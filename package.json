@@ -1,18 +1,30 @@
 {
   "name": "pi-smart-compact",
   "version": "7.5.0",
-  "description": "EESV semantic compaction extension for Pi Coding Agent",
+  "description": "EESV smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification with redundancy pruning, project fingerprinting, and damage detection.",
   "license": "MIT",
-  "author": "Smart Compact Contributors",
+  "author": "Alper Tarhan <alpertarhan@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alpertarhan/pi-smart-compact.git"
+  },
+  "homepage": "https://github.com/alpertarhan/pi-smart-compact#readme",
+  "bugs": {
+    "url": "https://github.com/alpertarhan/pi-smart-compact/issues"
+  },
   "keywords": [
+    "pi",
     "pi-extension",
+    "pi-coding-agent",
+    "pi-smart-compact",
     "smart-compaction",
     "context-compression",
-    "eesv"
+    "eesv",
+    "conversation-summarization",
+    "llm-context"
   ],
   "files": [
     "src",
-    "index.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -23,5 +35,8 @@
   },
   "pi": {
     "extensions": ["./src/index.ts"]
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

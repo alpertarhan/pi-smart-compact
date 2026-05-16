@@ -2,7 +2,7 @@
 
 > EESV-powered smart compaction extension for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 
-[![Version](https://img.shields.io/badge/version-7.3.2-blue)](./package.json)
+[![Version](https://img.shields.io/badge/version-7.5.0-blue)](./package.json)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 ---
