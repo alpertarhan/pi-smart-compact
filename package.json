@@ -1,0 +1,27 @@
+{
+  "name": "pi-smart-compact",
+  "version": "7.5.0",
+  "description": "EESV semantic compaction extension for Pi Coding Agent",
+  "license": "MIT",
+  "author": "Smart Compact Contributors",
+  "keywords": [
+    "pi-extension",
+    "smart-compaction",
+    "context-compression",
+    "eesv"
+  ],
+  "files": [
+    "src",
+    "index.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  }
+}

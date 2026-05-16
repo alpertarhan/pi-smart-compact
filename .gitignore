@@ -1,0 +1,25 @@
+# Build output
+dist/
+
+# Backups
+*.backup
+*.v*-backup
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Coverage
+coverage/
+
+# Packages
+*.tgz
+
+# Logs
+*.log
+
+# OS
+.DS_Store

@@ -1,0 +1,329 @@
+/**
+ * TUI overlays: model/profile selection, progress, result screen.
+ */
+
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import type { Model, Api } from "@earendil-works/pi-ai";
+import type {
+  CompressionProfile, ModelOption, ProgressState,
+  SmartCompactDetails, StructuredExtraction,
+} from "../types.ts";
+import { getMetricsSummary } from "../utils/cache.ts";
+import { getProviderCaps } from "../utils/tokens.ts";
+import { trackedComplete, cacheOpts } from "../utils/cache.ts";
+import path from "node:path";
+
+export function renderContextBar(theme: any, pct: number, tokens: number, barLen = 24): string {
+  const clamped = Math.min(Math.max(pct, 0), 100);
+  const filled = Math.min(barLen, Math.round((clamped / 100) * barLen));
+  const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
+  const color = clamped > 80 ? "error" : clamped > 50 ? "warning" : "success";
+  return theme.fg("text", "  Context: ") + theme.fg(color, bar) + theme.fg("text", " " + clamped + "%") + theme.fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
+}
+
+export function renderTokenBar(theme: any, before: number, after: number, label: string, barLen = 30): string {
+  const ratio = before > 0 ? after / before : 0;
+  const savedPct = Math.round((1 - ratio) * 100);
+  const filled = Math.min(barLen, Math.round(ratio * barLen));
+  const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
+  const savedColor = savedPct >= 50 ? "success" : savedPct >= 25 ? "warning" : "error";
+  return theme.fg("text", "  " + label + ": ") + theme.fg(savedColor, bar) + theme.fg("text", " " + (after ?? 0).toLocaleString() + "t") + theme.fg(savedColor, " (saved " + savedPct + "%)");
+}
+
+const _toolSupportCache = new Map<string, boolean>();
+
+export async function probeToolSupport(model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }): Promise<boolean> {
+  const key = model.provider + "/" + model.id;
+  if (_toolSupportCache.has(key)) return _toolSupportCache.get(key)!;
+  const caps = getProviderCaps(model.provider);
+  if (caps.supportsTools === true) { _toolSupportCache.set(key, true); return true; }
+  try {
+    await trackedComplete("probe", model, {
+      messages: [{ role: "user", content: [{ type: "text", text: "Reply with exactly: ok" }] }],
+      tools: [{ name: "test_tool", description: "test", parameters: { type: "object", properties: {} } }],
+    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 10, cacheRetention: "none" }));
+    _toolSupportCache.set(key, true);
+    return true;
+  } catch {
+    _toolSupportCache.set(key, false);
+    return false;
+  }
+}
+
+export async function selectModel(
+  ctx: ExtensionCommandContext,
+  opts: { contextTokens: number; contextPercent: number; currentModel: string; defaultModelIndex: number },
+): Promise<ModelOption | null> {
+  const available = ctx.modelRegistry.getAvailable();
+  const options: ModelOption[] = available.map(m => ({
+    value: m.provider + "/" + m.id,
+    label: m.provider + "/" + m.id + (m.contextWindow >= 200000 ? " (" + Math.round(m.contextWindow / 1000) + "K)" : ""),
+    model: m,
+    supportsTools: true,
+  }));
+  const items: SelectItem[] = options.map((o, i) => ({
+    value: "model:" + i,
+    label: o.label,
+    description: i === opts.defaultModelIndex ? "\u2190 session model" : undefined,
+  }));
+  const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+    const c = new Container();
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    c.addChild(new Text(theme.fg("accent", theme.bold("  \uD83D\uDD0D Smart Compact \u2014 Step 1/2")), 1, 0));
+    c.addChild(new Text(theme.fg("dim", "  Architecture: EESV (Extract \u2192 Explore \u2192 Synthesize \u2192 Verify)"), 0, 0));
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(renderContextBar(theme, opts.contextPercent, opts.contextTokens), 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  Session: " + opts.currentModel), 0, 0));
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("text", "  Select model for compaction:"), 1, 0));
+    c.addChild(new Text("", 0, 0));
+    const sel = new SelectList(items, Math.min(items.length, 12), {
+      selectedPrefix: t => theme.fg("accent", t),
+      selectedText: t => theme.fg("accent", t),
+      description: t => theme.fg("muted", t),
+      scrollInfo: t => theme.fg("dim", t),
+      noMatch: t => theme.fg("warning", t),
+    });
+    sel.selectedIndex = opts.defaultModelIndex;
+    sel.onSelect = item => done(item.value);
+    sel.onCancel = () => done(null);
+    c.addChild(sel);
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  \u2191\u2193 navigate \u2022 enter select \u2022 esc cancel"), 0, 0));
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    return {
+      render: (w: number) => c.render(w),
+      invalidate: () => c.invalidate(),
+      handleInput: (d: string) => { sel.handleInput(d); tui.requestRender(); },
+    };
+  });
+  if (!result?.startsWith("model:")) return null;
+  return options[parseInt(result.slice(6), 10)] ?? null;
+}
+
+export async function selectProfile(
+  ctx: ExtensionCommandContext,
+  selectedModel: ModelOption,
+  opts: { contextTokens: number; contextPercent: number },
+): Promise<CompressionProfile | null> {
+  const estAfter = (budget: number, keep: number) => budget + Math.min(opts.contextTokens, keep);
+  const profiles: { value: CompressionProfile; label: string; desc: string; budget: number; keep: number }[] = [
+    { value: "light", label: "\u2601\uFE0F  Light", desc: "Max detail", budget: 10000, keep: 30000 },
+    { value: "balanced", label: "\u2696\uFE0F  Balanced", desc: "Recommended", budget: 6000, keep: 20000 },
+    { value: "aggressive", label: "\uD83D\uDD25 Aggressive", desc: "Minimal", budget: 3000, keep: 10000 },
+  ];
+  const items: SelectItem[] = profiles.map(p => {
+    const after = estAfter(p.budget, p.keep);
+    const pct = opts.contextTokens > 0 ? Math.round((1 - after / opts.contextTokens) * 100) : 0;
+    return { value: p.value, label: p.label, description: p.desc + " \u2014 est. ~" + after.toLocaleString() + "t after (save ~" + pct + "%)" };
+  });
+  const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+    const c = new Container();
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    c.addChild(new Text(theme.fg("accent", theme.bold("  \uD83D\uDD0D Smart Compact \u2014 Step 2/2")), 1, 0));
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  Model: " + selectedModel.label), 0, 0));
+    c.addChild(new Text(renderContextBar(theme, opts.contextPercent, opts.contextTokens), 0, 0));
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("text", "  Select compression profile:"), 1, 0));
+    c.addChild(new Text("", 0, 0));
+    const sel = new SelectList(items, 3, {
+      selectedPrefix: t => theme.fg("accent", t),
+      selectedText: t => theme.fg("accent", t),
+      description: t => theme.fg("muted", t),
+      scrollInfo: t => theme.fg("dim", t),
+      noMatch: t => theme.fg("warning", t),
+    });
+    sel.selectedIndex = 1;
+    sel.onSelect = item => done(item.value);
+    sel.onCancel = () => done(null);
+    c.addChild(sel);
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  \u2191\u2193 navigate \u2022 enter select \u2022 esc cancel"), 0, 0));
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    return {
+      render: (w: number) => c.render(w),
+      invalidate: () => c.invalidate(),
+      handleInput: (d: string) => { sel.handleInput(d); tui.requestRender(); },
+    };
+  });
+  if (!result) return null;
+  return profiles.find(p => p.value === result)?.value ?? null;
+}
+
+export function showProgressOverlay(ctx: ExtensionCommandContext, state: ProgressState): void {
+  const phaseNames = ["Extract", "Explore", "Synthesize", "Verify"];
+  const progress = Math.round((state.phase / 4) * 100);
+  const name = phaseNames[state.phase - 1] ?? "?";
+  const detail = state.detail ? " (" + state.detail + ")" : "";
+  const type: "info" | "success" = state.phase >= 4 ? "success" : "info";
+  ctx.ui.notify("EESV [" + progress + "%] Phase " + state.phase + "/4: " + name + detail, type);
+}
+
+export async function showResultScreen(
+  ctx: ExtensionCommandContext,
+  details: SmartCompactDetails,
+  extraction: StructuredExtraction,
+): Promise<void> {
+  await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+    const c = new Container();
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    c.addChild(new Text(theme.fg("accent", theme.bold("  \u2705 Smart Compact Complete")), 1, 0));
+    c.addChild(new Text("", 0, 0));
+
+    const estimatedAfter = (details.tokensBefore ?? 0) - (details.tokensSaved ?? 0);
+    c.addChild(new Text(renderTokenBar(theme, details.tokensBefore, estimatedAfter, "Result  "), 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  Before: " + (details.tokensBefore ?? 0).toLocaleString() + "t \u2192 After: ~" + estimatedAfter.toLocaleString() + "t \u2192 Saved: " + (details.tokensSaved ?? 0).toLocaleString() + "t"), 0, 0));
+    c.addChild(new Text("", 0, 0));
+
+    const methodColors: Record<string, string> = { eesv: "accent", "single-pass": "success", heuristic: "warning" };
+    const methodColor = methodColors[details.method] ?? "text";
+    c.addChild(new Text(
+      theme.fg("text", "  Method: ") +
+      theme.fg(methodColor, details.method.toUpperCase()) +
+      theme.fg("dim", " \u2022 " + details.llmCalls + " LLM call(s) \u2022 Profile: " + details.profile),
+      0, 0));
+    if (details.model) {
+      c.addChild(new Text(theme.fg("dim", "  Model: " + details.model), 0, 0));
+    }
+
+    const scoreColor = details.qualityScore >= 80 ? "success" : details.qualityScore >= 50 ? "warning" : "error";
+    c.addChild(new Text(theme.fg("text", "  Quality: ") + theme.fg(scoreColor, details.qualityScore + "/100"), 0, 0));
+    c.addChild(new Text("", 0, 0));
+
+    c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDCCB Extraction")), 0, 0));
+    const ms = getMetricsSummary();
+    if (ms.totalCalls > 0) {
+      const cachePct = Math.round(ms.cacheHitRate * 100);
+      const cacheColor = cachePct >= 50 ? "success" : cachePct >= 20 ? "warning" : "dim";
+      c.addChild(new Text(
+        theme.fg("dim", "  LLM: ") +
+        theme.fg("text", ms.totalCalls + " calls") +
+        theme.fg("dim", " \u2022 ") +
+        theme.fg("text", ms.totalInput.toLocaleString() + "t in") +
+        theme.fg("dim", " \u2022 ") +
+        theme.fg(cacheColor, cachePct + "% cache hit") +
+        theme.fg("dim", " \u2022 ") +
+        theme.fg("dim", ms.avgLatency + "ms avg"),
+      0, 0));
+    }
+    const modFiles = details.modifiedFiles;
+    const errCount = extraction.errors.length;
+    const resolvedErr = extraction.errors.filter(e => e.resolved).length;
+    const unresolvedErr = errCount - resolvedErr;
+    c.addChild(new Text(
+      theme.fg("dim", "  Files: ") +
+      theme.fg("success", modFiles.length + " modified") +
+      theme.fg("dim", " \u2022 ") +
+      theme.fg("text", details.readFiles.length + " read") +
+      theme.fg("dim", " \u2022 ") +
+      theme.fg("text", details.totalMessages + " messages"),
+      0, 0));
+    if (errCount > 0) {
+      c.addChild(new Text(
+        theme.fg("dim", "  Errors: ") +
+        theme.fg("warning", errCount + " total") +
+        theme.fg("dim", " \u2022 ") +
+        theme.fg("success", resolvedErr + " resolved") +
+        theme.fg("dim", " \u2022 ") +
+        theme.fg("error", unresolvedErr + " unresolved"),
+        0, 0));
+    }
+    if (extraction.decisions.length > 0) {
+      const expD = extraction.decisions.filter(d => d.type === "explicit").length;
+      const impD = extraction.decisions.filter(d => d.type === "implicit").length;
+      c.addChild(new Text(theme.fg("dim", "  Decisions: " + extraction.decisions.length + " (" + expD + " explicit, " + impD + " implicit)"), 0, 0));
+    }
+    if (extraction.constraints.length > 0) {
+      const reqC = extraction.constraints.filter(cc => cc.category === "requirement").length;
+      const proC = extraction.constraints.filter(cc => cc.category === "prohibition").length;
+      const preC = extraction.constraints.filter(cc => cc.category === "preference").length;
+      c.addChild(new Text(theme.fg("dim", "  Constraints: " + extraction.constraints.length + " (" + reqC + " req, " + proC + " prohibit, " + preC + " pref)"), 0, 0));
+    }
+    c.addChild(new Text("", 0, 0));
+
+    if (modFiles.length > 0) {
+      c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDCC1 Modified Files")), 0, 0));
+      const maxShow = 8;
+      for (let i = 0; i < Math.min(modFiles.length, maxShow); i++) {
+        const f = modFiles[i];
+        const fc = extraction.modifiedFiles.find(e => e.path === f);
+        const count = fc ? " (" + fc.toolCalls + "x)" : "";
+        c.addChild(new Text(theme.fg("success", "    \u270E ") + theme.fg("text", path.basename(f)) + theme.fg("dim", count + " \u2192 " + f), 0, 0));
+      }
+      if (modFiles.length > maxShow) {
+        c.addChild(new Text(theme.fg("dim", "    + " + (modFiles.length - maxShow) + " more"), 0, 0));
+      }
+      c.addChild(new Text("", 0, 0));
+    }
+
+    if (details.topics.length > 0) {
+      c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDCE6 Topics")), 0, 0));
+      const maxTopics = 10;
+      for (let i = 0; i < Math.min(details.topics.length, maxTopics); i++) {
+        c.addChild(new Text(theme.fg("dim", "    " + (i + 1) + ". " + details.topics[i]), 0, 0));
+      }
+      if (details.topics.length > maxTopics) {
+        c.addChild(new Text(theme.fg("dim", "    + " + (details.topics.length - maxTopics) + " more"), 0, 0));
+      }
+      c.addChild(new Text("", 0, 0));
+    }
+
+    c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDD0D Verification")), 0, 0));
+    if (details.verified) {
+      c.addChild(new Text(theme.fg("success", "    \u2705 All facts verified \u2014 no gaps detected"), 0, 0));
+    } else if (details.gaps.length > 0) {
+      c.addChild(new Text(theme.fg("warning", "    \u26A0\uFE0F  " + details.gaps.length + " gap(s) patched:"), 0, 0));
+      for (const g of details.gaps.slice(0, 5)) {
+        c.addChild(new Text(theme.fg("dim", "      \u2022 " + g), 0, 0));
+      }
+    }
+    c.addChild(new Text("", 0, 0));
+
+    c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDD04 Pipeline")), 0, 0));
+    const phase1Status = theme.fg("success", "\u2713");
+    const phase2Status = details.explorationRounds > 0
+      ? theme.fg("success", "\u2713 " + details.explorationRounds + " rounds")
+      : theme.fg("warning", "\u26A0 skipped");
+    const phase2Bounds = details.explorationBoundaries > 0
+      ? theme.fg("text", " (" + details.explorationBoundaries + " boundaries)")
+      : theme.fg("dim", " (heuristic fallback)");
+    const phase4Status = details.verified
+      ? theme.fg("success", "\u2713 verified")
+      : details.gaps.length > 0
+        ? theme.fg("warning", "\u2713 patched (" + details.gaps.length + " gaps)")
+        : theme.fg("dim", "\u2014");
+    c.addChild(new Text(theme.fg("dim", "    Phase 1 Extract: ") + phase1Status, 0, 0));
+    c.addChild(new Text(theme.fg("dim", "    Phase 2 Explore: ") + phase2Status + phase2Bounds, 0, 0));
+    c.addChild(new Text(theme.fg("dim", "    Phase 3 Synthesize: ") + theme.fg("success", "\u2713 " + details.chunkCount + " chunks"), 0, 0));
+    c.addChild(new Text(theme.fg("dim", "    Phase 4 Verify: ") + phase4Status, 0, 0));
+    c.addChild(new Text("", 0, 0));
+
+    if (details.backupPath) {
+      c.addChild(new Text(theme.fg("dim", "  \uD83D\uDCBE Backup: " + details.backupPath), 0, 0));
+      c.addChild(new Text("", 0, 0));
+    }
+
+    c.addChild(new Text(theme.fg("dim", "  Press any key to close"), 0, 0));
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+    return {
+      render: (w: number) => c.render(w),
+      invalidate: () => c.invalidate(),
+      handleInput: (_d: string) => done(undefined),
+    };
+  }, { overlay: true, overlayOptions: { width: "70%", anchor: "center", maxHeight: "80%" } });
+}
+
+export async function showCompactUI(
+  ctx: ExtensionCommandContext,
+  opts: { contextTokens: number; contextPercent: number; currentModel: string; defaultModelIndex: number },
+): Promise<{ model: ModelOption; profile: CompressionProfile } | null> {
+  const selectedModel = await selectModel(ctx, opts);
+  if (!selectedModel) return null;
+  const selectedProfile = await selectProfile(ctx, selectedModel, { contextTokens: opts.contextTokens, contextPercent: opts.contextPercent });
+  if (!selectedProfile) return null;
+  return { model: selectedModel, profile: selectedProfile };
+}
