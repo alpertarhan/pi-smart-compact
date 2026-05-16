@@ -1,52 +1,77 @@
 # Smart Compact
 
-> EESV-powered smart compaction extension for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
-
-[![Version](https://img.shields.io/badge/version-7.5.0-blue)](./package.json)
+[![npm version](https://img.shields.io/npm/v/pi-smart-compact.svg)](https://www.npmjs.com/package/pi-smart-compact)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![GitHub](https://img.shields.io/badge/GitHub-alpertarhan%2Fpi--smart--compact-blue)](https://github.com/alpertarhan/pi-smart-compact)
+
+> EESV-powered intelligent context compaction for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
+
+**Smart Compact** compresses long conversation contexts by understanding *what happened* — not by blindly truncating. It deterministically extracts files, errors, decisions, and constraints from your session, then uses LLM-guided exploration and parallel batch synthesis to produce a structured summary that preserves the meaning and state of your work.
+
+The result: a shorter context that the agent can actually work with, without losing critical information.
 
 ---
 
-## What is it?
+## Why Smart Compact?
 
-**Smart Compact** compresses long conversation contexts by understanding *what happened* instead of blindly truncating. It uses the **EESV architecture**:
+Pi's built-in compaction truncates old messages. Smart Compact **understands** them first:
 
-| Phase | What it does | LLM calls |
-|-------|-------------|-----------|
-| **Extract** | Deterministically pull files, errors, decisions, constraints, topics | 0 |
-| **Explore** | Use LLM tools to verify boundaries and enrich context (skipped for simple sessions) | 0–8 |
-| **Synthesize** | Parallel batch summarization + assembly | N + 1 |
-| **Verify** | Check coverage, detect hallucinations, patch gaps | 0–1 |
-
-**Result:** Shorter context that preserves the *meaning* and *state* of your session.
+- **Zero-LLM extraction** — files modified/read, errors with retry lifecycle, user decisions, constraints, topic segmentation — all deterministically extracted before any LLM call
+- **Hallucination detection** — verifies the summary doesn't invent file paths or misstate error status
+- **Decision propagation** — carries decisions across batch boundaries so the LLM never forgets what was decided
+- **Redundancy pruning** — collapses duplicate reads, consecutive failures, and low-info messages before compaction, reducing input by 15–30%
+- **Cross-session memory** — learns your project's language, framework, and file structure across sessions
+- **Damage detection** — monitors post-compaction behavior for regression signals
 
 ---
 
-## Features
+## The EESV Pipeline
 
-- 🔍 **Deterministic extraction** — zero-LLM-call file/error/decision mining
-- 🧭 **Tool-calling exploration** — targeted investigation with `get_message_range`, `search_conversation`, `get_error_chain`
-- ⚡ **Parallel batch synthesis** — provider-aware concurrency (2–5 in flight)
-- ✅ **Automated verification** — coverage checks, hallucination detection, gap patching
-- 📊 **Live metrics** — token savings, cache hit rate, latency per phase
-- 🎛️ **Profiles** — `light` / `balanced` / `aggressive` compression
-- 💾 **Backup & incremental cache** — safe rollback, delta re-compaction
-- 🧠 **Adaptive exploration** — skips Phase 2 for simple sessions, saving 3–8 LLM calls
-- 🔧 **Provider-aware token estimation** — language and JSON-aware with per-provider calibration
-
----
-
-## Install
-
-```bash
-# Inside your Pi agent extensions directory
-cd ~/.pi/agent/extensions
-git clone https://github.com/YOUR_USERNAME/pi-smart-compact.git
-cd pi-smart-compact
-bun install
+```
+Extract → Explore → Synthesize → Verify
+(0 LLM)  (0–8 LLM) (N+1 LLM)   (0–1 LLM)
 ```
 
-Add to your Pi `settings.json`:
+| Phase | What it does | LLM cost |
+|-------|-------------|----------|
+| **Extract** | Deterministically mine files, errors, decisions, constraints, topics | **0 calls** |
+| **Explore** | LLM investigates conversation with tools to verify boundaries and enrich context. **Skipped for simple sessions.** | 0–8 calls |
+| **Synthesize** | Parallel batch summarization with decision propagation, then single-pass assembly | N+1 calls |
+| **Verify** | Coverage checks, hallucination detection, deterministic patching (zero LLM), LLM patch only as last resort | 0–1 calls |
+
+### Pre-Processing (before EESV)
+
+```
+Pruning: Remove duplicate reads, collapse error chains, strip acknowledgments, truncate long outputs
+         ↳ Reduces compaction input by 15–30%
+Fingerprint: Load project context (language, framework, known files) from previous sessions
+```
+
+### Post-Processing (after EESV)
+
+```
+Damage Detection: Monitor agent behavior for regression signals (re-reads, user complaints, re-questions)
+                  ↳ Builds a quality feedback dataset over time
+```
+
+---
+
+## Installation
+
+```bash
+# Option 1: Install via bun (recommended)
+bun add pi-smart-compact
+
+# Option 2: Install via npm
+npm install pi-smart-compact
+
+# Option 3: Clone directly
+cd ~/.pi/agent/extensions
+git clone https://github.com/alpertarhan/pi-smart-compact.git
+cd pi-smart-compact && bun install
+```
+
+Then add to your Pi `settings.json`:
 
 ```json
 {
@@ -54,40 +79,32 @@ Add to your Pi `settings.json`:
 }
 ```
 
-Or via `package.json` (already configured):
-
-```json
-{
-  "pi": {
-    "extensions": ["./src/index.ts"]
-  }
-}
-```
-
 ---
 
 ## Usage
 
+### Command
+
 ```bash
-# TUI — pick model + profile
+# Interactive TUI — pick model + profile
 /smart-compact
 
 # Direct — specific model + profile
 /smart-compact anthropic/claude-sonnet-4 balanced
 
-# Dry run — preview only
+# Dry run — preview what would be compacted
 /smart-compact dry-run
 
-# Verbose — detailed logging
+# Verbose — detailed pipeline logging
 /smart-compact debug
 
-# Add a steering note
+# Steering note — guide the summary focus
 /smart-compact "focus on auth changes"
 ```
 
-### Tool Usage
+### Tool (agent-callable)
 
-The extension also registers a tool named `smart_compact`:
+The extension registers a tool the agent can call automatically:
 
 ```json
 {
@@ -100,48 +117,9 @@ The extension also registers a tool named `smart_compact`:
 }
 ```
 
----
+### Auto-Trigger
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│  Conversation (too long)                     │
-└──────────────┬──────────────────────────────┘
-               │
-  ┌────────────▼────────────┐
-  │  Phase 1: EXTRACT       │  ← deterministic (0 LLM calls)
-  │  • files modified/read  │
-  │  • errors + retries     │
-  │  • decisions            │
-  │  • constraints          │
-  └────────────┬────────────┘
-               │
-  ┌────────────▼────────────┐
-  │  Phase 2: EXPLORE       │  ← LLM with tools (0–8 rounds)
-  │  • verify topic bounds  │  ← skipped for simple sessions
-  │  • find cross-references│
-  │  • assess status        │
-  └────────────┬────────────┘
-               │
-  ┌────────────▼────────────┐
-  │  Phase 3: SYNTHESIZE    │  ← parallel batch summarize
-  │  • chunk messages       │
-  │  • summarize batches    │
-  │  • assemble final       │
-  └────────────┬────────────┘
-               │
-  ┌────────────▼────────────┐
-  │  Phase 4: VERIFY        │  ← deterministic checks
-  │  • coverage gaps?       │
-  │  • hallucinated files?  │
-  │  • patch if needed      │
-  └────────────┬────────────┘
-               │
-  ┌────────────▼────────────┐
-  │  Compact context applied│
-  └─────────────────────────┘
-```
+When `autoTrigger` is enabled (default), Smart Compact runs automatically before Pi's built-in compaction kicks in. The `session_before_compact` hook intercepts the event and produces the smart summary instead of blind truncation.
 
 ---
 
@@ -149,15 +127,15 @@ The extension also registers a tool named `smart_compact`:
 
 | Profile | Summary Budget | Keep Recent | Best For |
 |---------|---------------|-------------|----------|
-| **light** | 10K tokens | 30K tokens | Debugging, complex multi-file refactors |
+| **light** | 10K tokens | 30K tokens | Debugging sessions, complex multi-file refactors where detail matters |
 | **balanced** | 6K tokens | 20K tokens | General development (default) |
-| **aggressive** | 3K tokens | 10K tokens | Quick exploration, prototyping |
+| **aggressive** | 3K tokens | 10K tokens | Quick exploration, prototyping, or very large contexts |
 
 ---
 
 ## Configuration
 
-Create `~/.pi/agent/settings.json`:
+Add to `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -168,10 +146,160 @@ Create `~/.pi/agent/settings.json`:
     "autoTrigger": true,
     "backupEnabled": true,
     "profiles": {
-      "light": { "summaryBudgetTokens": 10000, "keepRecentTokens": 30000 }
+      "balanced": { "summaryBudgetTokens": 6000, "keepRecentTokens": 20000 }
     }
   }
 }
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `profile` | `"light"` \| `"balanced"` \| `"aggressive"` | `"balanced"` | Default compression profile |
+| `summaryModel` | `string` \| `null` | `null` | Override model for summarization (e.g. `"anthropic/claude-sonnet-4"`) |
+| `segmentationModel` | `string` \| `null` | `null` | Override model for exploration (e.g. `"anthropic/claude-haiku-3"`) |
+| `autoTrigger` | `boolean` | `true` | Automatically run on Pi's `session_before_compact` hook |
+| `backupEnabled` | `boolean` | `true` | Save conversation backup before compaction |
+| `profiles` | `object` | — | Override per-profile token budgets |
+
+---
+
+## Architecture Deep Dive
+
+### Deterministic Extraction (Phase 1)
+
+Zero LLM calls. Extracts purely from message structure:
+
+- **File operations** — tracks read/write/edit/delete with no-op detection (`"applied: 0"`, `"no changes"`)
+- **Error lifecycle** — not just "isError" but retry detection (same tool re-called within 6 messages) and resolution tracking
+- **Decisions** — explicit (`ask_user` tool calls) and implicit (user choice patterns like "use X instead of Y")
+- **Constraints** — regex-based mining with English + Turkish patterns, categorized as requirement/prohibition/preference
+- **Topic segmentation** — heuristic boundaries based on file transitions, error density, user "shift" patterns, and token limits
+
+### Adaptive Exploration Gate
+
+Exploration is **skipped** for simple sessions that meet all criteria:
+- ≤ 3 topics
+- ≤ 1 unresolved error
+- ≤ 2 decisions
+- ≤ 2 directory groups
+
+This saves 3–8 LLM calls on straightforward sessions.
+
+### Decision Propagation
+
+Each batch receives "Active Decisions from previous segments" — decisions made before the batch's message range. This prevents the common failure mode where Batch 2 doesn't know that Batch 1 decided to use React.
+
+### Immutable Context Framing
+
+The assembly prompt presents deterministic data as **IMMUTABLE CONTEXT** with explicit rules:
+
+> *"These are deterministically verified from the original conversation. They take priority over ANY summary content below."*
+
+This reduces fabrication by making the LLM treat verified data as ground truth.
+
+### Verification & Patching
+
+1. **Verification** — checks file coverage, error coverage, constraint coverage, hallucinated file paths, error-done inconsistencies, decision coverage
+2. **Deterministic patch** (score < 85) — injects missing items directly into the relevant markdown sections, zero LLM cost
+3. **LLM patch** (score < 75 after deterministic) — last resort, only if deterministic patch was insufficient
+4. **Skip** (score ≥ 85) — no patching needed
+
+### Redundancy Pruning
+
+Before compaction, deterministic pruning removes:
+- **Duplicate file reads** — keeps only the last read per file
+- **Collapsed error chains** — 3+ consecutive same-tool failures → keep first + last only
+- **Agent acknowledgments** — "I'll fix that", "Let me check", "Sure" (zero-information messages)
+- **Long tool outputs** — truncates to 800 chars (head 400 + tail 400)
+
+### Project Fingerprint
+
+Cross-session learning stored at `~/.pi/agent/.cache/smart-compact/projects/`:
+
+| Field | How it's detected |
+|-------|-------------------|
+| Language | Most common file extension (.ts → typescript, .rs → rust, etc.) |
+| Framework | Config file patterns (next.config → nextjs, vite.config → vite, etc.) |
+| Key directories | Most frequently modified directory paths |
+| Known files | Last 50 unique files across sessions |
+| Session count | Incremented each compaction |
+
+30-day TTL. Loaded before Phase 1 and injected into the synthesis prompt as project context.
+
+### Damage Detection
+
+After compaction, monitors the next 15 messages for regression signals:
+
+| Signal | Severity | Detection |
+|--------|----------|-----------|
+| Agent re-reads compacted file | Medium | Tool call `read` with path from compacted section |
+| User complaint | High | Regex: "I already told you", "you forgot", "nerede kaldı" |
+| Re-question | Low | User mentions compacted decision topic |
+
+Logged to `~/.pi/agent/.cache/smart-compact/damage-reports.jsonl` for future analysis.
+
+### Token Estimation
+
+- **Provider-specific ratios** (OpenAI: 4.0, Anthropic: 3.5, MiniMax: 3.8)
+- **JSON penalty** (0.85x) — JSON.stringify'd content has denser tokenization
+- **Language penalty** (0.9x) — Turkish/CE characters tokenize differently
+- **Per-provider EMA calibration** — learns from actual API responses, scoped per provider
+
+### Provider Concurrency
+
+| Provider | Concurrency Limit | Cache Strategy |
+|----------|-------------------|----------------|
+| OpenAI | 5 | prompt caching |
+| Anthropic (zai) | 3 | anthropic caching |
+| MiniMax | 2 | anthropic caching |
+| Xiaomi | 2 | openai caching |
+| Default | 2 | none |
+
+---
+
+## Summary Format
+
+Smart Compact produces structured markdown:
+
+```markdown
+## Goal
+[What the user is trying to accomplish]
+
+## Constraints & Preferences
+- [requirement] Must use TypeScript strict mode
+- [preference] Prefer functional components
+
+## Progress
+### Done
+- [x] Auth module implemented (src/auth.ts)
+### In Progress
+- [ ] Database migration
+### Blocked
+- Waiting for API credentials
+
+## Key Decisions
+- **Use JWT for auth**: User confirmed over session cookies
+
+## Files Modified
+- src/auth.ts
+- src/db/migrations/001.sql
+
+## Files Read
+- src/config.ts
+- package.json
+
+## Next Steps
+1. Complete database migration
+2. Add integration tests
+
+## Critical Context
+- Unresolved error: test failed in auth.ts line 42
+- API base URL: https://api.example.com/v2
+
+## Topics Covered
+- **Auth implementation** [high]
+- **DB schema design** [normal]
+- **Config review** [low]
 ```
 
 ---
@@ -180,16 +308,17 @@ Create `~/.pi/agent/settings.json`:
 
 ```bash
 bun install
-bun test         # runs test suite
+bun test          # 56 tests across 7 files
+bun run typecheck # TypeScript check
 ```
 
 ---
 
 ## Contributing
 
-1. Fork it
-2. Create your feature branch (`git checkout -b feat/amazing-feature`)
-3. Commit your changes (`git commit -am 'Add amazing feature'`)
+1. Fork the repo
+2. Create your branch (`git checkout -b feat/amazing-feature`)
+3. Commit (`git commit -am 'Add amazing feature'`)
 4. Push (`git push origin feat/amazing-feature`)
 5. Open a Pull Request
 
@@ -197,4 +326,4 @@ bun test         # runs test suite
 
 ## License
 
-MIT © [Alper](https://github.com/alper)
+MIT © [Alper Tarhan](https://github.com/alpertarhan)
