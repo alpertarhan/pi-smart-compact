@@ -9,7 +9,11 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "noEmit": true
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["dist", "test", "node_modules"]
