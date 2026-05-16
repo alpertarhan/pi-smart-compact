@@ -103,14 +103,6 @@ export async function runSmartCompact(
     const backupPath = backupConversation(convText, sessionId);
     const prevContext = getPreviousCompactionContext(branch);
 
-    // ── Project fingerprint (cross-session context) ──
-    const projectId = deriveProjectId(extraction);
-    const fingerprint = loadProjectFingerprint(projectId);
-    if (fingerprint) {
-      notify("Project: " + fingerprint.language + (fingerprint.framework ? "/" + fingerprint.framework : "") + " (" + fingerprint.sessionCount + " sessions)", "info");
-    }
-    const projectCtx = buildProjectContext(fingerprint);
-
     // Phase 1
     const cachedExt = loadCachedExtraction(sessionId);
     let extraction: StructuredExtraction;
@@ -124,6 +116,14 @@ export async function runSmartCompact(
       notify("Phase 1 Full: " + extraction.modifiedFiles.length + " files, " + extraction.errors.length + " errors", "info");
     }
     saveCachedExtraction(sessionId, extraction, llmMessages.length);
+
+    // ── Project fingerprint (cross-session context) ──
+    const projectId = deriveProjectId(extraction);
+    const fingerprint = loadProjectFingerprint(projectId);
+    if (fingerprint) {
+      notify("Project: " + fingerprint.language + (fingerprint.framework ? "/" + fingerprint.framework : "") + " (" + fingerprint.sessionCount + " sessions)", "info");
+    }
+    const projectCtx = buildProjectContext(fingerprint);
 
     let finalSummary: string;
     let method: string;

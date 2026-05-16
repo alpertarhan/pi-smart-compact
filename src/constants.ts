@@ -4,7 +4,7 @@
 
 import type { CompressionProfile, ProfileConfig } from "./types.ts";
 
-export const VERSION = "7.5.0";
+export const VERSION = "7.5.2";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
