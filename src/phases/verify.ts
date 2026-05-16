@@ -185,7 +185,7 @@ export async function patchSummary(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user" as const, content: [{ type: "text" as const, text: patchPrompt }] }],
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }));
-    const patched = (resp.content as any[]).filter((c: any): c is { type: "text"; text: string } => c?.type === "text").map(c => c.text).join("\n").trim();
+    const patched = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return patched.startsWith("##") ? patched : summary;
   } catch { return summary; }
 }

@@ -15,7 +15,7 @@ import {
   resetCompactSessionId, resetMetrics, appendMetricsLog, getMetricsSummary,
   saveCachedExtraction, loadCachedExtraction, mergeExtractions, cacheOpts,
 } from "./utils/cache.ts";
-import { extractStructured } from "./utils/extraction.ts";
+import { extractStructured, extractText } from "./utils/extraction.ts";
 import { pruneRedundant } from "./utils/pruning.ts";
 import { deriveProjectId, loadProjectFingerprint, saveProjectFingerprint, buildProjectContext } from "./utils/fingerprint.ts";
 import { detectDamage, logDamageReport } from "./utils/damage.ts";
@@ -23,7 +23,6 @@ import {
   loadConfig, backupConversation, getPreviousCompactionContext,
   smartKeepBoundary, createBatches,
 } from "./utils/helpers.ts";
-import { extractText } from "./utils/extraction.ts";
 import { exploreConversation, shouldExplore } from "./phases/explore.ts";
 import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback } from "./phases/synthesize.ts";
 import { verifySummary, patchSummary, patchDeterministic } from "./phases/verify.ts";
@@ -73,8 +72,9 @@ export async function runSmartCompact(
     let accTokens = 0, keepFrom = msgs.length;
     for (let i = msgs.length - 1; i >= 0; i--) {
       // Use extractText for content instead of JSON.stringify to avoid metadata overhead
-      const msg = msgs[i].message as any;
-      const contentText = msg?.content ? (typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content)) : "";
+      const msg = msgs[i].message as Record<string, unknown>;
+      const contentRaw = msg?.content;
+      const contentText = typeof contentRaw === "string" ? contentRaw : (contentRaw != null ? JSON.stringify(contentRaw) : "");
       accTokens += estimateTokens(contentText);
       if (accTokens >= pc.keepRecentTokens) { keepFrom = i; break; }
     }
@@ -244,7 +244,8 @@ export async function runSmartCompact(
       try {
         const r = await assembleLLM(summaries, extraction, explorationReport, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, pc.summaryBudgetTokens, prevContext, signal);
         if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
-      } catch {
+      } catch (err) {
+        console.error("[smart-compact] Assembly failed:", err instanceof Error ? err.message : err);
         finalSummary = assembleFallback(summaries, extraction); assemblyCalls = 0;
       }
 
@@ -266,7 +267,9 @@ export async function runSmartCompact(
           try {
             finalSummary = await patchSummary(finalSummary, recheck.gaps, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal);
             llmCalls++;
-          } catch { /* accept deterministic patch as-is */ }
+          } catch (err) { /* accept deterministic patch as-is */
+            console.error("[smart-compact] LLM patch failed:", err instanceof Error ? err.message : err);
+          }
         }
       } else {
         notify("Phase 4 Verify: " + verification.gaps.length + " gap(s), score=" + verification.score + " ≥ 85 — skipping patch", "info");
@@ -317,18 +320,19 @@ export async function runSmartCompact(
       const postCompactMsgs = msgs.slice(keepFrom).map(e => convertToLlm([e.message])).flat().map((m: any) => m as LlmMessage);
       if (postCompactMsgs.length > 2) {
         // Only detect if there are enough post-compaction messages
-        const lastCompaction = branch.filter((e: any) => e.type === "compaction").slice(-1)[0] as any;
+        const lastCompaction = branch.filter((e: { type: string }) => e.type === "compaction").slice(-1)[0] as { details?: SmartCompactDetails } | undefined;
         if (lastCompaction?.details) {
           const prevDetails = lastCompaction.details as SmartCompactDetails;
-          const prevExtraction = extractStructured(postCompactMsgs.slice(0, Math.min(15, postCompactMsgs.length)), pc);
-          const damage = detectDamage(postCompactMsgs.slice(0, Math.min(15, postCompactMsgs.length)), prevExtraction, prevDetails);
+          const damage = detectDamage(postCompactMsgs.slice(0, Math.min(15, postCompactMsgs.length)), prevDetails);
           if (damage.damageScore > 0) {
             notify("Previous compaction damage: " + damage.summary, "warning");
           }
           logDamageReport(sessionId, damage, prevDetails);
         }
       }
-    } catch { /* damage detection is best effort */ }
+    } catch (err) { /* damage detection is best effort */
+      console.error("[smart-compact] Damage detection error:", err instanceof Error ? err.message : err);
+    }
     const ms = getMetricsSummary();
     if (ms.totalCalls > 0) {
       notify("Metrics: " + ms.totalCalls + " calls, " + ms.totalInput + "t in, " + ms.totalOutput + "t out, cache " + Math.round(ms.cacheHitRate * 100) + "%, " + ms.avgLatency + "ms avg", "info");
@@ -337,7 +341,8 @@ export async function runSmartCompact(
       try {
         const timeout = new Promise<void>(resolve => setTimeout(resolve, 5000));
         await Promise.race([showResultScreen(ctx, details, extraction), timeout]);
-      } catch {
+      } catch (err) {
+        console.error("[smart-compact] Result screen error:", err instanceof Error ? err.message : err);
         notify("Result screen skipped", "info");
       }
     }

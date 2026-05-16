@@ -4,6 +4,7 @@
 
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary, CacheAwareOptions } from "../types.ts";
+import { isTextBlock, isToolCallBlock, extractTextSafe, getToolCallNames, filterToolCalls } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
@@ -75,7 +76,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
         preview: extractText(m?.content).slice(0, 150),
-        toolCalls: ((m?.content ?? []) as unknown[]).filter((b: any) => b?.type === "toolCall").map((b: any) => b.name),
+        toolCalls: getToolCallNames(m?.content),
         isError: m?.isError,
       })));
     }
@@ -95,7 +96,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
         text: extractText(m?.content).slice(0, 300),
-        toolCalls: ((m?.content ?? []) as unknown[]).filter((b: any) => b?.type === "toolCall").map((b: any) => b.name),
+        toolCalls: getToolCallNames(m?.content),
         isError: m?.isError,
       })));
     }
@@ -103,13 +104,12 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       const target = ((args.path as string) ?? "").toLowerCase();
       const results: unknown[] = [];
       for (let i = 0; i < llmMessages.length; i++) {
-        const blocks = (llmMessages[i]?.content ?? []) as unknown[];
-        for (const b of blocks) {
-          const block = b as { type?: string; name?: string; arguments?: Record<string, unknown> };
-          if (block?.type === "toolCall" && block.name === "edit" && JSON.stringify(block).toLowerCase().includes(target)) {
+        const tcs = filterToolCalls(llmMessages[i]?.content);
+        for (const block of tcs) {
+          if (block.name === "edit" && JSON.stringify(block).toLowerCase().includes(target)) {
             results.push({ idx: i, role: "assistant", toolCall: "edit", args: block.arguments, preview: extractText(llmMessages[i]?.content).slice(0, 400) });
           }
-          if (block?.type === "toolCall" && block.name === "write" && JSON.stringify(block).toLowerCase().includes(target)) {
+          if (block.name === "write" && JSON.stringify(block).toLowerCase().includes(target)) {
             results.push({ idx: i, role: "assistant", toolCall: "write", preview: extractText(llmMessages[i]?.content).slice(0, 400) });
           }
         }
@@ -124,7 +124,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
         idx: s + i, role: m?.role,
         text: extractText(m?.content).slice(0, 500),
         isError: m?.isError,
-        toolCalls: ((m?.content ?? []) as unknown[]).filter((b: any) => b?.type === "toolCall").map((b: any) => b.name),
+        toolCalls: getToolCallNames(m?.content),
       })));
     }
     default: return "Unknown tool: " + call.name;
@@ -242,7 +242,7 @@ export async function exploreConversation(
       tools: EXPLORATION_TOOLS as any,
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }));
 
-    const toolCalls = ((probeResp?.content ?? []) as unknown[]).filter((c: any) => c?.type === "toolCall");
+    const toolCalls = probeResp.content.filter((c): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
 
     if (toolCalls.length > 0) {
       supportsTools = true;
@@ -266,13 +266,14 @@ export async function exploreConversation(
             messages,
             tools: EXPLORATION_TOOLS as any,
           }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }));
-        } catch {
+        } catch (err) {
+          console.error("[smart-compact] Explore loop error:", err instanceof Error ? err.message : err);
           break;
         }
 
-        const nextToolCalls = ((response?.content ?? []) as unknown[]).filter((c: any) => c?.type === "toolCall");
+        const nextToolCalls = response.content.filter((c): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
         if (nextToolCalls.length === 0) {
-          const text = ((response?.content ?? []) as unknown[]).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n").trim();
+          const text = response.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
           let report = parseExplorationReport(text, llmMessages);
           if (!report.boundaries.length) {
             report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
@@ -288,14 +289,14 @@ export async function exploreConversation(
         }
       }
 
-      const lastAssistant = messages.filter((m: any) => m.role === "assistant").pop();
-      if (lastAssistant) {
-        const text = (lastAssistant.content ?? []).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n").trim();
+      const lastAssistant = messages.filter((m: { role: string }) => m.role === "assistant").pop() as { content?: Array<{ type: string; text?: string }> } | undefined;
+      if (lastAssistant?.content) {
+        const text = lastAssistant.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map(c => c.text).join("\n").trim();
         const report = parseExplorationReport(text, llmMessages);
         if (report.boundaries.length) return { report, rounds, toolSupported: true };
       }
     } else {
-      const text = ((probeResp?.content ?? []) as unknown[]).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n").trim();
+      const text = probeResp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
       let report = parseExplorationReport(text, llmMessages);
       if (!report.boundaries.length) {
         report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
@@ -305,6 +306,7 @@ export async function exploreConversation(
     // Provider responded without tool calls — still counts as tool-capable for this session
   } catch {
     // Probe failed — cache as unsupported
+    console.error("[smart-compact] Tool calling probe failed for " + cacheKey);
     _toolSupportCache.set(cacheKey, { result: false, timestamp: Date.now() });
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }
@@ -336,7 +338,7 @@ export async function explorationRetry(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }] }],
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal }));
-    const text = (resp.content as any[]).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("").trim();
+    const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
   } catch { return fallbackExplorationReport(llmMessages); }
 }
@@ -365,7 +367,7 @@ export async function directExploration(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal }));
-    const text = (resp.content as any[]).filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n").trim();
+    const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);
   } catch { return fallbackExplorationReport(llmMessages); }
 }

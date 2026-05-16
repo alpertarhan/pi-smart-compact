@@ -3,8 +3,9 @@
  * Reduces compaction input by collapsing redundant message sequences.
  */
 
-import type { LlmMessage, ToolCallBlock } from "../types.ts";
-import { extractText } from "./extraction.ts";
+import type { LlmMessage } from "../types.ts";
+import { isToolCallBlock } from "../types.ts";
+import { extractText, buildToolCallIndex } from "./extraction.ts";
 import { estimateTokens } from "./tokens.ts";
 
 export interface PruningResult {
@@ -19,23 +20,6 @@ const ACK_RE = /^(?:I'?ll |let me |sure|ok[,.]?|got it|i understand|i see|now i|
 
 // Maximum chars to keep from a tool result output
 const MAX_TOOL_OUTPUT_CHARS = 800;
-
-/**
- * Build a quick index of assistant tool calls for lookups.
- */
-function buildToolCallIndex(msgs: LlmMessage[]): Map<string, { name: string; args: Record<string, unknown>; msgIndex: number }> {
-  const idx = new Map<string, { name: string; args: Record<string, unknown>; msgIndex: number }>();
-  for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].role !== "assistant") continue;
-    for (const b of (msgs[i].content ?? []) as unknown[]) {
-      const block = b as ToolCallBlock;
-      if (block?.type === "toolCall" && block.id) {
-        idx.set(block.id, { name: block.name, args: block.arguments, msgIndex: i });
-      }
-    }
-  }
-  return idx;
-}
 
 /**
  * Detect and collapse redundant message sequences.
@@ -53,7 +37,7 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
     if (msgs[i].role !== "toolResult") continue;
     const tc = tcIdx.get(msgs[i].toolCallId ?? "");
     if (!tc || tc.name !== "read") continue;
-    const fp = (tc.args?.path ?? tc.args?.file_path) as string | undefined;
+    const fp = (tc?.arguments?.path ?? tc?.arguments?.file_path) as string | undefined;
     if (!fp) continue;
     const arr = readIndices.get(fp) ?? [];
     arr.push(i);
@@ -101,9 +85,9 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
   // ── 3. Agent acknowledgment messages: no informational content ──
   for (let idx = 0; idx < msgs.length; idx++) {
     if (msgs[idx].role !== "assistant") continue;
-    const blocks = (msgs[idx].content ?? []) as unknown[];
+    const blocks = Array.isArray(msgs[idx].content) ? msgs[idx].content : [];
     // Only consider messages that are pure text with no tool calls
-    const hasToolCall = blocks.some((b: any) => b?.type === "toolCall");
+    const hasToolCall = blocks.some(b => isToolCallBlock(b));
     if (hasToolCall) continue;
     const text = extractText(msgs[idx].content).trim();
     if (text.length > 0 && text.length < 100 && ACK_RE.test(text)) {

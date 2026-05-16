@@ -91,7 +91,7 @@ export async function singlePassCompact(
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
     ],
   }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }));
-  const summary = (resp.content as any[]).filter((c: any): c is { type: "text"; text: string } => c?.type === "text").map(c => c.text).join("\n").trim();
+  const summary = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
   if (!summary.startsWith("##")) throw new Error("Single-pass malformed output");
   return { summary, llmCalls: 1 };
 }
@@ -123,7 +123,7 @@ export async function summarizeBatch(
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
     ],
   }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal }));
-  const output = (resp.content as any[]).filter((c: any): c is { type: "text"; text: string } => c?.type === "text").map(c => c.text).join("\n");
+  const output = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n");
   const sections = output.split(/^### /m).filter(s => s.trim());
   return batch.map((ch, i) => {
     const sec = sections[i] ?? "";
@@ -164,7 +164,7 @@ export async function assembleLLM(
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
     ],
   }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budget, 8192), signal }));
-  return (resp.content as any[]).filter((c: any): c is { type: "text"; text: string } => c?.type === "text").map(c => c.text).join("\n").trim();
+  return resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
 }
 
 export function assembleFallback(summaries: ChunkSummary[], extraction: StructuredExtraction): string {

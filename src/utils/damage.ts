@@ -3,8 +3,11 @@
  * Monitors agent behavior after compaction to detect quality issues.
  */
 
-import type { LlmMessage, StructuredExtraction, SmartCompactDetails } from "../types.ts";
+import type { LlmMessage, SmartCompactDetails } from "../types.ts";
+import { isToolCallBlock } from "../types.ts";
 import { extractText } from "./extraction.ts";
+import fs from "node:fs";
+import path from "node:path";
 
 export interface RegressionSignal {
   type: "re-read" | "re-question" | "contradiction" | "user-complaint";
@@ -30,18 +33,15 @@ const COMPLAINT_PATTERNS = [
  * Called with the post-compaction messages (typically 5-20 messages).
  *
  * @param postMessages Messages after compaction was applied
- * @param extraction The extraction from the compacted section
- * @param details The compaction details
+ * @param details The compaction details (contains the files/decisions that were compacted)
  */
 export function detectDamage(
   postMessages: LlmMessage[],
-  extraction: StructuredExtraction,
   details: SmartCompactDetails,
 ): DamageReport {
   const signals: RegressionSignal[] = [];
-  const compactedFiles = new Set(extraction.modifiedFiles.map(f => f.path.toLowerCase()));
-  const compactedReadFiles = new Set(extraction.readFiles.map(f => f.toLowerCase()));
-  const compactedDecisions = extraction.decisions.filter(d => d.type === "explicit");
+  const compactedFiles = new Set(details.modifiedFiles.map(f => f.toLowerCase()));
+  const compactedReadFiles = new Set(details.readFiles.map(f => f.toLowerCase()));
 
   for (let i = 0; i < postMessages.length; i++) {
     const msg = postMessages[i];
@@ -49,11 +49,10 @@ export function detectDamage(
 
     // ── Re-read detection: agent reads files that were in the compacted section ──
     if (msg.role === "assistant") {
-      const blocks = (msg.content ?? []) as unknown[];
+      const blocks = Array.isArray(msg.content) ? msg.content : [];
       for (const b of blocks) {
-        const block = b as { type?: string; name?: string; arguments?: Record<string, unknown> };
-        if (block?.type === "toolCall" && (block.name === "read" || block.name === "bash")) {
-          const fp = (block.arguments?.path ?? block.arguments?.file_path) as string | undefined;
+        if (isToolCallBlock(b) && (b.name === "read" || b.name === "bash")) {
+          const fp = (b.arguments?.path ?? b.arguments?.file_path) as string | undefined;
           if (fp) {
             const fpLower = fp.toLowerCase();
             if (compactedFiles.has(fpLower) || compactedReadFiles.has(fpLower)) {
@@ -81,16 +80,14 @@ export function detectDamage(
         }
       }
 
-      // Check if user re-asks about compacted decisions
-      for (const d of compactedDecisions) {
-        const decWords = d.summary.toLowerCase().split(/\s+/).filter(w => w.length > 4).slice(0, 3);
-        if (decWords.length >= 2 && decWords.some(w => text.includes(w))) {
-          // User mentions the same topic — possible re-question
-          // But could also be continuation, so lower severity
+      // Check if user re-asks about compacted topics
+      for (const t of details.topics) {
+        const topicWords = t.toLowerCase().split(/\s+/).filter(w => w.length > 4).slice(0, 3);
+        if (topicWords.length >= 2 && topicWords.some(w => text.includes(w))) {
           signals.push({
             type: "re-question",
             severity: "low",
-            detail: "User mentions compacted decision topic: " + d.summary.slice(0, 80),
+            detail: "User mentions compacted topic: " + t.slice(0, 80),
           });
         }
       }
@@ -133,8 +130,6 @@ export function logDamageReport(
   details: SmartCompactDetails,
 ): void {
   try {
-    const fs = require("fs");
-    const path = require("path");
     const dir = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact");
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const logPath = path.join(dir, "damage-reports.jsonl");

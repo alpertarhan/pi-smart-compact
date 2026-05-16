@@ -7,7 +7,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions } from "../types.ts";
 import { estimateTokens, calibrateFromResponse } from "./tokens.ts";
-import { complete, type Model, type Api } from "@earendil-works/pi-ai";
+import { complete, type Model, type Api, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
 
 const CACHE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache");
 
@@ -59,23 +59,23 @@ export function getMetricsSummary(): { totalCalls: number; totalInput: number; t
 export async function trackedComplete(
   phase: LLMCallMetric["phase"],
   model: Model<Api>,
-  reqBody: Record<string, unknown>,
+  reqBody: Context,
   opts: CacheAwareOptions,
-): Promise<Record<string, unknown>> {
+): Promise<AssistantMessage> {
   const start = Date.now();
   try {
-    const resp = await complete(model, reqBody, opts) as Record<string, unknown>;
+    const resp = await complete(model, reqBody, opts);
     const latency = Date.now() - start;
-    const usage = (resp as any).usage ?? {};
-    const inputT = usage.input_tokens ?? usage.prompt_tokens ?? 0;
-    const outputT = usage.output_tokens ?? usage.completion_tokens ?? 0;
-    const cacheT = usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0;
+    const usage = resp.usage;
+    const inputT = usage?.input ?? 0;
+    const outputT = usage?.output ?? 0;
+    const cacheT = usage?.cacheRead ?? 0;
     recordMetric({
       phase, model: model.id, inputTokens: inputT, outputTokens: outputT,
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
     });
-    if (inputT > 0 && reqBody.messages) {
-      const rawText = JSON.stringify(reqBody.messages);
+    if (inputT > 0 && "messages" in reqBody) {
+      const rawText = JSON.stringify((reqBody as Record<string, unknown>).messages);
       calibrateFromResponse(estimateTokens(rawText), inputT, model.provider);
     }
     return resp;

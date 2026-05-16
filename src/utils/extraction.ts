@@ -6,6 +6,7 @@ import path from "node:path";
 import type { LlmMessage, ProfileConfig, StructuredExtraction, ToolCallBlock } from "../types.ts";
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
+import { isToolCallBlock } from "../types.ts";
 
 export function extractText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -22,11 +23,10 @@ export function buildToolCallIndex(msgs: LlmMessage[]): Map<string, { name: stri
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.role !== "assistant") continue;
-    const blocks = (m.content ?? []) as unknown[];
+    const blocks = Array.isArray(m.content) ? m.content : [];
     for (const b of blocks) {
-      const block = b as ToolCallBlock;
-      if (block?.type === "toolCall" && block.id) {
-        idx.set(block.id, { name: block.name, arguments: block.arguments, msgIndex: i });
+      if (isToolCallBlock(b) && b.id) {
+        idx.set(b.id, { name: b.name, arguments: b.arguments, msgIndex: i });
       }
     }
   }
@@ -94,13 +94,12 @@ export function catalogErrors(msgs: LlmMessage[]): StructuredExtraction["errors"
   for (const err of errors) {
     for (let j = err.index + 1; j < Math.min(msgs.length, err.index + 6); j++) {
       if (msgs[j]?.role === "assistant") {
-        const blocks = (msgs[j]?.content ?? []) as unknown[];
+        const blocks = Array.isArray(msgs[j]?.content) ? msgs[j].content : [];
         for (const b of blocks) {
-          const block = b as ToolCallBlock;
-          if (block?.type === "toolCall" && block.name === err.tool) {
+          if (isToolCallBlock(b) && b.name === err.tool) {
             err.retryAttempted = true;
             for (let k = j + 1; k < Math.min(msgs.length, j + 10); k++) {
-              if (msgs[k]?.role === "toolResult" && msgs[k]?.toolCallId === block.id && !msgs[k]?.isError) {
+              if (msgs[k]?.role === "toolResult" && msgs[k]?.toolCallId === b.id && !msgs[k]?.isError) {
                 err.resolved = true; break;
               }
             }
@@ -181,18 +180,17 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
     let primaryFile: string | null = null;
 
     if (m.role === "assistant") {
-      const blocks = (m.content ?? []) as unknown[];
+      const blocks = Array.isArray(m.content) ? m.content : [];
       for (const b of blocks) {
-        const block = b as ToolCallBlock;
-        if (block?.type === "toolCall") {
-          const fp = (block.arguments?.path ?? block.arguments?.file_path) as string | undefined;
+        if (isToolCallBlock(b)) {
+          const fp = (b.arguments?.path ?? b.arguments?.file_path) as string | undefined;
           if (fp) {
             const fn = path.basename(fp);
             if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
             lastFile = fn;
             primaryFile = fp;
-            if (block.name?.includes("write") || block.name?.includes("edit")) type = "implementation";
-            else if (block.name?.includes("read")) type = "review";
+            if (b.name?.includes("write") || b.name?.includes("edit")) type = "implementation";
+            else if (b.name?.includes("read")) type = "review";
           }
         }
       }
