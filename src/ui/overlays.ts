@@ -11,8 +11,6 @@ import type {
   SmartCompactDetails, StructuredExtraction,
 } from "../types.ts";
 import { getMetricsSummary } from "../utils/cache.ts";
-import { getProviderCaps } from "../utils/tokens.ts";
-import { trackedComplete, cacheOpts } from "../utils/cache.ts";
 import path from "node:path";
 
 export function renderContextBar(theme: any, pct: number, tokens: number, barLen = 24): string {
@@ -30,26 +28,6 @@ export function renderTokenBar(theme: any, before: number, after: number, label:
   const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
   const savedColor = savedPct >= 50 ? "success" : savedPct >= 25 ? "warning" : "error";
   return theme.fg("text", "  " + label + ": ") + theme.fg(savedColor, bar) + theme.fg("text", " " + (after ?? 0).toLocaleString() + "t") + theme.fg(savedColor, " (saved " + savedPct + "%)");
-}
-
-const _toolSupportCache = new Map<string, boolean>();
-
-export async function probeToolSupport(model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }): Promise<boolean> {
-  const key = model.provider + "/" + model.id;
-  if (_toolSupportCache.has(key)) return _toolSupportCache.get(key)!;
-  const caps = getProviderCaps(model.provider);
-  if (caps.supportsTools === true) { _toolSupportCache.set(key, true); return true; }
-  try {
-    await trackedComplete("probe", model, {
-      messages: [{ role: "user", content: [{ type: "text", text: "Reply with exactly: ok" }] }],
-      tools: [{ name: "test_tool", description: "test", parameters: { type: "object", properties: {} } }],
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 10, cacheRetention: "none" }));
-    _toolSupportCache.set(key, true);
-    return true;
-  } catch {
-    _toolSupportCache.set(key, false);
-    return false;
-  }
 }
 
 export async function selectModel(

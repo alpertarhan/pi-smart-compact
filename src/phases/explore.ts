@@ -233,7 +233,7 @@ export async function exploreConversation(
         const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal);
         if (retried.boundaries.length) return { report: retried, rounds: 1, toolSupported: false };
       }
-      return { report, rounds: 0, toolSupported: false };
+      return { report, rounds: 1, toolSupported: false };
     }
 
     const probeResp = await trackedComplete("explore", model, {
@@ -316,7 +316,7 @@ export async function exploreConversation(
     const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal);
     if (retried.boundaries.length) return { report: retried, rounds: 1, toolSupported: false };
   }
-  return { report, rounds: 0, toolSupported: supportsTools };
+  return { report, rounds: 1, toolSupported: supportsTools };
 }
 
 export async function explorationRetry(

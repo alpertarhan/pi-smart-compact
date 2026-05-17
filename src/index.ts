@@ -1,5 +1,5 @@
 /**
- * Smart Compact Extension for Pi Coding Agent v7.3.2 (EESV Architecture)
+ * Smart Compact Extension for Pi Coding Agent (EESV Architecture)
  *
  * Architecture: Extract -> Explore -> Synthesize -> Verify
  */
