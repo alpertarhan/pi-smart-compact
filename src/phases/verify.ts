@@ -6,6 +6,7 @@ import type { Model, Api } from "@earendil-works/pi-ai";
 import type { StructuredExtraction, VerificationResult, CacheAwareOptions } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX } from "../constants.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
+import * as log from "../utils/logger.ts";
 
 export function verifySummary(summary: string, extraction: StructuredExtraction): VerificationResult {
   const gaps: string[] = [];
@@ -63,7 +64,7 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
   ]);
   for (const ref of summaryFileRefs) {
     const refLower = ref.toLowerCase();
-    const isKnown = [...knownFiles].some(kf => kf.endsWith("/" + refLower) || kf === refLower || kf.endsWith(refLower) && refLower.length > 3);
+    const isKnown = [...knownFiles].some(kf => (kf.endsWith("/" + refLower) || kf === refLower || (kf.endsWith(refLower) && refLower.length > 3)));
     if (!isKnown) {
       gaps.push("Potentially fabricated file: " + ref);
       score -= 4;
@@ -132,11 +133,17 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
     !g.startsWith("Inconsistency")
   );
 
+  // Helper: find section header and return insertion point (cross-platform: tolerant to \r\n)
+  const findSectionInsert = (header: string): number | null => {
+    const re = new RegExp(header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\n", "i");
+    const m = patched.match(re);
+    return m?.index != null ? m.index + m[0].length : null;
+  };
+
   // Inject missing files into Files Modified section
   if (fileGaps.length > 0) {
-    const filesSection = patched.match(/## Files Modified\n/);
-    if (filesSection) {
-      const insertPos = filesSection.index! + filesSection[0].length;
+    const insertPos = findSectionInsert("## Files Modified");
+    if (insertPos != null) {
       const entries = fileGaps.map(g => "- " + g.replace("Missing modified file: ", "")).join("\n") + "\n";
       patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
     }
@@ -144,9 +151,8 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
 
   // Inject missing errors into Critical Context section
   if (errorGaps.length > 0) {
-    const ctxSection = patched.match(/## Critical Context\n/);
-    if (ctxSection) {
-      const insertPos = ctxSection.index! + ctxSection[0].length;
+    const insertPos = findSectionInsert("## Critical Context");
+    if (insertPos != null) {
       const entries = errorGaps.map(g => "- " + g).join("\n") + "\n";
       patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
     }
@@ -154,9 +160,8 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
 
   // Inject missing constraints into Constraints section
   if (constraintGaps.length > 0) {
-    const constrSection = patched.match(/## Constraints & Preferences\n/);
-    if (constrSection) {
-      const insertPos = constrSection.index! + constrSection[0].length;
+    const insertPos = findSectionInsert("## Constraints & Preferences");
+    if (insertPos != null) {
       const entries = constraintGaps.map(g => "- " + g).join("\n") + "\n";
       patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
     }
@@ -164,9 +169,8 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
 
   // Inject missing decisions into Key Decisions section
   if (decisionGaps.length > 0) {
-    const decSection = patched.match(/## Key Decisions\n/);
-    if (decSection) {
-      const insertPos = decSection.index! + decSection[0].length;
+    const insertPos = findSectionInsert("## Key Decisions");
+    if (insertPos != null) {
       const entries = decisionGaps.map(g => "- **" + g.replace("Missing decision: ", "") + "**").join("\n") + "\n";
       patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
     }
@@ -196,5 +200,5 @@ export async function patchSummary(
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }));
     const patched = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return patched.startsWith("##") ? patched : summary;
-  } catch { return summary; }
+  } catch (e) { log.debug("patchSummary LLM failed", e); return summary; }
 }

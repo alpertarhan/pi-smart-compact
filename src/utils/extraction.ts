@@ -6,7 +6,7 @@ import path from "node:path";
 import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop } from "../types.ts";
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
-import { isToolCallBlock } from "../types.ts";
+import { isToolCallBlock } from "../utils/type-guards.ts";
 
 /** Reusable tool call index type */
 export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;

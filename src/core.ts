@@ -9,7 +9,7 @@ import type {
   CompressionProfile, PendingCompaction, LlmMessage, StructuredExtraction,
   ExplorationReport, SmartCompactDetails, ChunkSummary, SessionMessageEntry,
 } from "./types.ts";
-import { PROFILES, MIN_TOKEN_THRESHOLD, MAX_EXPLORATION_ROUNDS, LOG_PREFIX } from "./constants.ts";
+import { PROFILES, MIN_TOKEN_THRESHOLD, MAX_EXPLORATION_ROUNDS } from "./constants.ts";
 import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
 import {
   resetCompactSessionId, resetMetrics, appendMetricsLog, getMetricsSummary,
@@ -28,6 +28,7 @@ import { exploreConversation, shouldExplore } from "./phases/explore.ts";
 import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback } from "./phases/synthesize.ts";
 import { verifySummary, patchSummary, patchDeterministic } from "./phases/verify.ts";
 import { showProgressOverlay, showResultScreen } from "./ui/overlays.ts";
+import * as log from "./utils/logger.ts";
 
 /** Options for runSmartCompact — avoids 10-parameter positional calls */
 export interface SmartCompactOptions {
@@ -252,7 +253,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         const r = await assembleLLM(summaries, extraction, explorationReport, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, pc.summaryBudgetTokens, prevContext, signal);
         if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
       } catch (err) {
-        console.error(LOG_PREFIX + " Assembly failed:", err instanceof Error ? err.message : err);
+        log.warn("Assembly failed", err);
         finalSummary = assembleFallback(summaries, extraction); assemblyCalls = 0;
       }
 
@@ -275,7 +276,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
             finalSummary = await patchSummary(finalSummary, recheck.gaps, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal);
             llmCalls++;
           } catch (err) { /* accept deterministic patch as-is */
-            console.error(LOG_PREFIX + " LLM patch failed:", err instanceof Error ? err.message : err);
+            log.warn("LLM patch failed", err);
           }
         }
       } else {
@@ -364,7 +365,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         }
       }
     } catch (err) { /* damage detection is best effort */
-      console.error(LOG_PREFIX + " Damage detection error:", err instanceof Error ? err.message : err);
+      log.warn("Damage detection error", err);
     }
     const ms = getMetricsSummary();
     if (ms.totalCalls > 0) {
@@ -375,7 +376,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         const timeout = new Promise<void>(resolve => setTimeout(resolve, 5000));
         await Promise.race([showResultScreen(ctx, details, extraction), timeout]);
       } catch (err) {
-        console.error(LOG_PREFIX + " Result screen error:", err instanceof Error ? err.message : err);
+        log.warn("Result screen error", err);
         notify("Result screen skipped", "info");
       }
     }

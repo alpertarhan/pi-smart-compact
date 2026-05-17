@@ -11,6 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "declarationMap": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": false,
     "sourceMap": true,
     "outDir": "./dist",
     "rootDir": "./src"

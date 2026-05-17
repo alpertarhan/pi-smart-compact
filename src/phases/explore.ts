@@ -4,11 +4,12 @@
 
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary, CacheAwareOptions } from "../types.ts";
-import { getToolCallNames, filterToolCalls } from "../types.ts";
-import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS, LOG_PREFIX } from "../constants.ts";
+import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
+import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
+import * as log from "../utils/logger.ts";
 
 // ── Tool Support Cache with TTL ──
 const _toolSupportCache = new Map<string, { result: boolean; timestamp: number }>();
@@ -140,10 +141,10 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
   if (s === -1 || e === -1) return fallbackExplorationReport(llmMessages);
   let rawJson = json.slice(s, e + 1);
 
-  try { return buildExplorationReportFromParsed(JSON.parse(rawJson), llmMessages); } catch {}
+  try { return buildExplorationReportFromParsed(JSON.parse(rawJson), llmMessages); } catch (e) { log.debug("JSON parse attempt 1 failed", e); }
 
   const cleaned = rawJson.replace(/,\s*([}\]])/g, "$1").replace(/'/g, "\"").replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
-  try { return buildExplorationReportFromParsed(JSON.parse(cleaned), llmMessages); } catch {}
+  try { return buildExplorationReportFromParsed(JSON.parse(cleaned), llmMessages); } catch (e) { log.debug("JSON parse attempt 2 (cleaned) failed", e); }
 
   const boundaryMatch = rawJson.match(/"boundaries"\s*:\s*\[([\s\S]*?)\]/);
   if (boundaryMatch) {
@@ -155,7 +156,7 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
         priority: ["critical", "high", "normal", "low"].includes(b.priority) ? b.priority : "normal",
         confidence: Math.min(1, Math.max(0, b.confidence ?? 0.5)),
       })) };
-    } catch {}
+    } catch (e) { log.debug("Boundary JSON parse failed", e); }
   }
   return fallbackExplorationReport(llmMessages);
 }
@@ -267,7 +268,7 @@ export async function exploreConversation(
             tools: EXPLORATION_TOOLS as any,
           }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
         } catch (err) {
-          console.error(LOG_PREFIX + " Explore loop error:", err instanceof Error ? err.message : err);
+          log.warn("Explore loop error", err);
           break;
         }
 
@@ -304,9 +305,9 @@ export async function exploreConversation(
       return { report, rounds: 1, toolSupported: true };
     }
     // Provider responded without tool calls — still counts as tool-capable for this session
-  } catch {
+  } catch (e) {
     // Probe failed — cache as unsupported
-    console.error(LOG_PREFIX + " Tool calling probe failed for " + cacheKey);
+    log.warn("Tool calling probe failed for " + cacheKey, e);
     _toolSupportCache.set(cacheKey, { result: false, timestamp: Date.now() });
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }
@@ -340,7 +341,7 @@ export async function explorationRetry(
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
-  } catch { return fallbackExplorationReport(llmMessages); }
+  } catch (e) { log.debug("explorationRetry failed", e); return fallbackExplorationReport(llmMessages); }
 }
 
 export async function directExploration(
@@ -369,5 +370,5 @@ export async function directExploration(
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);
-  } catch { return fallbackExplorationReport(llmMessages); }
+  } catch (e) { log.debug("directExploration failed", e); return fallbackExplorationReport(llmMessages); }
 }

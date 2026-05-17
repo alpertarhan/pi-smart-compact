@@ -6,7 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { CompactConfig, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionMessageEntry } from "../types.ts";
-import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT, LOG_PREFIX } from "../constants.ts";
+import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT } from "../constants.ts";
+import * as log from "./logger.ts";
 
 let _cfg: CompactConfig | null = null;
 let _cfgMtime = 0;
@@ -22,7 +23,8 @@ export function loadConfig(): CompactConfig {
     if (sc.profiles) merged.profiles = { ...PROFILES, ...sc.profiles };
     if (!merged.backupDir) merged.backupDir = path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups");
     _cfg = merged; _cfgMtime = stat.mtimeMs; return _cfg;
-  } catch {
+  } catch (e) {
+    log.warn("loadConfig failed, using defaults", e);
     const fallback: CompactConfig = { ...DEFAULT_CONFIG, backupDir: path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups") } as CompactConfig;
     _cfg = fallback;
     return fallback;
@@ -38,7 +40,7 @@ export function backupConversation(convText: string, sessionId: string): string 
     const fp = path.join(dir, sessionId + "-" + ts + "-" + hash + ".md");
     fs.writeFileSync(fp, "# Smart Compact Backup\n# Date: " + new Date().toISOString() + "\n# Session: " + sessionId + "\n\n" + convText);
     return fp;
-  } catch (e) { console.error(LOG_PREFIX + " backupConversation failed:", e instanceof Error ? e.message : e); return null; }
+  } catch (e) { log.warn("backupConversation failed", e); return null; }
 }
 
 export function getPreviousCompactionContext(branch: unknown[]): string {

@@ -1,9 +1,16 @@
 {
   "name": "pi-smart-compact",
-  "version": "7.8.0",
+  "version": "7.9.0",
   "description": "EESV smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification with redundancy pruning, project fingerprinting, and damage detection.",
   "license": "MIT",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "author": "Alper Tarhan <alpertarhan@gmail.com>",
   "repository": {
     "type": "git",
@@ -33,7 +40,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox'",
+    "build": "rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' && (bunx tsc --emitDeclarationOnly --outDir dist || true)",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },

@@ -11,6 +11,7 @@ import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./cons
 import { loadConfig, extractUserNote } from "./utils/helpers.ts";
 import { runSmartCompact } from "./core.ts";
 import { showCompactUI } from "./ui/overlays.ts";
+import * as log from "./utils/logger.ts";
 
 function resolveModelArg(ctx: ExtensionCommandContext, modelArg: string): Model<Api> | undefined {
   const [p, ...r] = modelArg.split("/");
@@ -124,7 +125,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           return { compaction: { summary: c.summary, firstKeptEntryId: c.firstKeptEntryId, tokensBefore: c.tokensBefore, details: c.details } };
         }
       }
-    } catch { /* silent */ }
+    } catch (e) { log.warn("session_before_compact error", e); }
   });
 
   pi.registerTool({

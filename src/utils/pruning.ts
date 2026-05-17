@@ -4,7 +4,7 @@
  */
 
 import type { LlmMessage } from "../types.ts";
-import { isToolCallBlock } from "../types.ts";
+import { isToolCallBlock } from "../utils/type-guards.ts";
 import { extractText, buildToolCallIndex } from "./extraction.ts";
 import { estimateTokens } from "./tokens.ts";
 

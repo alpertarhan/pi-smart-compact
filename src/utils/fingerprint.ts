@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { StructuredExtraction } from "../types.ts";
-import { LOG_PREFIX } from "../constants.ts";
+import * as log from "./logger.ts";
 
 export interface ProjectFingerprint {
   id: string;
@@ -141,7 +141,7 @@ export function loadProjectFingerprint(projectId: string): ProjectFingerprint | 
     // Expire after 30 days
     if (Date.now() - data.updatedAt > 30 * 24 * 60 * 60 * 1000) return null;
     return data;
-  } catch (e) { console.error(LOG_PREFIX + " loadProjectFingerprint failed:", e instanceof Error ? e.message : e); return null; }
+  } catch (e) { log.warn("loadProjectFingerprint failed", e); return null; }
 }
 
 /**
@@ -172,7 +172,7 @@ export function saveProjectFingerprint(
     };
 
     fs.writeFileSync(getFingerprintPath(projectId), JSON.stringify(fingerprint, null, 2));
-  } catch (e) { console.error(LOG_PREFIX + " saveProjectFingerprint failed:", e instanceof Error ? e.message : e); }
+  } catch (e) { log.warn("saveProjectFingerprint failed", e); }
 }
 
 /**

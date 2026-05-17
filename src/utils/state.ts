@@ -7,7 +7,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport } from "../types.ts";
-import { VERSION, LOG_PREFIX } from "../constants.ts";
+import { VERSION } from "../constants.ts";
+import * as log from "./logger.ts";
 
 const STATE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states");
 
@@ -22,7 +23,7 @@ export function saveCompactionState(projectId: string, state: CompactionState): 
   try {
     if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(getStatePath(projectId), JSON.stringify(state, null, 2));
-  } catch (e) { console.error(LOG_PREFIX + " saveCompactionState failed:", e instanceof Error ? e.message : e); }
+  } catch (e) { log.warn("saveCompactionState failed", e); }
 }
 
 /**
@@ -37,12 +38,12 @@ export function loadCompactionState(projectId: string): CompactionState | null {
     if (data.compactionVersion) {
       let updatedAt = data.updatedAt;
       if (!updatedAt) {
-        try { updatedAt = fs.statSync(fp).mtimeMs; } catch { updatedAt = 0; }
+        try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
       }
       if (Date.now() - updatedAt > 7 * 24 * 60 * 60 * 1000) return null;
     }
     return data;
-  } catch (e) { console.error(LOG_PREFIX + " loadCompactionState failed:", e instanceof Error ? e.message : e); return null; }
+  } catch (e) { log.warn("loadCompactionState failed", e); return null; }
 }
 
 export function buildCompactionState(

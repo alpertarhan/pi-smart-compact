@@ -1,5 +1,7 @@
 # Smart Compact v7.8.0 Development Plan — TAMAMLANDI ✅
 
+> **Not:** Bu döküman v7.8.0 geliştirme planıdır. Yeni özellikler ve iyileştirmeler için ROADMAP.md'e bakınız.
+
 ## Hedef
 Context window'u hem LLM server tarafında (cache hits, token efficiency) hem 
 local makinemizde (compaction hızı, memory) optimum kullanmak.
@@ -39,7 +41,21 @@ local makinemizde (compaction hızı, memory) optimum kullanmak.
 - [x] F2: Delta extraction — only new messages + merge
 - [x] F3: Pipeline integration with incremental path
 
-### ✅ Phase G: Final
-- [x] G1: Version 7.2.0
-- [x] G2: Bun build passes (2230 lines)
-- [x] G3: DEVPLAN.md
+### ✅ Phase G: Structured State & Cross-Session Tracking (v7.5+)
+- [x] G1: CompactionState interface + save/load (cross-compaction delta)
+- [x] G2: computeDelta — decisions, errors, files, open loops diff
+- [x] G3: Delta section injection into summary
+- [x] G4: Open Loops extraction (bugfix, follow-up, blocked, retry)
+- [x] G5: Project fingerprinting (language, framework, key dirs)
+- [x] G6: Damage detection (post-compaction regression signals)
+
+### ✅ Phase H: Code Quality & Audit Fixes (v7.8.0)
+- [x] H1: Options object pattern for runSmartCompact
+- [x] H2: CompactionState.updatedAt + proper TTL logic
+- [x] H3: Dead code removal (message-blocks.ts, duplicate interfaces/functions)
+- [x] H4: Type guards extracted to utils/type-guards.ts
+- [x] H5: Centralized logger (utils/logger.ts)
+- [x] H6: Cross-platform regex in patchDeterministic
+- [x] H7: directExploration rounds: 1 fix
+- [x] H8: package.json types/exports fields
+- [x] H9: Overlay dead code (probeToolSupport) removed
