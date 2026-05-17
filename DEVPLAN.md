@@ -1,4 +1,4 @@
-# Semantic-Compact v7.2 Development Plan — TAMAMLANDI ✅
+# Smart Compact v7.8.0 Development Plan — TAMAMLANDI ✅
 
 ## Hedef
 Context window'u hem LLM server tarafında (cache hits, token efficiency) hem 

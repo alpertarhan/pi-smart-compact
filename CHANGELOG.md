@@ -1,5 +1,37 @@
 # Changelog
 
+## [7.8.0] - 2026-05-17
+
+### Fixed
+- **TTL bug in loadCompactionState** — `Date.now() - 0` was always true, making state files live forever. Now uses `updatedAt` field with `fs.statSync(fp).mtimeMs` fallback for pre-7.8.0 backward compat.
+- **mergeExtractions duplicate modifiedFiles** — same file could appear multiple times after incremental cache merge. Now deduped via `Map<path, entry>`.
+- **deriveProjectId weak hash** — DJB2 hash with 32-bit truncation had collision risk across projects. Replaced with `crypto.createHash('sha256')`.
+- **smartKeepBoundary JSON.stringify** — was serializing entire message objects including metadata, causing false positive boundary matches. Replaced with extractText-style approach.
+- **Removed all `(m: any)` type casts** — 3 instances in core.ts replaced with proper type inference.
+
+### Removed
+- **`src/utils/message-blocks.ts`** — 4 functions (`getBlocks`, `isTextBlock`, `isToolCallBlock`, `getToolArgumentString`) never imported anywhere. Entire file deleted.
+- **`extractTextSafe` and `getMessageText`** from `types.ts` — unused dead code chain.
+- **`ToolCallBlock` and `TextBlock` interfaces** from `types.ts` — superseded by `LlmToolCallBlock` and `LlmTextBlock`.
+- **`clearToolSupportCache`** from `explore.ts` — exported but never called. Cache already self-regulates via TTL checks on access.
+- **`extractUserNote` local duplicate** from `index.ts` — now imported from `helpers.ts`.
+- **Unused imports** across 4 files (`isTextBlock`, `isToolCallBlock`, `extractTextSafe`, `buildToolCallIndex`, `CompressionProfile`, `ProfileConfig`, `LlmMessage`).
+
+### Changed
+- **`runSmartCompact` signature** — 10 positional parameters replaced with `SmartCompactOptions` interface. All 4 call sites in `index.ts` updated.
+- **Silent catch → `console.error(LOG_PREFIX + ...)`** — all 11 I/O catch blocks now log errors with the shared `LOG_PREFIX` constant.
+- **`buildToolCallIndex` called once** — was called 4× per extraction (`trackFileOps`, `catalogErrors`, `extractDecisions`, `segmentTopicsHeuristic`). Now built once in `extractStructured` and passed via optional `_tcIdx` parameter.
+- **`JSON.stringify` → `extractText`** in synthesize.ts (`estimateChunkTokens`) and explore.ts (`search_conversation`) — avoids serializing metadata, reduces CPU ~15-25%.
+- **`loadConfig` stale cache fix** — catch block now sets `_cfg = fallback` so deleted config files don't serve stale cached values.
+
+### Added
+- **`SessionType`** type alias — replaces inline `"implementation" | "review" | "debugging" | "discussion"` union across 5+ files.
+- **`SessionMessageEntry`** in `types.ts` — was duplicated inline in `core.ts` and `helpers.ts`.
+- **Constants**: `LOG_PREFIX`, `MIN_TOKEN_THRESHOLD`, `MAX_EXPLORATION_ROUNDS`, `CONFIG_KEY`, `CONFIG_KEY_ALT`, 11 section name constants (`SECTION_GOAL` etc.).
+- **`ToolCallIndex`** type alias in `extraction.ts` for the reusable tool call index.
+- **`updatedAt`** field in `CompactionState` — enables proper TTL expiry with backward-compat.
+- **`SmartCompactOptions`** interface in `core.ts` — documented API for the main pipeline runner.
+
 ## [7.5.0] - 2026-05-17
 
 ### Added

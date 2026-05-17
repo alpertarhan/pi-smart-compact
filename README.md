@@ -341,15 +341,16 @@ Add this to `~/.pi/agent/settings.json`:
 | `segmentationModel` | `string \| null` | `null` | Override exploration model |
 | `autoTrigger` | `boolean` | `true` | Run automatically before Pi's built-in compaction |
 | `backupEnabled` | `boolean` | `true` | Save a backup before compaction |
+| `backupDir` | `string` | `"~/.pi/agent/compact-backups"` | Directory for backup files |
 | `profiles` | `object` | built-in defaults | Override per-profile budgets |
 
 ### Profiles
 
-| Profile | Summary budget | Keep recent | Best for |
-| --- | --- | --- | --- |
-| **light** | 10K | 30K | sessions where more detail should survive |
-| **balanced** | 6K | 20K | general daily development |
-| **aggressive** | 3K | 10K | large contexts and faster reduction |
+| Profile | Summary budget | Keep recent | Min chunk | Max chunk | Single-pass max | Batch max | Best for |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **light** | 10K | 30K | 800 | 12K | 40K | 30K | sessions where more detail should survive |
+| **balanced** | 6K | 20K | 500 | 8K | 30K | 24K | general daily development |
+| **aggressive** | 3K | 10K | 300 | 6K | 20K | 18K | large contexts and faster reduction |
 
 ### Backward compatibility
 
@@ -555,20 +556,22 @@ As always with Pi packages, review interactions in your own environment if you c
 ```text
 src/         TypeScript source
  dist/        compiled package entry for distribution
- test/        Bun tests
+ test/        93 Bun tests across 9 files
  README.md    package documentation
+ CHANGELOG.md version history
+ DEVPLAN.md   development plan
 ```
 
 ### Test suite
 
-Smart Compact has **91 tests** across 9 files, including:
+Smart Compact has **93 tests** across 9 files, including:
 
 - **Unit tests** — extraction, tokens, verification, pruning, fingerprint, exploration
 - **State tests** — open loops, compaction state, delta computation, state persistence
 - **Evaluation harness** — 5 gold conversation scenarios with expected extraction results, delta evaluation across compactions, and fabrication safety checks
 
 ```bash
-bun test                # run all 91 tests
+bun test                # run all 93 tests
 bun test test/eval.test.ts  # evaluation harness only
 ```
 
