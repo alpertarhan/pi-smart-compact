@@ -11,7 +11,7 @@ import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PR
 import { estimateTokens, getProviderCaps } from "../utils/tokens.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
 import { extractText } from "../utils/extraction.ts";
-import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries } from "../utils/helpers.ts";
+import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries, inferSessionType } from "../utils/helpers.ts";
 
 /** Token estimation for a chunk of messages — uses text-only extraction, not JSON.stringify */
 function estimateChunkTokens(msgs: LlmMessage[]): number {
@@ -80,7 +80,7 @@ export async function singlePassCompact(
   const extractionCtx = buildExtractionContext(extraction);
   const explorationCtx = report ? buildExplorationContext(report) : "";
   // Session-aware prompt adaptation
-  const sessionType = report?.sessionType ?? "implementation";
+  const sessionType = inferSessionType(extraction, report);
   const sessionInstruction = SESSION_TYPE_INSTRUCTIONS[sessionType] ?? SESSION_TYPE_INSTRUCTIONS.implementation;
   const adaptedPrefix = SINGLE_PASS_PREFIX + "\nSession-specific instructions:\n" + sessionInstruction;
   const dynamicSuffix = SINGLE_PASS_SUFFIX

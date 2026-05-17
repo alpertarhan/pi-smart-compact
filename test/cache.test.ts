@@ -1,0 +1,273 @@
+import { describe, it, expect } from "bun:test";
+import { mergeExtractions } from "../src/utils/cache.ts";
+import type { StructuredExtraction } from "../src/types.ts";
+
+function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
+  return {
+    modifiedFiles: [],
+    readFiles: [],
+    deletedFiles: [],
+    errors: [],
+    decisions: [],
+    constraints: [],
+    topics: [],
+    timeline: [],
+    mainGoal: null,
+    lastUserMessages: [],
+    lastErrors: [],
+    messageCount: 0,
+    ...partial,
+  };
+}
+
+// ── Index offset correctness ──
+
+describe("mergeExtractions — index offset", () => {
+  it("offsets error indexes by baseMsgCount", () => {
+    const base = makeExtraction({
+      errors: [
+        { index: 2, tool: "bash", message: "error in base", retryAttempted: false, resolved: false },
+      ],
+      messageCount: 10,
+    });
+    const delta = makeExtraction({
+      errors: [
+        { index: 0, tool: "edit", message: "delta error 0", retryAttempted: false, resolved: false },
+        { index: 3, tool: "bash", message: "delta error 3", retryAttempted: true, resolved: false },
+      ],
+      messageCount: 5,
+    });
+    const merged = mergeExtractions(base, delta, 10);
+
+    expect(merged.errors.length).toBe(3);
+    expect(merged.errors[0].index).toBe(2);  // base, unchanged
+    expect(merged.errors[1].index).toBe(10); // delta[0].index (0) + baseMsgCount (10)
+    expect(merged.errors[2].index).toBe(13); // delta[1].index (3) + baseMsgCount (10)
+  });
+
+  it("offsets decision indexes by baseMsgCount", () => {
+    const base = makeExtraction({
+      decisions: [
+        { index: 1, type: "explicit", summary: "base decision" },
+      ],
+      messageCount: 8,
+    });
+    const delta = makeExtraction({
+      decisions: [
+        { index: 2, type: "implicit", summary: "delta decision", userResponse: "yes" },
+      ],
+      messageCount: 3,
+    });
+    const merged = mergeExtractions(base, delta, 8);
+
+    expect(merged.decisions.length).toBe(2);
+    expect(merged.decisions[0].index).toBe(1);  // base
+    expect(merged.decisions[1].index).toBe(10); // 2 + 8
+  });
+
+  it("offsets constraint indexes by baseMsgCount", () => {
+    const base = makeExtraction({
+      constraints: [
+        { index: 0, text: "Must use TS", category: "requirement", confidence: 0.9 },
+      ],
+      messageCount: 5,
+    });
+    const delta = makeExtraction({
+      constraints: [
+        { index: 1, text: "No any", category: "prohibition", confidence: 0.8 },
+      ],
+      messageCount: 2,
+    });
+    const merged = mergeExtractions(base, delta, 5);
+
+    expect(merged.constraints.length).toBe(2);
+    expect(merged.constraints[0].index).toBe(0); // base
+    expect(merged.constraints[1].index).toBe(6); // 1 + 5
+  });
+
+  it("offsets topic start/end indexes by baseMsgCount", () => {
+    const base = makeExtraction({
+      topics: [
+        { startIndex: 0, endIndex: 4, primaryFile: "a.ts", type: "implementation", errorDensity: 0 },
+      ],
+      messageCount: 5,
+    });
+    const delta = makeExtraction({
+      topics: [
+        { startIndex: 0, endIndex: 2, primaryFile: "b.ts", type: "debugging", errorDensity: 2 },
+      ],
+      messageCount: 3,
+    });
+    const merged = mergeExtractions(base, delta, 5);
+
+    expect(merged.topics.length).toBe(2);
+    expect(merged.topics[0].startIndex).toBe(0); // base
+    expect(merged.topics[0].endIndex).toBe(4);
+    expect(merged.topics[1].startIndex).toBe(5); // 0 + 5
+    expect(merged.topics[1].endIndex).toBe(7);   // 2 + 5
+  });
+
+  it("offsets timeline indexes by baseMsgCount", () => {
+    const base = makeExtraction({
+      timeline: [
+        { index: 0, event: "user_request", summary: "hello" },
+      ],
+      messageCount: 4,
+    });
+    const delta = makeExtraction({
+      timeline: [
+        { index: 1, event: "error", summary: "oops" },
+      ],
+      messageCount: 2,
+    });
+    const merged = mergeExtractions(base, delta, 4);
+
+    expect(merged.timeline.length).toBe(2);
+    expect(merged.timeline[0].index).toBe(0); // base
+    expect(merged.timeline[1].index).toBe(5); // 1 + 4
+  });
+
+  it("offsets modifiedFiles.lastModifiedIndex by baseMsgCount", () => {
+    const base = makeExtraction({
+      modifiedFiles: [
+        { path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 3 },
+      ],
+      messageCount: 5,
+    });
+    const delta = makeExtraction({
+      modifiedFiles: [
+        { path: "src/b.ts", toolCalls: 2, lastModifiedIndex: 1 },
+      ],
+      messageCount: 3,
+    });
+    const merged = mergeExtractions(base, delta, 5);
+
+    // src/a.ts from base, src/b.ts from delta (different paths → both kept)
+    expect(merged.modifiedFiles.length).toBe(2);
+    expect(merged.modifiedFiles.find(f => f.path === "src/a.ts")!.lastModifiedIndex).toBe(3);
+    expect(merged.modifiedFiles.find(f => f.path === "src/b.ts")!.lastModifiedIndex).toBe(6); // 1 + 5
+  });
+});
+
+// ── Deduplication and field merge ──
+
+describe("mergeExtractions — deduplication", () => {
+  it("deduplicates modifiedFiles by path (delta overwrites base)", () => {
+    const base = makeExtraction({
+      modifiedFiles: [
+        { path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 3 },
+      ],
+      messageCount: 5,
+    });
+    const delta = makeExtraction({
+      modifiedFiles: [
+        { path: "src/a.ts", toolCalls: 2, lastModifiedIndex: 2 },
+      ],
+      messageCount: 3,
+    });
+    const merged = mergeExtractions(base, delta, 5);
+
+    expect(merged.modifiedFiles.length).toBe(1);
+    // Last write wins (Map insertion order)
+    expect(merged.modifiedFiles[0].toolCalls).toBe(2);
+    expect(merged.modifiedFiles[0].lastModifiedIndex).toBe(7); // 2 + 5
+  });
+
+  it("deduplicates readFiles", () => {
+    const base = makeExtraction({ readFiles: ["a.ts", "b.ts"], messageCount: 5 });
+    const delta = makeExtraction({ readFiles: ["b.ts", "c.ts"], messageCount: 3 });
+    const merged = mergeExtractions(base, delta, 5);
+
+    expect([...merged.readFiles].sort()).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+});
+
+// ── messageCount ──
+
+describe("mergeExtractions — messageCount", () => {
+  it("sums baseMsgCount and delta.messageCount", () => {
+    const base = makeExtraction({ messageCount: 10 });
+    const delta = makeExtraction({ messageCount: 5 });
+    const merged = mergeExtractions(base, delta, 10);
+
+    expect(merged.messageCount).toBe(15);
+  });
+
+  it("uses baseMsgCount parameter, not base.messageCount", () => {
+    // baseMsgCount can differ from base.messageCount if the caller
+    // uses cachedExt.messageCount which may be stale
+    const base = makeExtraction({ messageCount: 10 });
+    const delta = makeExtraction({ messageCount: 5 });
+    const merged = mergeExtractions(base, delta, 12); // explicit baseMsgCount=12
+
+    expect(merged.messageCount).toBe(17); // 12 + 5, NOT 10 + 5
+  });
+});
+
+// ── mainGoal / lastUserMessages / lastErrors ──
+
+describe("mergeExtractions — field precedence", () => {
+  it("prefers delta.mainGoal over base", () => {
+    const base = makeExtraction({ mainGoal: "old goal" });
+    const delta = makeExtraction({ mainGoal: "new goal" });
+    expect(mergeExtractions(base, delta, 5).mainGoal).toBe("new goal");
+  });
+
+  it("falls back to base.mainGoal when delta is null", () => {
+    const base = makeExtraction({ mainGoal: "old goal" });
+    const delta = makeExtraction({ mainGoal: null });
+    expect(mergeExtractions(base, delta, 5).mainGoal).toBe("old goal");
+  });
+
+  it("prefers delta.lastUserMessages when non-empty", () => {
+    const base = makeExtraction({ lastUserMessages: ["old msg"] });
+    const delta = makeExtraction({ lastUserMessages: ["new msg 1", "new msg 2"] });
+    expect(mergeExtractions(base, delta, 5).lastUserMessages).toEqual(["new msg 1", "new msg 2"]);
+  });
+
+  it("falls back to base.lastUserMessages when delta is empty", () => {
+    const base = makeExtraction({ lastUserMessages: ["old msg"] });
+    const delta = makeExtraction({ lastUserMessages: [] });
+    expect(mergeExtractions(base, delta, 5).lastUserMessages).toEqual(["old msg"]);
+  });
+});
+
+// ── Regression: zero baseMsgCount edge case ──
+
+describe("mergeExtractions — edge cases", () => {
+  it("works correctly with baseMsgCount = 0", () => {
+    const base = makeExtraction({ errors: [], messageCount: 0 });
+    const delta = makeExtraction({
+      errors: [{ index: 5, tool: "bash", message: "err", retryAttempted: false, resolved: false }],
+      messageCount: 10,
+    });
+    const merged = mergeExtractions(base, delta, 0);
+
+    expect(merged.errors[0].index).toBe(5); // 5 + 0
+  });
+
+  it("merges empty base with populated delta", () => {
+    const base = makeExtraction();
+    const delta = makeExtraction({
+      errors: [{ index: 0, tool: "bash", message: "err", retryAttempted: false, resolved: false }],
+      decisions: [{ index: 1, type: "explicit", summary: "decide" }],
+      constraints: [{ index: 2, text: "constraint", category: "requirement", confidence: 0.9 }],
+      topics: [{ startIndex: 0, endIndex: 3, primaryFile: null, type: "exploration", errorDensity: 0 }],
+      timeline: [{ index: 0, event: "user_request", summary: "hi" }],
+      modifiedFiles: [{ path: "a.ts", toolCalls: 1, lastModifiedIndex: 2 }],
+      readFiles: ["b.ts"],
+      messageCount: 5,
+    });
+    const merged = mergeExtractions(base, delta, 0);
+
+    expect(merged.errors[0].index).toBe(0);
+    expect(merged.decisions[0].index).toBe(1);
+    expect(merged.constraints[0].index).toBe(2);
+    expect(merged.topics[0].startIndex).toBe(0);
+    expect(merged.topics[0].endIndex).toBe(3);
+    expect(merged.timeline[0].index).toBe(0);
+    expect(merged.modifiedFiles[0].lastModifiedIndex).toBe(2);
+    expect(merged.readFiles).toEqual(["b.ts"]);
+    expect(merged.messageCount).toBe(5);
+  });
+});

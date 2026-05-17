@@ -18,8 +18,10 @@ export function renderContextBar(theme: any, pct: number, tokens: number, barLen
   const filled = Math.min(barLen, Math.round((clamped / 100) * barLen));
   const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
   const color = clamped > 80 ? "error" : clamped > 50 ? "warning" : "success";
-  const fg = theme.fg as (c: string, t: string) => string;
-  return fg("text", "  Context: ") + fg(color, bar) + fg("text", " " + clamped + "%") + fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
+  // IMPORTANT: Do NOT destructure theme.fg into a local variable.
+  // The Theme.fg() method uses `this.fgColors` internally — destructuring
+  // loses the `this` binding and causes "Cannot read properties of undefined (reading 'fgColors')".
+  return theme.fg("text", "  Context: ") + theme.fg(color, bar) + theme.fg("text", " " + clamped + "%") + theme.fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
 }
 
 export function renderTokenBar(theme: any, before: number, after: number, label: string, barLen = 30): string {
@@ -156,12 +158,12 @@ export async function showResultScreen(
     c.addChild(new Text(theme.fg("dim", "  Before: " + (details.tokensBefore ?? 0).toLocaleString() + "t \u2192 After: ~" + estimatedAfter.toLocaleString() + "t \u2192 Saved: " + (details.tokensSaved ?? 0).toLocaleString() + "t"), 0, 0));
     c.addChild(new Text("", 0, 0));
 
-    const methodColors: Record<string, string> = { eesv: "accent", "single-pass": "success", heuristic: "warning" };
+    const methodColors: Record<string, import("@earendil-works/pi-coding-agent").ThemeColor> = { eesv: "accent", "single-pass": "success", heuristic: "warning" };
     const methodColor = methodColors[details.method] ?? "text";
-    const fg = theme.fg as (c: string, t: string) => string;
+    // Do NOT destructure theme.fg — it loses `this` binding (see renderContextBar).
     c.addChild(new Text(
       theme.fg("text", "  Method: ") +
-      fg(methodColor, details.method.toUpperCase()) +
+      theme.fg(methodColor, details.method.toUpperCase()) +
       theme.fg("dim", " \u2022 " + details.llmCalls + " LLM call(s) \u2022 Profile: " + details.profile),
       0, 0));
     if (details.model) {

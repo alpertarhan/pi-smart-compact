@@ -6,8 +6,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport } from "../types.ts";
+import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType } from "../types.ts";
 import { VERSION } from "../constants.ts";
+import { inferSessionType } from "./helpers.ts";
 import * as log from "./logger.ts";
 
 const STATE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states");
@@ -96,7 +97,7 @@ export function buildCompactionState(
     })),
     nextActions,
     criticalContext,
-    sessionType: report?.sessionType ?? "implementation",
+    sessionType: inferSessionType(extraction, report),
     compactionVersion: VERSION,
     updatedAt: Date.now(),
   };

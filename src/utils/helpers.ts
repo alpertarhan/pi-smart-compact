@@ -5,9 +5,44 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { CompactConfig, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionMessageEntry } from "../types.ts";
+import type { CompactConfig, CompressionProfile, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionType, SessionMessageEntry } from "../types.ts";
 import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT } from "../constants.ts";
 import * as log from "./logger.ts";
+
+/**
+ * Validate user-supplied smart-compact config values.
+ *
+ * Invalid keys are **deleted** from `sc` so that the subsequent
+ * `{ ...DEFAULT_CONFIG, ...sc }` merge falls back to the default.
+ * This prevents silent misconfiguration (e.g. profile: "super").
+ */
+function validateSmartCompactConfig(sc: Record<string, unknown>): void {
+  const VALID_PROFILES: readonly string[] = ["light", "balanced", "aggressive"];
+  if ("profile" in sc && !VALID_PROFILES.includes(sc.profile as string)) {
+    log.warn("smart-compact config: invalid profile '" + sc.profile + "', expected light|balanced|aggressive. Using default 'balanced'.");
+    delete sc.profile;
+  }
+  if ("autoTrigger" in sc && typeof sc.autoTrigger !== "boolean") {
+    log.warn("smart-compact config: autoTrigger must be boolean, got " + typeof sc.autoTrigger);
+    delete sc.autoTrigger;
+  }
+  if ("backupEnabled" in sc && typeof sc.backupEnabled !== "boolean") {
+    log.warn("smart-compact config: backupEnabled must be boolean, got " + typeof sc.backupEnabled);
+    delete sc.backupEnabled;
+  }
+  if ("summaryModel" in sc && sc.summaryModel !== null && typeof sc.summaryModel !== "string") {
+    log.warn("smart-compact config: summaryModel must be string|null, got " + typeof sc.summaryModel);
+    delete sc.summaryModel;
+  }
+  if ("segmentationModel" in sc && sc.segmentationModel !== null && typeof sc.segmentationModel !== "string") {
+    log.warn("smart-compact config: segmentationModel must be string|null, got " + typeof sc.segmentationModel);
+    delete sc.segmentationModel;
+  }
+  if ("profiles" in sc && (typeof sc.profiles !== "object" || sc.profiles === null || Array.isArray(sc.profiles))) {
+    log.warn("smart-compact config: profiles must be an object, got " + typeof sc.profiles);
+    delete sc.profiles;
+  }
+}
 
 let _cfg: CompactConfig | null = null;
 let _cfgMtime = 0;
@@ -19,8 +54,9 @@ export function loadConfig(): CompactConfig {
     if (_cfg && stat.mtimeMs === _cfgMtime) return _cfg;
     const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
     const sc = raw[CONFIG_KEY] ?? raw[CONFIG_KEY_ALT] ?? {};
+    validateSmartCompactConfig(sc as Record<string, unknown>);
     const merged = { ...DEFAULT_CONFIG, ...sc } as CompactConfig;
-    if (sc.profiles) merged.profiles = { ...PROFILES, ...sc.profiles };
+    if (sc.profiles) merged.profiles = { ...PROFILES, ...sc.profiles } as Record<CompressionProfile, import("../types.ts").ProfileConfig>;
     if (!merged.backupDir) merged.backupDir = path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups");
     _cfg = merged; _cfgMtime = stat.mtimeMs; return _cfg;
   } catch (e) {
@@ -160,6 +196,40 @@ export function buildExtractionContext(extraction: StructuredExtraction, forRang
     "Decisions: " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, 60)).join("; ") || "none"),
     "Constraints: " + (extraction.constraints.map(c => "[" + c.category + "] " + c.text.slice(0, 60)).join("; ") || "none"),
   ].join("\n");
+}
+
+/**
+ * Infer session type from extraction data when exploration report is absent.
+ *
+ * Previously defaulted blindly to "implementation", which caused review-only
+ * and discussion-only sessions to be summarized with the wrong prompt strategy.
+ *
+ * Heuristic priority:
+ *  1. If exploration report provides a classification → trust it
+ *  2. Active errors + code changes → debugging
+ *  3. Reads only, no modifications → review
+ *  4. Decisions but no code changes → discussion
+ *  5. Code modifications → implementation
+ *  6. Fallback → implementation (most common agent activity)
+ */
+export function inferSessionType(
+  extraction: StructuredExtraction,
+  report: ExplorationReport | null,
+): SessionType {
+  if (report?.sessionType) return report.sessionType;
+
+  const hasModifications = extraction.modifiedFiles.length > 0;
+  const hasUnresolvedErrors = extraction.errors.some(e => !e.resolved);
+  const hasResolvedErrors = extraction.errors.some(e => e.resolved);
+  const hasReadsOnly = extraction.readFiles.length > 2 && !hasModifications;
+  const hasDecisions = extraction.decisions.length > 0;
+
+  if (hasUnresolvedErrors && (hasModifications || hasResolvedErrors)) return "debugging";
+  if (hasReadsOnly && !hasDecisions) return "review";
+  if (hasDecisions && !hasModifications && !hasUnresolvedErrors) return "discussion";
+  if (hasModifications) return "implementation";
+
+  return "implementation";
 }
 
 export function buildExplorationContext(report: ExplorationReport): string {

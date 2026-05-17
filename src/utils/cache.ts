@@ -118,16 +118,42 @@ export function loadCachedExtraction(sessionId: string): CachedExtraction | null
   } catch (e) { log.warn("loadCachedExtraction failed", e); return null; }
 }
 
+/**
+ * Merge a delta extraction into a base extraction, offsetting all
+ * index-bearing fields so they align with the global message array.
+ *
+ * When `extractStructured` is called on `msgs.slice(cached.lastMessageIndex + 1)`
+ * the delta's indexes start at 0 in the slice — but in the full conversation
+ * they start at `baseMsgCount` (= `cached.messageCount` = `cached.lastMessageIndex + 1`).
+ *
+ * Without this offset, incremental extraction produces corrupted indexes that
+ * break timeline ordering, topic segmentation, and downstream verification.
+ */
 export function mergeExtractions(base: StructuredExtraction, delta: StructuredExtraction, baseMsgCount: number): StructuredExtraction {
+  // ── Offset every index-bearing field in delta ──
+  const offsetErrors = delta.errors.map(e => ({ ...e, index: e.index + baseMsgCount }));
+  const offsetDecisions = delta.decisions.map(d => ({ ...d, index: d.index + baseMsgCount }));
+  const offsetConstraints = delta.constraints.map(c => ({ ...c, index: c.index + baseMsgCount }));
+  const offsetTopics = delta.topics.map(t => ({
+    ...t,
+    startIndex: t.startIndex + baseMsgCount,
+    endIndex: t.endIndex + baseMsgCount,
+  }));
+  const offsetTimeline = delta.timeline.map(t => ({ ...t, index: t.index + baseMsgCount }));
+  const offsetModifiedFiles = delta.modifiedFiles.map(f => ({
+    ...f,
+    lastModifiedIndex: f.lastModifiedIndex + baseMsgCount,
+  }));
+
   return {
-    modifiedFiles: [...new Map([...base.modifiedFiles, ...delta.modifiedFiles].map(f => [f.path, f])).values()],
+    modifiedFiles: [...new Map([...base.modifiedFiles, ...offsetModifiedFiles].map(f => [f.path, f])).values()],
     readFiles: [...new Set([...base.readFiles, ...delta.readFiles])],
     deletedFiles: [...new Set([...base.deletedFiles, ...delta.deletedFiles])],
-    errors: [...base.errors, ...delta.errors],
-    decisions: [...base.decisions, ...delta.decisions],
-    constraints: [...base.constraints, ...delta.constraints],
-    topics: [...base.topics, ...delta.topics],
-    timeline: [...base.timeline, ...delta.timeline],
+    errors: [...base.errors, ...offsetErrors],
+    decisions: [...base.decisions, ...offsetDecisions],
+    constraints: [...base.constraints, ...offsetConstraints],
+    topics: [...base.topics, ...offsetTopics],
+    timeline: [...base.timeline, ...offsetTimeline],
     mainGoal: delta.mainGoal ?? base.mainGoal,
     lastUserMessages: delta.lastUserMessages.length > 0 ? delta.lastUserMessages : base.lastUserMessages,
     lastErrors: delta.lastErrors.length > 0 ? delta.lastErrors : base.lastErrors,
