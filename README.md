@@ -6,7 +6,7 @@
 
 > Intelligent, verification-oriented conversation compaction for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 
-**Smart Compact** is a Pi extension that compresses long coding sessions by preserving the *working state* of the conversation — not just the words. Instead of blindly truncating old messages, it extracts verified facts, explores ambiguous areas when needed, synthesizes a structured summary, and checks that the result still covers the important parts of the session.
+**Smart Compact** is a Pi extension that compresses long coding sessions by preserving the *working state* of the conversation - not just the words. Instead of blindly truncating old messages, it extracts verified facts, explores ambiguous areas when needed, synthesizes a structured summary, and checks that the result still covers the important parts of the session.
 
 In practice, that means your agent keeps the things that actually matter:
 
@@ -16,6 +16,9 @@ In practice, that means your agent keeps the things that actually matter:
 - decisions already made
 - constraints and preferences
 - follow-up work still pending
+- **open loops** — unresolved tasks that survive compaction
+- **delta since last compaction** — what changed, what resolved, what's new
+- **structured state** — machine-readable JSON alongside the Markdown summary
 
 ---
 
@@ -61,15 +64,15 @@ For a coding agent, these omissions are expensive. They lead to redundant reads,
 
 ## What makes it different
 
-Smart Compact is not just “another summary prompt.” It is a **multi-stage compaction pipeline** with deterministic extraction, targeted exploration, structured synthesis, and verification.
+Smart Compact is not just "another summary prompt." It is a **multi-stage compaction pipeline** with deterministic extraction, targeted exploration, structured synthesis, and verification.
 
 That design gives it a few practical advantages over plain truncation or one-shot summarization:
 
-- **Deterministic first, LLM second** — verified facts are extracted before any model call
-- **Cheaper when possible** — simple sessions skip exploration entirely
-- **Safer by default** — summaries are checked for missing files, errors, constraints, and fabricated paths
-- **More agent-friendly** — output is structured around goal, progress, decisions, files, next steps, and critical context
-- **Better continuity** — follow-up work survives compaction more reliably
+- **Deterministic first, LLM second** - verified facts are extracted before any model call
+- **Cheaper when possible** - simple sessions skip exploration entirely
+- **Safer by default** - summaries are checked for missing files, errors, constraints, and fabricated paths
+- **More agent-friendly** - output is structured around goal, progress, decisions, files, next steps, and critical context
+- **Better continuity** - follow-up work survives compaction more reliably
 
 ---
 
@@ -90,7 +93,7 @@ The goal is not to recreate the whole conversation. The goal is to preserve the 
 Easy sessions should stay cheap. Complex sessions should get deeper exploration and better synthesis.
 
 ### 5. Optimize for real coding sessions
-This extension is designed for implementation, debugging, review, and discussion workflows inside Pi — not for generic meeting notes.
+This extension is designed for implementation, debugging, review, and discussion workflows inside Pi - not for generic meeting notes.
 
 ---
 
@@ -120,9 +123,9 @@ Extract → Explore → Synthesize → Verify
 | Phase | Purpose | Typical LLM cost |
 | --- | --- | --- |
 | **Extract** | Deterministically mine files, errors, decisions, constraints, and topic boundaries | **0 calls** |
-| **Explore** | Investigate ambiguous areas with tools and improve topic understanding | 0–8 calls |
+| **Explore** | Investigate ambiguous areas with tools and improve topic understanding | 0-8 calls |
 | **Synthesize** | Build batch summaries and merge them into one structured compaction summary | N+1 calls |
-| **Verify** | Check coverage, detect hallucinations, patch missing facts deterministically first | 0–1 calls |
+| **Verify** | Check coverage, detect hallucinations, patch missing facts deterministically first | 0-1 calls |
 
 ### Before EESV
 
@@ -147,9 +150,7 @@ It can also record quality signals for future analysis:
 ### Deterministic extraction
 Before asking any model to summarize anything, Smart Compact extracts:
 
-- modified files
-- read files
-- deleted files
+- modified, read, and deleted files
 - error chains and retry attempts
 - explicit and implicit decisions
 - user constraints and preferences
@@ -166,8 +167,42 @@ Simple sessions can skip Phase 2 entirely when they have:
 - few decisions
 - limited cross-directory work
 
+### Open Loops detection
+Every compaction identifies unresolved work and tracks it as **open loops**:
+
+- **bugfix** — unresolved errors from tool calls
+- **follow-up** — user mentions of pending next steps
+- **blocked** — dependencies waiting on external input
+- **retry** — retried but still-unresolved failures
+
+Each loop gets a stable ID, priority, and file references. They appear in both the Markdown summary and the structured JSON state.
+
+### Cross-compaction tracking
+Smart Compact persists structured state between compactions. On the next compaction, it loads the previous state and computes a **delta**:
+
+- which open loops were resolved
+- which are still persistent
+- which decisions carried over
+- which errors were fixed vs newly introduced
+- which files are newly modified
+- whether the goal shifted
+
+This means every compaction builds on the last one — not from scratch.
+
+### Structured JSON state output
+Alongside the human-readable Markdown summary, Smart Compact produces a machine-readable `CompactionState` JSON object:
+
+- goal, decisions, constraints
+- modified/read/deleted files
+- unresolved and resolved errors
+- open loops with stable IDs
+- next actions and critical context
+- session type and version
+
+This structured state enables better verification, follow-up tracking, and future retrieval integration.
+
 ### Decision propagation
-Batch summaries receive decisions from earlier segments, reducing a common failure mode where later summaries “forget” what was decided earlier.
+Batch summaries receive decisions from earlier segments, reducing a common failure mode where later summaries "forget" what was decided earlier.
 
 ### Verification-oriented synthesis
 The final summary is checked against extracted facts. If important information is missing, Smart Compact tries to patch it deterministically before spending another LLM call.
@@ -189,7 +224,7 @@ The extension keeps a small project fingerprint so later compactions can reuse c
 - recently relevant files
 
 ### Auto-triggered compaction
-When enabled, Smart Compact hooks into Pi’s `session_before_compact` event and can replace default blind compaction with a smarter summary.
+When enabled, Smart Compact hooks into Pi's `session_before_compact` event and can replace default blind compaction with a smarter summary.
 
 ---
 
@@ -304,7 +339,7 @@ Add this to `~/.pi/agent/settings.json`:
 | `profile` | `"light" \| "balanced" \| "aggressive"` | `"balanced"` | Default compaction profile |
 | `summaryModel` | `string \| null` | `null` | Override summarization model |
 | `segmentationModel` | `string \| null` | `null` | Override exploration model |
-| `autoTrigger` | `boolean` | `true` | Run automatically before Pi’s built-in compaction |
+| `autoTrigger` | `boolean` | `true` | Run automatically before Pi's built-in compaction |
 | `backupEnabled` | `boolean` | `true` | Save a backup before compaction |
 | `profiles` | `object` | built-in defaults | Override per-profile budgets |
 
@@ -342,17 +377,45 @@ Smart Compact produces structured Markdown designed to be both human-readable an
 ## Key Decisions
 ## Files Modified
 ## Files Read
+## Open Loops
+## Changes Since Last Compaction
 ## Next Steps
 ## Critical Context
 ## Topics Covered
 ```
 
-This format is intentionally opinionated. It is optimized to preserve:
+New sections:
+
+- **Open Loops** — unresolved tasks with priority and file references
+- **Changes Since Last Compaction** — delta from previous compaction state
+
+The format is intentionally opinionated. It is optimized to preserve:
 
 - actionable state
 - exact references
 - unresolved issues
+- open loops and follow-up integrity
+- state transitions across compactions
 - clear continuation paths
+
+### Structured JSON output
+
+In addition to Markdown, Smart Compact produces a structured `CompactionState` object accessible in compaction details:
+
+```json
+{
+  "goal": "Build auth module",
+  "decisions": [{ "id": "decision-1", "summary": "Use JWT", "type": "explicit" }],
+  "constraints": [{ "id": "constraint-1", "text": "Must use TypeScript", "category": "requirement" }],
+  "modifiedFiles": ["src/auth.ts"],
+  "unresolvedErrors": [],
+  "openLoops": [{ "id": "loop-1", "type": "follow-up", "priority": "normal", "summary": "add tests" }],
+  "resolvedErrors": [{ "id": "error-1", "message": "login returns undefined", "tool": "bash" }],
+  "nextActions": ["Add unit tests for auth"],
+  "sessionType": "implementation",
+  "compactionVersion": "7.7.0"
+}
+```
 
 ---
 
@@ -369,7 +432,7 @@ It identifies:
 - tool errors and bash-like failures
 - retries and likely resolutions
 - explicit `ask_user` decisions
-- implicit user choices such as “use X instead of Y”
+- implicit user choices such as "use X instead of Y"
 - English and Turkish constraint language
 - topic boundaries from file transitions, error density, and user shift cues
 
@@ -419,6 +482,7 @@ It looks for issues such as:
 - missing unresolved errors
 - missing strong constraints
 - missing explicit decisions
+- missing Open Loops section when unresolved errors exist
 - suspicious file references not seen in the conversation
 - structural omissions
 
@@ -458,6 +522,16 @@ The pipeline tracks:
 ### Incremental extraction cache
 Structured extraction results are cached per session to avoid reprocessing unchanged history.
 
+### Cross-compaction state persistence
+After each compaction, the structured state is persisted to disk. On the next compaction, Smart Compact:
+
+1. loads the previous state
+2. computes a delta (resolved loops, new errors, goal shifts, etc.)
+3. injects `## Changes Since Last Compaction` into the summary
+4. saves the updated state for the next cycle
+
+This creates a **compaction memory chain** — every compaction builds on the last.
+
 ---
 
 ## Compatibility
@@ -485,12 +559,24 @@ src/         TypeScript source
  README.md    package documentation
 ```
 
+### Test suite
+
+Smart Compact has **91 tests** across 9 files, including:
+
+- **Unit tests** — extraction, tokens, verification, pruning, fingerprint, exploration
+- **State tests** — open loops, compaction state, delta computation, state persistence
+- **Evaluation harness** — 5 gold conversation scenarios with expected extraction results, delta evaluation across compactions, and fabrication safety checks
+
+```bash
+bun test                # run all 91 tests
+bun test test/eval.test.ts  # evaluation harness only
+```
+
 ### Local commands
 
 ```bash
 bun install
 bun run build
-bun test
 bun run typecheck
 ```
 
