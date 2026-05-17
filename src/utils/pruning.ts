@@ -85,9 +85,10 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
   // ── 3. Agent acknowledgment messages: no informational content ──
   for (let idx = 0; idx < msgs.length; idx++) {
     if (msgs[idx].role !== "assistant") continue;
-    const blocks = Array.isArray(msgs[idx].content) ? msgs[idx].content : [];
+    const rawBlocks = msgs[idx].content;
+    const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
     // Only consider messages that are pure text with no tool calls
-    const hasToolCall = blocks.some(b => isToolCallBlock(b));
+    const hasToolCall = blocks.some((b: unknown) => isToolCallBlock(b));
     if (hasToolCall) continue;
     const text = extractText(msgs[idx].content).trim();
     if (text.length > 0 && text.length < 100 && ACK_RE.test(text)) {

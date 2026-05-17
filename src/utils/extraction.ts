@@ -97,7 +97,8 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
   for (const err of errors) {
     for (let j = err.index + 1; j < Math.min(msgs.length, err.index + 6); j++) {
       if (msgs[j]?.role === "assistant") {
-        const blocks = Array.isArray(msgs[j]?.content) ? msgs[j].content : [];
+        const rawBlocks = msgs[j]?.content;
+        const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
         for (const b of blocks) {
           if (isToolCallBlock(b) && b.name === err.tool) {
             err.retryAttempted = true;

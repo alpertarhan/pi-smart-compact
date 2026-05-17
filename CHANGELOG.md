@@ -1,5 +1,26 @@
 # Changelog
 
+## [7.9.0] - 2026-05-17
+
+### Fixed
+- **40 TypeScript strict-mode errors resolved** — `bunx tsc --noEmit` now passes cleanly with zero errors against latest `@earendil-works/pi-ai`, `pi-coding-agent`, `pi-tui` peer types.
+- **`notify()` level mismatch** — `"success"` is not a valid level in `ExtensionUIContext.notify()`. All instances mapped to `"info"`.
+- **`UserMessage.timestamp` mandatory** — 10 inline message objects across `explore.ts`, `synthesize.ts`, `verify.ts` were missing the required `timestamp: Date.now()` field.
+- **`AgentToolResult.details` mandatory** — All tool return objects in `index.ts` now include explicit `details: undefined`.
+- **`SelectList.selectedIndex` private accessor** — Replaced with `setSelectedIndex()` in `overlays.ts`.
+- **`ThemeColor` union vs arbitrary string** — `theme.fg()` cast to `(c: string, t: string) => string` in overlays for dynamic color lookup.
+- **`CacheAwareOptions` not assignable to `ProviderStreamOptions`** — Added explicit cast in `cache.ts`.
+- **`blocks: unknown` after `Array.isArray`** — Explicit `unknown[]` typing in `extraction.ts` and `pruning.ts`.
+- **`ExtensionContext` vs `ExtensionCommandContext`** — Proper `as unknown as` double-cast in `index.ts` for tool and hook contexts.
+- **`apiKey?: string` (optional) used as `string`** — Extracted `apiKey` and `apiHeaders` as separate non-optional variables after guard check in `core.ts`.
+- **`pendingRef.value` type narrowed to `never`** — TypeScript control flow after `pendingRef.value = null` prevented re-reading after `runSmartCompact`. Fixed with explicit cast.
+
+### Changed
+- **`/smart-compact` command now uses `waitForIdle()`** — Prevents race condition when slash command is entered while agent is streaming. Agent finishes current turn before compaction starts.
+- **Tool (`smart_compact`) keeps `skipCompact: true`** — Mid-turn compaction via `ctx.compact()` would abort the running agent loop (`this.abort()` internally). Tool prepares summary in `pendingRef` for the next natural compact to apply.
+- **Tool description enriched** — Better description, parameter descriptions, and context-usage guard help the agent decide when to call smart_compact.
+- **README.md updated** — version 7.9.0, module count 18, line count ~5,091, typecheck status now passing, added `logger.ts` and `type-guards.ts` to source table.
+
 ## [7.8.0] - 2026-05-17
 
 ### Fixed

@@ -239,7 +239,7 @@ export async function exploreConversation(
 
     const probeResp = await trackedComplete("explore", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
-      messages: [{ role: "user", content: [{ type: "text", text: userContent }] }],
+      messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
       tools: EXPLORATION_TOOLS as any,
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
 
@@ -272,9 +272,9 @@ export async function exploreConversation(
           break;
         }
 
-        const nextToolCalls = response.content.filter((c): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
+        const nextToolCalls = response.content.filter((c: any): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
         if (nextToolCalls.length === 0) {
-          const text = response.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
+          const text = response.content.filter((c: any): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map((c: any) => c.text).join("\n").trim();
           let report = parseExplorationReport(text, llmMessages);
           if (!report.boundaries.length) {
             report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
@@ -337,7 +337,7 @@ export async function explorationRetry(
   try {
     const resp = await trackedComplete("explore-retry", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
-      messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }] }],
+      messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }], timestamp: Date.now() }],
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
@@ -366,7 +366,7 @@ export async function directExploration(
   try {
     const resp = await trackedComplete("explore-direct", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
-      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
     }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);

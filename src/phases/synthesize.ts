@@ -92,8 +92,8 @@ export async function singlePassCompact(
   const resp = await trackedComplete("single-pass", model, {
     systemPrompt: COMPACT_SYSTEM_PREFIX,
     messages: [
-      { role: "user" as const, content: [{ type: "text" as const, text: adaptedPrefix }] },
-      { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
+      { role: "user" as const, content: [{ type: "text" as const, text: adaptedPrefix }], timestamp: Date.now() },
+      { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
   }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: getProviderCaps(model.provider).maxOutputTokens, signal }, model.provider));
   const summary = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
@@ -124,8 +124,8 @@ export async function summarizeBatch(
   const resp = await trackedComplete("batch", model, {
     systemPrompt: COMPACT_SYSTEM_PREFIX,
     messages: [
-      { role: "user" as const, content: [{ type: "text" as const, text: BATCH_PROMPT_PREFIX }] },
-      { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
+      { role: "user" as const, content: [{ type: "text" as const, text: BATCH_PROMPT_PREFIX }], timestamp: Date.now() },
+      { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
   }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
   const output = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n");
@@ -165,8 +165,8 @@ export async function assembleLLM(
   const resp = await trackedComplete("assemble", model, {
     systemPrompt: COMPACT_SYSTEM_PREFIX,
     messages: [
-      { role: "user" as const, content: [{ type: "text" as const, text: ASSEMBLY_PROMPT_PREFIX }] },
-      { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
+      { role: "user" as const, content: [{ type: "text" as const, text: ASSEMBLY_PROMPT_PREFIX }], timestamp: Date.now() },
+      { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
   }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budget, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
   return resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();

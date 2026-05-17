@@ -56,6 +56,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       return m.length ? m : null;
     },
     handler: async (args, ctx) => {
+      await ctx.waitForIdle();
       try {
         const tokens = args.trim().split(/\s+/).filter(Boolean);
         const flags = tokens.map(t => t.toLowerCase());
@@ -114,15 +115,15 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) return;
       const cur = ctx.model;
       if (!cur) return;
-      const { segModel, sumModel } = resolveModels(ctx, cur, config);
+      const { segModel, sumModel } = resolveModels(ctx as unknown as ExtensionCommandContext, cur, config);
       if (!sumModel) return;
       if (!isRunning.value) {
-        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true });
-        if (pendingRef.value) {
-          const c = pendingRef.value;
+        await runSmartCompact({ ctx: ctx as unknown as ExtensionCommandContext, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true });
+        const pending = pendingRef.value as PendingCompaction | null;
+        if (pending) {
           pendingRef.value = null;
           pendingRef.createdAt = 0;
-          return { compaction: { summary: c.summary, firstKeptEntryId: c.firstKeptEntryId, tokensBefore: c.tokensBefore, details: c.details } };
+          return { compaction: { summary: pending.summary, firstKeptEntryId: pending.firstKeptEntryId, tokensBefore: pending.tokensBefore, details: pending.details } };
         }
       }
     } catch (e) { log.warn("session_before_compact error", e); }
@@ -130,15 +131,15 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "smart_compact", label: "Smart Compact",
-    description: "EESV smart compaction v" + VERSION + " with deterministic extraction, exploration, and verification.",
+    description: "EESV smart compaction v" + VERSION + " with deterministic extraction, exploration, and verification. Compacts the conversation into a structured summary preserving goals, decisions, open loops, modified files, and critical context. Call this when the conversation is getting long — the tool internally checks context usage and skips if not needed. Prefer this over default compact.",
     promptSnippet: "Smart compaction",
-    promptGuidelines: ["Use for long conversations.", "Prefer over default compact."],
+    promptGuidelines: ["Use for long conversations. Prefer over default compact."],
     parameters: {
       type: "object",
       properties: {
-        profile: { type: "string", description: "light, balanced, or aggressive" },
-        verbose: { type: "boolean" },
-        dry_run: { type: "boolean" },
+        profile: { type: "string", description: "light, balanced, or aggressive. Default: balanced." },
+        verbose: { type: "boolean", description: "Show detailed pipeline output." },
+        dry_run: { type: "boolean", description: "Run the pipeline but skip applying the compaction." },
       },
     },
     async execute(_id, params, _sig, _onUp, ctx) {
@@ -147,22 +148,38 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const dryRun = !!params.dry_run;
       const config = loadConfig();
       const resolvedProfile = profile ?? config.profile;
-      const cur = ('model' in ctx) ? (ctx as any).model : undefined;
-      const { segModel, sumModel } = resolveModels(ctx as ExtensionCommandContext, cur, config);
+      const cmdCtx = ctx as unknown as ExtensionCommandContext;
+
+      // Check context usage — skip if not enough tokens to justify compaction
+      const usage = ctx.getContextUsage?.();
+      const totalTokens = usage?.tokens ?? 0;
+      if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
+        const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
+        return { content: [{ type: "text", text: "Context is not large enough for compaction (" + totalTokens.toLocaleString() + " tokens, " + pct + "%). No action needed." }], details: undefined };
+      }
+
+      const cur = ('model' in ctx) ? (ctx as unknown as Record<string, unknown>).model as Model<Api> | undefined : undefined;
+      const { segModel, sumModel } = resolveModels(cmdCtx, cur, config);
       if (!sumModel) {
-        return { content: [{ type: "text", text: "Error: Could not resolve model." }] };
+        return { content: [{ type: "text", text: "Error: Could not resolve model." }], details: undefined };
       }
       try {
         const toolStart = Date.now();
-        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true });
+        // Prepare summary only — do NOT call ctx.compact() from within a tool.
+        // The agent loop holds its own message array; compacting mid-turn would cause
+        // (a) the current LLM call to still use the old un-compacted context, and
+        // (b) tool_result referencing a tool_call in a message that no longer exists.
+        // Instead, store the summary in pendingRef and let the session_before_compact
+        // hook apply it on the next natural compact (or auto-trigger).
+        await runSmartCompact({ ctx: cmdCtx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true });
         const toolSecs = ((Date.now() - toolStart) / 1000).toFixed(1);
         if (pendingRef.value) {
-          return { content: [{ type: "text", text: "Smart summary generated (" + resolvedProfile + "). Tokens: " + (pendingRef.value.tokensBefore ?? "?") + " -> " + (pendingRef.value.summary?.length ?? 0) + " chars (" + toolSecs + "s).\n\nNow run tree compact to apply — the session_before_compact hook will use this summary.\nTTL: " + Math.round(PENDING_TTL_MS / 60000) + " minutes." }] };
+          return { content: [{ type: "text", text: "Smart summary prepared (" + resolvedProfile + "). Tokens: " + (pendingRef.value.tokensBefore ?? 0).toLocaleString() + " — summary cached for " + Math.round(PENDING_TTL_MS / 60000) + " min. The next /compact will use this summary automatically." }], details: undefined };
         }
-        return { content: [{ type: "text", text: "Compaction finished (" + resolvedProfile + ") but no summary was generated." }] };
+        return { content: [{ type: "text", text: "Compaction finished (" + resolvedProfile + ") but no summary was generated." }], details: undefined };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text", text: "Compaction error: " + msg }] };
+        return { content: [{ type: "text", text: "Compaction error: " + msg }], details: undefined };
       }
     },
   });

@@ -66,7 +66,7 @@ export async function trackedComplete(
 ): Promise<AssistantMessage> {
   const start = Date.now();
   try {
-    const resp = await complete(model, reqBody, opts);
+    const resp = await complete(model, reqBody, opts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -78,7 +78,7 @@ export async function trackedComplete(
     });
     try {
       if (inputT > 0 && "messages" in reqBody) {
-        const rawText = JSON.stringify((reqBody as Record<string, unknown>).messages);
+        const rawText = JSON.stringify((reqBody as unknown as Record<string, unknown>).messages);
         calibrateFromResponse(estimateTokens(rawText), inputT, model.provider);
       }
     } catch (e) { log.debug("token calibration failed", e); }

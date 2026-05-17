@@ -57,12 +57,12 @@ The extension keeps a short-lived pending compaction in memory, then hands that 
 
 **Observed from the current codebase (`README`, `src/`, `test/`, `package.json`)**
 
-- **Package version:** `7.8.0`
+- **Package version:** `7.9.0`
 - **Runtime entrypoint:** `dist/index.js`
 - **Source entrypoint:** `src/index.ts`
-- **Source modules:** 16 TypeScript files under `src/`
+- **Source modules:** 18 TypeScript files under `src/`
 - **Tests:** 9 test files, **93 passing tests**
-- **Approx repo footprint:** ~5,053 lines across `src/` + `test/`
+- **Approx repo footprint:** ~5,091 lines across `src/` + `test/`
 - **Documentation asset:** `docs/assets/pi-smart-compact.png`
 - **Published package files:** `dist/`, `docs/`, `README.md`, `LICENSE`, `CHANGELOG.md`
 
@@ -72,9 +72,9 @@ The extension keeps a short-lived pending compaction in memory, then hands that 
 | --- | --- | --- |
 | `bun test` | ✅ Pass | 93/93 tests passing |
 | `bun run build` | ✅ Pass | Bundles `src/index.ts` to `dist/index.js` |
-| `bun run typecheck` | ⚠️ Fails | Current repo has TypeScript compatibility issues against the installed Pi typings / `.ts` import style |
+| `bun run typecheck` | ✅ Pass | Strict TypeScript compatibility clean |
 
-So the project is currently **buildable and tested**, but **not fully typecheck-clean**.
+So the project is currently **buildable, tested, and typecheck-clean**.
 
 ---
 
@@ -348,11 +348,13 @@ That pending summary is valid for **5 minutes** and is consumed by:
 | `src/utils/cache.ts` | Metrics, cache-aware LLM options, extraction cache |
 | `src/utils/damage.ts` | Post-compaction regression signal detection |
 | `src/utils/extraction.ts` | Deterministic extraction and open-loop detection |
+| `src/utils/logger.ts` | Centralized logging with shared prefix |
 | `src/utils/fingerprint.ts` | Cross-session project fingerprinting |
 | `src/utils/helpers.ts` | Config loading, backups, batching, prompt helpers |
 | `src/utils/pruning.ts` | Redundancy pruning before compaction |
 | `src/utils/state.ts` | Compaction state persistence and delta logic |
 | `src/utils/tokens.ts` | Provider capabilities and token estimation |
+| `src/utils/type-guards.ts` | Shared type guard functions |
 
 ### Tests
 
@@ -589,10 +591,9 @@ The current codebase includes these safeguards:
 
 To keep this README aligned with the repository's **actual** current state:
 
-1. **`bun run typecheck` is currently failing.** The repo builds with Bun and passes tests, but strict TypeScript compatibility is not clean right now.
-2. **One legacy test filename remains:** `test/semantic-compact.test.ts`.
-3. **The package is published from `dist/`, not directly from `src/`.** Source and tests are not included in the package tarball.
-4. **The extension depends on Pi runtime APIs and peer packages** (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`).
+1. **One legacy test filename remains:** `test/semantic-compact.test.ts`.
+2. **The package is published from `dist/`**, not directly from `src/`. Source and tests are not included in the package tarball.
+3. **The extension depends on Pi runtime APIs and peer packages** (`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`).
 
 ---
 
@@ -629,7 +630,7 @@ rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target b
 bun run typecheck
 ```
 
-At the moment, this command is expected to report errors.
+At the moment, this command passes cleanly.
 
 ### Typical local path inside Pi
 

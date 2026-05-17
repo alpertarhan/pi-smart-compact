@@ -60,12 +60,14 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(summaryModel);
     const segAuth = segModel !== summaryModel ? await ctx.modelRegistry.getApiKeyAndHeaders(segModel) : auth;
     if ((!auth.ok || !auth.apiKey) || (!segAuth.ok || !segAuth.apiKey)) { isRunning.value = false; if (!autoTriggered) ctx.ui.notify("Auth failed", "error"); return; }
+    const apiKey = auth.apiKey!;
+    const apiHeaders = auth.headers;
 
     const usage = ctx.getContextUsage();
     const totalTokens = usage?.tokens ?? 0;
     if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) { isRunning.value = false; if (!autoTriggered) ctx.ui.notify("Context OK or unknown", "info"); return; }
 
-    const notify = (msg: string, type: "info" | "success" | "warning" | "error" = "info") => { ctx.ui.notify(msg, type); };
+    const notify = (msg: string, type: "info" | "success" | "warning" | "error" = "info") => { ctx.ui.notify(msg, type === "success" ? "info" : type); };
     const ctrl = new AbortController();
     const signal = ctrl.signal;
     const modelLabel = summaryModel.provider + "/" + summaryModel.id;
@@ -90,13 +92,13 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
 
     const toCompact = msgs.slice(0, keepFrom);
     if (!toCompact.length) { isRunning.value = false; return; }
-    const firstKeptId = msgs[keepFrom]?.id ?? msgs[msgs.length - 1]?.id ?? "";
+    const firstKeptId = (msgs[keepFrom]?.id ?? msgs[msgs.length - 1]?.id) as string;
 
     if (!autoTriggered) {
       showProgressOverlay(ctx, { phase: 1, phaseName: "Extract", detail: "Preparing...", model: modelLabel, profile });
     }
 
-    const llmMessages = convertToLlm(toCompact.map(e => e.message)) as LlmMessage[];
+    const llmMessages = convertToLlm(toCompact.map(e => e.message as import("@earendil-works/pi-ai").Message)) as LlmMessage[];
 
     // ── Pre-compaction redundancy pruning ──
     const pruning = pruneRedundant(llmMessages);
@@ -104,7 +106,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       notify("Pruning: " + pruning.prunedCount + " msgs removed (" + pruning.reasons.map(r => r.count + "x " + r.reason).join(", ") + ")", "info");
     }
     const prunedMessages = pruning.messages;
-    const convText = serializeConversation(prunedMessages);
+    const convText = serializeConversation(prunedMessages as unknown as import("@earendil-works/pi-ai").Message[]);
     const convTokens = estimateTokens(convText);
 
     const sessionId = ctx.sessionManager.getSessionId?.() ?? "unknown";
@@ -144,7 +146,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     if (convTokens < pc.singlePassMaxTokens) {
       if (!autoTriggered) showProgressOverlay(ctx, { phase: 2, phaseName: "Explore", detail: "Single-pass (" + convTokens.toLocaleString() + "t)", model: modelLabel, profile, extraction });
       try {
-        const r = await singlePassCompact(convText, extraction, null, prevContext + projectCtx, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal);
+        const r = await singlePassCompact(convText, extraction, null, prevContext + projectCtx, summaryModel, { apiKey, headers: apiHeaders }, signal);
         finalSummary = r.summary; method = "single-pass"; llmCalls = r.llmCalls;
       } catch (err) {
         notify("Single-pass failed: " + (err instanceof Error ? err.message : String(err)), "warning");
@@ -157,7 +159,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       if (needsExploration) {
         if (!autoTriggered) showProgressOverlay(ctx, { phase: 2, phaseName: "Explore", detail: "Exploring...", model: modelLabel, profile, extraction });
         try {
-          const expResult = await exploreConversation(llmMessages, extraction, segModel, { apiKey: segAuth.apiKey, headers: segAuth.headers }, prevContext || undefined, userNote, signal, MAX_EXPLORATION_ROUNDS, notify);
+          const expResult = await exploreConversation(llmMessages, extraction, segModel, { apiKey: segAuth.apiKey!, headers: segAuth.headers }, prevContext || undefined, userNote, signal, MAX_EXPLORATION_ROUNDS, notify);
           explorationReport = expResult.report;
           explorationRounds = expResult.rounds;
           notify("Phase 2 Explore: " + expResult.rounds + " rounds, " + explorationReport.boundaries.length + " boundaries" + (expResult.toolSupported ? "" : " (no tool support)"), "info");
@@ -211,7 +213,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
 
       if (totalBatches <= 1) {
         try {
-          summaries.push(...await summarizeBatch(batches[0], extraction, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal));
+          summaries.push(...await summarizeBatch(batches[0], extraction, summaryModel, { apiKey, headers: apiHeaders }, signal));
         } catch (err) {
           summaries.push(...batches[0].map(ch => ({
             topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
@@ -229,7 +231,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
           const wavePromises = waveBatches.map(async (batch, i) => {
             const idx = wave + i;
             try {
-              results[idx] = await summarizeBatch(batch, extraction, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal);
+              results[idx] = await summarizeBatch(batch, extraction, summaryModel, { apiKey, headers: apiHeaders }, signal);
             } catch (err) {
               errors[idx] = err instanceof Error ? err : new Error(String(err));
               results[idx] = batch.map(ch => ({
@@ -250,7 +252,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       if (!autoTriggered) showProgressOverlay(ctx, { phase: 3, phaseName: "Synthesize", detail: "Assembling...", model: modelLabel, profile, extraction, totalBatches: batches.length });
       let assemblyCalls = 1;
       try {
-        const r = await assembleLLM(summaries, extraction, explorationReport, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, pc.summaryBudgetTokens, prevContext, signal);
+        const r = await assembleLLM(summaries, extraction, explorationReport, summaryModel, { apiKey, headers: apiHeaders }, pc.summaryBudgetTokens, prevContext, signal);
         if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
       } catch (err) {
         log.warn("Assembly failed", err);
@@ -273,7 +275,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         if (!recheck.ok && recheck.score < 75) {
           notify("Phase 4 Verify: deterministic patch insufficient (score=" + recheck.score + "), trying LLM patch", "warning");
           try {
-            finalSummary = await patchSummary(finalSummary, recheck.gaps, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal);
+            finalSummary = await patchSummary(finalSummary, recheck.gaps, summaryModel, { apiKey, headers: apiHeaders }, signal);
             llmCalls++;
           } catch (err) { /* accept deterministic patch as-is */
             log.warn("LLM patch failed", err);
@@ -351,7 +353,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // ── Damage detection: check if previous compaction caused issues ──
     // This reads post-compaction messages from the current branch to detect regression
     try {
-      const postCompactMsgs = msgs.slice(keepFrom).map(e => convertToLlm([e.message])).flat() as LlmMessage[];
+      const postCompactMsgs = msgs.slice(keepFrom).map(e => convertToLlm([e.message as import("@earendil-works/pi-ai").Message])).flat() as LlmMessage[];
       if (postCompactMsgs.length > 2) {
         // Only detect if there are enough post-compaction messages
         const lastCompaction = branch.filter((e: { type: string }) => e.type === "compaction").slice(-1)[0] as { details?: SmartCompactDetails } | undefined;
@@ -384,7 +386,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     if (!skipCompact) {
       ctx.compact({
         customInstructions: "Use pre-computed smart summary from /smart-compact",
-        onComplete: () => { if (!autoTriggered) ctx.ui.notify("Applied \u2713", "success"); },
+        onComplete: () => { if (!autoTriggered) ctx.ui.notify("Applied \u2713", "info"); },
         onError: e => { if (!autoTriggered) ctx.ui.notify("Failed: " + e.message, "error"); },
       });
     }

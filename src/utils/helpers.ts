@@ -45,7 +45,7 @@ export function backupConversation(convText: string, sessionId: string): string 
 
 export function getPreviousCompactionContext(branch: unknown[]): string {
   interface BranchEntry { type: string; details?: { topics?: string[]; method?: string } }
-  const compactions = branch.filter((e: BranchEntry) => e.type === "compaction");
+  const compactions = branch.filter((e): e is BranchEntry => (e as BranchEntry).type === "compaction");
   if (!compactions.length) return "";
   const last = compactions[compactions.length - 1] as BranchEntry;
   const topics = last.details?.topics ?? [];

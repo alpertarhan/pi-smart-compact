@@ -18,7 +18,8 @@ export function renderContextBar(theme: any, pct: number, tokens: number, barLen
   const filled = Math.min(barLen, Math.round((clamped / 100) * barLen));
   const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
   const color = clamped > 80 ? "error" : clamped > 50 ? "warning" : "success";
-  return theme.fg("text", "  Context: ") + theme.fg(color, bar) + theme.fg("text", " " + clamped + "%") + theme.fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
+  const fg = theme.fg as (c: string, t: string) => string;
+  return fg("text", "  Context: ") + fg(color, bar) + fg("text", " " + clamped + "%") + fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
 }
 
 export function renderTokenBar(theme: any, before: number, after: number, label: string, barLen = 30): string {
@@ -64,7 +65,7 @@ export async function selectModel(
       scrollInfo: t => theme.fg("dim", t),
       noMatch: t => theme.fg("warning", t),
     });
-    sel.selectedIndex = opts.defaultModelIndex;
+    sel.setSelectedIndex(opts.defaultModelIndex);
     sel.onSelect = item => done(item.value);
     sel.onCancel = () => done(null);
     c.addChild(sel);
@@ -114,7 +115,7 @@ export async function selectProfile(
       scrollInfo: t => theme.fg("dim", t),
       noMatch: t => theme.fg("warning", t),
     });
-    sel.selectedIndex = 1;
+    sel.setSelectedIndex(1);
     sel.onSelect = item => done(item.value);
     sel.onCancel = () => done(null);
     c.addChild(sel);
@@ -136,8 +137,7 @@ export function showProgressOverlay(ctx: ExtensionCommandContext, state: Progres
   const progress = Math.round((state.phase / 4) * 100);
   const name = phaseNames[state.phase - 1] ?? "?";
   const detail = state.detail ? " (" + state.detail + ")" : "";
-  const type: "info" | "success" = state.phase >= 4 ? "success" : "info";
-  ctx.ui.notify("EESV [" + progress + "%] Phase " + state.phase + "/4: " + name + detail, type);
+  ctx.ui.notify("EESV [" + progress + "%] Phase " + state.phase + "/4: " + name + detail, state.phase >= 4 ? "info" : "info");
 }
 
 export async function showResultScreen(
@@ -158,9 +158,10 @@ export async function showResultScreen(
 
     const methodColors: Record<string, string> = { eesv: "accent", "single-pass": "success", heuristic: "warning" };
     const methodColor = methodColors[details.method] ?? "text";
+    const fg = theme.fg as (c: string, t: string) => string;
     c.addChild(new Text(
       theme.fg("text", "  Method: ") +
-      theme.fg(methodColor, details.method.toUpperCase()) +
+      fg(methodColor, details.method.toUpperCase()) +
       theme.fg("dim", " \u2022 " + details.llmCalls + " LLM call(s) \u2022 Profile: " + details.profile),
       0, 0));
     if (details.model) {
