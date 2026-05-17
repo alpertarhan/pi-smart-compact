@@ -3,7 +3,7 @@
  */
 
 import path from "node:path";
-import type { LlmMessage, ProfileConfig, StructuredExtraction, ToolCallBlock } from "../types.ts";
+import type { LlmMessage, ProfileConfig, StructuredExtraction, ToolCallBlock, OpenLoop } from "../types.ts";
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock } from "../types.ts";
@@ -237,6 +237,93 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
     if (txt && !txt.startsWith("/")) return txt.slice(0, 300);
   }
   return null;
+}
+
+/** Extract open loops — unresolved tasks from the conversation */
+export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtraction): OpenLoop[] {
+  const loops: OpenLoop[] = [];
+  let loopId = 0;
+
+  // ── 1. Unresolved errors → bugfix loops ──
+  for (const err of extraction.errors.filter(e => !e.resolved)) {
+    const errFiles = extraction.modifiedFiles
+      .filter(f => err.message.toLowerCase().includes(f.path.split("/").pop()?.toLowerCase() ?? "__none__"))
+      .map(f => f.path);
+    loops.push({
+      id: "loop-" + (++loopId),
+      type: "bugfix",
+      priority: err.retryAttempted ? "high" : "normal",
+      status: "open",
+      summary: err.message.slice(0, 120),
+      files: errFiles,
+      sourceIndex: err.index,
+    });
+  }
+
+  // ── 2. User "next step" / follow-up patterns → follow-up loops ──
+  const FOLLOWUP_RE = /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|gotta|yapalim|yapmamiz|gerekiyor|eklenecek|düzeltilecek|bitmedi|kaldi)/i;
+  for (const msg of msgs) {
+    if (msg.role !== "user") continue;
+    const txt = extractText(msg.content);
+    if (txt.length < 10 || txt.startsWith("/")) continue;
+    if (FOLLOWUP_RE.test(txt)) {
+      const idx = msgs.indexOf(msg);
+      // Avoid duplicates with errors
+      const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
+      if (!isDup) {
+        loops.push({
+          id: "loop-" + (++loopId),
+          type: "follow-up",
+          priority: "normal",
+          status: "open",
+          summary: txt.slice(0, 120),
+          files: [],
+          sourceIndex: idx,
+        });
+      }
+    }
+  }
+
+  // ── 3. Blocked items → blocked loops ──
+  const BLOCKED_RE = /blocked|waiting for|depend|ba[ğg]li|bekliyor|engell/i;
+  for (const msg of msgs) {
+    if (msg.role !== "user") continue;
+    const txt = extractText(msg.content);
+    if (BLOCKED_RE.test(txt)) {
+      const idx = msgs.indexOf(msg);
+      const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
+      if (!isDup) {
+        loops.push({
+          id: "loop-" + (++loopId),
+          type: "blocked",
+          priority: "high",
+          status: "open",
+          summary: txt.slice(0, 120),
+          files: [],
+          sourceIndex: idx,
+        });
+      }
+    }
+  }
+
+  // ── 4. Pending tool retries → retry loops ──
+  for (const err of extraction.errors.filter(e => e.retryAttempted && !e.resolved)) {
+    // Only add if not already captured as bugfix
+    const exists = loops.some(l => l.type === "bugfix" && l.sourceIndex === err.index);
+    if (!exists) {
+      loops.push({
+        id: "loop-" + (++loopId),
+        type: "retry",
+        priority: "high",
+        status: "open",
+        summary: "Retried but unresolved: " + err.message.slice(0, 80),
+        files: [],
+        sourceIndex: err.index,
+      });
+    }
+  }
+
+  return loops;
 }
 
 export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig): StructuredExtraction {

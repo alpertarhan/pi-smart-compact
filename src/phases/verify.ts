@@ -101,6 +101,15 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
+  // ── Open Loop coverage ──
+  if (extraction.errors.some(e => !e.resolved)) {
+    const hasOpenLoops = lower.includes("## open loops") || lower.includes("unresolved") || lower.includes("open loop");
+    if (!hasOpenLoops && extraction.errors.filter(e => !e.resolved).length >= 2) {
+      gaps.push("Missing Open Loops section despite " + extraction.errors.filter(e => !e.resolved).length + " unresolved errors");
+      score -= 5;
+    }
+  }
+
   return { ok: gaps.length === 0, gaps, score: Math.max(0, score) };
 }
 

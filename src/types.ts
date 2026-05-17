@@ -82,6 +82,8 @@ export interface SmartCompactDetails {
   model: string;
   qualityScore: number;
   tokensBefore: number;
+  compactionState?: CompactionState;
+  openLoops?: OpenLoop[];
 }
 
 export interface PendingCompaction {
@@ -89,6 +91,7 @@ export interface PendingCompaction {
   firstKeptEntryId: string;
   tokensBefore: number;
   details: SmartCompactDetails;
+  compactionState?: CompactionState;
 }
 
 export interface ModelOption {
@@ -211,6 +214,35 @@ export interface CachedExtraction {
   extraction: StructuredExtraction;
   messageCount: number;
   timestamp: number;
+}
+
+/** An open loop — unresolved task detected during compaction */
+export interface OpenLoop {
+  id: string;
+  type: "bugfix" | "follow-up" | "blocked" | "pending" | "retry";
+  priority: "critical" | "high" | "normal" | "low";
+  status: "open" | "in-progress" | "resolved";
+  summary: string;
+  files: string[];
+  sourceIndex?: number;
+}
+
+/** Structured machine-readable compaction state */
+export interface CompactionState {
+  goal: string | null;
+  decisions: Array<{ id: string; summary: string; userResponse?: string; type: "explicit" | "implicit" }>;
+  constraints: Array<{ id: string; text: string; category: "requirement" | "preference" | "prohibition"; confidence: number }>;
+  modifiedFiles: string[];
+  readFiles: string[];
+  deletedFiles: string[];
+  unresolvedErrors: Array<{ id: string; message: string; tool: string; files: string[] }>;
+  resolvedErrors: Array<{ id: string; message: string; tool: string }>;
+  openLoops: OpenLoop[];
+  topics: Array<{ title: string; type: string; priority: string }>;
+  nextActions: string[];
+  criticalContext: string[];
+  sessionType: "implementation" | "review" | "debugging" | "discussion";
+  compactionVersion: string;
 }
 
 export interface ProgressState {

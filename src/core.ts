@@ -15,7 +15,8 @@ import {
   resetCompactSessionId, resetMetrics, appendMetricsLog, getMetricsSummary,
   saveCachedExtraction, loadCachedExtraction, mergeExtractions, cacheOpts,
 } from "./utils/cache.ts";
-import { extractStructured, extractText } from "./utils/extraction.ts";
+import { extractStructured, extractText, extractOpenLoops } from "./utils/extraction.ts";
+import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext } from "./utils/state.ts";
 import { pruneRedundant } from "./utils/pruning.ts";
 import { deriveProjectId, loadProjectFingerprint, saveProjectFingerprint, buildProjectContext } from "./utils/fingerprint.ts";
 import { detectDamage, logDamageReport } from "./utils/damage.ts";
@@ -288,6 +289,18 @@ export async function runSmartCompact(
     const durationStr = pipelineMs < 1000 ? pipelineMs + "ms" : (pipelineMs / 1000).toFixed(1) + "s";
     notify("Done: " + pipelineInfo + " — saved " + (tokensSaved ?? 0).toLocaleString() + "t (" + durationStr + ")", "success");
 
+    // ── Open Loops extraction ──
+    const openLoops = extractOpenLoops(llmMessages, extraction);
+    if (openLoops.length > 0) {
+      notify("Open Loops: " + openLoops.length + " detected (" + openLoops.filter(l => l.priority === "high").length + " high)", "info");
+      finalSummary = injectOpenLoopsSection(finalSummary, openLoops);
+    }
+
+    // ── Build structured compaction state ──
+    const nextActions = extractNextActions(finalSummary);
+    const criticalContextItems = extractCriticalContext(finalSummary);
+    const compactionState = buildCompactionState(extraction, openLoops, explorationReport, nextActions, criticalContextItems);
+
     const details: SmartCompactDetails = {
       method: method as SmartCompactDetails["method"],
       chunkCount: chunkCount || 1,
@@ -299,6 +312,7 @@ export async function runSmartCompact(
       explorationRounds, explorationBoundaries: explorationReport?.boundaries.length ?? 0,
       model: modelLabel, qualityScore: verification.score,
       tokensBefore: totalTokens,
+      compactionState, openLoops,
     };
 
     if (dryRun) {
@@ -306,7 +320,7 @@ export async function runSmartCompact(
       return;
     }
 
-    pendingRef.value = { summary: finalSummary, firstKeptEntryId: firstKeptId, tokensBefore: totalTokens, details };
+    pendingRef.value = { summary: finalSummary, firstKeptEntryId: firstKeptId, tokensBefore: totalTokens, details, compactionState };
     pendingRef.createdAt = Date.now();
 
     // ── Save project fingerprint for cross-session context ──
