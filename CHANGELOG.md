@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.9.3] - 2026-05-18
+
+### Changed
+- **README refocused** — Rewrote `README.md` as a concise, user-facing overview. It now explains the package in terms of agentic compaction, Kamradt-style chunking, and the EESV pipeline without repo-audit noise or drift-prone implementation snapshots.
+- **Docs cleanup** — `DEVPLAN.md` is now positioned as an archived implementation record, `ROADMAP.md` serves as the live planning document, and new `CONTRIBUTING.md` / `ARCHITECTURE.md` files document contributor workflow and system design.
+- **Version metadata synchronized** — `package.json`, runtime version constants, and generated `dist/` metadata now align on `7.9.3`.
+- **TS script invocation stabilized** — `build` and `typecheck` now use `bun x tsc`, matching the working local invocation more reliably.
+
 ## [7.9.1] - 2026-05-17
 
 ### Fixed
