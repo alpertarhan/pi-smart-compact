@@ -4,6 +4,9 @@
 
 import type { Model, Api } from "@earendil-works/pi-ai";
 
+/** Session type classification */
+export type SessionType = "implementation" | "review" | "debugging" | "discussion";
+
 export type CompressionProfile = "light" | "balanced" | "aggressive";
 
 export interface ProfileConfig {
@@ -110,7 +113,7 @@ export interface VerificationResult {
 export interface ExplorationReport {
   boundaries: TopicBoundary[];
   mainGoal: string;
-  sessionType: "implementation" | "review" | "debugging" | "discussion";
+  sessionType: SessionType;
   enrichedConstraints: string[];
   crossReferences: string[];
   statusAssessment: { done: string[]; inProgress: string[]; blocked: string[] };
@@ -160,18 +163,6 @@ export function isToolCallBlock(c: unknown): c is { type: "toolCall"; id?: strin
   return typeof c === "object" && c !== null && (c as { type?: string }).type === "toolCall" && typeof (c as { name?: unknown }).name === "string";
 }
 
-/** Get text content from an LlmMessage */
-export function getMessageText(m: LlmMessage): string {
-  return extractTextSafe(m.content);
-}
-
-/** Extract text from unknown content */
-export function extractTextSafe(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.filter(isTextBlock).map(b => b.text).join("");
-}
-
 /** Get tool call names from unknown content */
 export function getToolCallNames(content: unknown): string[] {
   if (!Array.isArray(content)) return [];
@@ -182,18 +173,6 @@ export function getToolCallNames(content: unknown): string[] {
 export function filterToolCalls(content: unknown): Array<{ type: "toolCall"; id?: string; name: string; arguments: Record<string, unknown> }> {
   if (!Array.isArray(content)) return [];
   return content.filter(isToolCallBlock);
-}
-
-export interface ToolCallBlock {
-  type: "toolCall";
-  id?: string;
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-export interface TextBlock {
-  type: "text";
-  text: string;
 }
 
 export interface LlmTextBlock { type: "text"; text: string; }
@@ -241,9 +220,13 @@ export interface CompactionState {
   topics: Array<{ title: string; type: string; priority: string }>;
   nextActions: string[];
   criticalContext: string[];
-  sessionType: "implementation" | "review" | "debugging" | "discussion";
+  sessionType: SessionType;
   compactionVersion: string;
+  updatedAt?: number;
 }
+
+/** Shared session message entry type (branch entry filter) */
+export interface SessionMessageEntry { type: "message"; id: string; message: unknown }
 
 export interface ProgressState {
   phase: number;

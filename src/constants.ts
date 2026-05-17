@@ -127,6 +127,30 @@ export const SESSION_TYPE_INSTRUCTIONS: Record<string, string> = {
   discussion: "Focus on: decisions made, trade-offs discussed, consensus reached. Prioritize rationale over implementation details.",
 };
 
+// ── Section name constants ──
+export const SECTION_GOAL = "## Goal";
+export const SECTION_CONSTRAINTS = "## Constraints & Preferences";
+export const SECTION_PROGRESS = "## Progress";
+export const SECTION_DECISIONS = "## Key Decisions";
+export const SECTION_FILES_MODIFIED = "## Files Modified";
+export const SECTION_FILES_READ = "## Files Read";
+export const SECTION_NEXT_STEPS = "## Next Steps";
+export const SECTION_CRITICAL_CONTEXT = "## Critical Context";
+export const SECTION_TOPICS = "## Topics Covered";
+export const SECTION_OPEN_LOOPS = "## Open Loops";
+export const SECTION_CHANGES = "## Changes Since Last Compaction";
+
+// ── Log prefix ──
+export const LOG_PREFIX = "[smart-compact]";
+
+// ── Thresholds ──
+export const MIN_TOKEN_THRESHOLD = 5000;
+export const MAX_EXPLORATION_ROUNDS = 8;
+
+// ── Config keys ──
+export const CONFIG_KEY = "smartCompact";
+export const CONFIG_KEY_ALT = "semanticCompact";
+
 export const EXPLORER_SYSTEM_PROMPT =
   "You are a conversation analyst. You have deterministic extraction data and can query the raw conversation using tools.\n\n" +
   "Your job:\n" +

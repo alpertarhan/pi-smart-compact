@@ -4,8 +4,8 @@
 
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary, CacheAwareOptions } from "../types.ts";
-import { isTextBlock, isToolCallBlock, extractTextSafe, getToolCallNames, filterToolCalls } from "../types.ts";
-import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT } from "../constants.ts";
+import { getToolCallNames, filterToolCalls } from "../types.ts";
+import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS, LOG_PREFIX } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
@@ -13,13 +13,6 @@ import { getProviderCaps } from "../utils/tokens.ts";
 // ── Tool Support Cache with TTL ──
 const _toolSupportCache = new Map<string, { result: boolean; timestamp: number }>();
 const TOOL_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-
-export function clearToolSupportCache(): void {
-  const now = Date.now();
-  for (const [k, v] of _toolSupportCache) {
-    if (now - v.timestamp > TOOL_CACHE_TTL) _toolSupportCache.delete(k);
-  }
-}
 
 /**
  * Determine whether exploration is worthwhile based on session complexity.
@@ -83,7 +76,13 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
     }
     case "search_conversation": {
       const q = ((args.query as string) ?? "").toLowerCase();
-      return JSON.stringify(llmMessages.filter((m) => JSON.stringify(m).toLowerCase().includes(q)).slice(0, 10).map((m) => ({
+      return JSON.stringify(llmMessages.filter((m) => {
+        const text = extractText(m?.content).toLowerCase();
+        if (text.includes(q)) return true;
+        // Also check tool call arguments for file paths
+        const tcs = filterToolCalls(m?.content);
+        return tcs.some(tc => JSON.stringify(tc.arguments).toLowerCase().includes(q));
+      }).slice(0, 10).map((m) => ({
         idx: llmMessages.indexOf(m), role: m?.role, preview: extractText(m?.content).slice(0, 150),
       })));
     }
@@ -196,7 +195,7 @@ export async function exploreConversation(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
   prevSummary: string | undefined, userNote: string | undefined,
-  signal?: AbortSignal, maxRounds = 8,
+  signal?: AbortSignal, maxRounds = MAX_EXPLORATION_ROUNDS,
   notify?: (msg: string, type?: "info" | "success" | "warning" | "error") => void,
 ): Promise<{ report: ExplorationReport; rounds: number; toolSupported: boolean }> {
 
@@ -268,7 +267,7 @@ export async function exploreConversation(
             tools: EXPLORATION_TOOLS as any,
           }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
         } catch (err) {
-          console.error("[smart-compact] Explore loop error:", err instanceof Error ? err.message : err);
+          console.error(LOG_PREFIX + " Explore loop error:", err instanceof Error ? err.message : err);
           break;
         }
 
@@ -307,7 +306,7 @@ export async function exploreConversation(
     // Provider responded without tool calls — still counts as tool-capable for this session
   } catch {
     // Probe failed — cache as unsupported
-    console.error("[smart-compact] Tool calling probe failed for " + cacheKey);
+    console.error(LOG_PREFIX + " Tool calling probe failed for " + cacheKey);
     _toolSupportCache.set(cacheKey, { result: false, timestamp: Date.now() });
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }

@@ -7,6 +7,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions } from "../types.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
+import { LOG_PREFIX } from "../constants.ts";
 import { complete, type Model, type Api, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
 
 const CACHE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache");
@@ -75,10 +76,12 @@ export async function trackedComplete(
       phase, model: model.id, inputTokens: inputT, outputTokens: outputT,
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
     });
-    if (inputT > 0 && "messages" in reqBody) {
-      const rawText = JSON.stringify((reqBody as Record<string, unknown>).messages);
-      calibrateFromResponse(estimateTokens(rawText), inputT, model.provider);
-    }
+    try {
+      if (inputT > 0 && "messages" in reqBody) {
+        const rawText = JSON.stringify((reqBody as Record<string, unknown>).messages);
+        calibrateFromResponse(estimateTokens(rawText), inputT, model.provider);
+      }
+    } catch { /* calibration is best-effort */ }
     return resp;
   } catch (err) {
     recordMetric({
@@ -102,7 +105,7 @@ export function saveCachedExtraction(sessionId: string, extraction: StructuredEx
       lastMessageIndex: msgCount - 1, extraction, messageCount: msgCount, timestamp: Date.now(),
     };
     fs.writeFileSync(getCachePath(sessionId), JSON.stringify(cached));
-  } catch { /* best effort */ }
+  } catch (e) { console.error(LOG_PREFIX + " saveCachedExtraction failed:", e instanceof Error ? e.message : e); }
 }
 
 export function loadCachedExtraction(sessionId: string): CachedExtraction | null {
@@ -112,12 +115,12 @@ export function loadCachedExtraction(sessionId: string): CachedExtraction | null
     const cached = JSON.parse(fs.readFileSync(fp, "utf8")) as CachedExtraction;
     if (Date.now() - cached.timestamp > 3600000) return null; // 1hr TTL
     return cached;
-  } catch { return null; }
+  } catch (e) { console.error(LOG_PREFIX + " loadCachedExtraction failed:", e instanceof Error ? e.message : e); return null; }
 }
 
 export function mergeExtractions(base: StructuredExtraction, delta: StructuredExtraction, baseMsgCount: number): StructuredExtraction {
   return {
-    modifiedFiles: [...base.modifiedFiles, ...delta.modifiedFiles],
+    modifiedFiles: [...new Map([...base.modifiedFiles, ...delta.modifiedFiles].map(f => [f.path, f])).values()],
     readFiles: [...new Set([...base.readFiles, ...delta.readFiles])],
     deletedFiles: [...new Set([...base.deletedFiles, ...delta.deletedFiles])],
     errors: [...base.errors, ...delta.errors],
@@ -139,7 +142,7 @@ export function appendMetricsLog(sessionId: string): void {
     const logPath = path.join(CACHE_DIR, "compact-metrics.jsonl");
     const entry = { ts: new Date().toISOString(), sessionId, ...getMetricsSummary() };
     fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
-  } catch { /* best effort */ }
+  } catch (e) { console.error(LOG_PREFIX + " appendMetricsLog failed:", e instanceof Error ? e.message : e); }
 }
 
 // ── Backup ──

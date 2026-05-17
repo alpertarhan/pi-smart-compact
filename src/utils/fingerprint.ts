@@ -5,7 +5,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import type { StructuredExtraction } from "../types.ts";
+import { LOG_PREFIX } from "../constants.ts";
 
 export interface ProjectFingerprint {
   id: string;
@@ -73,12 +75,9 @@ export function deriveProjectId(extraction: StructuredExtraction): string {
     roots.set(root, (roots.get(root) ?? 0) + 1);
   }
   const topRoot = [...roots.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "unknown";
-  // Simple hash of the root
-  let hash = 0;
-  for (let i = 0; i < topRoot.length; i++) {
-    hash = ((hash << 5) - hash + topRoot.charCodeAt(i)) | 0;
-  }
-  return "proj-" + Math.abs(hash).toString(36);
+  // Hash using SHA-256 (collision-resistant, crypto already available)
+  const hash = crypto.createHash("sha256").update(topRoot).digest("hex").slice(0, 12);
+  return "proj-" + hash;
 }
 
 /**
@@ -142,7 +141,7 @@ export function loadProjectFingerprint(projectId: string): ProjectFingerprint | 
     // Expire after 30 days
     if (Date.now() - data.updatedAt > 30 * 24 * 60 * 60 * 1000) return null;
     return data;
-  } catch { return null; }
+  } catch (e) { console.error(LOG_PREFIX + " loadProjectFingerprint failed:", e instanceof Error ? e.message : e); return null; }
 }
 
 /**
@@ -173,7 +172,7 @@ export function saveProjectFingerprint(
     };
 
     fs.writeFileSync(getFingerprintPath(projectId), JSON.stringify(fingerprint, null, 2));
-  } catch { /* best effort */ }
+  } catch (e) { console.error(LOG_PREFIX + " saveProjectFingerprint failed:", e instanceof Error ? e.message : e); }
 }
 
 /**

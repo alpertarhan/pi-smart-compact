@@ -7,8 +7,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile, PendingCompaction } from "./types.ts";
-import { VERSION } from "./constants.ts";
-import { loadConfig } from "./utils/helpers.ts";
+import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./constants.ts";
+import { loadConfig, extractUserNote } from "./utils/helpers.ts";
 import { runSmartCompact } from "./core.ts";
 import { showCompactUI } from "./ui/overlays.ts";
 
@@ -68,7 +68,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           const usage = ctx.getContextUsage();
           const totalTokens = usage?.tokens ?? 0;
           const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
-          if (!totalTokens || totalTokens < 5000) { ctx.ui.notify("Context OK or unknown", "info"); return; }
+          if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) { ctx.ui.notify("Context OK or unknown", "info"); return; }
           const cur = ctx.model;
           const avail = ctx.modelRegistry.getAvailable();
           const opts = avail.map(m => ({ value: m.provider + "/" + m.id, label: m.provider + "/" + m.id + (m.contextWindow >= 200000 ? " (" + Math.round(m.contextWindow / 1000) + "K)" : ""), model: m }));
@@ -77,14 +77,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
           const { segModel, sumModel } = resolveModels(ctx, selected.model.model, loadConfig());
           if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
-          await runSmartCompact(ctx, sumModel, segModel ?? sumModel, selected.profile, false, false, pendingRef, isRunning, false);
+          await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: selected.profile, pendingRef, isRunning });
           return;
         }
 
         const { segModel, sumModel } = resolveModels(ctx, modelArg ? resolveModelArg(ctx, modelArg) : ctx.model, loadConfig());
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
         const note = extractUserNote(args);
-        await runSmartCompact(ctx, sumModel, segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, false, note);
+        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note });
       } catch (error) {
         const msg = error instanceof Error ? error.message + "\n" + error.stack : String(error);
         ctx.ui.notify("smart-compact error: " + msg, "error");
@@ -110,13 +110,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     try {
       const usage = ctx.getContextUsage();
       const totalTokens = usage?.tokens ?? 0;
-      if (!totalTokens || totalTokens < 5000) return;
+      if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) return;
       const cur = ctx.model;
       if (!cur) return;
       const { segModel, sumModel } = resolveModels(ctx, cur, config);
       if (!sumModel) return;
       if (!isRunning.value) {
-        await runSmartCompact(ctx, sumModel, segModel ?? sumModel, config.profile, false, false, pendingRef, isRunning, true);
+        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true });
         if (pendingRef.value) {
           const c = pendingRef.value;
           pendingRef.value = null;
@@ -153,7 +153,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       }
       try {
         const toolStart = Date.now();
-        await runSmartCompact(ctx as ExtensionCommandContext, sumModel, segModel ?? sumModel, resolvedProfile, verbose, dryRun, pendingRef, isRunning, true, undefined, true);
+        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true });
         const toolSecs = ((Date.now() - toolStart) / 1000).toFixed(1);
         if (pendingRef.value) {
           return { content: [{ type: "text", text: "Smart summary generated (" + resolvedProfile + "). Tokens: " + (pendingRef.value.tokensBefore ?? "?") + " -> " + (pendingRef.value.summary?.length ?? 0) + " chars (" + toolSecs + "s).\n\nNow run tree compact to apply — the session_before_compact hook will use this summary.\nTTL: " + Math.round(PENDING_TTL_MS / 60000) + " minutes." }] };
@@ -167,9 +167,4 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   });
 }
 
-function extractUserNote(args: string): string | undefined {
-  const SKIP = new Set(["verbose", "debug", "dry-run", "light", "balanced", "aggressive"]);
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  const nonFlags = tokens.filter(t => !t.includes("/") && !SKIP.has(t.toLowerCase()));
-  return nonFlags.length > 0 ? nonFlags.join(" ") : undefined;
-}
+// extractUserNote is imported from utils/helpers.ts — no local duplicate

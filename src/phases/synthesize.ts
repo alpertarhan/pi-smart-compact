@@ -13,12 +13,17 @@ import { trackedComplete, cacheOpts } from "../utils/cache.ts";
 import { extractText } from "../utils/extraction.ts";
 import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries } from "../utils/helpers.ts";
 
+/** Token estimation for a chunk of messages — uses text-only extraction, not JSON.stringify */
+function estimateChunkTokens(msgs: LlmMessage[]): number {
+  return estimateTokens(msgs.map(m => extractText(m.content)).join(""));
+}
+
 export function chunkLlmMessages(msgs: LlmMessage[], boundaries: import("../types.ts").TopicBoundary[], pc: ProfileConfig): LlmChunk[] {
   if (!msgs.length) return [];
   if (!boundaries.length) {
     return [{
       startIndex: 0, endIndex: msgs.length - 1,
-      tokenEstimate: estimateTokens(JSON.stringify(msgs)),
+      tokenEstimate: estimateChunkTokens(msgs),
       topic: "Full conversation", priority: "normal", messages: msgs,
     }];
   }
@@ -33,7 +38,7 @@ export function chunkLlmMessages(msgs: LlmMessage[], boundaries: import("../type
       const slice = msgs.slice(start, end);
       chunks.push({
         startIndex: start, endIndex: end - 1,
-        tokenEstimate: estimateTokens(JSON.stringify(slice)),
+        tokenEstimate: estimateChunkTokens(slice),
         topic: bp.topic || "Segment " + (chunks.length + 1),
         priority: bp.priority,
         messages: slice,
@@ -47,7 +52,7 @@ export function chunkLlmMessages(msgs: LlmMessage[], boundaries: import("../type
     const lastTopic = sorted.length ? "After: " + sorted[sorted.length - 1].topic : "Full conversation";
     chunks.push({
       startIndex: start, endIndex: msgs.length - 1,
-      tokenEstimate: estimateTokens(JSON.stringify(slice)),
+      tokenEstimate: estimateChunkTokens(slice),
       topic: lastTopic, priority: "normal", messages: slice,
     });
   }

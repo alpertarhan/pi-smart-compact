@@ -3,10 +3,13 @@
  */
 
 import path from "node:path";
-import type { LlmMessage, ProfileConfig, StructuredExtraction, ToolCallBlock, OpenLoop } from "../types.ts";
+import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop } from "../types.ts";
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock } from "../types.ts";
+
+/** Reusable tool call index type */
+export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
 
 export function extractText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -18,7 +21,7 @@ export function extractText(content: unknown): string {
   return "";
 }
 
-export function buildToolCallIndex(msgs: LlmMessage[]): Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }> {
+export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
   const idx = new Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>();
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
@@ -33,8 +36,8 @@ export function buildToolCallIndex(msgs: LlmMessage[]): Map<string, { name: stri
   return idx;
 }
 
-export function trackFileOps(msgs: LlmMessage[]): { modified: StructuredExtraction["modifiedFiles"]; read: string[]; deleted: string[] } {
-  const tcIdx = buildToolCallIndex(msgs);
+export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modified: StructuredExtraction["modifiedFiles"]; read: string[]; deleted: string[] } {
+  const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const modMap = new Map<string, { toolCalls: number; lastIdx: number }>();
   const readSet = new Set<string>();
   const delSet = new Set<string>();
@@ -68,8 +71,8 @@ export function trackFileOps(msgs: LlmMessage[]): { modified: StructuredExtracti
   };
 }
 
-export function catalogErrors(msgs: LlmMessage[]): StructuredExtraction["errors"] {
-  const tcIdx = buildToolCallIndex(msgs);
+export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["errors"] {
+  const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const errors: StructuredExtraction["errors"] = [];
 
   for (let i = 0; i < msgs.length; i++) {
@@ -113,8 +116,8 @@ export function catalogErrors(msgs: LlmMessage[]): StructuredExtraction["errors"
   return errors;
 }
 
-export function extractDecisions(msgs: LlmMessage[]): StructuredExtraction["decisions"] {
-  const tcIdx = buildToolCallIndex(msgs);
+export function extractDecisions(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["decisions"] {
+  const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const decisions: StructuredExtraction["decisions"] = [];
 
   for (const [id, tc] of tcIdx) {
@@ -166,10 +169,10 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
   return constraints;
 }
 
-export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, maxSegs = 20): StructuredExtraction["topics"] {
+export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, maxSegs = 20, _tcIdx?: ToolCallIndex): StructuredExtraction["topics"] {
   const topics: StructuredExtraction["topics"] = [];
   let startIdx = 0, tokenAcc = 0, lastFile: string | null = null, errAcc = 0;
-  const tcIdx = buildToolCallIndex(msgs);
+  const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
 
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
@@ -327,11 +330,12 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
 }
 
 export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig): StructuredExtraction {
-  const { modified, read, deleted } = trackFileOps(msgs);
-  const errors = catalogErrors(msgs);
-  const decisions = extractDecisions(msgs);
+  const tcIdx = buildToolCallIndex(msgs);
+  const { modified, read, deleted } = trackFileOps(msgs, tcIdx);
+  const errors = catalogErrors(msgs, tcIdx);
+  const decisions = extractDecisions(msgs, tcIdx);
   const constraints = mineConstraints(msgs);
-  const topics = segmentTopicsHeuristic(msgs, pc);
+  const topics = segmentTopicsHeuristic(msgs, pc, 20, tcIdx);
   const timeline = buildTimeline(msgs, errors);
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs.filter(m => m.role === "user").slice(-5).map(m => extractText(m.content));

@@ -6,6 +6,7 @@
 import type { LlmMessage, SmartCompactDetails } from "../types.ts";
 import { isToolCallBlock } from "../types.ts";
 import { extractText } from "./extraction.ts";
+import { LOG_PREFIX } from "../constants.ts";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -144,5 +145,5 @@ export function logDamageReport(
       summary: report.summary,
     };
     fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
-  } catch { /* best effort */ }
+  } catch (e) { console.error(LOG_PREFIX + " logDamageReport failed:", e instanceof Error ? e.message : e); }
 }

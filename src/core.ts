@@ -7,9 +7,9 @@ import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-a
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   CompressionProfile, PendingCompaction, LlmMessage, StructuredExtraction,
-  ExplorationReport, SmartCompactDetails, ChunkSummary,
+  ExplorationReport, SmartCompactDetails, ChunkSummary, SessionMessageEntry,
 } from "./types.ts";
-import { PROFILES } from "./constants.ts";
+import { PROFILES, MIN_TOKEN_THRESHOLD, MAX_EXPLORATION_ROUNDS, LOG_PREFIX } from "./constants.ts";
 import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
 import {
   resetCompactSessionId, resetMetrics, appendMetricsLog, getMetricsSummary,
@@ -29,17 +29,23 @@ import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assem
 import { verifySummary, patchSummary, patchDeterministic } from "./phases/verify.ts";
 import { showProgressOverlay, showResultScreen } from "./ui/overlays.ts";
 
-export async function runSmartCompact(
-  ctx: ExtensionCommandContext,
-  summaryModel: Model<Api>, segModel: Model<Api>,
-  profile: CompressionProfile,
-  verbose: boolean, dryRun: boolean,
-  pendingRef: { value: PendingCompaction | null; createdAt: number },
-  isRunning: { value: boolean },
-  autoTriggered: boolean,
-  userNote?: string,
-  skipCompact?: boolean,
-): Promise<void> {
+/** Options for runSmartCompact — avoids 10-parameter positional calls */
+export interface SmartCompactOptions {
+  ctx: ExtensionCommandContext;
+  summaryModel: Model<Api>;
+  segModel: Model<Api>;
+  profile: CompressionProfile;
+  verbose?: boolean;
+  dryRun?: boolean;
+  pendingRef: { value: PendingCompaction | null; createdAt: number };
+  isRunning: { value: boolean };
+  autoTriggered?: boolean;
+  userNote?: string;
+  skipCompact?: boolean;
+}
+
+export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> {
+  const { ctx, summaryModel, segModel, profile, verbose = false, dryRun = false, pendingRef, isRunning, autoTriggered = false, userNote, skipCompact } = opts;
   if (isRunning.value) return;
   isRunning.value = true;
   const pipelineStart = Date.now();
@@ -56,7 +62,7 @@ export async function runSmartCompact(
 
     const usage = ctx.getContextUsage();
     const totalTokens = usage?.tokens ?? 0;
-    if (!totalTokens || totalTokens < 5000) { isRunning.value = false; if (!autoTriggered) ctx.ui.notify("Context OK or unknown", "info"); return; }
+    if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) { isRunning.value = false; if (!autoTriggered) ctx.ui.notify("Context OK or unknown", "info"); return; }
 
     const notify = (msg: string, type: "info" | "success" | "warning" | "error" = "info") => { ctx.ui.notify(msg, type); };
     const ctrl = new AbortController();
@@ -66,8 +72,8 @@ export async function runSmartCompact(
     notify("EESV Compact (" + modelLabel + ", " + profile + ") — " + (totalTokens ?? 0).toLocaleString() + "t", "info");
 
     const branch = ctx.sessionManager.getBranch();
-    interface SessionMessageEntry { type: "message"; id: string; message: unknown }
-    const msgs = branch.filter((e: SessionMessageEntry): e is SessionMessageEntry => e.type === "message" && e.message != null);
+    // Inline filter: branch entries include ThinkingLevelChangeEntry etc., we only want message entries
+    const msgs = branch.filter((e: { type: string; id?: string; message?: unknown }) => e.type === "message" && e.message != null) as SessionMessageEntry[];
     if (msgs.length < 3) { isRunning.value = false; return; }
 
     let accTokens = 0, keepFrom = msgs.length;
@@ -150,7 +156,7 @@ export async function runSmartCompact(
       if (needsExploration) {
         if (!autoTriggered) showProgressOverlay(ctx, { phase: 2, phaseName: "Explore", detail: "Exploring...", model: modelLabel, profile, extraction });
         try {
-          const expResult = await exploreConversation(llmMessages, extraction, segModel, { apiKey: segAuth.apiKey, headers: segAuth.headers }, prevContext || undefined, userNote, signal, 8, notify);
+          const expResult = await exploreConversation(llmMessages, extraction, segModel, { apiKey: segAuth.apiKey, headers: segAuth.headers }, prevContext || undefined, userNote, signal, MAX_EXPLORATION_ROUNDS, notify);
           explorationReport = expResult.report;
           explorationRounds = expResult.rounds;
           notify("Phase 2 Explore: " + expResult.rounds + " rounds, " + explorationReport.boundaries.length + " boundaries" + (expResult.toolSupported ? "" : " (no tool support)"), "info");
@@ -208,7 +214,7 @@ export async function runSmartCompact(
         } catch (err) {
           summaries.push(...batches[0].map(ch => ({
             topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
-            summary: "[Failed] " + ch.messages.map((m: any) => extractText(m.content)).join("\n").slice(0, 300),
+            summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, 300),
             keyDecisions: [] as string[], filesModified: [] as string[], filesRead: [] as string[], priority: ch.priority as ChunkSummary["priority"],
           })));
         }
@@ -227,7 +233,7 @@ export async function runSmartCompact(
               errors[idx] = err instanceof Error ? err : new Error(String(err));
               results[idx] = batch.map(ch => ({
                 topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
-                summary: "[Failed] " + ch.messages.map((m: any) => extractText(m.content)).join("\n").slice(0, 300),
+                summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, 300),
                 keyDecisions: [] as string[], filesModified: [] as string[], filesRead: [] as string[], priority: ch.priority as ChunkSummary["priority"],
               }));
             }
@@ -246,7 +252,7 @@ export async function runSmartCompact(
         const r = await assembleLLM(summaries, extraction, explorationReport, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, pc.summaryBudgetTokens, prevContext, signal);
         if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
       } catch (err) {
-        console.error("[smart-compact] Assembly failed:", err instanceof Error ? err.message : err);
+        console.error(LOG_PREFIX + " Assembly failed:", err instanceof Error ? err.message : err);
         finalSummary = assembleFallback(summaries, extraction); assemblyCalls = 0;
       }
 
@@ -269,7 +275,7 @@ export async function runSmartCompact(
             finalSummary = await patchSummary(finalSummary, recheck.gaps, summaryModel, { apiKey: auth.apiKey, headers: auth.headers }, signal);
             llmCalls++;
           } catch (err) { /* accept deterministic patch as-is */
-            console.error("[smart-compact] LLM patch failed:", err instanceof Error ? err.message : err);
+            console.error(LOG_PREFIX + " LLM patch failed:", err instanceof Error ? err.message : err);
           }
         }
       } else {
@@ -344,7 +350,7 @@ export async function runSmartCompact(
     // ── Damage detection: check if previous compaction caused issues ──
     // This reads post-compaction messages from the current branch to detect regression
     try {
-      const postCompactMsgs = msgs.slice(keepFrom).map(e => convertToLlm([e.message])).flat().map((m: any) => m as LlmMessage);
+      const postCompactMsgs = msgs.slice(keepFrom).map(e => convertToLlm([e.message])).flat() as LlmMessage[];
       if (postCompactMsgs.length > 2) {
         // Only detect if there are enough post-compaction messages
         const lastCompaction = branch.filter((e: { type: string }) => e.type === "compaction").slice(-1)[0] as { details?: SmartCompactDetails } | undefined;
@@ -358,7 +364,7 @@ export async function runSmartCompact(
         }
       }
     } catch (err) { /* damage detection is best effort */
-      console.error("[smart-compact] Damage detection error:", err instanceof Error ? err.message : err);
+      console.error(LOG_PREFIX + " Damage detection error:", err instanceof Error ? err.message : err);
     }
     const ms = getMetricsSummary();
     if (ms.totalCalls > 0) {
@@ -369,7 +375,7 @@ export async function runSmartCompact(
         const timeout = new Promise<void>(resolve => setTimeout(resolve, 5000));
         await Promise.race([showResultScreen(ctx, details, extraction), timeout]);
       } catch (err) {
-        console.error("[smart-compact] Result screen error:", err instanceof Error ? err.message : err);
+        console.error(LOG_PREFIX + " Result screen error:", err instanceof Error ? err.message : err);
         notify("Result screen skipped", "info");
       }
     }

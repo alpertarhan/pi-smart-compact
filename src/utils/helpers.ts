@@ -5,8 +5,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { CompactConfig, CompressionProfile, ChunkSummary, LlmChunk, ProfileConfig, LlmMessage, StructuredExtraction, ExplorationReport } from "../types.ts";
-import { DEFAULT_CONFIG, PROFILES } from "../constants.ts";
+import type { CompactConfig, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionMessageEntry } from "../types.ts";
+import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT, LOG_PREFIX } from "../constants.ts";
 
 let _cfg: CompactConfig | null = null;
 let _cfgMtime = 0;
@@ -17,13 +17,15 @@ export function loadConfig(): CompactConfig {
     const stat = fs.statSync(p);
     if (_cfg && stat.mtimeMs === _cfgMtime) return _cfg;
     const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
-    const sc = raw.smartCompact ?? raw.semanticCompact ?? {};
-    const merged = { ...DEFAULT_CONFIG, ...sc };
+    const sc = raw[CONFIG_KEY] ?? raw[CONFIG_KEY_ALT] ?? {};
+    const merged = { ...DEFAULT_CONFIG, ...sc } as CompactConfig;
     if (sc.profiles) merged.profiles = { ...PROFILES, ...sc.profiles };
     if (!merged.backupDir) merged.backupDir = path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups");
     _cfg = merged; _cfgMtime = stat.mtimeMs; return _cfg;
   } catch {
-    return { ...DEFAULT_CONFIG, backupDir: path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups") };
+    const fallback: CompactConfig = { ...DEFAULT_CONFIG, backupDir: path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups") } as CompactConfig;
+    _cfg = fallback;
+    return fallback;
   }
 }
 
@@ -36,7 +38,7 @@ export function backupConversation(convText: string, sessionId: string): string 
     const fp = path.join(dir, sessionId + "-" + ts + "-" + hash + ".md");
     fs.writeFileSync(fp, "# Smart Compact Backup\n# Date: " + new Date().toISOString() + "\n# Session: " + sessionId + "\n\n" + convText);
     return fp;
-  } catch { return null; }
+  } catch (e) { console.error(LOG_PREFIX + " backupConversation failed:", e instanceof Error ? e.message : e); return null; }
 }
 
 export function getPreviousCompactionContext(branch: unknown[]): string {
@@ -49,15 +51,27 @@ export function getPreviousCompactionContext(branch: unknown[]): string {
   return "\n[IMPORTANT: Previous compaction exists (" + (last.details?.method ?? "unknown") + "). Already summarized topics: " + topics.join(", ") + ". Build upon this, don't re-summarize the same content.]";
 }
 
-interface SessionMessageEntry { type: "message"; id: string; message: unknown }
+// SessionMessageEntry is now imported from types.ts
 
 export function smartKeepBoundary(msgs: SessionMessageEntry[], keepFromIndex: number): number {
   if (keepFromIndex <= 0 || keepFromIndex >= msgs.length) return keepFromIndex;
   const last = msgs[keepFromIndex - 1];
   const first = msgs[keepFromIndex];
   if (last && first) {
-    const lastText = JSON.stringify(last.message).toLowerCase();
-    const keptText = JSON.stringify(first.message).toLowerCase();
+    // Use extractText-style approach instead of JSON.stringify
+    const getText = (msg: unknown): string => {
+      const m = msg as Record<string, unknown>;
+      const c = m?.content;
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) return c.map((b: unknown) => {
+        if (typeof b === "string") return b;
+        if (typeof b === "object" && b !== null && (b as { type?: string }).type === "text") return (b as { text?: string }).text ?? "";
+        return "";
+      }).join("");
+      return "";
+    };
+    const lastText = getText(last.message).toLowerCase();
+    const keptText = getText(first.message).toLowerCase();
     const fileRe = /(?:path|file)=["']([^"']+)["']/g;
     const lastFiles = new Set([...lastText.matchAll(fileRe)].map(m => m[1].split("/").pop()));
     fileRe.lastIndex = 0;

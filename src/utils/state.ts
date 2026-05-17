@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport } from "../types.ts";
-import { VERSION } from "../constants.ts";
+import { VERSION, LOG_PREFIX } from "../constants.ts";
 
 const STATE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states");
 
@@ -22,7 +22,7 @@ export function saveCompactionState(projectId: string, state: CompactionState): 
   try {
     if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(getStatePath(projectId), JSON.stringify(state, null, 2));
-  } catch { /* best effort */ }
+  } catch (e) { console.error(LOG_PREFIX + " saveCompactionState failed:", e instanceof Error ? e.message : e); }
 }
 
 /**
@@ -33,12 +33,16 @@ export function loadCompactionState(projectId: string): CompactionState | null {
     const fp = getStatePath(projectId);
     if (!fs.existsSync(fp)) return null;
     const data = JSON.parse(fs.readFileSync(fp, "utf8")) as CompactionState;
-    // Expire after 7 days
-    if (data.compactionVersion && Date.now() - 0 > 7 * 24 * 60 * 60 * 1000) {
-      // Version check only — keep state as long as file exists
+    // Expire after 7 days — updatedAt from v7.8.0+, fallback to file mtime for older states
+    if (data.compactionVersion) {
+      let updatedAt = data.updatedAt;
+      if (!updatedAt) {
+        try { updatedAt = fs.statSync(fp).mtimeMs; } catch { updatedAt = 0; }
+      }
+      if (Date.now() - updatedAt > 7 * 24 * 60 * 60 * 1000) return null;
     }
     return data;
-  } catch { return null; }
+  } catch (e) { console.error(LOG_PREFIX + " loadCompactionState failed:", e instanceof Error ? e.message : e); return null; }
 }
 
 export function buildCompactionState(
@@ -93,6 +97,7 @@ export function buildCompactionState(
     criticalContext,
     sessionType: report?.sessionType ?? "implementation",
     compactionVersion: VERSION,
+    updatedAt: Date.now(),
   };
 }
 
