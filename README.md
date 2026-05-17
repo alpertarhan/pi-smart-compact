@@ -5,7 +5,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-alpertarhan%2Fpi--smart--compact-blue)](https://github.com/alpertarhan/pi-smart-compact)
 
 <p align="center">
-  <img src="./docs/assets/pi-smart-compact.png" alt="pi-smart-compact" width="1200" />
+  <img src="./docs/assets/pi-smart-compact.png" alt="pi-smart-compact" width="760" />
 </p>
 
 > Verification-oriented smart compaction for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
@@ -83,6 +83,8 @@ So the project is currently **buildable and tested**, but **not fully typecheck-
 The repository image used by this `README.md` now lives at:
 
 - `docs/assets/pi-smart-compact.png`
+
+The asset is now a cleaned transparent `PNG` instead of a checkerboard/transparent-preview render, so it displays correctly inside GitHub `README.md`.
 
 This keeps documentation assets separate from `src/` implementation code and `test/` fixtures while still shipping the image with the package via `package.json` `files`.
 
