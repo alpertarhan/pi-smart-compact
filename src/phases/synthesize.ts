@@ -8,7 +8,7 @@ import type {
   ExplorationReport, ProfileConfig, CacheAwareOptions,
 } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PROMPT_PREFIX, BATCH_PROMPT_SUFFIX, ASSEMBLY_PROMPT_PREFIX, ASSEMBLY_PROMPT_SUFFIX, SESSION_TYPE_INSTRUCTIONS } from "../constants.ts";
-import { estimateTokens } from "../utils/tokens.ts";
+import { estimateTokens, getProviderCaps } from "../utils/tokens.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
 import { extractText } from "../utils/extraction.ts";
 import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries } from "../utils/helpers.ts";
@@ -90,7 +90,7 @@ export async function singlePassCompact(
       { role: "user" as const, content: [{ type: "text" as const, text: adaptedPrefix }] },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
     ],
-  }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }));
+  }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: getProviderCaps(model.provider).maxOutputTokens, signal }, model.provider));
   const summary = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
   if (!summary.startsWith("##")) throw new Error("Single-pass malformed output");
   return { summary, llmCalls: 1 };
@@ -122,7 +122,7 @@ export async function summarizeBatch(
       { role: "user" as const, content: [{ type: "text" as const, text: BATCH_PROMPT_PREFIX }] },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
     ],
-  }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal }));
+  }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
   const output = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n");
   const sections = output.split(/^### /m).filter(s => s.trim());
   return batch.map((ch, i) => {
@@ -163,7 +163,7 @@ export async function assembleLLM(
       { role: "user" as const, content: [{ type: "text" as const, text: ASSEMBLY_PROMPT_PREFIX }] },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }] },
     ],
-  }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budget, 8192), signal }));
+  }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budget, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
   return resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
 }
 

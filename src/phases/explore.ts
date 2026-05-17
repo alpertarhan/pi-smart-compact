@@ -8,6 +8,7 @@ import { isTextBlock, isToolCallBlock, extractTextSafe, getToolCallNames, filter
 import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { trackedComplete, cacheOpts } from "../utils/cache.ts";
+import { getProviderCaps } from "../utils/tokens.ts";
 
 // ── Tool Support Cache with TTL ──
 const _toolSupportCache = new Map<string, { result: boolean; timestamp: number }>();
@@ -240,7 +241,7 @@ export async function exploreConversation(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: userContent }] }],
       tools: EXPLORATION_TOOLS as any,
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }));
+    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
 
     const toolCalls = probeResp.content.filter((c): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
 
@@ -265,7 +266,7 @@ export async function exploreConversation(
             systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
             messages,
             tools: EXPLORATION_TOOLS as any,
-          }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }));
+          }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
         } catch (err) {
           console.error("[smart-compact] Explore loop error:", err instanceof Error ? err.message : err);
           break;
@@ -337,7 +338,7 @@ export async function explorationRetry(
     const resp = await trackedComplete("explore-retry", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }] }],
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal }));
+    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
   } catch { return fallbackExplorationReport(llmMessages); }
@@ -366,7 +367,7 @@ export async function directExploration(
     const resp = await trackedComplete("explore-direct", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 4096, signal }));
+    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);
   } catch { return fallbackExplorationReport(llmMessages); }

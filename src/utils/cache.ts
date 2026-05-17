@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions } from "../types.ts";
-import { estimateTokens, calibrateFromResponse } from "./tokens.ts";
+import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import { complete, type Model, type Api, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
 
 const CACHE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache");
@@ -26,12 +26,13 @@ export function resetCompactSessionId(): void {
 }
 
 // ── Cache Options ──
-export function cacheOpts(opts: CacheAwareOptions): CacheAwareOptions & { sessionId?: string } {
-  const retention = opts.cacheRetention ?? "short";
+export function cacheOpts(opts: CacheAwareOptions, provider?: string): CacheAwareOptions & { sessionId?: string } {
+  const strategy = provider ? getProviderCaps(provider).cacheStrategy : "none";
+  const retention = strategy === "none" ? "none" as const : (opts.cacheRetention ?? "short" as const);
   if (retention === "none") {
     return { ...opts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: getCompactSessionId(), cacheRetention: "short" as const };
+  return { ...opts, sessionId: getCompactSessionId(), cacheRetention: retention };
 }
 
 // ── Metrics ──

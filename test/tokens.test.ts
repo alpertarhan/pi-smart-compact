@@ -36,11 +36,35 @@ describe("getProviderCaps", () => {
     const caps = getProviderCaps("openai");
     expect(caps.maxOutputTokens).toBe(16384);
     expect(caps.concurrencyLimit).toBe(5);
+    expect(caps.cacheStrategy).toBe("openai");
   });
 
   it("returns default caps for unknown provider", () => {
     const caps = getProviderCaps("unknown-provider");
     expect(caps.maxOutputTokens).toBe(8192);
     expect(caps.concurrencyLimit).toBe(2);
+    expect(caps.cacheStrategy).toBe("none");
+  });
+
+  it("fuzzy matches provider names", () => {
+    // Exact match
+    expect(getProviderCaps("anthropic").cacheStrategy).toBe("anthropic");
+    // Fuzzy: partial match via alias
+    expect(getProviderCaps("anthropic/claude-sonnet-4").cacheStrategy).toBe("anthropic");
+    expect(getProviderCaps("google/gemini-pro").concurrencyLimit).toBe(3);
+    expect(getProviderCaps("deepseek-v3").cacheStrategy).toBe("none");
+    expect(getProviderCaps("mistral/mistral-large").concurrencyLimit).toBe(3);
+    expect(getProviderCaps("xai/grok-3").concurrencyLimit).toBe(3);
+  });
+
+  it("all providers have valid caps", () => {
+    const providers = ["zai-anthropic", "anthropic", "openai", "google", "deepseek", "minimax", "xiaomi-token-plan", "mistral", "xai"];
+    for (const p of providers) {
+      const caps = getProviderCaps(p);
+      expect(caps.maxOutputTokens).toBeGreaterThan(0);
+      expect(caps.concurrencyLimit).toBeGreaterThan(0);
+      expect(caps.tokenRatioEstimate).toBeGreaterThan(0);
+      expect(["anthropic", "openai", "none"]).toContain(caps.cacheStrategy);
+    }
   });
 });
