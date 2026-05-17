@@ -57,7 +57,7 @@ The extension keeps a short-lived pending compaction in memory, then hands that 
 
 **Observed from the current codebase (`README`, `src/`, `test/`, `package.json`)**
 
-- **Package version:** `7.9.0`
+- **Package version:** `7.9.1`
 - **Runtime entrypoint:** `dist/index.js`
 - **Source entrypoint:** `src/index.ts`
 - **Source modules:** 18 TypeScript files under `src/`

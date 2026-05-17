@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.9.1] - 2026-05-17
+
+### Fixed
+- **`/smart-compact` race condition** — Added `waitForIdle()` to slash command handler. Previously the command could execute concurrently with agent streaming since extension commands bypass the input queue.
+- **Tool `skipCompact` safety** — `ctx.compact()` internally calls `this.abort()`, which would kill the running agent loop if called from within a tool. Tool path now correctly keeps `skipCompact: true` and caches summary in `pendingRef` for the next natural compact.
+- **Tool context-usage guard** — Tool now checks `getContextUsage()` before running and returns early with token info if context is too small.
+- **Tool description enriched** — Better description and parameter hints so the agent knows when and how to call `smart_compact`.
+
 ## [7.9.0] - 2026-05-17
 
 ### Fixed
