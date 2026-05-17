@@ -106,36 +106,36 @@ Default compaction usually loses exactly the things a coding agent needs most:
 
 ```mermaid
 flowchart TD
-    A[Entry points<br/>/smart-compact<br/>session_before_compact<br/>smart_compact tool] --> B[Load config + resolve models<br/>loadConfig()<br/>summaryModel / segmentationModel]
-    B --> C{Context >= 5000 tokens?}
-    C -- No --> C1[Exit early]
-    C -- Yes --> D[Read current branch<br/>keep recent tail by profile<br/>smartKeepBoundary()]
-    D --> E[Pre-processing<br/>pruneRedundant()<br/>serializeConversation()<br/>backupConversation()<br/>getPreviousCompactionContext()]
-    E --> F[Phase 1: Extract<br/>extractStructured()<br/>files, errors, decisions, constraints,<br/>heuristic topics, timeline, goal]
-    F --> G[Cross-session helpers<br/>load/saveCachedExtraction()<br/>deriveProjectId()<br/>loadProjectFingerprint()]
-    G --> H{Compacted text < singlePassMaxTokens?}
-    H -- Yes --> I[Single-pass path<br/>singlePassCompact()]
-    H -- No --> J{shouldExplore()?}
-    J -- Yes --> K[Phase 2: Explore<br/>exploreConversation()<br/>tool probe -> tool loop<br/>or direct JSON fallback]
-    J -- No --> L[Skip exploration<br/>use heuristic boundaries only]
-    K --> M[Merge LLM boundaries<br/>with heuristic boundaries]
-    L --> N[chunkLlmMessages()]
+    A["Entry points<br/>/smart-compact<br/>session_before_compact<br/>smart_compact tool"] --> B["Load config and resolve models<br/>loadConfig()<br/>summaryModel / segmentationModel"]
+    B --> C{"Context >= 5000 tokens?"}
+    C -- No --> C1["Exit early"]
+    C -- Yes --> D["Read current branch<br/>keep recent tail by profile<br/>smartKeepBoundary()"]
+    D --> E["Pre-processing<br/>pruneRedundant()<br/>serializeConversation()<br/>backupConversation()<br/>getPreviousCompactionContext()"]
+    E --> F["Phase 1: Extract<br/>extractStructured()<br/>files, errors, decisions, constraints,<br/>heuristic topics, timeline, goal"]
+    F --> G["Cross-session helpers<br/>load or save cached extraction<br/>deriveProjectId()<br/>loadProjectFingerprint()"]
+    G --> H{"Compacted text below singlePassMaxTokens?"}
+    H -- Yes --> I["Single-pass path<br/>singlePassCompact()"]
+    H -- No --> J{"shouldExplore()?"}
+    J -- Yes --> K["Phase 2: Explore<br/>exploreConversation()<br/>tool probe -> tool loop<br/>or direct JSON fallback"]
+    J -- No --> L["Skip exploration<br/>use heuristic boundaries only"]
+    K --> M["Merge LLM boundaries<br/>with heuristic boundaries"]
+    L --> N["chunkLlmMessages()"]
     M --> N
-    N --> O[createBatches()<br/>provider-aware concurrency]
-    O --> P[Phase 3: Synthesize<br/>summarizeBatch() per batch<br/>assembleLLM() or assembleFallback()]
-    I --> Q[Phase 4: Verify<br/>verifySummary()]
+    N --> O["createBatches()<br/>provider-aware concurrency"]
+    O --> P["Phase 3: Synthesize<br/>summarizeBatch() per batch<br/>assembleLLM() or assembleFallback()"]
+    I --> Q["Phase 4: Verify<br/>verifySummary()"]
     P --> Q
-    Q --> R{Quality score < 85?}
-    R -- No --> S[Accept summary]
-    R -- Yes --> T[patchDeterministic()]
-    T --> U{Still < 75?}
+    Q --> R{"Quality score below 85?"}
+    R -- No --> S["Accept summary"]
+    R -- Yes --> T["patchDeterministic()"]
+    T --> U{"Still below 75?"}
     U -- No --> S
-    U -- Yes --> V[patchSummary() via LLM]
+    U -- Yes --> V["patchSummary() via LLM"]
     V --> S
-    S --> W[Post-processing<br/>extractOpenLoops()<br/>buildCompactionState()<br/>computeDelta()<br/>inject sections]
-    W --> X[Persist artifacts<br/>project fingerprint<br/>compaction state<br/>metrics log<br/>damage report]
-    X --> Y[Store pending compaction<br/>in memory<br/>TTL: 5 minutes]
-    Y --> Z[ctx.compact() now<br/>or next tree compact consumes it]
+    S --> W["Post-processing<br/>extractOpenLoops()<br/>buildCompactionState()<br/>computeDelta()<br/>inject sections"]
+    W --> X["Persist artifacts<br/>project fingerprint<br/>compaction state<br/>metrics log<br/>damage report"]
+    X --> Y["Store pending compaction<br/>in memory<br/>TTL: 5 minutes"]
+    Y --> Z["ctx.compact() now<br/>or next tree compact consumes it"]
 ```
 
 ---
