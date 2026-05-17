@@ -1,5 +1,11 @@
 # Changelog
 
+## [7.9.4] - 2026-05-18
+
+### Changed
+- **Fingerprint fixture sanitization** — Removed personal absolute paths from `test/fingerprint.test.ts` and replaced them with neutral helper-generated fixture paths while preserving the absolute-path regression coverage.
+- **No runtime behavior changes** — This is a test-only/docs hygiene patch intended to keep the repository and GitHub source free of personal machine paths.
+
 ## [7.9.3] - 2026-05-18
 
 ### Changed
