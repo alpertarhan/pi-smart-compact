@@ -16,7 +16,7 @@ import {
   saveCachedExtraction, loadCachedExtraction, mergeExtractions, cacheOpts,
 } from "./utils/cache.ts";
 import { extractStructured, extractText, extractOpenLoops } from "./utils/extraction.ts";
-import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext } from "./utils/state.ts";
+import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext, saveCompactionState, loadCompactionState, computeDelta, injectDeltaSection } from "./utils/state.ts";
 import { pruneRedundant } from "./utils/pruning.ts";
 import { deriveProjectId, loadProjectFingerprint, saveProjectFingerprint, buildProjectContext } from "./utils/fingerprint.ts";
 import { detectDamage, logDamageReport } from "./utils/damage.ts";
@@ -301,6 +301,16 @@ export async function runSmartCompact(
     const criticalContextItems = extractCriticalContext(finalSummary);
     const compactionState = buildCompactionState(extraction, openLoops, explorationReport, nextActions, criticalContextItems);
 
+    // ── Delta compaction: compare with previous state ──
+    const prevState = loadCompactionState(projectId);
+    if (prevState) {
+      const delta = computeDelta(prevState, compactionState);
+      if (delta.newLoops.length || delta.resolvedLoops.length || delta.newDecisions.length || delta.newErrors.length || delta.newModifiedFiles.length) {
+        finalSummary = injectDeltaSection(finalSummary, delta);
+        notify("Delta: " + delta.newLoops.length + " new loops, " + delta.resolvedLoops.length + " resolved, " + delta.newModifiedFiles.length + " new files", "info");
+      }
+    }
+
     const details: SmartCompactDetails = {
       method: method as SmartCompactDetails["method"],
       chunkCount: chunkCount || 1,
@@ -325,6 +335,9 @@ export async function runSmartCompact(
 
     // ── Save project fingerprint for cross-session context ──
     saveProjectFingerprint(projectId, extraction);
+
+    // ── Save compaction state for cross-compaction tracking ──
+    saveCompactionState(projectId, compactionState);
 
     appendMetricsLog(sessionId);
 

@@ -1,10 +1,45 @@
 /**
  * Build structured machine-readable compaction state.
  * Produced alongside the human-readable Markdown summary.
+ * Supports cross-compaction tracking and delta computation.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport } from "../types.ts";
 import { VERSION } from "../constants.ts";
+
+const STATE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states");
+
+function getStatePath(projectId: string): string {
+  return path.join(STATE_DIR, projectId + ".json");
+}
+
+/**
+ * Persist compaction state for cross-compaction tracking.
+ */
+export function saveCompactionState(projectId: string, state: CompactionState): void {
+  try {
+    if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(getStatePath(projectId), JSON.stringify(state, null, 2));
+  } catch { /* best effort */ }
+}
+
+/**
+ * Load previous compaction state for delta computation.
+ */
+export function loadCompactionState(projectId: string): CompactionState | null {
+  try {
+    const fp = getStatePath(projectId);
+    if (!fs.existsSync(fp)) return null;
+    const data = JSON.parse(fs.readFileSync(fp, "utf8")) as CompactionState;
+    // Expire after 7 days
+    if (data.compactionVersion && Date.now() - 0 > 7 * 24 * 60 * 60 * 1000) {
+      // Version check only — keep state as long as file exists
+    }
+    return data;
+  } catch { return null; }
+}
 
 export function buildCompactionState(
   extraction: StructuredExtraction,
@@ -86,6 +121,153 @@ export function injectOpenLoopsSection(summary: string, openLoops: OpenLoop[]): 
 
   // Fallback: append at the end
   return summary + "\n" + lines.join("\n");
+}
+
+/**
+ * Compute delta between previous and current compaction state.
+ */
+export interface CompactionDelta {
+  /** Decisions added since last compaction */
+  newDecisions: string[];
+  /** Decisions that appear to have been superseded or removed */
+  removedDecisions: string[];
+  /** Open loops that were resolved */
+  resolvedLoops: string[];
+  /** Open loops still open from last time */
+  persistentLoops: string[];
+  /** New open loops */
+  newLoops: string[];
+  /** Files modified since last compaction */
+  newModifiedFiles: string[];
+  /** Errors that were resolved since last compaction */
+  resolvedErrors: string[];
+  /** New unresolved errors */
+  newErrors: string[];
+  /** Goal changed? */
+  goalChanged: boolean;
+  /** Previous goal if changed */
+  previousGoal: string | null;
+}
+
+export function computeDelta(prev: CompactionState, current: CompactionState): CompactionDelta {
+  // Decisions: fuzzy match by summary keywords
+  const prevDecisionTexts = new Set(prev.decisions.map(d => d.summary.toLowerCase().slice(0, 60)));
+  const currDecisionTexts = new Set(current.decisions.map(d => d.summary.toLowerCase().slice(0, 60)));
+  const newDecisions = current.decisions
+    .filter(d => !prevDecisionTexts.has(d.summary.toLowerCase().slice(0, 60)))
+    .map(d => d.summary);
+  const removedDecisions = prev.decisions
+    .filter(d => !currDecisionTexts.has(d.summary.toLowerCase().slice(0, 60)))
+    .map(d => d.summary);
+
+  // Open loops: match by summary fuzzy
+  const prevLoopSummaries = new Map(prev.openLoops.map(l => [l.summary.toLowerCase().slice(0, 50), l]));
+  const currLoopSummaries = new Map(current.openLoops.map(l => [l.summary.toLowerCase().slice(0, 50), l]));
+  const resolvedLoops: string[] = [];
+  const persistentLoops: string[] = [];
+  for (const [key, loop] of prevLoopSummaries) {
+    if (currLoopSummaries.has(key)) {
+      persistentLoops.push(loop.summary);
+    } else {
+      resolvedLoops.push(loop.summary);
+    }
+  }
+  const newLoops = current.openLoops
+    .filter(l => !prevLoopSummaries.has(l.summary.toLowerCase().slice(0, 50)))
+    .map(l => l.summary);
+
+  // Files: diff sets
+  const prevFiles = new Set(prev.modifiedFiles);
+  const newModifiedFiles = current.modifiedFiles.filter(f => !prevFiles.has(f));
+
+  // Errors: match by message snippet
+  const prevErrorMsgs = new Set(prev.unresolvedErrors.map(e => e.message.toLowerCase().slice(0, 40)));
+  const currErrorMsgs = new Set(current.unresolvedErrors.map(e => e.message.toLowerCase().slice(0, 40)));
+  const resolvedErrors = prev.unresolvedErrors
+    .filter(e => !currErrorMsgs.has(e.message.toLowerCase().slice(0, 40)))
+    .map(e => e.message);
+  const newErrors = current.unresolvedErrors
+    .filter(e => !prevErrorMsgs.has(e.message.toLowerCase().slice(0, 40)))
+    .map(e => e.message);
+
+  // Goal change
+  const goalChanged = prev.goal !== current.goal && prev.goal !== null && current.goal !== null;
+
+  return {
+    newDecisions, removedDecisions,
+    resolvedLoops, persistentLoops, newLoops,
+    newModifiedFiles,
+    resolvedErrors, newErrors,
+    goalChanged, previousGoal: goalChanged ? prev.goal : null,
+  };
+}
+
+/**
+ * Format delta as Markdown section for injection into summary.
+ */
+export function formatDeltaSection(delta: CompactionDelta): string {
+  const lines: string[] = ["## Changes Since Last Compaction", ""];
+
+  if (delta.goalChanged) {
+    lines.push("- **Goal shifted**: " + (delta.previousGoal ?? "?") + " → see current goal above");
+  }
+
+  if (delta.resolvedLoops.length) {
+    lines.push("- **Resolved loops**: " + delta.resolvedLoops.map(s => "~~" + s.slice(0, 60) + "~~").join(", "));
+  }
+  if (delta.persistentLoops.length) {
+    lines.push("- **Still open**: " + delta.persistentLoops.map(s => s.slice(0, 60)).join("; "));
+  }
+  if (delta.newLoops.length) {
+    lines.push("- **New loops**: " + delta.newLoops.map(s => s.slice(0, 60)).join("; "));
+  }
+  if (delta.newDecisions.length) {
+    lines.push("- **New decisions**: " + delta.newDecisions.map(s => s.slice(0, 80)).join("; "));
+  }
+  if (delta.resolvedErrors.length) {
+    lines.push("- **Resolved errors**: " + delta.resolvedErrors.map(s => s.slice(0, 60)).join("; "));
+  }
+  if (delta.newErrors.length) {
+    lines.push("- **New errors**: " + delta.newErrors.map(s => s.slice(0, 60)).join("; "));
+  }
+  if (delta.newModifiedFiles.length) {
+    lines.push("- **New files touched**: " + delta.newModifiedFiles.join(", "));
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * Inject delta section into summary, after Open Loops (or before Next Steps).
+ */
+export function injectDeltaSection(summary: string, delta: CompactionDelta): string {
+  const section = formatDeltaSection(delta);
+
+  // Check if there's anything to report
+  const hasChanges = delta.goalChanged
+    || delta.resolvedLoops.length > 0
+    || delta.newLoops.length > 0
+    || delta.newDecisions.length > 0
+    || delta.newErrors.length > 0
+    || delta.newModifiedFiles.length > 0;
+  if (!hasChanges) return summary;
+
+  // Insert after Open Loops or before Next Steps
+  const openLoopsIdx = summary.indexOf("## Open Loops");
+  const nextStepsIdx = summary.indexOf("## Next Steps");
+
+  if (openLoopsIdx >= 0) {
+    // Find end of Open Loops section
+    const afterOL = summary.indexOf("## ", openLoopsIdx + 1);
+    if (afterOL >= 0) {
+      return summary.slice(0, afterOL) + section + summary.slice(afterOL);
+    }
+  }
+  if (nextStepsIdx >= 0) {
+    return summary.slice(0, nextStepsIdx) + section + summary.slice(nextStepsIdx);
+  }
+  return summary + "\n" + section;
 }
 
 /**
