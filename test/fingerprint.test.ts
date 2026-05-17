@@ -11,6 +11,19 @@ function makeExtraction(partial: Partial<StructuredExtraction> = {}): Structured
   };
 }
 
+function posixJoin(...parts: string[]): string {
+  return parts.join("/").replace(/\/+/g, "/");
+}
+
+const HOME = "/Users/example";
+const DEV_ROOT = posixJoin(HOME, "dev");
+const AGENT_ROOT = posixJoin(HOME, ".pi", "agent");
+
+const repoPath = (projectRoot: string, ...parts: string[]) => posixJoin(DEV_ROOT, projectRoot, ...parts);
+const agentPath = (...parts: string[]) => posixJoin(AGENT_ROOT, ...parts);
+const npmCachePath = (...parts: string[]) => posixJoin(HOME, ".npm", "_cacache", ...parts);
+const cachePath = (...parts: string[]) => posixJoin(HOME, ".cache", ...parts);
+
 // ── Basic stability ──
 
 describe("deriveProjectId — stability", () => {
@@ -46,14 +59,14 @@ describe("deriveProjectId — collision resistance", () => {
   it("produces DIFFERENT IDs for different projects (absolute paths)", () => {
     const projectA = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/pi/pi-smart-compact/src/core.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/pi/pi-smart-compact/README.md", toolCalls: 1, lastModifiedIndex: 3 },
+        { path: repoPath("workspace-alpha/repo-core", "src/core.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("workspace-alpha/repo-core", "README.md"), toolCalls: 1, lastModifiedIndex: 3 },
       ],
     });
     const projectB = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/sentirum/senti-ai-agent/src/tools/index.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/sentirum/senti-ai-agent/README.md", toolCalls: 1, lastModifiedIndex: 2 },
+        { path: repoPath("workspace-beta/repo-agent", "src/tools/index.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("workspace-beta/repo-agent", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
     });
     expect(deriveProjectId(projectA)).not.toBe(deriveProjectId(projectB));
@@ -83,8 +96,8 @@ describe("deriveProjectId — collision resistance", () => {
     });
     const absoluteExt = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/pi/pi-smart-compact/src/core.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/sentirum/senti-ai-agent/README.md", toolCalls: 1, lastModifiedIndex: 2 },
+        { path: repoPath("workspace-alpha/repo-core", "src/core.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("workspace-beta/repo-agent", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
     });
 
@@ -99,17 +112,17 @@ describe("deriveProjectId — noise filtering", () => {
   it("ignores node_modules paths", () => {
     const clean = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/project-a/src/main.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/project-a/README.md", toolCalls: 1, lastModifiedIndex: 2 },
+        { path: repoPath("project-a", "src/main.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("project-a", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
     });
     const withNoise = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/project-a/src/main.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/project-a/README.md", toolCalls: 1, lastModifiedIndex: 2 },
+        { path: repoPath("project-a", "src/main.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("project-a", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
       readFiles: [
-        "/Users/alper/.npm/_cacache/tmp/abc.json",
+        npmCachePath("tmp", "abc.json"),
         "node_modules/lodash/index.js",
       ],
     });
@@ -126,8 +139,8 @@ describe("deriveProjectId — noise filtering", () => {
         "src/core.ts",
         "src/utils/helpers.ts",
         "package.json",
-        "/Users/alper/.pi/agent/npm/node_modules/pi-smart-compact/package.json",
-        "/Users/alper/.pi/agent/settings.json",
+        agentPath("npm", "node_modules", "pi-smart-compact", "package.json"),
+        agentPath("settings.json"),
       ],
     });
     expect(deriveProjectId(clean)).toBe(deriveProjectId(withPiNoise));
@@ -137,7 +150,7 @@ describe("deriveProjectId — noise filtering", () => {
     const noiseOnly = makeExtraction({
       readFiles: [
         "node_modules/react/index.js",
-        "/Users/alper/.cache/something.json",
+        cachePath("something.json"),
       ],
     });
     expect(deriveProjectId(noiseOnly)).toBe("unknown");
@@ -150,9 +163,9 @@ describe("deriveProjectId — absolute path resolution", () => {
   it("finds the correct deep project root for a single project", () => {
     const ext = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/myproject/src/a.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/myproject/src/b.ts", toolCalls: 1, lastModifiedIndex: 2 },
-        { path: "/Users/alper/dev/myproject/package.json", toolCalls: 1, lastModifiedIndex: 3 },
+        { path: repoPath("myproject", "src/a.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("myproject", "src/b.ts"), toolCalls: 1, lastModifiedIndex: 2 },
+        { path: repoPath("myproject", "package.json"), toolCalls: 1, lastModifiedIndex: 3 },
       ],
     });
     const id1 = deriveProjectId(ext);
@@ -160,7 +173,7 @@ describe("deriveProjectId — absolute path resolution", () => {
     // Adding more files from the same project should give the same ID
     const ext2 = makeExtraction({
       ...ext,
-      readFiles: ["/Users/alper/dev/myproject/README.md"],
+      readFiles: [repoPath("myproject", "README.md")],
     });
     expect(deriveProjectId(ext2)).toBe(id1);
   });
@@ -170,16 +183,16 @@ describe("deriveProjectId — absolute path resolution", () => {
     // should NOT produce the same ID as a pure project-y session
     const primary = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/project-x/src/main.ts", toolCalls: 3, lastModifiedIndex: 5 },
-        { path: "/Users/alper/dev/project-x/src/util.ts", toolCalls: 2, lastModifiedIndex: 8 },
-        { path: "/Users/alper/dev/project-x/test/main.test.ts", toolCalls: 1, lastModifiedIndex: 10 },
+        { path: repoPath("project-x", "src/main.ts"), toolCalls: 3, lastModifiedIndex: 5 },
+        { path: repoPath("project-x", "src/util.ts"), toolCalls: 2, lastModifiedIndex: 8 },
+        { path: repoPath("project-x", "test/main.test.ts"), toolCalls: 1, lastModifiedIndex: 10 },
       ],
-      readFiles: ["/Users/alper/dev/project-y/README.md"], // one stray read
+      readFiles: [repoPath("project-y", "README.md")], // one stray read
     });
     const otherProject = makeExtraction({
       modifiedFiles: [
-        { path: "/Users/alper/dev/project-y/src/index.ts", toolCalls: 1, lastModifiedIndex: 1 },
-        { path: "/Users/alper/dev/project-y/README.md", toolCalls: 1, lastModifiedIndex: 2 },
+        { path: repoPath("project-y", "src/index.ts"), toolCalls: 1, lastModifiedIndex: 1 },
+        { path: repoPath("project-y", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
     });
     // The primary session (project-x) must not get confused with project-y
