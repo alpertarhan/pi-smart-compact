@@ -24,6 +24,7 @@ export interface CompactConfig {
   summaryModel: string | null;
   segmentationModel: string | null;
   autoTrigger: boolean;
+  autoTriggerTimeoutMs: number;
   backupEnabled: boolean;
   backupDir: string;
 }
@@ -173,6 +174,9 @@ export interface CachedExtraction {
   extraction: StructuredExtraction;
   messageCount: number;
   timestamp: number;
+  /** First/last entry IDs for branch-aware cache invalidation */
+  firstEntryId?: string;
+  lastEntryId?: string;
 }
 
 /** An open loop — unresolved task detected during compaction */

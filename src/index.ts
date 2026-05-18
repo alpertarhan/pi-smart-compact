@@ -118,7 +118,23 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const { segModel, sumModel } = resolveModels(ctx as unknown as ExtensionCommandContext, cur, config);
       if (!sumModel) return;
       if (!isRunning.value) {
-        await runSmartCompact({ ctx: ctx as unknown as ExtensionCommandContext, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true });
+        const compactPromise = runSmartCompact({ ctx: ctx as unknown as ExtensionCommandContext, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true });
+        // Hard timeout: even if the LLM provider ignores AbortSignal, we won't block native compact.
+        const timeoutPromise = new Promise<void>((_, reject) => {
+          setTimeout(() => reject(new Error("smart-compact-timeout")), config.autoTriggerTimeoutMs);
+        });
+        try {
+          await Promise.race([compactPromise, timeoutPromise]);
+        } catch (e) {
+          if (e instanceof Error && e.message === "smart-compact-timeout") {
+            log.warn("Smart compact auto-trigger hard timeout after " + config.autoTriggerTimeoutMs + "ms");
+            isRunning.value = false;
+            pendingRef.value = null;
+            pendingRef.createdAt = 0;
+            return; // fall back to native compact
+          }
+          throw e;
+        }
         const pending = pendingRef.value as PendingCompaction | null;
         if (pending) {
           pendingRef.value = null;

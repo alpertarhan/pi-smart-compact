@@ -8,6 +8,13 @@ import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 
+/** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
+export const TRUNCATE_RE = /…✂\d+$/;
+
+export function isTruncated(content: unknown): boolean {
+  return TRUNCATE_RE.test(extractText(content));
+}
+
 /** Reusable tool call index type */
 export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
 
@@ -28,8 +35,23 @@ export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
     if (m.role !== "assistant") continue;
     const blocks = Array.isArray(m.content) ? m.content : [];
     for (const b of blocks) {
-      if (isToolCallBlock(b) && b.id) {
+      if (!isToolCallBlock(b)) continue;
+      if (b.id) {
         idx.set(b.id, { name: b.name, arguments: b.arguments, msgIndex: i });
+      }
+      // Flatten multi_tool_use.parallel into synthetic tool-call entries.
+      // Prefer the real tool_use id if present (matches downstream toolResult.toolCallId),
+      // otherwise fall back to a deterministic synthetic id.
+      if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
+        for (let t = 0; t < b.arguments.tool_uses.length; t++) {
+          const use = b.arguments.tool_uses[t] as Record<string, unknown>;
+          const recipient = (use?.recipient_name as string) ?? "";
+          const toolName = recipient.replace(/^functions\./, "");
+          const params = (use?.parameters as Record<string, unknown>) ?? {};
+          const realId = (use?.id as string) ?? undefined;
+          const syntheticId = b.id ? b.id + "_" + t : "mtu_" + i + "_" + t;
+          idx.set(realId || syntheticId, { name: toolName, arguments: params, msgIndex: i });
+        }
       }
     }
   }
@@ -54,7 +76,12 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
 
     if (tool.includes("write") || tool.includes("edit")) {
       const resultText = extractText(m.content);
-      if (!NO_OP_RE.test(resultText)) {
+      if (isTruncated(resultText)) {
+        // pi-toolkit truncated the result — we cannot verify no-op vs actual write.
+        // Safe default: treat as modified (the toolCall itself implies intent).
+        const existing = modMap.get(filePath);
+        modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
+      } else if (!NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
         modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
       }
@@ -87,12 +114,30 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
 
     if (tc?.name === "bash") {
       const txt = extractText(m.content);
-      const isLikelyError = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed)/i.test(txt);
+      const isLikelyError = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i.test(txt);
       if (isLikelyError && txt.length < 2000) {
         errors.push({ index: i, tool: "bash", message: txt.slice(0, 300), retryAttempted: false, resolved: false });
       }
     }
   }
+
+/**
+ * Flatten a single tool-call block (including multi_tool_use.parallel) into
+ * an array of { name, id } for retry/resolution detection.
+ */
+function flattenToolCallBlock(b: unknown): Array<{ name: string; id?: string }> {
+  if (!isToolCallBlock(b)) return [];
+  if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
+    return (b.arguments.tool_uses as Record<string, unknown>[]).map((u) => {
+      const recipient = (u?.recipient_name as string) ?? "";
+      return {
+        name: recipient.replace(/^functions\./, ""),
+        id: (u?.id as string) ?? undefined,
+      };
+    });
+  }
+  return [{ name: b.name, id: b.id }];
+}
 
   for (const err of errors) {
     for (let j = err.index + 1; j < Math.min(msgs.length, err.index + 6); j++) {
@@ -100,15 +145,18 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
         const rawBlocks = msgs[j]?.content;
         const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
         for (const b of blocks) {
-          if (isToolCallBlock(b) && b.name === err.tool) {
-            err.retryAttempted = true;
-            for (let k = j + 1; k < Math.min(msgs.length, j + 10); k++) {
-              if (msgs[k]?.role === "toolResult" && msgs[k]?.toolCallId === b.id && !msgs[k]?.isError) {
-                err.resolved = true; break;
+          for (const tool of flattenToolCallBlock(b)) {
+            if (tool.name === err.tool) {
+              err.retryAttempted = true;
+              for (let k = j + 1; k < Math.min(msgs.length, j + 10); k++) {
+                if (msgs[k]?.role === "toolResult" && msgs[k]?.toolCallId === tool.id && !msgs[k]?.isError) {
+                  err.resolved = true; break;
+                }
               }
+              break;
             }
-            break;
           }
+          if (err.retryAttempted) break;
         }
         if (err.retryAttempted) break;
       }
@@ -173,6 +221,8 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
 export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, maxSegs = 20, _tcIdx?: ToolCallIndex): StructuredExtraction["topics"] {
   const topics: StructuredExtraction["topics"] = [];
   let startIdx = 0, tokenAcc = 0, lastFile: string | null = null, errAcc = 0;
+  let currentType: StructuredExtraction["topics"][0]["type"] = "exploration";
+  let currentPrimaryFile: string | null = null;
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
 
   for (let i = 0; i < msgs.length; i++) {
@@ -186,34 +236,47 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
     if (m.role === "assistant") {
       const blocks = Array.isArray(m.content) ? m.content : [];
       for (const b of blocks) {
-        if (isToolCallBlock(b)) {
-          const fp = (b.arguments?.path ?? b.arguments?.file_path) as string | undefined;
+        if (!isToolCallBlock(b)) continue;
+        // Flatten multi_tool_use.parallel
+        const nested: Array<{ name: string; args: Record<string, unknown> }> =
+          b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)
+            ? (b.arguments.tool_uses as Record<string, unknown>[]).map((u) => {
+                const recipient = (u?.recipient_name as string) ?? "";
+                return {
+                  name: recipient.replace(/^functions\./, ""),
+                  args: (u?.parameters as Record<string, unknown>) ?? {},
+                };
+              })
+            : [{ name: b.name, args: b.arguments }];
+        for (const tool of nested) {
+          const fp = (tool.args?.path ?? tool.args?.file_path) as string | undefined;
           if (fp) {
             const fn = path.basename(fp);
             if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
             lastFile = fn;
-            primaryFile = fp;
-            if (b.name?.includes("write") || b.name?.includes("edit")) type = "implementation";
-            else if (b.name?.includes("read")) type = "review";
+            primaryFile = fp; currentPrimaryFile = fp;
+            if (tool.name?.includes("write") || tool.name?.includes("edit")) { type = "implementation"; if (currentType !== "implementation") currentType = "implementation"; }
+            else if (tool.name?.includes("read")) { type = "review"; if (currentType === "exploration") currentType = "review"; }
           }
         }
       }
     }
-    if (m.role === "toolResult" && m.isError) { errAcc++; type = "debugging"; }
+    if (m.role === "toolResult" && m.isError) { errAcc++; type = "debugging"; if (currentType !== "implementation") currentType = "debugging"; }
     if (m.role === "toolResult" && !m.isError) {
       const tc = tcIdx.get(m.toolCallId ?? "");
-      if (tc?.name === "bash" && /error|fail/i.test(txt)) { errAcc++; type = "debugging"; }
+      if (tc?.name === "bash" && /error|fail/i.test(txt)) { errAcc++; type = "debugging"; if (currentType !== "implementation") currentType = "debugging"; }
     }
     if (m.role === "user" && SHIFT_RE.test(txt) && tokenAcc > pc.minChunkTokens) brk = true;
     if (tokenAcc >= pc.maxChunkTokens) brk = true;
 
     if (brk && i > startIdx && topics.length < maxSegs - 1) {
-      topics.push({ startIndex: startIdx, endIndex: i, primaryFile, type, errorDensity: errAcc });
+      topics.push({ startIndex: startIdx, endIndex: i, primaryFile: currentPrimaryFile, type: currentType, errorDensity: errAcc });
       startIdx = i + 1; tokenAcc = 0; lastFile = null; errAcc = 0;
+      currentType = "exploration"; currentPrimaryFile = null;
     }
   }
   if (startIdx < msgs.length) {
-    topics.push({ startIndex: startIdx, endIndex: msgs.length - 1, primaryFile: null, type: "exploration", errorDensity: errAcc });
+    topics.push({ startIndex: startIdx, endIndex: msgs.length - 1, primaryFile: currentPrimaryFile, type: currentType, errorDensity: errAcc });
   }
   return topics;
 }

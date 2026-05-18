@@ -16,7 +16,7 @@ import * as log from "./logger.ts";
  * `{ ...DEFAULT_CONFIG, ...sc }` merge falls back to the default.
  * This prevents silent misconfiguration (e.g. profile: "super").
  */
-function validateSmartCompactConfig(sc: Record<string, unknown>): void {
+export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
   const VALID_PROFILES: readonly string[] = ["light", "balanced", "aggressive"];
   if ("profile" in sc && !VALID_PROFILES.includes(sc.profile as string)) {
     log.warn("smart-compact config: invalid profile '" + sc.profile + "', expected light|balanced|aggressive. Using default 'balanced'.");
@@ -42,6 +42,13 @@ function validateSmartCompactConfig(sc: Record<string, unknown>): void {
     log.warn("smart-compact config: profiles must be an object, got " + typeof sc.profiles);
     delete sc.profiles;
   }
+  if ("autoTriggerTimeoutMs" in sc) {
+    const v = sc.autoTriggerTimeoutMs;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 1000 || v > 300000) {
+      log.warn("smart-compact config: autoTriggerTimeoutMs must be 1000–300000, got " + v + ". Using default " + DEFAULT_CONFIG.autoTriggerTimeoutMs + "ms.");
+      delete sc.autoTriggerTimeoutMs;
+    }
+  }
 }
 
 let _cfg: CompactConfig | null = null;
@@ -60,7 +67,7 @@ export function loadConfig(): CompactConfig {
     if (!merged.backupDir) merged.backupDir = path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups");
     _cfg = merged; _cfgMtime = stat.mtimeMs; return _cfg;
   } catch (e) {
-    log.warn("loadConfig failed, using defaults", e);
+    log.debug("loadConfig: settings.json not found or unreadable, using defaults", e);
     const fallback: CompactConfig = { ...DEFAULT_CONFIG, backupDir: path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups") } as CompactConfig;
     _cfg = fallback;
     return fallback;
@@ -91,10 +98,61 @@ export function getPreviousCompactionContext(branch: unknown[]): string {
 
 // SessionMessageEntry is now imported from types.ts
 
-export function smartKeepBoundary(msgs: SessionMessageEntry[], keepFromIndex: number): number {
-  if (keepFromIndex <= 0 || keepFromIndex >= msgs.length) return keepFromIndex;
-  const last = msgs[keepFromIndex - 1];
-  const first = msgs[keepFromIndex];
+/**
+ * Detect pi-toolkit anchor entries in the branch.
+ * Anchors are toolResult entries with toolName=="context" and details.anchor.
+ */
+function findLastAnchorIndex(branchEntries: unknown[]): number {
+  for (let i = branchEntries.length - 1; i >= 0; i--) {
+    const e = branchEntries[i] as Record<string, unknown> | undefined;
+    if (e?.type !== "message") continue;
+    const msg = e.message as Record<string, unknown> | undefined;
+    if (msg?.role !== "toolResult") continue;
+    if (msg?.toolName === "context" && (msg?.details as Record<string, unknown>)?.anchor) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Map a branch entry index to its corresponding position in the filtered msgs array.
+ * Branch may contain non-message entries (compaction, etc.), so indices don't align 1:1.
+ */
+function branchIndexToMsgIndex(branchEntries: unknown[], branchIdx: number, msgs: SessionMessageEntry[]): number {
+  let msgCount = 0;
+  for (let i = 0; i <= branchIdx && i < branchEntries.length; i++) {
+    const e = branchEntries[i] as Record<string, unknown> | undefined;
+    if (e?.type === "message") {
+      if (msgCount >= msgs.length) return msgs.length - 1;
+      msgCount++;
+    }
+  }
+  return Math.min(msgCount - 1, msgs.length - 1);
+}
+
+export function smartKeepBoundary(
+  msgs: SessionMessageEntry[],
+  keepFromIndex: number,
+  branchEntries?: unknown[],
+): number {
+  let adjusted = keepFromIndex;
+
+  // ── pi-toolkit anchor protection: never compact past the last on-branch anchor ──
+  if (branchEntries && branchEntries.length > 0) {
+    const lastAnchorBranchIdx = findLastAnchorIndex(branchEntries);
+    if (lastAnchorBranchIdx >= 0) {
+      const lastAnchorMsgIdx = branchIndexToMsgIndex(branchEntries, lastAnchorBranchIdx, msgs);
+      if (adjusted > lastAnchorMsgIdx && lastAnchorMsgIdx >= 0) {
+        adjusted = lastAnchorMsgIdx;
+      }
+    }
+  }
+
+  if (adjusted <= 0 || adjusted >= msgs.length) return adjusted;
+
+  const last = msgs[adjusted - 1];
+  const first = msgs[adjusted];
   if (last && first) {
     // Use extractText-style approach instead of JSON.stringify
     const getText = (msg: unknown): string => {
@@ -114,9 +172,53 @@ export function smartKeepBoundary(msgs: SessionMessageEntry[], keepFromIndex: nu
     const lastFiles = new Set([...lastText.matchAll(fileRe)].map(m => m[1].split("/").pop()));
     fileRe.lastIndex = 0;
     const keptFiles = new Set([...keptText.matchAll(fileRe)].map(m => m[1].split("/").pop()));
-    if ([...lastFiles].filter(f => keptFiles.has(f)).length > 0) return keepFromIndex - 1;
+    if ([...lastFiles].filter(f => keptFiles.has(f)).length > 0) return adjusted - 1;
   }
-  return keepFromIndex;
+  return adjusted;
+}
+
+/**
+ * Tool-call boundary guard: never split a toolCall / toolResult pair across the compaction boundary.
+ *
+ * If a kept message is a toolResult whose corresponding toolCall would be compacted,
+ * pull keepFrom back to include the assistant message containing that toolCall.
+ * This prevents "tool_call_id is not found" API errors after compaction.
+ */
+export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
+  if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
+
+  // Map toolCallId -> assistant message index
+  const tcMap = new Map<string, number>();
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i].message as Record<string, unknown>;
+    if (m?.role !== "assistant") continue;
+    const blocks = Array.isArray(m?.content) ? m.content : [];
+    for (const b of blocks) {
+      if ((b as { type?: string })?.type === "toolCall" && (b as { id?: string }).id) {
+        tcMap.set((b as { id: string }).id, i);
+      }
+    }
+  }
+
+  let adjusted = keepFrom;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = adjusted; i < msgs.length; i++) {
+      const m = msgs[i].message as Record<string, unknown>;
+      if (m?.role !== "toolResult") continue;
+      const tcId = m?.toolCallId as string | undefined;
+      if (!tcId) continue;
+      const tcIdx = tcMap.get(tcId);
+      if (tcIdx !== undefined && tcIdx < adjusted) {
+        adjusted = tcIdx;
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return Math.max(0, Math.min(adjusted, msgs.length));
 }
 
 export function extractUserNote(args: string): string | undefined {
@@ -212,6 +314,45 @@ export function buildExtractionContext(extraction: StructuredExtraction, forRang
  *  5. Code modifications → implementation
  *  6. Fallback → implementation (most common agent activity)
  */
+/**
+ * Compute tool-output character percentage from branch entries.
+ * Mirrors pi-toolkit's context hook logic for consistent tier decisions.
+ */
+export function computeToolCharPercentage(branchEntries: unknown[]): number {
+  let totalChars = 0;
+  let toolChars = 0;
+  for (const e of branchEntries as any[]) {
+    const m = e?.message;
+    if (!m) continue;
+    let mc = 0;
+    if (typeof m.content === "string") {
+      mc = m.content.length;
+    } else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (typeof part?.text === "string") mc += part.text.length;
+        else if (typeof part?.content === "string") mc += part.content.length;
+      }
+    }
+    totalChars += mc;
+    if (m.role === "toolResult") toolChars += mc;
+  }
+  return totalChars > 0 ? Math.round((toolChars / totalChars) * 100) : 0;
+}
+
+export type CompactionTier = "none" | "light" | "full";
+
+export function selectCompactionTier(
+  contextPercent: number,
+  toolPercent: number,
+  totalTokens: number,
+  minThreshold: number,
+): CompactionTier {
+  if (totalTokens < minThreshold) return "none";
+  if (contextPercent < 45 && toolPercent < 60) return "none";
+  if (contextPercent < 80) return "light";
+  return "full";
+}
+
 export function inferSessionType(
   extraction: StructuredExtraction,
   report: ExplorationReport | null,

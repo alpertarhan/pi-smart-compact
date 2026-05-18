@@ -1,6 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { deriveProjectId, buildProjectContext } from "../src/utils/fingerprint.ts";
+import { deriveProjectId, findGitRoot, buildProjectContext } from "../src/utils/fingerprint.ts";
 import type { StructuredExtraction } from "../src/types.ts";
+
+const TEST_CWD = ""; // empty cwd forces path-based derivation in tests
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
   return {
@@ -34,21 +36,21 @@ describe("deriveProjectId — stability", () => {
         { path: "src/auth.ts", toolCalls: 2, lastModifiedIndex: 5 },
       ],
     });
-    const id1 = deriveProjectId(ext);
-    const id2 = deriveProjectId(ext);
+    const id1 = deriveProjectId(TEST_CWD, ext);
+    const id2 = deriveProjectId(TEST_CWD, ext);
     expect(id1).toBe(id2);
     expect(id1.startsWith("proj-")).toBe(true);
   });
 
   it("returns unknown for empty extraction", () => {
-    expect(deriveProjectId(makeExtraction())).toBe("unknown");
+    expect(deriveProjectId(TEST_CWD, makeExtraction())).toBe("unknown");
   });
 
   it("is deterministic across calls with same data", () => {
     const ext = makeExtraction({
       readFiles: ["a.ts", "b.ts", "c.ts"],
     });
-    const results = Array.from({ length: 10 }, () => deriveProjectId(ext));
+    const results = Array.from({ length: 10 }, () => deriveProjectId(TEST_CWD, ext));
     expect(new Set(results).size).toBe(1);
   });
 });
@@ -69,7 +71,7 @@ describe("deriveProjectId — collision resistance", () => {
         { path: repoPath("workspace-beta/repo-agent", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
     });
-    expect(deriveProjectId(projectA)).not.toBe(deriveProjectId(projectB));
+    expect(deriveProjectId(TEST_CWD, projectA)).not.toBe(deriveProjectId(TEST_CWD, projectB));
   });
 
   it("produces DIFFERENT IDs for different projects (relative paths)", () => {
@@ -79,12 +81,10 @@ describe("deriveProjectId — collision resistance", () => {
     const projectB = makeExtraction({
       readFiles: ["web/src/app.tsx", "web/src/routes.ts", "extensions/main.js", "docs/guide.md"],
     });
-    expect(deriveProjectId(projectA)).not.toBe(deriveProjectId(projectB));
+    expect(deriveProjectId(TEST_CWD, projectA)).not.toBe(deriveProjectId(TEST_CWD, projectB));
   });
 
   it("does NOT use 'root' or '/Users' as project root (regression)", () => {
-    // Old bug: relative-only paths → hash("root") = proj-4813494d
-    // Old bug: absolute /Users paths → hash("/Users") = proj-a2a0ee2c
     const OLD_ROOT_BUG = "proj-4813494d137e";
     const OLD_USERS_BUG = "proj-a2a0ee2c7174";
 
@@ -101,8 +101,8 @@ describe("deriveProjectId — collision resistance", () => {
       ],
     });
 
-    expect(deriveProjectId(relativeExt)).not.toBe(OLD_ROOT_BUG);
-    expect(deriveProjectId(absoluteExt)).not.toBe(OLD_USERS_BUG);
+    expect(deriveProjectId(TEST_CWD, relativeExt)).not.toBe(OLD_ROOT_BUG);
+    expect(deriveProjectId(TEST_CWD, absoluteExt)).not.toBe(OLD_USERS_BUG);
   });
 });
 
@@ -126,8 +126,7 @@ describe("deriveProjectId — noise filtering", () => {
         "node_modules/lodash/index.js",
       ],
     });
-    // Should produce the same ID regardless of noise paths
-    expect(deriveProjectId(clean)).toBe(deriveProjectId(withNoise));
+    expect(deriveProjectId(TEST_CWD, clean)).toBe(deriveProjectId(TEST_CWD, withNoise));
   });
 
   it("ignores .pi/agent infrastructure paths", () => {
@@ -143,7 +142,7 @@ describe("deriveProjectId — noise filtering", () => {
         agentPath("settings.json"),
       ],
     });
-    expect(deriveProjectId(clean)).toBe(deriveProjectId(withPiNoise));
+    expect(deriveProjectId(TEST_CWD, clean)).toBe(deriveProjectId(TEST_CWD, withPiNoise));
   });
 
   it("returns 'unknown' when all paths are noise", () => {
@@ -153,7 +152,7 @@ describe("deriveProjectId — noise filtering", () => {
         cachePath("something.json"),
       ],
     });
-    expect(deriveProjectId(noiseOnly)).toBe("unknown");
+    expect(deriveProjectId(TEST_CWD, noiseOnly)).toBe("unknown");
   });
 });
 
@@ -168,26 +167,23 @@ describe("deriveProjectId — absolute path resolution", () => {
         { path: repoPath("myproject", "package.json"), toolCalls: 1, lastModifiedIndex: 3 },
       ],
     });
-    const id1 = deriveProjectId(ext);
+    const id1 = deriveProjectId(TEST_CWD, ext);
 
-    // Adding more files from the same project should give the same ID
     const ext2 = makeExtraction({
       ...ext,
       readFiles: [repoPath("myproject", "README.md")],
     });
-    expect(deriveProjectId(ext2)).toBe(id1);
+    expect(deriveProjectId(TEST_CWD, ext2)).toBe(id1);
   });
 
   it("does not collide when one project dominates with modifications", () => {
-    // A session primarily working on project-x with a stray read from project-y
-    // should NOT produce the same ID as a pure project-y session
     const primary = makeExtraction({
       modifiedFiles: [
         { path: repoPath("project-x", "src/main.ts"), toolCalls: 3, lastModifiedIndex: 5 },
         { path: repoPath("project-x", "src/util.ts"), toolCalls: 2, lastModifiedIndex: 8 },
         { path: repoPath("project-x", "test/main.test.ts"), toolCalls: 1, lastModifiedIndex: 10 },
       ],
-      readFiles: [repoPath("project-y", "README.md")], // one stray read
+      readFiles: [repoPath("project-y", "README.md")],
     });
     const otherProject = makeExtraction({
       modifiedFiles: [
@@ -195,8 +191,33 @@ describe("deriveProjectId — absolute path resolution", () => {
         { path: repoPath("project-y", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
       ],
     });
-    // The primary session (project-x) must not get confused with project-y
-    expect(deriveProjectId(primary)).not.toBe(deriveProjectId(otherProject));
+    expect(deriveProjectId(TEST_CWD, primary)).not.toBe(deriveProjectId(TEST_CWD, otherProject));
+  });
+});
+
+// ── Git-root based projectId ──
+
+describe("deriveProjectId — cwd/git-root priority", () => {
+  it("finds the real git root for the current directory", () => {
+    const root = findGitRoot(process.cwd());
+    expect(root).not.toBeNull();
+    expect(typeof root).toBe("string");
+    expect(root!.length).toBeGreaterThan(0);
+  });
+
+  it("prefers cwd/git-root over extraction paths", () => {
+    // Even with no file operations, a valid cwd should produce a stable projectId
+    const emptyExt = makeExtraction();
+    const idFromCwd = deriveProjectId(process.cwd(), emptyExt);
+    expect(idFromCwd).not.toBe("unknown");
+    expect(idFromCwd.startsWith("proj-")).toBe(true);
+  });
+
+  it("produces the same id for the same cwd regardless of extraction noise", () => {
+    const id1 = deriveProjectId(process.cwd(), makeExtraction({ readFiles: ["a.ts"] }));
+    const id2 = deriveProjectId(process.cwd(), makeExtraction({ readFiles: ["b.ts", "c.ts"] }));
+    // Same cwd → same projectId (git-root or cwd hash)
+    expect(id1).toBe(id2);
   });
 });
 

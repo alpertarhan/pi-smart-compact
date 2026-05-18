@@ -1,5 +1,49 @@
 # Changelog
 
+## [7.10.0] - 2026-05-19
+
+### Added
+- **`multi_tool_use.parallel` support** — `buildToolCallIndex()` now flattens nested `tool_uses` from `multi_tool_use.parallel` into synthetic tool-call entries. Reads real `use.id` when present (matching downstream `toolResult.toolCallId`), falls back to deterministic synthetic id. `trackFileOps`, `catalogErrors`, `segmentTopicsHeuristic`, and retry/resolution detection all support nested calls. 6 new tests.
+- **Entry-id cache invalidation** — `CachedExtraction` now stores `firstEntryId` and `lastEntryId`. Cache check in `core.ts` validates `firstEntryId === currentFirstId && lastEntryId === cachedLastMsgId`, so appended-message sessions preserve incremental extraction while pivot/branch changes auto-invalidate. 2 new tests.
+- **Auto-trigger hard timeout** — `index.ts` `session_before_compact` hook now wraps `runSmartCompact` in `Promise.race` with `config.autoTriggerTimeoutMs` (default 45s). If provider ignores `AbortSignal`, hook still returns to native compact on time. `core.ts` guards all side-effects (`pendingRef`, fingerprint, state, metrics) if `timedOut`.
+- **Config validation** — `validateSmartCompactConfig` now validates `autoTriggerTimeoutMs` range (1000–300000 ms). Invalid values are deleted and fallback to default. 8 new tests.
+- **Session log Pi filename format** — `findSessionLogFile` now supports `*_\${sessionId}.jsonl` glob pattern (e.g. `2026-05-19T12-00-00_abc123.jsonl`) in addition to exact match. 3 new tests.
+- **Git-root projectId priority** — `deriveProjectId(cwd, extraction, sessionId)` now prefers git root over file paths, surviving discussion-only sessions. `findGitRoot(cwd)` exported and tested. 3 new tests.
+- **Verbose pipeline diagnostics** — `vlog()` helper in `core.ts` logs tier, convTokens, extraction mode (incremental/full), explore boundaries, chunk topics, verification score, and pipeline completion stats when `/smart-compact verbose` is used.
+- **Rich metrics logging** — `appendMetricsLog` now records `profile`, `tier`, `contextPercent`, `toolPercent`, `tokensBefore`, `tokensSaved`, `pruneSavedTokens`, `chunkCount`, `verificationScore` for regression detection.
+- **Prepublish guard** — `package.json` `prepublishOnly`: `bun run typecheck && bun test && bun run build`.
+
+### Fixed
+- **Cache incremental check** — `lastEntryId` now compares against `toCompact[cachedExt.lastMessageIndex]?.id` instead of `toCompact[toCompact.length - 1]?.id`, so appended messages don't falsely invalidate the cache.
+- **catalogErrors retry flatten** — Retry/resolution scan now uses `flattenToolCallBlock()` to detect retries inside `multi_tool_use.parallel`. Previously only flat tool calls were matched.
+- **Segment topic type persistence** — `segmentTopicsHeuristic` now carries the most significant type (`implementation` > `debugging` > `review` > `exploration`) into the final trailing topic instead of defaulting to `exploration`.
+- **Tool-call boundary guard** — `guardToolCallBoundary()` prevents splitting `toolCall`/`toolResult` pairs across compaction boundary, eliminating `"tool_call_id is not found"` errors. 9 new tests.
+- **Session log ID-based alignment** — `resolveCompactionMessages` walks `toCompact` entries by `id` instead of tail-slice, guaranteeing exact 1:1 alignment regardless of pivot/branch changes.
+
+## [7.9.5] - 2026-05-18
+
+### Added
+
+- **pi-toolkit truncation detection + session log fallback** — New `src/utils/session-log.ts` reads the original untruncated conversation from pi-coding-agent's `.jsonl` session log when pi-toolkit's context hook has mutated branch entries (tool results truncated to `…✂N`). `resolveCompactionMessages()` auto-detects truncation and falls back to disk, preserving extraction accuracy. [pi-toolkit](https://github.com/ersintarhan/pi-toolkit) compatible.
+- **Anchor-aware keep boundary** — `smartKeepBoundary()` now accepts branch entries and guarantees the last on-branch pi-toolkit anchor is never compacted out of the keep window. Prevents pivot target loss. 5 test cases in `test/pi-toolkit-truncate.test.ts`.
+- **Tiered compaction** — Context pressure and tool-noise percentage now select pipeline depth automatically:
+  - `none` (< 45% context, < 60% tool): skip compaction entirely — pi-toolkit handles it.
+  - `prune` (45–60% context): deterministic redundancy pruning only, zero LLM calls.
+  - `light` (60–80% context): extract + single-pass, skip exploration.
+  - `full` (> 80% context): complete EESV pipeline.
+- **pi-toolkit status message pruning** — `pruneRedundant()` now detects and removes stale `[pi-auto-context]` status messages, keeping only the latest. Reduces per-turn noise injected by pi-toolkit.
+- **Internal LLM cache disable** — One-shot compaction phases (`explore`, `single-pass`, `batch`, `assemble`, `patch`) now automatically set `cacheRetention: "none"`. Cache write cost (1.25×–2×) is never amortized for internal calls. Centralized in `trackedComplete()` via phase-based `INTERNAL_PHASES` set.
+- **19 pi-toolkit integration tests** — New `test/pi-toolkit-truncate.test.ts` documents and validates truncation behavior, anchor boundary protection, extraction degradation under truncation, and toolCall-level fallback inference.
+
+### Changed
+
+- **Truncate-aware extraction** — `trackFileOps()` treats truncated write/edit results as "modified" (safe default; no-op cannot be verified). `catalogErrors()` adds `FAIL` and `ERROR:` to bash error regex for earlier-match resilience when content is truncated past keywords.
+- **Call-site cleanup** — Removed ~9 inline `cacheOpts()` calls across `explore.ts`, `synthesize.ts`, `verify.ts`. All caching logic now handled centrally by `trackedComplete()`.
+
+### Fixed
+
+- **pi-toolkit truncation data loss** — Before this release, pi-toolkit's context hook (which truncates tool results older than the last anchor) caused pi-smart-compact to extract from corrupted data. Errors, file modifications, and no-op edits were silently mis-detected. Now auto-detected and bypassed via session log.
+
 ## [7.9.4] - 2026-05-18
 
 ### Changed

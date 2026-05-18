@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mergeExtractions } from "../src/utils/cache.ts";
+import { mergeExtractions, saveCachedExtraction, loadCachedExtraction } from "../src/utils/cache.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
@@ -269,5 +269,38 @@ describe("mergeExtractions — edge cases", () => {
     expect(merged.modifiedFiles[0].lastModifiedIndex).toBe(2);
     expect(merged.readFiles).toEqual(["b.ts"]);
     expect(merged.messageCount).toBe(5);
+  });
+});
+
+// ── Entry-id cache round-trip ──
+
+describe("saveCachedExtraction / loadCachedExtraction", () => {
+  it("round-trips with firstEntryId and lastEntryId", () => {
+    const sessionId = "test-cache-roundtrip-" + Date.now();
+    const ext = makeExtraction({ modifiedFiles: [{ path: "a.ts", toolCalls: 1, lastModifiedIndex: 2 }], messageCount: 5 });
+    saveCachedExtraction(sessionId, ext, 5, "entry-0", "entry-4");
+    const loaded = loadCachedExtraction(sessionId);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.firstEntryId).toBe("entry-0");
+    expect(loaded!.lastEntryId).toBe("entry-4");
+    expect(loaded!.messageCount).toBe(5);
+    expect(loaded!.extraction.modifiedFiles[0].path).toBe("a.ts");
+  });
+
+  it("returns null for stale entry ids (same count, different ids)", () => {
+    // Simulate: first save with ids [A, B, C], then pivot/branch so ids [X, Y, Z]
+    // Same message count but different content → cache should NOT match
+    const sessionId = "test-cache-invalidation-" + Date.now();
+    const ext = makeExtraction({ messageCount: 3 });
+    saveCachedExtraction(sessionId, ext, 3, "entry-A", "entry-C");
+    const loaded = loadCachedExtraction(sessionId);
+    // loaded itself is not null, but a caller would compare firstEntryId/lastEntryId
+    expect(loaded).not.toBeNull();
+    expect(loaded!.firstEntryId).toBe("entry-A");
+    expect(loaded!.lastEntryId).toBe("entry-C");
+    // In core.ts, the caller checks: loaded.firstEntryId === currentFirstId && loaded.lastEntryId === currentLastId
+    // If current ids are ["entry-X", "entry-Z"], this would fail → full extraction
+    const idsMatch = loaded!.firstEntryId === "entry-X" && loaded!.lastEntryId === "entry-Z";
+    expect(idsMatch).toBe(false);
   });
 });

@@ -27,7 +27,22 @@ export function resetCompactSessionId(): void {
 }
 
 // ── Cache Options ──
-export function cacheOpts(opts: CacheAwareOptions, provider?: string): CacheAwareOptions & { sessionId?: string } {
+/** Internal compaction phases that should never use prompt caching — one-shot, not worth write cost. */
+const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
+  "explore", "explore-loop", "explore-retry", "explore-direct",
+  "single-pass", "batch", "assemble", "patch",
+]);
+
+export function cacheOpts(
+  opts: CacheAwareOptions,
+  provider?: string,
+  phase?: LLMCallMetric["phase"],
+): CacheAwareOptions & { sessionId?: string } {
+  // Internal compaction LLM calls are one-shot: cache write cost (1.25x–2x) is never amortized.
+  if (phase && INTERNAL_PHASES.has(phase)) {
+    return { ...opts, cacheRetention: "none" as const };
+  }
+
   const strategy = provider ? getProviderCaps(provider).cacheStrategy : "none";
   const retention = strategy === "none" ? "none" as const : (opts.cacheRetention ?? "short" as const);
   if (retention === "none") {
@@ -66,7 +81,8 @@ export async function trackedComplete(
 ): Promise<AssistantMessage> {
   const start = Date.now();
   try {
-    const resp = await complete(model, reqBody, opts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const resolvedOpts = cacheOpts(opts, model.provider, phase);
+    const resp = await complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -98,11 +114,23 @@ function getCachePath(sessionId: string): string {
   return path.join(CACHE_DIR, "compact-extraction-" + sessionId.replace(/[^a-zA-Z0-9-]/g, "_") + ".json");
 }
 
-export function saveCachedExtraction(sessionId: string, extraction: StructuredExtraction, msgCount: number): void {
+/**
+ * Save extraction cache with entry-id bounds for branch-aware invalidation.
+ * If first/last entry IDs are provided, a subsequent load will compare them
+ * against the current toCompact window to detect pivot/branch changes.
+ */
+export function saveCachedExtraction(
+  sessionId: string,
+  extraction: StructuredExtraction,
+  msgCount: number,
+  firstEntryId?: string,
+  lastEntryId?: string,
+): void {
   try {
     if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
     const cached: CachedExtraction = {
       lastMessageIndex: msgCount - 1, extraction, messageCount: msgCount, timestamp: Date.now(),
+      firstEntryId, lastEntryId,
     };
     fs.writeFileSync(getCachePath(sessionId), JSON.stringify(cached));
   } catch (e) { log.warn("saveCachedExtraction failed", e); }
@@ -162,11 +190,32 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
 }
 
 // ── Metrics log ──
-export function appendMetricsLog(sessionId: string): void {
+/** Extended metrics entry including pipeline context for regression detection. */
+export function appendMetricsLog(
+  sessionId: string,
+  extra?: {
+    profile?: string;
+    tier?: string;
+    contextPercent?: number;
+    toolPercent?: number;
+    tokensBefore?: number;
+    tokensSaved?: number;
+    pruneSavedTokens?: number;
+    chunkCount?: number;
+    fallbackReason?: string;
+    verificationScore?: number;
+  },
+): void {
   try {
     if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
     const logPath = path.join(CACHE_DIR, "compact-metrics.jsonl");
-    const entry = { ts: new Date().toISOString(), sessionId, ...getMetricsSummary() };
+    const summary = getMetricsSummary();
+    const entry = {
+      ts: new Date().toISOString(),
+      sessionId,
+      ...summary,
+      ...extra,
+    };
     fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
   } catch (e) { log.warn("appendMetricsLog failed", e); }
 }

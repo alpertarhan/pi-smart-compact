@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import type { StructuredExtraction } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -59,9 +60,6 @@ function getFingerprintPath(projectId: string): string {
 /**
  * Patterns matching paths from dependency/infrastructure directories
  * that must not influence project identity.
- *
- * Without this filter, paths like node_modules or .pi/agent/npm
- * would pollute the root detection and cause cross-project collisions.
  */
 const NOISE_PATH_RE = /(?:node_modules|[/\\]\.pi[/\\]agent|[/\\]\.cache|[/\\]\.npm|[/\\]\.bun|[/\\]\.git[/\\])/;
 
@@ -75,16 +73,20 @@ function hashProjectId(seed: string): string {
 }
 
 /**
+ * Find the git root for the current working directory.
+ * Returns null if not in a git repo.
+ */
+export function findGitRoot(cwd: string): string | null {
+  try {
+    const out = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf-8", timeout: 2000 });
+    return out.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Derive a stable project ID from absolute file paths.
- *
- * Algorithm:
- *  1. Normalize paths → strip leading /, split into segments
- *  2. Require minimum 3 segments for meaningful root identification
- *  3. Count how many paths fall under each directory prefix (depth 3+)
- *  4. Pick the **deepest** prefix that covers ≥ 50 % of paths
- *
- * This avoids the old bug where "root" or "/Users" was used as the
- * project root, causing cross-project fingerprint contamination.
  */
 function deriveFromAbsolutePaths(paths: string[]): string {
   const segments = paths
@@ -93,7 +95,6 @@ function deriveFromAbsolutePaths(paths: string[]): string {
 
   if (segments.length < 2) return deriveFromRelativePaths(paths);
 
-  // Count coverage of each directory prefix at depth 3+
   const dirCounts = new Map<string, number>();
   for (const segs of segments) {
     for (let depth = 3; depth <= segs.length; depth++) {
@@ -102,19 +103,17 @@ function deriveFromAbsolutePaths(paths: string[]): string {
     }
   }
 
-  // Find deepest prefix covering ≥ 50 % of paths
   const threshold = Math.ceil(segments.length * 0.5);
   const candidates = [...dirCounts.entries()]
     .filter(([, count]) => count >= threshold)
     .sort((a, b) => {
       const depthDiff = b[0].split("/").length - a[0].split("/").length;
-      if (depthDiff !== 0) return depthDiff; // deeper is better
-      return b[1] - a[1]; // more coverage is better
+      if (depthDiff !== 0) return depthDiff;
+      return b[1] - a[1];
     });
 
   if (candidates.length) return hashProjectId(candidates[0][0]);
 
-  // Fallback: longest common prefix
   const sorted = [...segments].sort((a, b) => a.length - b.length);
   let commonDepth = 0;
   for (let d = 0; d < sorted[0].length; d++) {
@@ -126,19 +125,12 @@ function deriveFromAbsolutePaths(paths: string[]): string {
 
 /**
  * Derive a stable project ID from relative file paths.
- *
- * Because relative paths lack project-level depth, we build a
- * "directory structure fingerprint" — a sorted set of top-level
- * entries + the most common depth-2 directories. This is stable
- * across sessions as long as the project structure doesn't change.
  */
 function deriveFromRelativePaths(paths: string[]): string {
-  // Top-level entries (depth-1 segments)
   const topEntries = [...new Set(
     paths.map(p => p.split("/").filter(Boolean)[0]).filter(Boolean),
   )].sort();
 
-  // Depth-2 directory frequency for specificity
   const dir2Counts = new Map<string, number>();
   for (const p of paths) {
     const segs = p.split("/").filter(Boolean);
@@ -148,54 +140,57 @@ function deriveFromRelativePaths(paths: string[]): string {
     }
   }
 
-  // Take top 8 depth-2 dirs by frequency, then sort for determinism
   const stableDirs = [...dir2Counts.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(([d]) => d)
     .sort();
 
-  const fingerprint = topEntries.join(",") + "|" + stableDirs.join(",");
-  return hashProjectId(fingerprint);
+  return hashProjectId(topEntries.join(",") + "|" + stableDirs.join(","));
 }
 
 /**
- * Generate a stable project ID from file paths in the extraction.
+ * Generate a stable project ID.
  *
- * Strategy (in priority order):
- *  1. **Noise filtering** — exclude node_modules, .cache, .pi/agent, etc.
- *  2. **Absolute paths** (≥ 2) — deep ancestor with majority vote
- *  3. **Relative paths** (≥ 2) — directory structure fingerprint
- *  4. **Fallback** — hash all paths together
+ * Priority:
+ *  1. cwd / git root — most reliable, survives discussion-only sessions
+ *  2. Extraction file paths — absolute → deep ancestor, relative → dir fingerprint
+ *  3. sessionId — last resort, never collides but never shares state either
  *
- * ⚠️ Breaking change: this replaces the previous shallow-root algorithm
- *    that caused cross-project contamination
- *    (e.g. hash("root") → proj-4813494d, hash("/Users") → proj-a2a0ee2c).
- *    Old fingerprint/state files will be orphaned and expire via TTL.
+ * Using cwd/git-root as primary prevents cross-project fingerprint contamination
+ * when a session has no file operations (review, discussion, debugging).
  */
-export function deriveProjectId(extraction: StructuredExtraction): string {
+export function deriveProjectId(cwd: string, extraction: StructuredExtraction, sessionId?: string): string {
+  // Priority 1: cwd / git root (most stable across sessions)
+  if (cwd && cwd !== "/" && cwd !== process.env.HOME) {
+    return hashProjectId(cwd);
+  }
+
+  // Priority 2: file paths from extraction
   const allPaths = [
     ...extraction.modifiedFiles.map(f => f.path),
     ...extraction.readFiles,
   ].filter(isProjectPath);
 
-  if (!allPaths.length) return "unknown";
+  if (allPaths.length) {
+    const absolutePaths = allPaths.filter(p => p.startsWith("/"));
+    const relativePaths = allPaths.filter(p => !p.startsWith("/"));
 
-  const absolutePaths = allPaths.filter(p => p.startsWith("/"));
-  const relativePaths = allPaths.filter(p => !p.startsWith("/"));
-
-  // Strategy 1: Absolute paths → deep ancestor with majority vote
-  if (absolutePaths.length >= 2) {
-    return deriveFromAbsolutePaths(absolutePaths);
+    if (absolutePaths.length >= 2) {
+      return deriveFromAbsolutePaths(absolutePaths);
+    }
+    if (relativePaths.length >= 2) {
+      return deriveFromRelativePaths(relativePaths);
+    }
+    return hashProjectId(allPaths.sort().join("|"));
   }
 
-  // Strategy 2: Relative paths → directory structure fingerprint
-  if (relativePaths.length >= 2) {
-    return deriveFromRelativePaths(relativePaths);
+  // Priority 3: sessionId — unique but isolated per session
+  if (sessionId && sessionId !== "unknown") {
+    return hashProjectId("session-" + sessionId);
   }
 
-  // Strategy 3: Fallback — hash all paths together
-  return hashProjectId(allPaths.sort().join("|"));
+  return "unknown";
 }
 
 /**

@@ -5,7 +5,7 @@
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { StructuredExtraction, VerificationResult, CacheAwareOptions } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX } from "../constants.ts";
-import { trackedComplete, cacheOpts } from "../utils/cache.ts";
+import { trackedComplete } from "../utils/cache.ts";
 import * as log from "../utils/logger.ts";
 
 export function verifySummary(summary: string, extraction: StructuredExtraction): VerificationResult {
@@ -197,7 +197,7 @@ export async function patchSummary(
     const resp = await trackedComplete("patch", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user" as const, content: [{ type: "text" as const, text: patchPrompt }], timestamp: Date.now() }],
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }));
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal });
     const patched = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return patched.startsWith("##") ? patched : summary;
   } catch (e) { log.debug("patchSummary LLM failed", e); return summary; }

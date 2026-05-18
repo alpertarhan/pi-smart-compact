@@ -18,6 +18,9 @@ export interface PruningResult {
 // Pattern for agent acknowledgment messages with no information
 const ACK_RE = /^(?:I'?ll |let me |sure|ok[,.]?|got it|i understand|i see|now i|next,? i|alright|great|perfect|sounds good|i can|i will|checking|looking|right away)/i;
 
+// pi-toolkit auto-context status messages injected every turn
+const PI_STATUS_RE = /^\[pi-auto-context\]/;
+
 // Maximum chars to keep from a tool result output
 const MAX_TOOL_OUTPUT_CHARS = 800;
 
@@ -95,6 +98,19 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
       keep.delete(idx);
       reasonMap.set("Agent acknowledgments", (reasonMap.get("Agent acknowledgments") ?? 0) + 1);
     }
+  }
+
+  // ── 3b. pi-toolkit status messages: keep only the latest ──
+  const statusIndices: number[] = [];
+  for (let idx = 0; idx < msgs.length; idx++) {
+    const text = extractText(msgs[idx].content);
+    if (PI_STATUS_RE.test(text)) {
+      statusIndices.push(idx);
+    }
+  }
+  for (let i = 0; i < statusIndices.length - 1; i++) {
+    keep.delete(statusIndices[i]);
+    reasonMap.set("pi-auto-context status", (reasonMap.get("pi-auto-context status") ?? 0) + 1);
   }
 
   // ── 4. Truncate long tool result outputs ──

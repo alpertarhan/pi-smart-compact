@@ -7,7 +7,7 @@ import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
 import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
-import { trackedComplete, cacheOpts } from "../utils/cache.ts";
+import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import * as log from "../utils/logger.ts";
 
@@ -241,7 +241,7 @@ export async function exploreConversation(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
       tools: EXPLORATION_TOOLS as any,
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
+    }, { apiKey: auth.apiKey, headers: auth.headers, signal });
 
     const toolCalls = probeResp.content.filter((c): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
 
@@ -266,7 +266,7 @@ export async function exploreConversation(
             systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
             messages,
             tools: EXPLORATION_TOOLS as any,
-          }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, signal }, model.provider));
+          }, { apiKey: auth.apiKey, headers: auth.headers, signal });
         } catch (err) {
           log.warn("Explore loop error", err);
           break;
@@ -338,7 +338,7 @@ export async function explorationRetry(
     const resp = await trackedComplete("explore-retry", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }], timestamp: Date.now() }],
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
   } catch (e) { log.debug("explorationRetry failed", e); return fallbackExplorationReport(llmMessages); }
@@ -367,7 +367,7 @@ export async function directExploration(
     const resp = await trackedComplete("explore-direct", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
-    }, cacheOpts({ apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, model.provider));
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);
   } catch (e) { log.debug("directExploration failed", e); return fallbackExplorationReport(llmMessages); }

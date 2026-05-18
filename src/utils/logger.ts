@@ -17,6 +17,10 @@ export function error(msg: string, err?: unknown): void {
   console.error(LOG_PREFIX + " " + msg + (detail ? ": " + detail : ""));
 }
 
+export function info(msg: string, ...args: unknown[]): void {
+  console.error(LOG_PREFIX + " [info] " + msg, ...args);
+}
+
 export function debug(msg: string, ...args: unknown[]): void {
   if (DEBUG) console.error(LOG_PREFIX + " [debug] " + msg, ...args);
 }
