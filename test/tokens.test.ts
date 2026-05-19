@@ -64,6 +64,9 @@ describe("getProviderCaps", () => {
       expect(caps.maxOutputTokens).toBeGreaterThan(0);
       expect(caps.concurrencyLimit).toBeGreaterThan(0);
       expect(caps.tokenRatioEstimate).toBeGreaterThan(0);
+      expect(caps.timeoutMultiplier).toBeGreaterThanOrEqual(1);
+      expect(caps.singlePassTokenMultiplier).toBeGreaterThan(0);
+      expect(["native", "metadata-only"]).toContain(caps.multimodal);
       expect(["anthropic", "openai", "none"]).toContain(caps.cacheStrategy);
     }
   });

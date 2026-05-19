@@ -10,54 +10,54 @@ const PROVIDER_MAP: Record<string, ProviderCapabilities> = {
   "zai-anthropic": {
     maxOutputTokens: 8192, supportsTools: "probe", jsonReliability: "high",
     instructionFollowing: "high", tokenRatioEstimate: 3.5, concurrencyLimit: 3,
-    cacheStrategy: "anthropic",
+    cacheStrategy: "anthropic", timeoutMultiplier: 1.2, singlePassTokenMultiplier: 1.0, multimodal: "metadata-only",
   },
   "anthropic": {
     maxOutputTokens: 8192, supportsTools: true, jsonReliability: "high",
     instructionFollowing: "high", tokenRatioEstimate: 3.5, concurrencyLimit: 3,
-    cacheStrategy: "anthropic",
+    cacheStrategy: "anthropic", timeoutMultiplier: 1.2, singlePassTokenMultiplier: 1.0, multimodal: "native",
   },
   // ── OpenAI family ──
   "openai": {
     maxOutputTokens: 16384, supportsTools: true, jsonReliability: "high",
     instructionFollowing: "high", tokenRatioEstimate: 4.0, concurrencyLimit: 5,
-    cacheStrategy: "openai",
+    cacheStrategy: "openai", timeoutMultiplier: 1.0, singlePassTokenMultiplier: 1.15, multimodal: "native",
   },
   // ── Google family ──
   "google": {
     maxOutputTokens: 8192, supportsTools: true, jsonReliability: "high",
     instructionFollowing: "high", tokenRatioEstimate: 3.8, concurrencyLimit: 3,
-    cacheStrategy: "openai",
+    cacheStrategy: "openai", timeoutMultiplier: 1.15, singlePassTokenMultiplier: 1.1, multimodal: "native",
   },
   // ── DeepSeek family ──
   "deepseek": {
     maxOutputTokens: 8192, supportsTools: true, jsonReliability: "medium",
     instructionFollowing: "medium", tokenRatioEstimate: 3.6, concurrencyLimit: 2,
-    cacheStrategy: "none",
+    cacheStrategy: "none", timeoutMultiplier: 1.5, singlePassTokenMultiplier: 0.85, multimodal: "metadata-only",
   },
   // ── MiniMax family ──
   "minimax": {
     maxOutputTokens: 4096, supportsTools: "probe", jsonReliability: "medium",
     instructionFollowing: "medium", tokenRatioEstimate: 3.8, concurrencyLimit: 2,
-    cacheStrategy: "anthropic",
+    cacheStrategy: "anthropic", timeoutMultiplier: 1.6, singlePassTokenMultiplier: 0.8, multimodal: "metadata-only",
   },
   // ── Xiaomi family ──
   "xiaomi-token-plan": {
     maxOutputTokens: 8192, supportsTools: "probe", jsonReliability: "medium",
     instructionFollowing: "medium", tokenRatioEstimate: 3.3, concurrencyLimit: 2,
-    cacheStrategy: "openai",
+    cacheStrategy: "openai", timeoutMultiplier: 1.35, singlePassTokenMultiplier: 0.9, multimodal: "metadata-only",
   },
   // ── Mistral family ──
   "mistral": {
     maxOutputTokens: 8192, supportsTools: true, jsonReliability: "high",
     instructionFollowing: "high", tokenRatioEstimate: 3.5, concurrencyLimit: 3,
-    cacheStrategy: "openai",
+    cacheStrategy: "openai", timeoutMultiplier: 1.2, singlePassTokenMultiplier: 1.0, multimodal: "metadata-only",
   },
   // ── xAI / Grok family ──
   "xai": {
     maxOutputTokens: 8192, supportsTools: true, jsonReliability: "medium",
     instructionFollowing: "high", tokenRatioEstimate: 3.8, concurrencyLimit: 3,
-    cacheStrategy: "openai",
+    cacheStrategy: "openai", timeoutMultiplier: 1.2, singlePassTokenMultiplier: 1.0, multimodal: "native",
   },
 };
 
@@ -78,7 +78,7 @@ const PROVIDER_ALIASES: Array<{ pattern: RegExp; provider: string }> = [
 const DEFAULT_CAPS: ProviderCapabilities = {
   maxOutputTokens: 8192, supportsTools: "probe", jsonReliability: "medium",
   instructionFollowing: "medium", tokenRatioEstimate: 3.8, concurrencyLimit: 2,
-  cacheStrategy: "none",
+  cacheStrategy: "none", timeoutMultiplier: 1.35, singlePassTokenMultiplier: 0.9, multimodal: "metadata-only",
 };
 
 export function getProviderCaps(provider: string): ProviderCapabilities {

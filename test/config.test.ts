@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { validateSmartCompactConfig } from "../src/utils/helpers.ts";
+import { DEFAULT_CONFIG, VERSION } from "../src/constants.ts";
+import pkg from "../package.json";
 
 describe("validateSmartCompactConfig", () => {
   it("deletes invalid profile", () => {
@@ -58,5 +60,32 @@ describe("validateSmartCompactConfig", () => {
     const sc2 = { autoTriggerTimeoutMs: 300000 };
     validateSmartCompactConfig(sc2);
     expect(sc2.autoTriggerTimeoutMs).toBe(300000);
+  });
+
+  it("uses a less aggressive default auto-trigger timeout", () => {
+    expect(DEFAULT_CONFIG.autoTriggerTimeoutMs).toBe(120000);
+  });
+
+  it("sanitizes invalid profile overrides", () => {
+    const sc = {
+      profiles: {
+        balanced: {
+          summaryBudgetTokens: 7000,
+          keepRecentTokens: "lots",
+          unknownKey: 123,
+        },
+        weird: { summaryBudgetTokens: 1 },
+      },
+    } as Record<string, unknown>;
+    validateSmartCompactConfig(sc);
+    const profiles = sc.profiles as Record<string, Record<string, unknown>>;
+    expect(profiles.balanced.summaryBudgetTokens).toBe(7000);
+    expect("keepRecentTokens" in profiles.balanced).toBe(false);
+    expect("unknownKey" in profiles.balanced).toBe(false);
+    expect("weird" in profiles).toBe(false);
+  });
+
+  it("keeps runtime VERSION in sync with package.json", () => {
+    expect(VERSION).toBe(pkg.version);
   });
 });

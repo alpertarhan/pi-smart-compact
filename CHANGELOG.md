@@ -1,5 +1,25 @@
 # Changelog
 
+## [7.12.0] - 2026-05-19
+
+### Added
+- **Performance monitoring report** — Metrics now include run status, method, provider/model, run type, total duration, verification gaps, and phase timings. `/smart-compact metrics` and the `smart_compact` tool's `report` parameter return a profile/provider comparison report for A/B-style evaluation.
+- **Professional local HTML dashboard** — `/smart-compact dashboard` and `smart_compact({ dashboard: true })` write `.cache/smart-compact-report.html` with KPI cards, reliability badges, duration trends, profile/provider comparison tables, phase timing bars, recent-run diagnostics, responsive dark/light styling, and aggregate metrics.
+- **Provider strategy fields** — Provider capabilities now include timeout multipliers, single-pass threshold multipliers, and multimodal support mode. Auto-trigger timeout and single-pass selection adapt to the selected provider.
+- **Multimodal metadata extraction** — The deterministic extractor now preserves image/file/audio/video attachment metadata without embedding binary/base64 payloads in summaries.
+
+### Fixed
+- **Manual tool timeout warning** — `smart_compact` tool calls no longer inherit the native auto-trigger timeout. The timeout guard now only applies when Pi's `session_before_compact` hook is trying to prepare a summary before native compaction.
+- **Auto-trigger robustness** — Increased the default `autoTriggerTimeoutMs` from 45s to 120s, cleared the hook timeout timer deterministically, and kept the native fallback warning specific to auto-trigger runs.
+- **Single-pass output budget** — Single-pass compaction now caps `maxTokens` to the selected profile's `summaryBudgetTokens` instead of the provider's maximum output size.
+- **Runtime version drift** — Synced the exported runtime `VERSION` with `package.json` and added a regression test.
+- **Config validation hardening** — Invalid per-profile overrides are now sanitized instead of reaching the compaction pipeline as non-numeric budget values.
+- **Metrics failure observability** — Timeout and unexpected error exits now write metrics entries with `status: "timeout"` or `status: "error"` before rethrowing.
+- **Dashboard hardening** — The local HTML dashboard escapes metric values and the metrics reader skips corrupt JSONL rows instead of dropping the whole report.
+
+### Performance
+- **Session log recovery cache** — Session log path lookup and parsed message maps are cached with mtime/size invalidation to avoid repeatedly scanning `~/.pi/agent/sessions` during recovery.
+
 ## [7.11.0] - 2026-05-19
 
 ### Changed

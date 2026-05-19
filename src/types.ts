@@ -37,16 +37,57 @@ export interface ProviderCapabilities {
   tokenRatioEstimate: number;
   concurrencyLimit: number;
   cacheStrategy: "anthropic" | "openai" | "none";
+  /** Provider-specific auto-trigger timeout multiplier. Slower providers get more headroom. */
+  timeoutMultiplier: number;
+  /** Suggested upper bound for single-pass compaction before chunking is preferred. */
+  singlePassTokenMultiplier: number;
+  /** Whether provider can receive non-text blocks directly. We currently summarize metadata only. */
+  multimodal: "native" | "metadata-only";
 }
 
 export interface LLMCallMetric {
   phase: "probe" | "explore" | "explore-loop" | "explore-retry" | "explore-direct" | "single-pass" | "batch" | "assemble" | "patch";
   model: string;
+  provider?: string;
   inputTokens: number;
   outputTokens: number;
   cacheHitTokens: number;
   latencyMs: number;
   success: boolean;
+}
+
+export interface PipelinePhaseTiming {
+  phase: "prepare" | "recover" | "prune" | "extract" | "explore" | "synthesize" | "verify" | "state" | "persist" | "damage";
+  durationMs: number;
+}
+
+export interface CompactMetricsEntry {
+  ts: string;
+  sessionId: string;
+  totalCalls: number;
+  totalInput: number;
+  totalOutput: number;
+  totalCacheHit: number;
+  avgLatency: number;
+  cacheHitRate: number;
+  profile?: string;
+  tier?: string;
+  method?: string;
+  model?: string;
+  provider?: string;
+  runType?: "manual" | "auto" | "tool";
+  status?: "success" | "timeout" | "error" | "dry-run";
+  contextPercent?: number;
+  toolPercent?: number;
+  tokensBefore?: number;
+  tokensSaved?: number;
+  pruneSavedTokens?: number;
+  chunkCount?: number;
+  fallbackReason?: string;
+  verificationScore?: number;
+  verificationGaps?: number;
+  phaseTimings?: PipelinePhaseTiming[];
+  durationMs?: number;
 }
 
 export interface TopicBoundary {
@@ -122,10 +163,20 @@ export interface ExplorationReport {
   keyDecisions: string[];
 }
 
+export interface MediaAttachment {
+  index: number;
+  kind: "image" | "file" | "audio" | "video" | "unknown";
+  mimeType?: string;
+  name?: string;
+  sizeBytes?: number;
+  source?: string;
+}
+
 export interface StructuredExtraction {
   modifiedFiles: Array<{ path: string; toolCalls: number; lastModifiedIndex: number }>;
   readFiles: string[];
   deletedFiles: string[];
+  mediaAttachments?: MediaAttachment[];
   errors: Array<{ index: number; tool: string; message: string; retryAttempted: boolean; resolved: boolean }>;
   decisions: Array<{ index: number; type: "explicit" | "implicit"; summary: string; userResponse?: string }>;
   constraints: Array<{ index: number; text: string; category: "requirement" | "preference" | "prohibition"; confidence: number }>;

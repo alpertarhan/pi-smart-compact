@@ -7,6 +7,7 @@ function makeExtraction(partial: Partial<StructuredExtraction> = {}): Structured
     modifiedFiles: [],
     readFiles: [],
     deletedFiles: [],
+    mediaAttachments: [],
     errors: [],
     decisions: [],
     constraints: [],
@@ -105,6 +106,16 @@ describe("mergeExtractions — index offset", () => {
     expect(merged.topics[0].endIndex).toBe(4);
     expect(merged.topics[1].startIndex).toBe(5); // 0 + 5
     expect(merged.topics[1].endIndex).toBe(7);   // 2 + 5
+  });
+
+  it("offsets media attachment indexes by baseMsgCount", () => {
+    const base = makeExtraction({ mediaAttachments: [{ index: 1, kind: "image", name: "before.png" }], messageCount: 4 });
+    const delta = makeExtraction({ mediaAttachments: [{ index: 2, kind: "file", name: "after.pdf" }], messageCount: 3 });
+    const merged = mergeExtractions(base, delta, 4);
+    expect(merged.mediaAttachments).toEqual([
+      { index: 1, kind: "image", name: "before.png" },
+      { index: 6, kind: "file", name: "after.pdf" },
+    ]);
   });
 
   it("offsets timeline indexes by baseMsgCount", () => {

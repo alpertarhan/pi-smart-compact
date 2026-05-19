@@ -9,6 +9,8 @@ import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile, PendingCompaction } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./constants.ts";
 import { loadConfig, extractUserNote } from "./utils/helpers.ts";
+import { getProviderCaps } from "./utils/tokens.ts";
+import { buildMetricsReport, writeMetricsDashboard } from "./utils/cache.ts";
 import { runSmartCompact } from "./core.ts";
 import { showCompactUI } from "./ui/overlays.ts";
 import * as log from "./utils/logger.ts";
@@ -52,7 +54,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   pi.registerCommand("smart-compact", {
     description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [light|balanced|aggressive] [verbose|debug|dry-run] [note]",
     getArgumentCompletions: (prefix: string) => {
-      const m = ["verbose", "debug", "dry-run", "light", "balanced", "aggressive"].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
+      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "light", "balanced", "aggressive"].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
       return m.length ? m : null;
     },
     handler: async (args, ctx) => {
@@ -62,6 +64,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         const flags = tokens.map(t => t.toLowerCase());
         const verbose = flags.includes("verbose") || flags.includes("debug");
         const dryRun = flags.includes("dry-run");
+        if (flags.includes("metrics") || flags.includes("dashboard")) {
+          const dashboard = flags.includes("dashboard");
+          const report = buildMetricsReport();
+          const fp = dashboard ? writeMetricsDashboard() : null;
+          ctx.ui.notify(report + (fp ? "\n\nDashboard: " + fp : ""), "info");
+          return;
+        }
         const modelArg = tokens.find(t => t.includes("/"));
         const profileArg = tokens.find(t => ["light", "balanced", "aggressive"].includes(t)) as CompressionProfile | undefined;
         const profile = profileArg ?? loadConfig().profile;
@@ -118,22 +127,26 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const { segModel, sumModel } = resolveModels(ctx as unknown as ExtensionCommandContext, cur, config);
       if (!sumModel) return;
       if (!isRunning.value) {
-        const compactPromise = runSmartCompact({ ctx: ctx as unknown as ExtensionCommandContext, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true });
+        const caps = getProviderCaps(sumModel.provider);
+        const effectiveTimeoutMs = Math.round(config.autoTriggerTimeoutMs * caps.timeoutMultiplier);
+        const compactPromise = runSmartCompact({ ctx: ctx as unknown as ExtensionCommandContext, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true, timeoutMs: effectiveTimeoutMs });
         // Hard timeout: even if the LLM provider ignores AbortSignal, we won't block native compact.
-        const timeoutPromise = new Promise<void>((_, reject) => {
-          setTimeout(() => reject(new Error("smart-compact-timeout")), config.autoTriggerTimeoutMs);
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        const timeoutPromise = new Promise<"timeout">((resolve) => {
+          timeoutId = setTimeout(() => resolve("timeout"), effectiveTimeoutMs + 100);
         });
+        let result: "done" | "timeout";
         try {
-          await Promise.race([compactPromise, timeoutPromise]);
-        } catch (e) {
-          if (e instanceof Error && e.message === "smart-compact-timeout") {
-            log.warn("Smart compact auto-trigger hard timeout after " + config.autoTriggerTimeoutMs + "ms");
-            isRunning.value = false;
-            pendingRef.value = null;
-            pendingRef.createdAt = 0;
-            return; // fall back to native compact
-          }
-          throw e;
+          result = await Promise.race([compactPromise.then(() => "done" as const), timeoutPromise]);
+        } finally {
+          if (timeoutId) clearTimeout(timeoutId);
+        }
+        if (result === "timeout") {
+          log.warn("Smart compact auto-trigger hard timeout after " + effectiveTimeoutMs + "ms");
+          isRunning.value = false;
+          pendingRef.value = null;
+          pendingRef.createdAt = 0;
+          return; // fall back to native compact
         }
         const pending = pendingRef.value as PendingCompaction | null;
         if (pending) {
@@ -156,12 +169,19 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         profile: { type: "string", description: "light, balanced, or aggressive. Default: balanced." },
         verbose: { type: "boolean", description: "Show detailed pipeline output." },
         dry_run: { type: "boolean", description: "Run the pipeline but skip applying the compaction." },
+        report: { type: "boolean", description: "Return recent performance metrics instead of compacting." },
+        dashboard: { type: "boolean", description: "Write a local HTML metrics dashboard and return its path." },
       },
     },
     async execute(_id, params, _sig, _onUp, ctx) {
       const profile = (params.profile === "light" || params.profile === "balanced" || params.profile === "aggressive") ? params.profile : undefined;
       const verbose = !!params.verbose;
       const dryRun = !!params.dry_run;
+      if (params.report || params.dashboard) {
+        const report = buildMetricsReport();
+        const fp = params.dashboard ? writeMetricsDashboard() : null;
+        return { content: [{ type: "text", text: report + (fp ? "\n\nDashboard: " + fp : "") }], details: undefined };
+      }
       const config = loadConfig();
       const resolvedProfile = profile ?? config.profile;
       const cmdCtx = ctx as unknown as ExtensionCommandContext;

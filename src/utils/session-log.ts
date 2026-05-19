@@ -45,6 +45,10 @@ interface LogMessage {
   display?: boolean;
 }
 
+const LOG_PATH_CACHE_TTL_MS = 30_000;
+const logPathCache = new Map<string, { path: string | null; expiresAt: number; home: string }>();
+const messageMapCache = new Map<string, { logPath: string; mtimeMs: number; size: number; map: Map<string, LlmMessage> }>();
+
 /**
  * Find the session .jsonl log file for a given session ID.
  *
@@ -54,8 +58,15 @@ interface LogMessage {
  */
 function findSessionLogFile(sessionId: string): string | null {
   try {
+    const home = process.env.HOME ?? "/tmp";
+    const cached = logPathCache.get(sessionId);
+    if (cached && cached.home === home && cached.expiresAt > Date.now()) return cached.path;
+
     const sessionsDir = getSessionsDir();
-    if (!fs.existsSync(sessionsDir)) return null;
+    if (!fs.existsSync(sessionsDir)) {
+      logPathCache.set(sessionId, { path: null, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home });
+      return null;
+    }
     for (const subdir of fs.readdirSync(sessionsDir)) {
       const subdirPath = path.join(sessionsDir, subdir);
       const stat = fs.statSync(subdirPath);
@@ -63,16 +74,24 @@ function findSessionLogFile(sessionId: string): string | null {
 
       // Try exact match first (future / alternative layout)
       const exact = path.join(subdirPath, sessionId + ".jsonl");
-      if (fs.existsSync(exact)) return exact;
+      if (fs.existsSync(exact)) {
+        logPathCache.set(sessionId, { path: exact, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home });
+        return exact;
+      }
 
       // Try glob suffix: *_<sessionId>.jsonl
       const files = fs.readdirSync(subdirPath);
       const match = files.find(f => f.endsWith("_" + sessionId + ".jsonl"));
-      if (match) return path.join(subdirPath, match);
+      if (match) {
+        const found = path.join(subdirPath, match);
+        logPathCache.set(sessionId, { path: found, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home });
+        return found;
+      }
     }
   } catch (e) {
     log.debug("findSessionLogFile failed", e);
   }
+  logPathCache.set(sessionId, { path: null, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home: process.env.HOME ?? "/tmp" });
   return null;
 }
 
@@ -119,6 +138,12 @@ function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | nu
   }
 
   try {
+    const stat = fs.statSync(logPath);
+    const cached = messageMapCache.get(sessionId);
+    if (cached && cached.logPath === logPath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.map;
+    }
+
     const raw = fs.readFileSync(logPath, "utf-8");
     const map = new Map<string, LlmMessage>();
 
@@ -137,7 +162,11 @@ function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | nu
     }
 
     log.debug("readOriginalMessageMap: " + map.size + " msgs from " + logPath);
-    return map.size > 0 ? map : null;
+    if (map.size > 0) {
+      messageMapCache.set(sessionId, { logPath, mtimeMs: stat.mtimeMs, size: stat.size, map });
+      return map;
+    }
+    return null;
   } catch (e) {
     log.debug("readOriginalMessageMap failed", e);
     return null;

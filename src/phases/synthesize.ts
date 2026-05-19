@@ -75,7 +75,7 @@ export function chunkLlmMessages(msgs: LlmMessage[], boundaries: import("../type
 export async function singlePassCompact(
   convText: string, extraction: StructuredExtraction, report: ExplorationReport | null,
   prevContext: string,
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, signal?: AbortSignal,
+  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, budgetTokens: number, signal?: AbortSignal,
 ): Promise<{ summary: string; llmCalls: 1 }> {
   const extractionCtx = buildExtractionContext(extraction);
   const explorationCtx = report ? buildExplorationContext(report) : "";
@@ -95,7 +95,7 @@ export async function singlePassCompact(
       { role: "user" as const, content: [{ type: "text" as const, text: adaptedPrefix }], timestamp: Date.now() },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
-  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: getProviderCaps(model.provider).maxOutputTokens, signal });
+  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budgetTokens, getProviderCaps(model.provider).maxOutputTokens), signal });
   const summary = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
   if (!summary.startsWith("##")) throw new Error("Single-pass malformed output");
   return { summary, llmCalls: 1 };

@@ -153,6 +153,8 @@ With no arguments, the extension opens a small picker for:
 /smart-compact anthropic/claude-sonnet-4 balanced
 /smart-compact dry-run
 /smart-compact debug
+/smart-compact metrics
+/smart-compact dashboard
 /smart-compact "focus on auth changes and unresolved follow-up work"
 ```
 
@@ -164,7 +166,9 @@ With no arguments, the extension opens a small picker for:
   "parameters": {
     "profile": "balanced",
     "verbose": false,
-    "dry_run": false
+    "dry_run": false,
+    "report": false,
+    "dashboard": false
   }
 }
 ```
@@ -179,6 +183,8 @@ The tool prepares a pending smart summary and lets Pi consume it on the next nat
 - the tool path does **not** compact the conversation mid-turn
 - pending summaries are kept in memory for **5 minutes**
 - exploration is adaptive and may be skipped for simple sessions
+- use `/smart-compact metrics` for profile/provider comparisons
+- use `/smart-compact dashboard` to write a local HTML report at `.cache/smart-compact-report.html`
 
 This keeps the extension helpful without forcing extra work when it is not needed.
 
@@ -195,6 +201,7 @@ Add this to `~/.pi/agent/settings.json`:
     "summaryModel": "anthropic/claude-sonnet-4",
     "segmentationModel": "anthropic/claude-haiku-3",
     "autoTrigger": true,
+    "autoTriggerTimeoutMs": 120000,
     "backupEnabled": true,
     "profiles": {
       "balanced": {
@@ -214,6 +221,7 @@ Add this to `~/.pi/agent/settings.json`:
 | `summaryModel` | `string \| null` | `null` |
 | `segmentationModel` | `string \| null` | `null` |
 | `autoTrigger` | `boolean` | `true` |
+| `autoTriggerTimeoutMs` | `number` | `120000` |
 | `backupEnabled` | `boolean` | `true` |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` |
 | `profiles` | partial per-profile overrides | built-ins |
@@ -269,8 +277,10 @@ The current design includes:
 - hallucinated file-reference detection
 - open-loop injection
 - project fingerprinting and delta tracking
+- provider-specific timeout and single-pass strategies
+- multimodal attachment metadata preservation
 - backup creation before compaction
-- metrics logging and damage detection
+- metrics logging, profile/provider comparison, and damage detection
 
 ---
 
@@ -282,6 +292,7 @@ At runtime, the extension writes to paths under `~/.pi/agent/`, including:
 - `compact-backups/`
 - `.cache/compact-extraction-<session>.json`
 - `.cache/compact-metrics.jsonl`
+- `.cache/smart-compact-report.html`
 - `.cache/smart-compact/projects/<projectId>.json`
 - `.cache/smart-compact/states/<projectId>.json`
 - `.cache/smart-compact/damage-reports.jsonl`

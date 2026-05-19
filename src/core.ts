@@ -7,7 +7,7 @@ import { convertToLlm, serializeConversation } from "@earendil-works/pi-coding-a
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   CompressionProfile, PendingCompaction, LlmMessage, StructuredExtraction,
-  ExplorationReport, SmartCompactDetails, ChunkSummary, SessionMessageEntry,
+  ExplorationReport, SmartCompactDetails, ChunkSummary, SessionMessageEntry, PipelinePhaseTiming,
 } from "./types.ts";
 import { PROFILES, MIN_TOKEN_THRESHOLD, MAX_EXPLORATION_ROUNDS } from "./constants.ts";
 import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
@@ -44,15 +44,32 @@ export interface SmartCompactOptions {
   autoTriggered?: boolean;
   userNote?: string;
   skipCompact?: boolean;
+  /** Optional hard budget for native auto-trigger only. Manual/tool runs do not time out by default. */
+  timeoutMs?: number;
 }
 
 export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> {
-  const { ctx, summaryModel, segModel, profile, verbose = false, dryRun = false, pendingRef, isRunning, autoTriggered = false, userNote, skipCompact } = opts;
+  const { ctx, summaryModel, segModel, profile, verbose = false, dryRun = false, pendingRef, isRunning, autoTriggered = false, userNote, skipCompact, timeoutMs = 0 } = opts;
   if (isRunning.value) return;
   isRunning.value = true;
   const pipelineStart = Date.now();
+  const phaseTimings: PipelinePhaseTiming[] = [];
+  let phaseStart = pipelineStart;
+  const markPhase = (phase: PipelinePhaseTiming["phase"]) => {
+    const now = Date.now();
+    phaseTimings.push({ phase, durationMs: now - phaseStart });
+    phaseStart = now;
+  };
   resetCompactSessionId();
   resetMetrics();
+
+  let sessionId = "unknown";
+  let totalTokens = 0;
+  let contextPercent = 0;
+  let toolPercent = 0;
+  let tier: string | undefined;
+  let methodForMetrics: string | undefined;
+  const modelLabel = summaryModel ? summaryModel.provider + "/" + summaryModel.id : "unknown";
 
   if (!summaryModel || !segModel) { isRunning.value = false; if (!autoTriggered) ctx.ui.notify("Model resolve failed", "error"); return; }
 
@@ -70,21 +87,20 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     const apiHeaders = auth.headers;
 
     const usage = ctx.getContextUsage();
-    const totalTokens = usage?.tokens ?? 0;
+    totalTokens = usage?.tokens ?? 0;
 
     const notify = (msg: string, type: "info" | "success" | "warning" | "error" = "info") => { ctx.ui.notify(msg, type === "success" ? "info" : type); };
     const vlog = (msg: string) => { if (verbose) log.info(msg); };
     const ctrl = new AbortController();
     const signal = ctrl.signal;
 
-    if (autoTriggered && config.autoTriggerTimeoutMs > 0) {
+    if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         timedOut = true;
         ctrl.abort();
-        notify("Smart compact auto-trigger timed out after " + config.autoTriggerTimeoutMs + "ms, falling back to native compact", "warning");
-      }, config.autoTriggerTimeoutMs);
+        notify("Smart compact auto-trigger exceeded " + timeoutMs + "ms; Pi will use native compact for this run", "warning");
+      }, timeoutMs);
     }
-    const modelLabel = summaryModel.provider + "/" + summaryModel.id;
     notify("Smart compact: " + modelLabel + ", " + profile + ", tokens=" + totalTokens, "info");
     notify("EESV Compact (" + modelLabel + ", " + profile + ") — " + (totalTokens ?? 0).toLocaleString() + "t", "info");
 
@@ -108,6 +124,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     const toCompact = msgs.slice(0, keepFrom);
     if (!toCompact.length) { isRunning.value = false; return; }
     const firstKeptId = (msgs[keepFrom]?.id ?? msgs[msgs.length - 1]?.id) as string;
+    markPhase("prepare");
 
     if (!autoTriggered) {
       showProgressOverlay(ctx, { phase: 1, phaseName: "Extract", detail: "Preparing...", model: modelLabel, profile });
@@ -124,11 +141,12 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         notify("Using untruncated session log (" + llmMessages.length + " msgs)", "info");
       }
     }
+    markPhase("recover");
 
     // ── Tiered compaction: adapt pipeline depth to context pressure ──
-    const contextPercent = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
-    const toolPercent = computeToolCharPercentage(branch);
-    const tier = selectCompactionTier(contextPercent, toolPercent, totalTokens, MIN_TOKEN_THRESHOLD);
+    contextPercent = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
+    toolPercent = computeToolCharPercentage(branch);
+    tier = selectCompactionTier(contextPercent, toolPercent, totalTokens, MIN_TOKEN_THRESHOLD);
 
     if (tier === "none") {
       isRunning.value = false;
@@ -144,10 +162,11 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       notify("Pruning: " + pruning.prunedCount + " msgs removed (" + pruning.reasons.map(r => r.count + "x " + r.reason).join(", ") + ")", "info");
     }
     llmMessages = pruning.messages;
+    markPhase("prune");
     const convText = serializeConversation(llmMessages as unknown as import("@earendil-works/pi-ai").Message[]);
     const convTokens = estimateTokens(convText);
 
-    const sessionId = ctx.sessionManager.getSessionId?.() ?? "unknown";
+    sessionId = ctx.sessionManager.getSessionId?.() ?? "unknown";
     const backupPath = backupConversation(convText, sessionId);
     const prevContext = getPreviousCompactionContext(branch);
 
@@ -172,6 +191,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       vlog("Full extraction — " + llmMessages.length + " messages, tier=" + tier);
     }
     saveCachedExtraction(sessionId, extraction, llmMessages.length, currentFirstId, currentLastId);
+    markPhase("extract");
 
     // ── Project fingerprint (cross-session context) ──
     const projectId = deriveProjectId(findGitRoot(ctx.cwd) ?? ctx.cwd, extraction, sessionId);
@@ -189,11 +209,13 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     let explorationRounds = 0;
     let chunkCount = 0;
 
-    vlog("Tier=" + tier + " | convTokens=" + convTokens + " | singlePassMax=" + pc.singlePassMaxTokens);
-    if (convTokens < pc.singlePassMaxTokens) {
+    const providerCaps = getProviderCaps(summaryModel.provider);
+    const singlePassMaxTokens = Math.round(pc.singlePassMaxTokens * providerCaps.singlePassTokenMultiplier);
+    vlog("Tier=" + tier + " | convTokens=" + convTokens + " | singlePassMax=" + singlePassMaxTokens);
+    if (convTokens < singlePassMaxTokens) {
       if (!autoTriggered) showProgressOverlay(ctx, { phase: 2, phaseName: "Explore", detail: "Single-pass (" + convTokens.toLocaleString() + "t)", model: modelLabel, profile, extraction });
       try {
-        const r = await singlePassCompact(convText, extraction, null, prevContext + projectCtx, summaryModel, { apiKey, headers: apiHeaders }, signal);
+        const r = await singlePassCompact(convText, extraction, null, prevContext + projectCtx, summaryModel, { apiKey, headers: apiHeaders }, pc.summaryBudgetTokens, signal);
         finalSummary = r.summary; method = "single-pass"; llmCalls = r.llmCalls;
       } catch (err) {
         notify("Single-pass failed: " + (err instanceof Error ? err.message : String(err)), "warning");
@@ -217,6 +239,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       } else {
         notify("Phase 2 Explore: skipped (simple session: " + extraction.topics.length + " topics, " + extraction.errors.filter(e => !e.resolved).length + " unresolved errors)", "info");
       }
+      markPhase("explore");
 
       let boundaries: import("./types.ts").TopicBoundary[];
       if (explorationReport?.boundaries.length) {
@@ -257,8 +280,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       const totalBatches = batches.length;
       if (!autoTriggered) showProgressOverlay(ctx, { phase: 3, phaseName: "Synthesize", detail: "0/" + totalBatches + " batches", model: modelLabel, profile, extraction, totalBatches });
 
-      const caps = getProviderCaps(summaryModel.provider);
-      const concurrency = caps.concurrencyLimit;
+      const concurrency = providerCaps.concurrencyLimit;
 
       if (totalBatches <= 1) {
         try {
@@ -311,6 +333,9 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       method = "eesv";
       llmCalls = explorationRounds + batches.length + assemblyCalls;
     }
+    methodForMetrics = method;
+    if (method === "single-pass" || method === "heuristic") markPhase("explore");
+    markPhase("synthesize");
 
     if (!autoTriggered) showProgressOverlay(ctx, { phase: 4, phaseName: "Verify", detail: "Checking...", model: modelLabel, profile, extraction, explorationRounds });
     const verification = verifySummary(finalSummary, extraction);
@@ -335,6 +360,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         notify("Phase 4 Verify: " + verification.gaps.length + " gap(s), score=" + verification.score + " ≥ 85 — skipping patch", "info");
       }
     }
+
+    markPhase("verify");
 
     const detModified = extraction.modifiedFiles.map(f => f.path);
     const detRead = extraction.readFiles;
@@ -371,6 +398,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       }
     }
 
+    markPhase("state");
+
     const details: SmartCompactDetails = {
       method: method as SmartCompactDetails["method"],
       chunkCount: chunkCount || 1,
@@ -386,6 +415,24 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     };
 
     if (dryRun) {
+      appendMetricsLog(sessionId, {
+        profile, tier,
+        contextPercent: Math.round(contextPercent),
+        toolPercent,
+        tokensBefore: totalTokens,
+        tokensSaved,
+        pruneSavedTokens: pruning.prunedTokenSaving,
+        chunkCount: chunkCount || 1,
+        verificationScore: verification.score,
+        verificationGaps: verification.gaps.length,
+        method,
+        model: modelLabel,
+        provider: summaryModel.provider,
+        runType: skipCompact ? "tool" : autoTriggered ? "auto" : "manual",
+        status: "dry-run",
+        phaseTimings,
+        durationMs: Date.now() - pipelineStart,
+      });
       notify("DRY RUN (" + method + ", " + profile + ") — " + toCompact.length + " msgs, " + llmCalls + " calls", "info");
       return;
     }
@@ -406,16 +453,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // ── Save compaction state for cross-compaction tracking ──
     saveCompactionState(projectId, compactionState);
 
-    appendMetricsLog(sessionId, {
-      profile, tier,
-      contextPercent: Math.round(contextPercent),
-      toolPercent,
-      tokensBefore: totalTokens,
-      tokensSaved,
-      pruneSavedTokens: pruning.prunedTokenSaving,
-      chunkCount: chunkCount || 1,
-      verificationScore: verification.score,
-    });
+    markPhase("persist");
 
     // ── Damage detection: check if previous compaction caused issues ──
     // This reads post-compaction messages from the current branch to detect regression
@@ -436,6 +474,25 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     } catch (err) { /* damage detection is best effort */
       log.warn("Damage detection error", err);
     }
+    markPhase("damage");
+    appendMetricsLog(sessionId, {
+      profile, tier,
+      contextPercent: Math.round(contextPercent),
+      toolPercent,
+      tokensBefore: totalTokens,
+      tokensSaved,
+      pruneSavedTokens: pruning.prunedTokenSaving,
+      chunkCount: chunkCount || 1,
+      verificationScore: verification.score,
+      verificationGaps: verification.gaps.length,
+      method,
+      model: modelLabel,
+      provider: summaryModel.provider,
+      runType: skipCompact ? "tool" : autoTriggered ? "auto" : "manual",
+      status: "success",
+      phaseTimings,
+      durationMs: Date.now() - pipelineStart,
+    });
     const ms = getMetricsSummary();
     if (ms.totalCalls > 0) {
       notify("Metrics: " + ms.totalCalls + " calls, " + ms.totalInput + "t in, " + ms.totalOutput + "t out, cache " + Math.round(ms.cacheHitRate * 100) + "%, " + ms.avgLatency + "ms avg", "info");
@@ -457,6 +514,23 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         onError: e => { ctx.ui.notify("Failed: " + e.message, "error"); },
       });
     }
+  } catch (err) {
+    appendMetricsLog(sessionId, {
+      profile,
+      tier,
+      contextPercent: Math.round(contextPercent),
+      toolPercent,
+      tokensBefore: totalTokens,
+      method: methodForMetrics,
+      model: modelLabel,
+      provider: summaryModel.provider,
+      runType: skipCompact ? "tool" : autoTriggered ? "auto" : "manual",
+      status: timedOut ? "timeout" : "error",
+      fallbackReason: err instanceof Error ? err.message : String(err),
+      phaseTimings,
+      durationMs: Date.now() - pipelineStart,
+    });
+    throw err;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
     isRunning.value = false;

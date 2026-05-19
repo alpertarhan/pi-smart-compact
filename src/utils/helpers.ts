@@ -9,6 +9,9 @@ import type { CompactConfig, CompressionProfile, ChunkSummary, LlmChunk, Structu
 import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT } from "../constants.ts";
 import * as log from "./logger.ts";
 
+const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
+const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
+
 /**
  * Validate user-supplied smart-compact config values.
  *
@@ -17,8 +20,7 @@ import * as log from "./logger.ts";
  * This prevents silent misconfiguration (e.g. profile: "super").
  */
 export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
-  const VALID_PROFILES: readonly string[] = ["light", "balanced", "aggressive"];
-  if ("profile" in sc && !VALID_PROFILES.includes(sc.profile as string)) {
+  if ("profile" in sc && !(VALID_PROFILES as readonly string[]).includes(sc.profile as string)) {
     log.warn("smart-compact config: invalid profile '" + sc.profile + "', expected light|balanced|aggressive. Using default 'balanced'.");
     delete sc.profile;
   }
@@ -38,9 +40,37 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
     log.warn("smart-compact config: segmentationModel must be string|null, got " + typeof sc.segmentationModel);
     delete sc.segmentationModel;
   }
-  if ("profiles" in sc && (typeof sc.profiles !== "object" || sc.profiles === null || Array.isArray(sc.profiles))) {
-    log.warn("smart-compact config: profiles must be an object, got " + typeof sc.profiles);
-    delete sc.profiles;
+  if ("profiles" in sc) {
+    if (typeof sc.profiles !== "object" || sc.profiles === null || Array.isArray(sc.profiles)) {
+      log.warn("smart-compact config: profiles must be an object, got " + typeof sc.profiles);
+      delete sc.profiles;
+    } else {
+      const profiles = sc.profiles as Record<string, unknown>;
+      for (const [profileName, value] of Object.entries(profiles)) {
+        if (!(VALID_PROFILES as readonly string[]).includes(profileName)) {
+          log.warn("smart-compact config: ignoring unknown profile override '" + profileName + "'.");
+          delete profiles[profileName];
+          continue;
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          log.warn("smart-compact config: profile '" + profileName + "' must be an object.");
+          delete profiles[profileName];
+          continue;
+        }
+        const profileCfg = value as Record<string, unknown>;
+        for (const [key, raw] of Object.entries(profileCfg)) {
+          if (!(PROFILE_NUMERIC_KEYS as readonly string[]).includes(key)) {
+            log.warn("smart-compact config: ignoring unknown profile key '" + profileName + "." + key + "'.");
+            delete profileCfg[key];
+            continue;
+          }
+          if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0 || raw > 1_000_000) {
+            log.warn("smart-compact config: profile '" + profileName + "." + key + "' must be a positive finite number.");
+            delete profileCfg[key];
+          }
+        }
+      }
+    }
   }
   if ("autoTriggerTimeoutMs" in sc) {
     const v = sc.autoTriggerTimeoutMs;
@@ -291,12 +321,14 @@ export function preProcessSummaries(summaries: ChunkSummary[], budgetTokens?: nu
 export function buildExtractionContext(extraction: StructuredExtraction, forRange?: { start: number; end: number }): string {
   const files = forRange ? extraction.modifiedFiles.filter(f => f.lastModifiedIndex >= forRange.start && f.lastModifiedIndex <= forRange.end) : extraction.modifiedFiles;
   const errors = forRange ? extraction.errors.filter(e => e.index >= forRange.start && e.index <= forRange.end) : extraction.errors;
+  const media = forRange ? (extraction.mediaAttachments ?? []).filter(a => a.index >= forRange.start && a.index <= forRange.end) : (extraction.mediaAttachments ?? []);
   return [
     "## Deterministic Extraction (verified facts)",
     "Files modified: " + (files.map(f => f.path).join(", ") || "none"),
     "Errors: " + (errors.map(e => "[" + e.tool + "] " + e.message.slice(0, 80) + (e.resolved ? " ✓" : "")).join("; ") || "none"),
     "Decisions: " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, 60)).join("; ") || "none"),
     "Constraints: " + (extraction.constraints.map(c => "[" + c.category + "] " + c.text.slice(0, 60)).join("; ") || "none"),
+    "Media attachments: " + (media.map(a => a.kind + (a.name ? ":" + a.name : "") + (a.mimeType ? " (" + a.mimeType + ")" : "") + " @msg" + a.index).join("; ") || "none"),
   ].join("\n");
 }
 

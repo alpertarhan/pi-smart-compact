@@ -3,7 +3,7 @@
  */
 
 import path from "node:path";
-import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop } from "../types.ts";
+import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop, MediaAttachment } from "../types.ts";
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
@@ -26,6 +26,38 @@ export function extractText(content: unknown): string {
     return "";
   }).join("");
   return "";
+}
+
+function mediaKind(type: string, mime?: string): MediaAttachment["kind"] {
+  const s = (type + " " + (mime ?? "")).toLowerCase();
+  if (/image|input_image|image_url/.test(s)) return "image";
+  if (/audio/.test(s)) return "audio";
+  if (/video/.test(s)) return "video";
+  if (/file|document|pdf|attachment/.test(s)) return "file";
+  return "unknown";
+}
+
+/** Extract attachment metadata without embedding binary/base64 payloads in summaries. */
+export function extractMediaAttachments(msgs: LlmMessage[]): MediaAttachment[] {
+  const out: MediaAttachment[] = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const blocks = Array.isArray(msgs[i].content) ? msgs[i].content as unknown[] : [];
+    for (const b of blocks) {
+      if (!b || typeof b !== "object") continue;
+      const rec = b as Record<string, unknown>;
+      const type = String(rec.type ?? "");
+      if (type === "text" || type === "toolCall" || type === "tool_use") continue;
+      const mimeType = (rec.mimeType ?? rec.mime_type ?? rec.mediaType ?? rec.media_type) as string | undefined;
+      const name = (rec.name ?? rec.filename ?? rec.fileName ?? rec.title) as string | undefined;
+      const sizeBytes = (rec.sizeBytes ?? rec.size_bytes ?? rec.size) as number | undefined;
+      const source = typeof rec.url === "string" ? "url" : typeof rec.path === "string" ? "path" : typeof rec.data === "string" || typeof rec.base64 === "string" ? "inline" : undefined;
+      const kind = mediaKind(type, mimeType);
+      if (kind !== "unknown" || source || mimeType || name) {
+        out.push({ index: i, kind, mimeType, name, sizeBytes: typeof sizeBytes === "number" ? sizeBytes : undefined, source });
+      }
+    }
+  }
+  return out;
 }
 
 export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
@@ -401,12 +433,13 @@ export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig): Struct
   const constraints = mineConstraints(msgs);
   const topics = segmentTopicsHeuristic(msgs, pc, 20, tcIdx);
   const timeline = buildTimeline(msgs, errors);
+  const mediaAttachments = extractMediaAttachments(msgs);
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs.filter(m => m.role === "user").slice(-5).map(m => extractText(m.content));
   const lastErrors = errors.slice(-3).map(e => e.message);
   return {
     modifiedFiles: modified, readFiles: read, deletedFiles: deleted,
-    errors, decisions, constraints, topics, timeline,
+    errors, decisions, constraints, topics, timeline, mediaAttachments,
     mainGoal, lastUserMessages, lastErrors, messageCount: msgs.length,
   };
 }

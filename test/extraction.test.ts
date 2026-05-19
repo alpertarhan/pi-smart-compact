@@ -8,6 +8,7 @@ import {
   mineConstraints,
   segmentTopicsHeuristic,
   extractMainGoal,
+  extractMediaAttachments,
   extractStructured,
 } from "../src/utils/extraction.ts";
 import type { LlmMessage, ProfileConfig } from "../src/types.ts";
@@ -31,6 +32,19 @@ describe("extractText", () => {
   });
   it("returns empty for unknown", () => {
     expect(extractText(42)).toBe("");
+  });
+});
+
+describe("extractMediaAttachments", () => {
+  it("captures image/file metadata without text payload", () => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: [{ type: "text", text: "inspect this" }, { type: "image", mimeType: "image/png", name: "screen.png", sizeBytes: 1234, data: "base64..." }] },
+      { role: "user", content: [{ type: "file", mime_type: "application/pdf", filename: "spec.pdf", url: "https://example.test/spec.pdf" }] },
+    ];
+    const media = extractMediaAttachments(msgs);
+    expect(media).toHaveLength(2);
+    expect(media[0]).toMatchObject({ index: 0, kind: "image", mimeType: "image/png", name: "screen.png", sizeBytes: 1234, source: "inline" });
+    expect(media[1]).toMatchObject({ index: 1, kind: "file", mimeType: "application/pdf", name: "spec.pdf", source: "url" });
   });
 });
 
@@ -158,6 +172,7 @@ describe("extractStructured", () => {
     ];
     const ext = extractStructured(msgs, PC);
     expect(ext.messageCount).toBe(5);
+    expect(ext.mediaAttachments).toEqual([]);
     expect(ext.modifiedFiles.length).toBe(1);
     expect(ext.modifiedFiles[0].path).toBe("/src/Login.tsx");
     expect(ext.errors.length).toBe(1);

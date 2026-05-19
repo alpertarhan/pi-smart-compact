@@ -4,7 +4,7 @@
 
 import type { CompressionProfile, ProfileConfig } from "./types.ts";
 
-export const VERSION = "7.9.5";
+export const VERSION = "7.12.0";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
@@ -47,7 +47,7 @@ export const DEFAULT_CONFIG = {
   summaryModel: null as string | null,
   segmentationModel: null as string | null,
   autoTrigger: true,
-  autoTriggerTimeoutMs: 45000,
+  autoTriggerTimeoutMs: 120000,
   backupEnabled: true,
   backupDir: "",
 };
