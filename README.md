@@ -37,6 +37,25 @@ The extension stages a short-lived pending summary in memory, then hands it back
 
 ---
 
+## Compatibility note
+
+`pi-smart-compact` sits close to Pi's compaction path: it registers `session_before_compact`, reads the active branch and session log, stages a pending summary, and may call Pi's native compaction flow from `/smart-compact`.
+
+Because of that, use extra care with extensions that also manipulate:
+
+- **compaction hooks** — especially extensions that return a custom result from `session_before_compact`
+- **session / branch history** — rewriting, pruning, reordering, or replacing entries before compaction
+- **message identity** — removing entry IDs, tool-call IDs, or tool-result metadata used to align log entries
+- **tool output content** — truncating or rewriting `toolResult` messages before extraction
+- **compaction boundaries** — moving the keep/discard split or splitting `toolCall` / `toolResult` pairs
+- **session log storage** — replacing or deleting Pi's `.jsonl` logs under `~/.pi/agent/sessions`
+
+It is intentionally compatible with, and recommended alongside, [`pi-toolkit`](https://github.com/ersintarhan/pi-toolkit): pi-toolkit handles everyday context hygiene such as anchors, pivots, status lines, and old tool-output trimming; `pi-smart-compact` handles high-pressure verified compaction. The integration protects recent pi-toolkit anchors and can recover original tool outputs from the session log when older tool results were trimmed.
+
+If you use another automatic compaction or context-rewriting extension, prefer enabling only one `session_before_compact` owner unless the hook order and returned values are explicitly coordinated.
+
+---
+
 ## Why it exists
 
 Default compaction often loses the parts that matter most during coding work:

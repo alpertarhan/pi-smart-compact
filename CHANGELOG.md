@@ -1,5 +1,10 @@
 # Changelog
 
+## [7.11.0] - 2026-05-19
+
+### Changed
+- **README compatibility guidance** — Added a prominent note documenting conflict-prone extension behavior around compaction hooks, session/branch history, message and tool metadata, tool output rewriting, compaction boundaries, and session log storage. Also clarified that `pi-smart-compact` is recommended alongside `pi-toolkit` for complementary context hygiene and verified compaction.
+
 ## [7.10.0] - 2026-05-19
 
 ### Added
