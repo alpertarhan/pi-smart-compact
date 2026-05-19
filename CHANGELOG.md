@@ -1,5 +1,10 @@
 # Changelog
 
+## [7.12.1] - 2026-05-19
+
+### Fixed
+- **Pi package gallery preview** — Added `pi.image` metadata pointing to the packaged logo asset so pi.dev/package listings can render the package image.
+
 ## [7.12.0] - 2026-05-19
 
 ### Added
