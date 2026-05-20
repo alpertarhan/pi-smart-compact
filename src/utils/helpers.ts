@@ -385,7 +385,7 @@ export function selectCompactionTier(
   toolPercent: number,
   totalTokens: number,
   minThreshold: number,
-  minContextPercent: number = 30,
+  minContextPercent: number = 60,
 ): CompactionTier {
   if (totalTokens < minThreshold) return "none";
   // Guard: don't compact if context is below threshold — tool=97% doesn't mean context is full

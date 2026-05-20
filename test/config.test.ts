@@ -116,8 +116,8 @@ describe("validateSmartCompactConfig", () => {
     expect(sc2.minContextPercent).toBe(100);
   });
 
-  it("has default minContextPercent of 30", () => {
-    expect(DEFAULT_CONFIG.minContextPercent).toBe(30);
+  it("has default minContextPercent of 60", () => {
+    expect(DEFAULT_CONFIG.minContextPercent).toBe(60);
   });
 });
 
@@ -127,14 +127,19 @@ describe("selectCompactionTier", () => {
   });
 
   it("returns none if contextPercent < minContextPercent (even with high tool%)", () => {
-    // This is the key fix: tool=97% but context=5% should NOT compact
-    expect(selectCompactionTier(5, 97, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
-    expect(selectCompactionTier(15, 80, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
-    expect(selectCompactionTier(29, 99, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+    // This is the key fix: tool=97% but context=5-59% should NOT compact with default-safe threshold
+    expect(selectCompactionTier(5, 97, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
+    expect(selectCompactionTier(35, 80, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
+    expect(selectCompactionTier(59, 99, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
   });
 
   it("returns none if contextPercent < 45 AND toolPercent < 60", () => {
     expect(selectCompactionTier(40, 50, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+  });
+
+  it("uses 60 as the default minContextPercent", () => {
+    expect(selectCompactionTier(50, 97, 10000, MIN_TOKEN_THRESHOLD)).toBe("none");
+    expect(selectCompactionTier(69, 93, 10000, MIN_TOKEN_THRESHOLD)).toBe("light");
   });
 
   it("returns light if contextPercent between 45 and 80", () => {

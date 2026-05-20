@@ -179,7 +179,8 @@ The tool prepares a pending smart summary and lets Pi consume it on the next nat
 
 ## Usage notes
 
-- compaction is skipped when the context is still small enough
+- compaction is skipped when the context is still small enough (default: below 60% actual context usage)
+- pi-toolkit `tool=XX%` status means tool-output ratio, **not** context fullness; smart-compact uses actual `context=XX%`
 - the tool path does **not** compact the conversation mid-turn
 - pending summaries are kept in memory for **5 minutes**
 - exploration is adaptive and may be skipped for simple sessions
@@ -202,6 +203,7 @@ Add this to `~/.pi/agent/settings.json`:
     "segmentationModel": "anthropic/claude-haiku-3",
     "autoTrigger": true,
     "autoTriggerTimeoutMs": 120000,
+    "minContextPercent": 60,
     "backupEnabled": true,
     "profiles": {
       "balanced": {
@@ -222,6 +224,7 @@ Add this to `~/.pi/agent/settings.json`:
 | `segmentationModel` | `string \| null` | `null` |
 | `autoTrigger` | `boolean` | `true` |
 | `autoTriggerTimeoutMs` | `number` | `120000` |
+| `minContextPercent` | `number` | `60` |
 | `backupEnabled` | `boolean` | `true` |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` |
 | `profiles` | partial per-profile overrides | built-ins |

@@ -1,6 +1,6 @@
 {
   "name": "pi-smart-compact",
-  "version": "7.12.2",
+  "version": "7.12.3",
   "description": "EESV smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification with redundancy pruning, project fingerprinting, and damage detection.",
   "license": "MIT",
   "main": "./dist/index.js",
@@ -47,7 +47,7 @@
   },
   "pi": {
     "extensions": ["./dist/index.js"],
-    "image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/v7.12.1/docs/assets/pi-smart-compact.png"
+    "image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/main/docs/assets/pi-smart-compact.png"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

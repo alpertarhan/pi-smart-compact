@@ -107,6 +107,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     if (pendingRef.value) {
       const age = Date.now() - pendingRef.createdAt;
       if (age > PENDING_TTL_MS) {
+        log.warn("Discarding expired pending smart compaction after " + Math.round(age / 1000) + "s");
         pendingRef.value = null;
         pendingRef.createdAt = 0;
       } else {
@@ -163,9 +164,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "smart_compact", label: "Smart Compact",
-    description: "EESV smart compaction v" + VERSION + " with deterministic extraction, exploration, and verification. Compacts the conversation into a structured summary preserving goals, decisions, open loops, modified files, and critical context. Call this when the conversation is getting long — the tool internally checks context usage and skips if not needed. Prefer this over default compact.",
+    description: "EESV smart compaction v" + VERSION + " with deterministic extraction, exploration, and verification. Compacts the conversation into a structured summary preserving goals, decisions, open loops, modified files, and critical context. Call only when actual context usage is high; ignore pi-auto-context tool=XX% because that is tool-output ratio, not context fullness. The tool internally checks context usage and skips if not needed.",
     promptSnippet: "Smart compaction",
-    promptGuidelines: ["Use for long conversations. Prefer over default compact."],
+    promptGuidelines: [
+      "Use only when actual context usage is high (for example pi-auto-context context>=60%).",
+      "Do NOT call just because pi-auto-context shows tool=XX%; tool% is tool-output ratio, not context fullness.",
+      "Prefer this over default compact only when compaction is actually needed.",
+    ],
     parameters: {
       type: "object",
       properties: {

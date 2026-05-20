@@ -1,5 +1,24 @@
 # Changelog
 
+## [7.12.3] - 2026-05-20
+
+### Changed
+- **Safer pi-toolkit threshold** — Raised the default `minContextPercent` from 30 to 60 so high `tool=XX%` ratios from pi-auto-context do not trigger smart compaction while actual context usage is still moderate.
+- **Agent guidance** — Updated the `smart_compact` tool description and guidelines to explicitly ignore pi-auto-context `tool=XX%` as a compaction signal and use actual `context=XX%` instead.
+- **Package image metadata** — Switched the package gallery image URL to the stable `main` asset path to avoid version-tag drift.
+
+### Fixed
+- **Provider capability mapping** — Added explicit pi-toolkit provider entries for `kimi-coding`, `xiaomi-mimo`, and `crofai` so timeout/concurrency/cache metadata does not fall through to generic defaults.
+- **Open-loop indexing** — Replaced `msgs.indexOf(msg)` with indexed loops in open-loop extraction to avoid O(n²) scans and incorrect source indexes for repeated message references.
+- **Batch summary fallback** — Hardened `summarizeBatch()` so a missing or merged LLM section falls back to the original chunk preview instead of producing an empty segment summary.
+- **Pending summary observability** — Log when an expired pending smart summary is discarded.
+
+## [7.12.2] - 2026-05-20
+
+### Fixed
+- **Context threshold guard completion** — Completed the `minContextPercent` guard across config, types, tier selection, core pipeline, tool handler, and tests.
+- **Precise threshold comparison** — `smart_compact` now compares raw context percentage for the guard and uses rounded percentage only for user-facing text.
+
 ## [7.12.1] - 2026-05-19
 
 ### Fixed

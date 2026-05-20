@@ -135,10 +135,12 @@ export async function summarizeBatch(
     const f = (n: string) => { const m = sec.match(new RegExp("\\*\\*" + n + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i")); return m ? m[1].trim() : ""; };
     const l = (n: string) => { const v = f(n); return !v || v === "None" ? [] : v.split(",").map(s => s.trim()).filter(Boolean); };
     const prio = f("Priority").toLowerCase();
+    const sectionFallback = sec.split("\n").slice(1).join("\n").trim().slice(0, 500);
+    const chunkFallback = ch.messages.map(m => "[" + (m?.role ?? "unknown") + "] " + extractText(m?.content).slice(0, 180)).join("\n").slice(0, 500);
     return {
       topic: ch.topic,
       startIndex: ch.startIndex, endIndex: ch.endIndex,
-      summary: f("Summary") || sec.split("\n").slice(1).join("\n").trim().slice(0, 500),
+      summary: f("Summary") || sectionFallback || chunkFallback || "No summary generated for this segment.",
       keyDecisions: l("Decisions"), filesModified: l("Modified"), filesRead: l("Read"),
       priority: ["critical", "high", "normal", "low"].includes(prio) ? prio as ChunkSummary["priority"] : ch.priority,
     };

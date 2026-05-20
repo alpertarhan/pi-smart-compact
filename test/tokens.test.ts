@@ -55,10 +55,13 @@ describe("getProviderCaps", () => {
     expect(getProviderCaps("deepseek-v3").cacheStrategy).toBe("none");
     expect(getProviderCaps("mistral/mistral-large").concurrencyLimit).toBe(3);
     expect(getProviderCaps("xai/grok-3").concurrencyLimit).toBe(3);
+    expect(getProviderCaps("kimi-coding/moonshot").cacheStrategy).toBe("anthropic");
+    expect(getProviderCaps("xiaomi-mimo").cacheStrategy).toBe("anthropic");
+    expect(getProviderCaps("crofai/claude").timeoutMultiplier).toBe(1.2);
   });
 
   it("all providers have valid caps", () => {
-    const providers = ["zai-anthropic", "anthropic", "openai", "google", "deepseek", "minimax", "xiaomi-token-plan", "mistral", "xai"];
+    const providers = ["zai-anthropic", "kimi-coding", "anthropic", "openai", "google", "deepseek", "minimax", "xiaomi-token-plan", "xiaomi-mimo", "crofai", "mistral", "xai"];
     for (const p of providers) {
       const caps = getProviderCaps(p);
       expect(caps.maxOutputTokens).toBeGreaterThan(0);

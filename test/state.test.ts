@@ -53,6 +53,22 @@ describe("extractOpenLoops", () => {
     expect(loops.some(l => l.type === "follow-up")).toBe(true);
   });
 
+  it("uses actual iteration indexes for repeated message object references", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const repeated: LlmMessage = { role: "user", content: "next step is to add tests" };
+    const msgs: LlmMessage[] = [
+      repeated,
+      { role: "assistant", content: "a" },
+      { role: "assistant", content: "b" },
+      { role: "assistant", content: "c" },
+      { role: "assistant", content: "d" },
+      { role: "assistant", content: "e" },
+      repeated,
+    ];
+    const loops = extractOpenLoops(msgs, extraction).filter(l => l.type === "follow-up");
+    expect(loops.map(l => l.sourceIndex)).toEqual([0, 6]);
+  });
+
   it("creates blocked loops", () => {
     const extraction = makeExtraction({ errors: [] });
     const msgs: LlmMessage[] = [

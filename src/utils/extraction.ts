@@ -361,12 +361,12 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
 
   // ── 2. User "next step" / follow-up patterns → follow-up loops ──
   const FOLLOWUP_RE = /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|gotta|yapalim|yapmamiz|gerekiyor|eklenecek|düzeltilecek|bitmedi|kaldi)/i;
-  for (const msg of msgs) {
+  for (let idx = 0; idx < msgs.length; idx++) {
+    const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
     if (txt.length < 10 || txt.startsWith("/")) continue;
     if (FOLLOWUP_RE.test(txt)) {
-      const idx = msgs.indexOf(msg);
       // Avoid duplicates with errors
       const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
       if (!isDup) {
@@ -385,11 +385,11 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
 
   // ── 3. Blocked items → blocked loops ──
   const BLOCKED_RE = /blocked|waiting for|depend|ba[ğg]li|bekliyor|engell/i;
-  for (const msg of msgs) {
+  for (let idx = 0; idx < msgs.length; idx++) {
+    const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
     if (BLOCKED_RE.test(txt)) {
-      const idx = msgs.indexOf(msg);
       const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
       if (!isDup) {
         loops.push({
