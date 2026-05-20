@@ -179,7 +179,8 @@ The tool prepares a pending smart summary and lets Pi consume it on the next nat
 
 ## Usage notes
 
-- compaction is skipped when the context is still small enough (default: below 60% actual context usage)
+- auto/tool compaction is skipped when the context is still small enough (default: below 60% actual context usage)
+- explicit manual `/smart-compact` commands bypass the 60% adaptive gate because the user intentionally requested compaction
 - pi-toolkit `tool=XX%` status means tool-output ratio, **not** context fullness; smart-compact uses actual `context=XX%`
 - the tool path does **not** compact the conversation mid-turn
 - pending summaries are kept in memory for **5 minutes**

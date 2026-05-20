@@ -88,14 +88,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
           const { segModel, sumModel } = resolveModels(ctx, selected.model.model, loadConfig());
           if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
-          await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: selected.profile, pendingRef, isRunning });
+          await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: selected.profile, pendingRef, isRunning, force: true });
           return;
         }
 
         const { segModel, sumModel } = resolveModels(ctx, modelArg ? resolveModelArg(ctx, modelArg) : ctx.model, loadConfig());
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
         const note = extractUserNote(args);
-        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note });
+        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note, force: true });
       } catch (error) {
         const msg = error instanceof Error ? error.message + "\n" + error.stack : String(error);
         ctx.ui.notify("smart-compact error: " + msg, "error");

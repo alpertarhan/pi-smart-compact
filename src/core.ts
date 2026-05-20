@@ -44,12 +44,14 @@ export interface SmartCompactOptions {
   autoTriggered?: boolean;
   userNote?: string;
   skipCompact?: boolean;
+  /** Explicit user command may bypass adaptive context-pressure tier gate. */
+  force?: boolean;
   /** Optional hard budget for native auto-trigger only. Manual/tool runs do not time out by default. */
   timeoutMs?: number;
 }
 
 export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> {
-  const { ctx, summaryModel, segModel, profile, verbose = false, dryRun = false, pendingRef, isRunning, autoTriggered = false, userNote, skipCompact, timeoutMs = 0 } = opts;
+  const { ctx, summaryModel, segModel, profile, verbose = false, dryRun = false, pendingRef, isRunning, autoTriggered = false, userNote, skipCompact, force = false, timeoutMs = 0 } = opts;
   if (isRunning.value) return;
   isRunning.value = true;
   const pipelineStart = Date.now();
@@ -146,7 +148,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // ── Tiered compaction: adapt pipeline depth to context pressure ──
     contextPercent = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
     toolPercent = computeToolCharPercentage(branch);
-    tier = selectCompactionTier(contextPercent, toolPercent, totalTokens, MIN_TOKEN_THRESHOLD, config.minContextPercent);
+    tier = force ? (contextPercent >= 80 ? "full" : "light") : selectCompactionTier(contextPercent, toolPercent, totalTokens, MIN_TOKEN_THRESHOLD, config.minContextPercent);
 
     if (tier === "none") {
       isRunning.value = false;

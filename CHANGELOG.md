@@ -1,5 +1,10 @@
 # Changelog
 
+## [7.12.4] - 2026-05-20
+
+### Fixed
+- **Manual command override** — Explicit user-run `/smart-compact` commands now bypass the adaptive `minContextPercent` tier gate, while auto-trigger and agent tool calls still respect it. This keeps cache-protective behavior for agents but preserves user control.
+
 ## [7.12.3] - 2026-05-20
 
 ### Changed
