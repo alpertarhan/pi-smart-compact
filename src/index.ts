@@ -122,6 +122,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const usage = ctx.getContextUsage();
       const totalTokens = usage?.tokens ?? 0;
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) return;
+      // Guard: don't auto-compact if context is below threshold — tool=97% doesn't mean context is full
+      const pct = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
+      if (pct < config.minContextPercent) return;
       const cur = ctx.model;
       if (!cur) return;
       const { segModel, sumModel } = resolveModels(ctx as unknown as ExtensionCommandContext, cur, config);
@@ -186,12 +189,17 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const resolvedProfile = profile ?? config.profile;
       const cmdCtx = ctx as unknown as ExtensionCommandContext;
 
-      // Check context usage — skip if not enough tokens to justify compaction
+      // Check context usage — skip if not enough tokens or context too small
       const usage = ctx.getContextUsage?.();
       const totalTokens = usage?.tokens ?? 0;
+      const rawPct = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
+      const pct = Math.round(rawPct);
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
-        const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
         return { content: [{ type: "text", text: "Context is not large enough for compaction (" + totalTokens.toLocaleString() + " tokens, " + pct + "%). No action needed." }], details: undefined };
+      }
+      // Guard: don't compact if context is below threshold — tool=97% doesn't mean context is full
+      if (rawPct < config.minContextPercent) {
+        return { content: [{ type: "text", text: "Context is only " + pct + "% full (" + totalTokens.toLocaleString() + " tokens). Compaction is not needed yet. The tool=97% in status means tool output ratio, NOT context usage." }], details: undefined };
       }
 
       const cur = ('model' in ctx) ? (ctx as unknown as Record<string, unknown>).model as Model<Api> | undefined : undefined;
