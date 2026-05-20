@@ -146,7 +146,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // ── Tiered compaction: adapt pipeline depth to context pressure ──
     contextPercent = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
     toolPercent = computeToolCharPercentage(branch);
-    tier = selectCompactionTier(contextPercent, toolPercent, totalTokens, MIN_TOKEN_THRESHOLD);
+    tier = selectCompactionTier(contextPercent, toolPercent, totalTokens, MIN_TOKEN_THRESHOLD, config.minContextPercent);
 
     if (tier === "none") {
       isRunning.value = false;

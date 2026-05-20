@@ -79,6 +79,13 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
       delete sc.autoTriggerTimeoutMs;
     }
   }
+  if ("minContextPercent" in sc) {
+    const v = sc.minContextPercent;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 100) {
+      log.warn("smart-compact config: minContextPercent must be 0–100, got " + v + ". Using default " + DEFAULT_CONFIG.minContextPercent + ".");
+      delete sc.minContextPercent;
+    }
+  }
 }
 
 let _cfg: CompactConfig | null = null;
@@ -378,8 +385,11 @@ export function selectCompactionTier(
   toolPercent: number,
   totalTokens: number,
   minThreshold: number,
+  minContextPercent: number = 30,
 ): CompactionTier {
   if (totalTokens < minThreshold) return "none";
+  // Guard: don't compact if context is below threshold — tool=97% doesn't mean context is full
+  if (contextPercent < minContextPercent) return "none";
   if (contextPercent < 45 && toolPercent < 60) return "none";
   if (contextPercent < 80) return "light";
   return "full";

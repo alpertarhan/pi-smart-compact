@@ -27,6 +27,7 @@ export interface CompactConfig {
   autoTriggerTimeoutMs: number;
   backupEnabled: boolean;
   backupDir: string;
+  minContextPercent: number; // Don't compact below this threshold
 }
 
 export interface ProviderCapabilities {

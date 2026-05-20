@@ -4,7 +4,7 @@
 
 import type { CompressionProfile, ProfileConfig } from "./types.ts";
 
-export const VERSION = "7.12.1";
+export const VERSION = "7.12.2";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
@@ -50,6 +50,7 @@ export const DEFAULT_CONFIG = {
   autoTriggerTimeoutMs: 120000,
   backupEnabled: true,
   backupDir: "",
+  minContextPercent: 30, // Don't compact below this threshold (tool=97% ≠ context full)
 };
 
 export const NO_OP_RE = /applied:\s*0|no changes applied|nothing to (?:do|change)|0 edits? applied/i;

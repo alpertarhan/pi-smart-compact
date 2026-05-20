@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { validateSmartCompactConfig } from "../src/utils/helpers.ts";
-import { DEFAULT_CONFIG, VERSION } from "../src/constants.ts";
+import { validateSmartCompactConfig, selectCompactionTier } from "../src/utils/helpers.ts";
+import { DEFAULT_CONFIG, VERSION, MIN_TOKEN_THRESHOLD } from "../src/constants.ts";
 import pkg from "../package.json";
 
 describe("validateSmartCompactConfig", () => {
@@ -87,5 +87,71 @@ describe("validateSmartCompactConfig", () => {
 
   it("keeps runtime VERSION in sync with package.json", () => {
     expect(VERSION).toBe(pkg.version);
+  });
+
+  it("deletes invalid minContextPercent (negative)", () => {
+    const sc = { minContextPercent: -10 };
+    validateSmartCompactConfig(sc);
+    expect("minContextPercent" in sc).toBe(false);
+  });
+
+  it("deletes invalid minContextPercent (too large)", () => {
+    const sc = { minContextPercent: 150 };
+    validateSmartCompactConfig(sc);
+    expect("minContextPercent" in sc).toBe(false);
+  });
+
+  it("keeps valid minContextPercent", () => {
+    const sc = { minContextPercent: 25 };
+    validateSmartCompactConfig(sc);
+    expect(sc.minContextPercent).toBe(25);
+  });
+
+  it("keeps boundary values (0 and 100)", () => {
+    const sc1 = { minContextPercent: 0 };
+    validateSmartCompactConfig(sc1);
+    expect(sc1.minContextPercent).toBe(0);
+    const sc2 = { minContextPercent: 100 };
+    validateSmartCompactConfig(sc2);
+    expect(sc2.minContextPercent).toBe(100);
+  });
+
+  it("has default minContextPercent of 30", () => {
+    expect(DEFAULT_CONFIG.minContextPercent).toBe(30);
+  });
+});
+
+describe("selectCompactionTier", () => {
+  it("returns none if below MIN_TOKEN_THRESHOLD", () => {
+    expect(selectCompactionTier(50, 90, 4000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+  });
+
+  it("returns none if contextPercent < minContextPercent (even with high tool%)", () => {
+    // This is the key fix: tool=97% but context=5% should NOT compact
+    expect(selectCompactionTier(5, 97, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+    expect(selectCompactionTier(15, 80, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+    expect(selectCompactionTier(29, 99, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+  });
+
+  it("returns none if contextPercent < 45 AND toolPercent < 60", () => {
+    expect(selectCompactionTier(40, 50, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+  });
+
+  it("returns light if contextPercent between 45 and 80", () => {
+    expect(selectCompactionTier(50, 70, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("light");
+    expect(selectCompactionTier(60, 80, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("light");
+    expect(selectCompactionTier(79, 90, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("light");
+  });
+
+  it("returns full if contextPercent >= 80", () => {
+    expect(selectCompactionTier(80, 90, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("full");
+    expect(selectCompactionTier(95, 99, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("full");
+  });
+
+  it("respects custom minContextPercent", () => {
+    // With minContextPercent=10, context=15% should not be blocked
+    expect(selectCompactionTier(15, 97, 10000, MIN_TOKEN_THRESHOLD, 10)).toBe("light");
+    // With minContextPercent=20, context=15% should be blocked
+    expect(selectCompactionTier(15, 97, 10000, MIN_TOKEN_THRESHOLD, 20)).toBe("none");
   });
 });
