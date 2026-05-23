@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.12.5] - 2026-05-23
+
+### Fixed
+- **Extraction cache safety** — Incremental extraction now reuses cache only when both the original entry prefix and the pruned-message prefix still match, preventing corrupted merges when pruning changes or when legacy cache entries lack pruning metadata.
+- **Chunk synthesis robustness** — Batch summarization now emits stable `CHUNK N` ids, includes tool-call context in segment text, parses returned sections by chunk id instead of raw position, and falls back to section/chunk previews when the model omits a clean summary line.
+- **Verification result accuracy** — Metrics and result details now use the post-patch verification result after deterministic/LLM repair instead of the pre-patch score.
+- **Auto-trigger overlap guard** — Hard-timeout cleanup no longer resets `isRunning` early while a timed-out compaction is still unwinding, avoiding overlapping background compactions.
+- **Nested parallel tool boundaries** — Keep-boundary protection now understands nested `multi_tool_use.parallel` tool call ids so compaction does not split wrapper calls from kept tool results.
+
+### Changed
+- **Extraction-cache observability** — Metrics, dashboard/report rows, notifications, and result overlays now distinguish provider prompt-cache hit rate from deterministic extraction-cache hit rate and record extraction-cache miss reasons.
+- **Pending summary visibility** — Expired pending smart summaries now raise a user-visible warning when discarded.
+
 ## [7.12.4] - 2026-05-20
 
 ### Fixed
