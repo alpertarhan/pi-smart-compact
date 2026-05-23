@@ -133,8 +133,9 @@ describe("selectCompactionTier", () => {
     expect(selectCompactionTier(59, 99, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
   });
 
-  it("returns none if contextPercent < 45 AND toolPercent < 60", () => {
-    expect(selectCompactionTier(40, 50, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+  it("returns none if contextPercent < minContextPercent regardless of toolPercent", () => {
+    expect(selectCompactionTier(25, 50, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+    expect(selectCompactionTier(25, 90, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
   });
 
   it("uses 60 as the default minContextPercent", () => {

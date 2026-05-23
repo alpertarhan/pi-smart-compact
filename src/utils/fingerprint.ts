@@ -274,10 +274,12 @@ export function saveProjectFingerprint(
       ...extraction.readFiles,
     ])].slice(-50); // Keep last 50 unique files
 
+    const detectedLanguage = detectLanguage(extraction);
+    const detectedFramework = detectFramework(extraction);
     const fingerprint: ProjectFingerprint = {
       id: projectId,
-      language: existing?.language ?? detectLanguage(extraction),
-      framework: existing?.framework ?? detectFramework(extraction),
+      language: existing?.language && existing.language !== "unknown" ? existing.language : detectedLanguage,
+      framework: existing?.framework ?? detectedFramework,
       keyDirectories: extractKeyDirs(extraction),
       knownFiles: newKnownFiles,
       sessionCount: (existing?.sessionCount ?? 0) + 1,

@@ -10,7 +10,7 @@ import type {
   CompressionProfile, ModelOption, ProgressState,
   SmartCompactDetails, StructuredExtraction,
 } from "../types.ts";
-import { getMetricsSummary } from "../utils/cache.ts";
+import { getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import path from "node:path";
 
 export function renderContextBar(theme: any, pct: number, tokens: number, barLen = 24): string {
@@ -176,16 +176,20 @@ export async function showResultScreen(
 
     c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDCCB Extraction")), 0, 0));
     const ms = getMetricsSummary();
+    const ecs = getExtractionCacheStats();
     if (ms.totalCalls > 0) {
-      const cachePct = Math.round(ms.cacheHitRate * 100);
-      const cacheColor = cachePct >= 50 ? "success" : cachePct >= 20 ? "warning" : "dim";
+      const providerCachePct = Math.round(ms.cacheHitRate * 100);
+      const extractionCachePct = Math.round(ecs.hitRate * 100);
+      const cacheColor = extractionCachePct >= 50 ? "success" : extractionCachePct >= 20 ? "warning" : "dim";
       c.addChild(new Text(
         theme.fg("dim", "  LLM: ") +
         theme.fg("text", ms.totalCalls + " calls") +
         theme.fg("dim", " \u2022 ") +
         theme.fg("text", ms.totalInput.toLocaleString() + "t in") +
         theme.fg("dim", " \u2022 ") +
-        theme.fg(cacheColor, cachePct + "% cache hit") +
+        theme.fg("dim", providerCachePct + "% provider cache") +
+        theme.fg("dim", " \u2022 ") +
+        theme.fg(cacheColor, extractionCachePct + "% extraction cache") +
         theme.fg("dim", " \u2022 ") +
         theme.fg("dim", ms.avgLatency + "ms avg"),
       0, 0));

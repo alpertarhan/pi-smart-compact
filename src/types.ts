@@ -71,6 +71,11 @@ export interface CompactMetricsEntry {
   totalCacheHit: number;
   avgLatency: number;
   cacheHitRate: number;
+  /** Deterministic extraction-cache stats, distinct from provider prompt-cache. */
+  extractionCacheHits?: number;
+  extractionCacheMisses?: number;
+  extractionCacheHitRate?: number;
+  extractionCacheMissReason?: string;
   profile?: string;
   tier?: string;
   method?: string;
@@ -229,6 +234,10 @@ export interface CachedExtraction {
   /** First/last entry IDs for branch-aware cache invalidation */
   firstEntryId?: string;
   lastEntryId?: string;
+  /** Original toCompact entry IDs for branch/pivot detection. */
+  entryIds?: string[];
+  /** Entry IDs that survived pruning; this is the index domain of `extraction`. */
+  keptEntryIds?: string[];
 }
 
 /** An open loop — unresolved task detected during compaction */

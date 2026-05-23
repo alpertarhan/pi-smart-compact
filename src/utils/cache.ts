@@ -114,10 +114,36 @@ function getCachePath(sessionId: string): string {
   return path.join(CACHE_DIR, "compact-extraction-" + sessionId.replace(/[^a-zA-Z0-9-]/g, "_") + ".json");
 }
 
+let _extractionCacheHits = 0;
+let _extractionCacheMisses = 0;
+
+export function resetExtractionCacheStats(): void {
+  _extractionCacheHits = 0;
+  _extractionCacheMisses = 0;
+}
+
+export function getExtractionCacheStats(): { hits: number; misses: number; hitRate: number } {
+  const total = _extractionCacheHits + _extractionCacheMisses;
+  return {
+    hits: _extractionCacheHits,
+    misses: _extractionCacheMisses,
+    hitRate: total > 0 ? _extractionCacheHits / total : 0,
+  };
+}
+
+export function recordExtractionCacheHit(): void { _extractionCacheHits++; }
+export function recordExtractionCacheMiss(): void { _extractionCacheMisses++; }
+
 /**
  * Save extraction cache with entry-id bounds for branch-aware invalidation.
- * If first/last entry IDs are provided, a subsequent load will compare them
- * against the current toCompact window to detect pivot/branch changes.
+ *
+ * @param msgCount — Length of the **pruned** llmMessages array. This is the
+ *   domain for all index-bearing fields inside `extraction` (topics, errors,
+ *   decisions, etc.). It must NOT be the unpruned toCompact length.
+ * @param entryIds — FULL ordered list of original toCompact entry IDs. Used
+ *   for branch/pivot detection on subsequent incremental runs.
+ * @param keptEntryIds — Ordered entry IDs that survived pruning. This is the
+ *   index domain used for safe incremental extraction prefix matching.
  */
 export function saveCachedExtraction(
   sessionId: string,
@@ -125,12 +151,14 @@ export function saveCachedExtraction(
   msgCount: number,
   firstEntryId?: string,
   lastEntryId?: string,
+  entryIds?: string[],
+  keptEntryIds?: string[],
 ): void {
   try {
     if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
     const cached: CachedExtraction = {
       lastMessageIndex: msgCount - 1, extraction, messageCount: msgCount, timestamp: Date.now(),
-      firstEntryId, lastEntryId,
+      firstEntryId, lastEntryId, entryIds, keptEntryIds,
     };
     fs.writeFileSync(getCachePath(sessionId), JSON.stringify(cached));
   } catch (e) { log.warn("saveCachedExtraction failed", e); }
@@ -406,7 +434,7 @@ function phaseRows(entry?: CompactMetricsEntry): string {
 }
 
 function recentRunRows(entries: CompactMetricsEntry[]): string {
-  if (!entries.length) return `<tr><td colspan="11" class="empty">No runs recorded yet</td></tr>`;
+  if (!entries.length) return `<tr><td colspan="12" class="empty">No runs recorded yet</td></tr>`;
   return entries.slice(-80).reverse().map(entry => `<tr>
     <td class="mono small">${escapeHtml(entry.ts)}</td>
     <td>${escapeHtml(entry.profile)}</td>
@@ -418,7 +446,8 @@ function recentRunRows(entries: CompactMetricsEntry[]): string {
     <td class="num">${typeof entry.verificationScore === "number" ? formatNumber(entry.verificationScore) : "—"}</td>
     <td class="num">${typeof entry.tokensSaved === "number" ? formatNumber(entry.tokensSaved) : "—"}</td>
     <td class="num">${formatNumber(entry.totalCalls)}</td>
-    <td class="mono small reason">${escapeHtml(entry.fallbackReason ?? "")}</td>
+    <td class="num">${typeof entry.extractionCacheHitRate === "number" ? formatPercent(entry.extractionCacheHitRate) : "—"}</td>
+    <td class="mono small reason">${escapeHtml(entry.fallbackReason ?? entry.extractionCacheMissReason ?? "")}</td>
   </tr>`).join("\n");
 }
 
@@ -432,6 +461,8 @@ export function buildMetricsReport(entries = readMetricsLog(100)): string {
   const byProfile = groupMetrics(entries, e => e.profile ?? "unknown");
   const byProvider = groupMetrics(entries, e => e.provider ?? e.model?.split("/")[0] ?? "unknown");
   const summarizeGroup = (group: MetricsGroupSummary) => "- " + group.name + ": n=" + group.runs + ", avg=" + group.avgDuration + "ms, p95=" + group.p95Duration + "ms, score=" + group.avgScore + ", saved=" + group.totalSaved + "t, reliability=" + formatPercent(1 - group.errorRate);
+  const extractionCacheRuns = entries.filter(e => typeof e.extractionCacheHitRate === "number");
+  const extractionCacheAvg = average(extractionCacheRuns.map(e => e.extractionCacheHitRate ?? 0));
   return [
     "# Smart Compact Metrics",
     "",
@@ -439,6 +470,7 @@ export function buildMetricsReport(entries = readMetricsLog(100)): string {
     "Reliability: " + formatPercent(summary.successRate),
     "Latency: avg " + summary.avgDuration + "ms, p95 " + summary.p95Duration + "ms",
     "LLM calls: " + summary.totalCalls + ", input " + summary.totalInput + "t, output " + summary.totalOutput + "t",
+    "Extraction cache: avg " + (extractionCacheRuns.length ? formatPercent(extractionCacheAvg) : "—") + " across " + extractionCacheRuns.length + " measured run(s)",
     "Tokens saved: " + summary.totalSaved + "t, average verification score: " + summary.avgScore,
     "",
     "## Profile comparison",
@@ -474,7 +506,7 @@ export function writeMetricsDashboard(entries = readMetricsLog(200)): string | n
         <div class="panel"><h2>Profile comparison</h2><div class="table-wrap"><table><thead><tr><th>Profile</th><th class="num">Runs</th><th class="num">Avg</th><th class="num">p95</th><th class="num">Score</th><th class="num">Calls</th><th class="num">Saved</th><th>Reliability</th></tr></thead><tbody>${comparisonRows(profileGroups)}</tbody></table></div></div>
         <div class="panel"><h2>Provider comparison</h2><div class="table-wrap"><table><thead><tr><th>Provider</th><th class="num">Runs</th><th class="num">Avg</th><th class="num">p95</th><th class="num">Score</th><th class="num">Calls</th><th class="num">Saved</th><th>Reliability</th></tr></thead><tbody>${comparisonRows(providerGroups)}</tbody></table></div></div>
       </section>
-      <section class="panel section"><h2>Recent runs</h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Profile</th><th>Provider</th><th>Method</th><th>Run</th><th>Status</th><th class="num">Duration</th><th class="num">Score</th><th class="num">Saved</th><th class="num">Calls</th><th>Reason</th></tr></thead><tbody>${recentRunRows(entries)}</tbody></table></div></section>
+      <section class="panel section"><h2>Recent runs</h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Profile</th><th>Provider</th><th>Method</th><th>Run</th><th>Status</th><th class="num">Duration</th><th class="num">Score</th><th class="num">Saved</th><th class="num">Calls</th><th class="num">Ext cache</th><th>Reason</th></tr></thead><tbody>${recentRunRows(entries)}</tbody></table></div></section>
       <section class="section"><h2>Raw text report</h2><pre>${escapeHtml(report)}</pre></section>
     </main></body></html>`;
     const fp = path.join(CACHE_DIR, "smart-compact-report.html");

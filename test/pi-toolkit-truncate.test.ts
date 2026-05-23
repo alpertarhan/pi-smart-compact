@@ -659,4 +659,54 @@ describe("guardToolCallBoundary", () => {
     ];
     expect(guardToolCallBoundary(msgs, 5)).toBe(5);
   });
+
+  it("pulls back when multi_tool_use.parallel wrapper is compacted but nested result is kept", () => {
+    const msgs: SessionMessageEntry[] = [
+      makeSessionEntry({ role: "user", content: "msg1" }),
+      makeSessionEntry({
+        role: "assistant",
+        content: [{
+          type: "toolCall" as const,
+          id: "call_mtu",
+          name: "multi_tool_use.parallel",
+          arguments: {
+            tool_uses: [
+              { id: "tc1", recipient_name: "functions.read", parameters: { path: "/a.ts" } },
+            ],
+          },
+        }],
+      }),
+      makeSessionEntry({ role: "toolResult", toolCallId: "tc1", content: "content" }),
+      makeSessionEntry({ role: "user", content: "msg2" }),
+    ];
+    // keepFrom=2 keeps toolResult (msg[2]) but assistant wrapper (msg[1]) is compacted
+    const result = guardToolCallBoundary(msgs, 2);
+    expect(result).toBe(1);
+  });
+
+  it("handles multiple nested tool_uses inside multi_tool_use.parallel", () => {
+    const msgs: SessionMessageEntry[] = [
+      makeSessionEntry({ role: "user", content: "msg1" }),
+      makeSessionEntry({
+        role: "assistant",
+        content: [{
+          type: "toolCall" as const,
+          id: "call_mtu",
+          name: "multi_tool_use.parallel",
+          arguments: {
+            tool_uses: [
+              { id: "tc1", recipient_name: "functions.read", parameters: { path: "/a.ts" } },
+              { id: "tc2", recipient_name: "functions.read", parameters: { path: "/b.ts" } },
+            ],
+          },
+        }],
+      }),
+      makeSessionEntry({ role: "toolResult", toolCallId: "tc1", content: "a" }),
+      makeSessionEntry({ role: "toolResult", toolCallId: "tc2", content: "b" }),
+      makeSessionEntry({ role: "user", content: "msg2" }),
+    ];
+    // keepFrom=3 keeps tc2 result but assistant wrapper (msg[1]) is compacted
+    const result = guardToolCallBoundary(msgs, 3);
+    expect(result).toBe(1);
+  });
 });

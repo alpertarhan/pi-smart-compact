@@ -1,6 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { mergeExtractions, saveCachedExtraction, loadCachedExtraction } from "../src/utils/cache.ts";
-import type { StructuredExtraction } from "../src/types.ts";
+import { pruneRedundant } from "../src/utils/pruning.ts";
+import { extractStructured } from "../src/utils/extraction.ts";
+import { PROFILES } from "../src/constants.ts";
+import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
   return {
@@ -296,6 +299,97 @@ describe("saveCachedExtraction / loadCachedExtraction", () => {
     expect(loaded!.lastEntryId).toBe("entry-4");
     expect(loaded!.messageCount).toBe(5);
     expect(loaded!.extraction.modifiedFiles[0].path).toBe("a.ts");
+  });
+
+  it("round-trips with entryIds array for pruning-immune prefix matching", () => {
+    const sessionId = "test-cache-entryids-" + Date.now();
+    const ext = makeExtraction({ modifiedFiles: [{ path: "b.ts", toolCalls: 1, lastModifiedIndex: 1 }], messageCount: 3 });
+    const entryIds = ["e-0", "e-1", "e-2"];
+    saveCachedExtraction(sessionId, ext, 3, "e-0", "e-2", entryIds);
+    const loaded = loadCachedExtraction(sessionId);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.entryIds).toEqual(entryIds);
+    expect(loaded!.firstEntryId).toBe("e-0");
+    expect(loaded!.lastEntryId).toBe("e-2");
+  });
+
+  it("preserves pruned domain messageCount for correct merge offset", () => {
+    // Scenario: toCompact had 5 entries but pruning removed 1 → llmMessages.length = 4.
+    // messageCount must reflect the pruned domain (4), not the unpruned entry count (5).
+    const sessionId = "test-pruned-domain-" + Date.now();
+    const base = makeExtraction({
+      topics: [{ startIndex: 0, endIndex: 3, primaryFile: "a.ts", type: "implementation", errorDensity: 0 }],
+      errors: [{ index: 2, tool: "read", message: "base err", retryAttempted: false, resolved: false }],
+      messageCount: 4,
+    });
+    const entryIds = ["e-0", "e-1", "e-2", "e-3", "e-4"]; // 5 unpruned entries
+    saveCachedExtraction(sessionId, base, 4, "e-0", "e-4", entryIds);
+
+    const loaded = loadCachedExtraction(sessionId);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.messageCount).toBe(4); // pruned domain preserved
+    expect(loaded!.entryIds).toEqual(entryIds);
+
+    // Simulate delta from 2 new pruned messages
+    const delta = makeExtraction({
+      topics: [{ startIndex: 0, endIndex: 1, primaryFile: "b.ts", type: "debugging", errorDensity: 1 }],
+      errors: [{ index: 1, tool: "bash", message: "err", retryAttempted: false, resolved: false }],
+      messageCount: 2,
+    });
+    const merged = mergeExtractions(loaded!.extraction, delta, loaded!.messageCount);
+    expect(merged.messageCount).toBe(6); // 4 + 2
+    expect(merged.topics[0].startIndex).toBe(0);  // base topic unchanged
+    expect(merged.topics[1].startIndex).toBe(4);  // 0 + 4 (pruned offset)
+    expect(merged.topics[1].endIndex).toBe(5);    // 1 + 4
+    expect(merged.errors[0].index).toBe(2);       // base error unchanged
+    expect(merged.errors[1].index).toBe(5);       // 1 + 4 (delta offset)
+  });
+
+  it("round-trips keptEntryIds for pruned-prefix validation", () => {
+    const sessionId = "test-cache-kept-entryids-" + Date.now();
+    const ext = makeExtraction({ messageCount: 2 });
+    saveCachedExtraction(sessionId, ext, 2, "e-0", "e-3", ["e-0", "e-1", "e-2", "e-3"], ["e-0", "e-3"]);
+    const loaded = loadCachedExtraction(sessionId);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.entryIds).toEqual(["e-0", "e-1", "e-2", "e-3"]);
+    expect(loaded!.keptEntryIds).toEqual(["e-0", "e-3"]);
+    expect(loaded!.messageCount).toBe(2);
+  });
+
+  it("detects when new messages change the pruned prefix and forces full extraction", () => {
+    const pc = PROFILES.balanced;
+    const user = (text: string): LlmMessage => ({ role: "user", content: [{ type: "text", text }] });
+    const readCall = (id: string, path: string): LlmMessage => ({ role: "assistant", content: [{ type: "toolCall", id, name: "read", arguments: { path } }] });
+    const readResult = (id: string, text: string): LlmMessage => ({ role: "toolResult", toolCallId: id, content: [{ type: "text", text }] });
+
+    const baseMsgs = [
+      user("please inspect a.ts"),
+      readCall("r1", "a.ts"),
+      readResult("r1", "old content"),
+      user("continue"),
+      user("keep going"),
+    ];
+    const baseEntryIds = baseMsgs.map((_, i) => "e-" + i);
+    const basePruning = pruneRedundant(baseMsgs);
+    const cachedKeptEntryIds = basePruning.keptIndices.map(i => baseEntryIds[i]);
+    const cachedExtraction = extractStructured(basePruning.messages, pc);
+
+    const currentMsgs = [...baseMsgs, readCall("r2", "a.ts"), readResult("r2", "new content")];
+    const currentEntryIds = currentMsgs.map((_, i) => "e-" + i);
+    const currentPruning = pruneRedundant(currentMsgs);
+    const currentKeptEntryIds = currentPruning.keptIndices.map(i => currentEntryIds[i]);
+
+    const prunedPrefixMatch = cachedKeptEntryIds.length <= currentKeptEntryIds.length &&
+      cachedKeptEntryIds.every((id, i) => id === currentKeptEntryIds[i]);
+    expect(prunedPrefixMatch).toBe(false);
+
+    // The old unsafe approach pruned only the new suffix, retaining cached messages
+    // that full pruning would now evict.
+    const suffixPruning = pruneRedundant(currentMsgs.slice(baseMsgs.length));
+    const unsafeDelta = extractStructured(suffixPruning.messages, pc);
+    const unsafeMerged = mergeExtractions(cachedExtraction, unsafeDelta, cachedExtraction.messageCount);
+    const full = extractStructured(currentPruning.messages, pc);
+    expect(unsafeMerged.messageCount).not.toBe(full.messageCount);
   });
 
   it("returns null for stale entry ids (same count, different ids)", () => {

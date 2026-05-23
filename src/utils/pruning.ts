@@ -10,6 +10,8 @@ import { estimateTokens } from "./tokens.ts";
 
 export interface PruningResult {
   messages: LlmMessage[];
+  /** Original input indexes retained in `messages`; same order as `messages`. */
+  keptIndices: number[];
   prunedCount: number;
   prunedTokenSaving: number;
   reasons: Array<{ count: number; reason: string }>;
@@ -28,7 +30,7 @@ const MAX_TOOL_OUTPUT_CHARS = 800;
  * Detect and collapse redundant message sequences.
  */
 export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
-  if (msgs.length < 5) return { messages: msgs, prunedCount: 0, prunedTokenSaving: 0, reasons: [] };
+  if (msgs.length < 5) return { messages: msgs, keptIndices: msgs.map((_, i) => i), prunedCount: 0, prunedTokenSaving: 0, reasons: [] };
 
   const tcIdx = buildToolCallIndex(msgs);
   const keep = new Set<number>(msgs.map((_, i) => i));
@@ -129,8 +131,15 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
     return m;
   });
 
-  // Build final message list, preserving order
-  const finalMsgs = kept.filter((m): m is LlmMessage => m !== null);
+  // Build final message list, preserving order, and remember original input indexes.
+  const keptIndices: number[] = [];
+  const finalMsgs: LlmMessage[] = [];
+  for (let idx = 0; idx < kept.length; idx++) {
+    const m = kept[idx];
+    if (m === null) continue;
+    keptIndices.push(idx);
+    finalMsgs.push(m);
+  }
   const prunedCount = msgs.length - finalMsgs.length;
 
   // Estimate token saving
@@ -141,6 +150,7 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
 
   return {
     messages: finalMsgs,
+    keptIndices,
     prunedCount,
     prunedTokenSaving: Math.max(0, originalTokens - prunedTokens),
     reasons,

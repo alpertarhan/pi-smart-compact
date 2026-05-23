@@ -108,6 +108,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const age = Date.now() - pendingRef.createdAt;
       if (age > PENDING_TTL_MS) {
         log.warn("Discarding expired pending smart compaction after " + Math.round(age / 1000) + "s");
+        (ctx as unknown as ExtensionCommandContext).ui?.notify?.("Expired pending smart compaction discarded", "warning");
         pendingRef.value = null;
         pendingRef.createdAt = 0;
       } else {
@@ -147,7 +148,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         }
         if (result === "timeout") {
           log.warn("Smart compact auto-trigger hard timeout after " + effectiveTimeoutMs + "ms");
-          isRunning.value = false;
+          // Do not reset isRunning here: runSmartCompact owns that lifecycle in
+          // its finally block. Resetting here can allow overlapping background
+          // smart compactions while the timed-out provider call is still unwinding.
           pendingRef.value = null;
           pendingRef.createdAt = 0;
           return; // fall back to native compact

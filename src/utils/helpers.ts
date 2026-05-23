@@ -215,26 +215,50 @@ export function smartKeepBoundary(
 }
 
 /**
+ * Recursively collect tool call IDs from assistant message blocks.
+ * Handles top-level toolCall blocks and nested multi_tool_use.parallel wrappers.
+ */
+function collectToolCallIds(blocks: unknown[], msgIndex: number, out: Map<string, number>): void {
+  for (const b of blocks) {
+    const block = b as Record<string, unknown>;
+    if (block?.type === "toolCall") {
+      if (typeof block.id === "string") {
+        out.set(block.id, msgIndex);
+      }
+      // Flatten nested tool calls inside multi_tool_use.parallel
+      const args = block.arguments as Record<string, unknown> | undefined;
+      if (block.name === "multi_tool_use.parallel" && args && Array.isArray(args.tool_uses)) {
+        for (const nested of args.tool_uses as unknown[]) {
+          const n = nested as Record<string, unknown>;
+          if (typeof n.id === "string") {
+            out.set(n.id, msgIndex);
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
  * Tool-call boundary guard: never split a toolCall / toolResult pair across the compaction boundary.
  *
  * If a kept message is a toolResult whose corresponding toolCall would be compacted,
  * pull keepFrom back to include the assistant message containing that toolCall.
  * This prevents "tool_call_id is not found" API errors after compaction.
+ *
+ * Also handles multi_tool_use.parallel wrappers where the actual tool call IDs are nested
+ * inside arguments.tool_uses rather than on the wrapper block itself.
  */
 export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
   if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
 
-  // Map toolCallId -> assistant message index
+  // Map toolCallId -> assistant message index (including nested multi_tool_use.parallel)
   const tcMap = new Map<string, number>();
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i].message as Record<string, unknown>;
     if (m?.role !== "assistant") continue;
     const blocks = Array.isArray(m?.content) ? m.content : [];
-    for (const b of blocks) {
-      if ((b as { type?: string })?.type === "toolCall" && (b as { id?: string }).id) {
-        tcMap.set((b as { id: string }).id, i);
-      }
-    }
+    collectToolCallIds(blocks, i, tcMap);
   }
 
   let adjusted = keepFrom;
@@ -390,7 +414,6 @@ export function selectCompactionTier(
   if (totalTokens < minThreshold) return "none";
   // Guard: don't compact if context is below threshold — tool=97% doesn't mean context is full
   if (contextPercent < minContextPercent) return "none";
-  if (contextPercent < 45 && toolPercent < 60) return "none";
   if (contextPercent < 80) return "light";
   return "full";
 }

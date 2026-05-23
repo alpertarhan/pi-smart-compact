@@ -12,7 +12,8 @@ import type {
 import { PROFILES, MIN_TOKEN_THRESHOLD, MAX_EXPLORATION_ROUNDS } from "./constants.ts";
 import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
 import {
-  resetCompactSessionId, resetMetrics, appendMetricsLog, getMetricsSummary,
+  resetCompactSessionId, resetMetrics, resetExtractionCacheStats, appendMetricsLog, getMetricsSummary,
+  getExtractionCacheStats, recordExtractionCacheHit, recordExtractionCacheMiss,
   saveCachedExtraction, loadCachedExtraction, mergeExtractions,
 } from "./utils/cache.ts";
 import { extractStructured, extractText, extractOpenLoops } from "./utils/extraction.ts";
@@ -64,6 +65,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   };
   resetCompactSessionId();
   resetMetrics();
+  resetExtractionCacheStats();
 
   let sessionId = "unknown";
   let totalTokens = 0;
@@ -158,8 +160,11 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
 
     const shouldSkipExplore = tier === "light";
 
+    const currentEntryIds = toCompact.map(e => e.id);
+
     // ── Pre-compaction redundancy pruning ──
     const pruning = pruneRedundant(llmMessages);
+    const currentKeptEntryIds = pruning.keptIndices.map(i => currentEntryIds[i]).filter((id): id is string => typeof id === "string");
     if (pruning.prunedCount > 0) {
       notify("Pruning: " + pruning.prunedCount + " msgs removed (" + pruning.reasons.map(r => r.count + "x " + r.reason).join(", ") + ")", "info");
     }
@@ -175,24 +180,54 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // Phase 1
     const cachedExt = loadCachedExtraction(sessionId);
     let extraction: StructuredExtraction;
+    let extractionCacheMissReason: string | undefined = cachedExt ? "not-incremental" : "no-cache";
     const currentFirstId = toCompact[0]?.id;
     const currentLastId = toCompact[toCompact.length - 1]?.id;
-    const cachedLastMsgId = toCompact[cachedExt?.lastMessageIndex ?? -1]?.id;
-    const idsMatch = cachedExt?.firstEntryId && cachedExt?.lastEntryId
-      && cachedExt.firstEntryId === currentFirstId && cachedExt.lastEntryId === cachedLastMsgId;
-    const cacheUsable = idsMatch && cachedExt.messageCount <= llmMessages.length && cachedExt.lastMessageIndex < llmMessages.length - 1;
-    if (cacheUsable) {
-      const newMsgs = llmMessages.slice(cachedExt.lastMessageIndex + 1);
+
+    // Safe incremental extraction requires the cached pruned prefix to still be
+    // the prefix of the current full-pruned conversation. Pruning is not
+    // generally prefix-stable (for example, a new duplicate read can evict an
+    // old cached read), so unpruned entryIds alone are not sufficient.
+    let cacheUsable = false;
+    if (cachedExt?.keptEntryIds && cachedExt.keptEntryIds.length > 0) {
+      const branchPrefixMatch = cachedExt.entryIds?.every((id, i) => id === currentEntryIds[i]) ?? false;
+      const prunedPrefixMatch = cachedExt.keptEntryIds.length <= currentKeptEntryIds.length &&
+        cachedExt.keptEntryIds.every((id, i) => id === currentKeptEntryIds[i]);
+      cacheUsable = branchPrefixMatch && prunedPrefixMatch &&
+        cachedExt.messageCount === cachedExt.keptEntryIds.length &&
+        cachedExt.messageCount < llmMessages.length;
+      if (!cacheUsable) {
+        extractionCacheMissReason = !branchPrefixMatch ? "entry-prefix-mismatch"
+          : !prunedPrefixMatch ? "pruned-prefix-changed"
+            : cachedExt.messageCount !== cachedExt.keptEntryIds.length ? "cache-shape-mismatch"
+              : "no-new-pruned-messages";
+      }
+    } else if (cachedExt) {
+      // Legacy cache entries lack keptEntryIds, so they cannot prove pruning-prefix
+      // stability. Prefer a full extraction over a potentially corrupted merge.
+      extractionCacheMissReason = "legacy-no-kept-entryids";
+      vlog("Extraction cache ignored: legacy entry lacks keptEntryIds");
+    }
+
+    if (cacheUsable && cachedExt) {
+      const newMsgs = llmMessages.slice(cachedExt.messageCount);
       const delta = extractStructured(newMsgs, pc);
       extraction = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount);
-      notify("Phase 1 Incremental: " + (cachedExt.lastMessageIndex + 1) + " cached + " + newMsgs.length + " new messages", "info");
-      vlog("Incremental extraction — cached messages: " + cachedExt.messageCount + ", current: " + llmMessages.length);
+      notify("Phase 1 Incremental: " + cachedExt.messageCount + " cached + " + newMsgs.length + " new pruned messages", "info");
+      vlog("Incremental extraction — cached pruned messages: " + cachedExt.messageCount + ", current pruned: " + llmMessages.length);
+      extractionCacheMissReason = undefined;
+      recordExtractionCacheHit();
     } else {
       extraction = extractStructured(llmMessages, pc);
       notify("Phase 1 Full: " + extraction.modifiedFiles.length + " files, " + extraction.errors.length + " errors", "info");
       vlog("Full extraction — " + llmMessages.length + " messages, tier=" + tier);
+      recordExtractionCacheMiss();
     }
-    saveCachedExtraction(sessionId, extraction, llmMessages.length, currentFirstId, currentLastId);
+    // messageCount MUST reflect the pruned llmMessages domain because extraction
+    // indexes (topics, errors, decisions, etc.) are all relative to pruned space.
+    // entryIds is the full unpruned window; keptEntryIds is the pruned prefix
+    // used to validate safe incremental extraction on the next run.
+    saveCachedExtraction(sessionId, extraction, llmMessages.length, currentFirstId, currentLastId, currentEntryIds, currentKeptEntryIds);
     markPhase("extract");
 
     // ── Project fingerprint (cross-session context) ──
@@ -340,7 +375,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     markPhase("synthesize");
 
     if (!autoTriggered) showProgressOverlay(ctx, { phase: 4, phaseName: "Verify", detail: "Checking...", model: modelLabel, profile, extraction, explorationRounds });
-    const verification = verifySummary(finalSummary, extraction);
+    let verification = verifySummary(finalSummary, extraction);
     vlog("Verification score=" + verification.score + " ok=" + verification.ok + " gaps=" + verification.gaps.length);
     if (!verification.ok) {
       if (verification.score < 85) {
@@ -348,7 +383,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         notify("Phase 4 Verify: " + verification.gaps.length + " gap(s), score=" + verification.score + ", applying deterministic patch", "warning");
         finalSummary = patchDeterministic(finalSummary, verification.gaps, extraction);
         // Re-verify after patch — only use LLM patch if still bad
-        const recheck = verifySummary(finalSummary, extraction);
+        let recheck = verifySummary(finalSummary, extraction);
         if (!recheck.ok && recheck.score < 75) {
           notify("Phase 4 Verify: deterministic patch insufficient (score=" + recheck.score + "), trying LLM patch", "warning");
           try {
@@ -357,7 +392,11 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
           } catch (err) { /* accept deterministic patch as-is */
             log.warn("LLM patch failed", err);
           }
+          // Final verification after LLM patch
+          recheck = verifySummary(finalSummary, extraction);
         }
+        // Use the post-patch verification as the canonical result
+        verification = recheck;
       } else {
         notify("Phase 4 Verify: " + verification.gaps.length + " gap(s), score=" + verification.score + " ≥ 85 — skipping patch", "info");
       }
@@ -417,6 +456,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     };
 
     if (dryRun) {
+      const ecs = getExtractionCacheStats();
       appendMetricsLog(sessionId, {
         profile, tier,
         contextPercent: Math.round(contextPercent),
@@ -434,6 +474,10 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         status: "dry-run",
         phaseTimings,
         durationMs: Date.now() - pipelineStart,
+        extractionCacheHits: ecs.hits,
+        extractionCacheMisses: ecs.misses,
+        extractionCacheHitRate: ecs.hitRate,
+        extractionCacheMissReason,
       });
       notify("DRY RUN (" + method + ", " + profile + ") — " + toCompact.length + " msgs, " + llmCalls + " calls", "info");
       return;
@@ -477,6 +521,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       log.warn("Damage detection error", err);
     }
     markPhase("damage");
+    const ecs = getExtractionCacheStats();
     appendMetricsLog(sessionId, {
       profile, tier,
       contextPercent: Math.round(contextPercent),
@@ -494,10 +539,16 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       status: "success",
       phaseTimings,
       durationMs: Date.now() - pipelineStart,
+      extractionCacheHits: ecs.hits,
+      extractionCacheMisses: ecs.misses,
+      extractionCacheHitRate: ecs.hitRate,
+      extractionCacheMissReason,
     });
     const ms = getMetricsSummary();
     if (ms.totalCalls > 0) {
-      notify("Metrics: " + ms.totalCalls + " calls, " + ms.totalInput + "t in, " + ms.totalOutput + "t out, cache " + Math.round(ms.cacheHitRate * 100) + "%, " + ms.avgLatency + "ms avg", "info");
+      const providerCacheRate = Math.round(ms.cacheHitRate * 100);
+      const extractionCacheRate = Math.round(ecs.hitRate * 100);
+      notify("Metrics: " + ms.totalCalls + " calls, " + ms.totalInput + "t in, " + ms.totalOutput + "t out, provider-cache " + providerCacheRate + "% (internal phases disabled), extraction-cache " + extractionCacheRate + "%, " + ms.avgLatency + "ms avg", "info");
     }
     if (!autoTriggered) {
       try {

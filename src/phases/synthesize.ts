@@ -11,6 +11,7 @@ import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PR
 import { estimateTokens, getProviderCaps } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { extractText } from "../utils/extraction.ts";
+import { filterToolCalls } from "../utils/type-guards.ts";
 import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries, inferSessionType } from "../utils/helpers.ts";
 
 /** Token estimation for a chunk of messages — uses text-only extraction, not JSON.stringify */
@@ -114,24 +115,47 @@ export async function summarizeBatch(
   const decisionCtx = activeDecisions.length
     ? "\n## Active Decisions from previous segments (honour these):\n" + activeDecisions.join("\n")
     : "";
-  const text = batch.map(ch => "--- Topic: " + ch.topic + " (" + ch.priority + ") ---\n" + ch.messages.map((m) => {
-    const role = m?.role ?? "unknown";
-    const content = extractText(m?.content).slice(0, 500);
-    return "[" + role + "] " + content;
-  }).join("\n")).join("\n\n");
+
+  // Stabil chunk IDs for robust parsing (index-based mapping breaks if LLM skips/adds sections)
+  const text = batch.map((ch, i) => {
+    const id = i + 1;
+    return "--- CHUNK " + id + ": " + ch.topic + " (" + ch.priority + ") ---\n" + ch.messages.map((m) => {
+      const role = m?.role ?? "unknown";
+      const content = extractText(m?.content).slice(0, 500);
+      const toolCalls = filterToolCalls(m?.content)
+        .map(tc => tc.name + " " + JSON.stringify(tc.arguments).slice(0, 300))
+        .join("; ");
+      const toolSuffix = toolCalls ? "\n[tool_calls] " + toolCalls : "";
+      return "[" + role + "] " + content + toolSuffix;
+    }).join("\n");
+  }).join("\n\n");
+
+  const promptPrefix = BATCH_PROMPT_PREFIX;
+
   const dynamicSuffix = BATCH_PROMPT_SUFFIX.replace("{EXTRACTION_CONTEXT}", extractionCtx + decisionCtx).replace("{TEXT}", text);
 
   const resp = await trackedComplete("batch", model, {
     systemPrompt: COMPACT_SYSTEM_PREFIX,
     messages: [
-      { role: "user" as const, content: [{ type: "text" as const, text: BATCH_PROMPT_PREFIX }], timestamp: Date.now() },
+      { role: "user" as const, content: [{ type: "text" as const, text: promptPrefix }], timestamp: Date.now() },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
-  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
+  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(Math.max(4096, batch.length * 1500), getProviderCaps(model.provider).maxOutputTokens), signal });
   const output = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n");
+
+  // ID-based parsing: map chunk number -> section content
+  const sectionMap = new Map<number, string>();
   const sections = output.split(/^### /m).filter(s => s.trim());
+  for (const sec of sections) {
+    const m = sec.match(/^CHUNK\s+(\d+):\s*(.*?)\n/i);
+    if (m) {
+      sectionMap.set(parseInt(m[1], 10), sec);
+    }
+  }
+
   return batch.map((ch, i) => {
-    const sec = sections[i] ?? "";
+    const id = i + 1;
+    const sec = sectionMap.get(id) ?? "";
     const f = (n: string) => { const m = sec.match(new RegExp("\\*\\*" + n + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i")); return m ? m[1].trim() : ""; };
     const l = (n: string) => { const v = f(n); return !v || v === "None" ? [] : v.split(",").map(s => s.trim()).filter(Boolean); };
     const prio = f("Priority").toLowerCase();

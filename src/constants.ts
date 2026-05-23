@@ -85,8 +85,8 @@ export const BATCH_PROMPT_PREFIX =
   "1. Use EXACT file paths from extraction data\n" +
   "2. Status: only mark \"done\" if there's clear evidence (successful test run, user confirmation)\n" +
   "3. Quote specific values, don't paraphrase code\n\n" +
-  "For EACH segment produce:\n" +
-  "### {TOPIC_NAME}\n" +
+  "For EACH segment produce EXACTLY:\n" +
+  "### CHUNK {NUMBER}: {TOPIC_NAME}\n" +
   "**Priority**: [critical|high|normal|low]\n" +
   "**Summary**: [2-4 sentences: what happened, errors, code changes with paths]\n" +
   "**Decisions**: [comma-separated, or \"None\"]\n" +

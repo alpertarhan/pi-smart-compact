@@ -77,14 +77,19 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
     }
     case "search_conversation": {
       const q = ((args.query as string) ?? "").toLowerCase();
-      return JSON.stringify(llmMessages.filter((m) => {
+      const matches: { idx: number; m: LlmMessage }[] = [];
+      for (let i = 0; i < llmMessages.length && matches.length < 10; i++) {
+        const m = llmMessages[i];
         const text = extractText(m?.content).toLowerCase();
-        if (text.includes(q)) return true;
+        if (text.includes(q)) { matches.push({ idx: i, m }); continue; }
         // Also check tool call arguments for file paths
         const tcs = filterToolCalls(m?.content);
-        return tcs.some(tc => JSON.stringify(tc.arguments).toLowerCase().includes(q));
-      }).slice(0, 10).map((m) => ({
-        idx: llmMessages.indexOf(m), role: m?.role, preview: extractText(m?.content).slice(0, 150),
+        if (tcs.some(tc => JSON.stringify(tc.arguments).toLowerCase().includes(q))) {
+          matches.push({ idx: i, m });
+        }
+      }
+      return JSON.stringify(matches.map(({ idx, m }) => ({
+        idx, role: m?.role, preview: extractText(m?.content).slice(0, 150),
       })));
     }
     case "get_recent_user_messages": {
