@@ -51,9 +51,9 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     if (!goalFound) { gaps.push("Main goal may be missing from summary"); score -= 10; }
   }
 
-  if (!lower.includes("## goal")) score -= 5;
-  if (!lower.includes("## progress")) score -= 5;
-  if (!lower.includes("## critical context")) score -= 3;
+  if (!lower.includes("## goal")) { gaps.push("Missing section: ## Goal"); score -= 5; }
+  if (!lower.includes("## progress")) { gaps.push("Missing section: ## Progress"); score -= 5; }
+  if (!lower.includes("## critical context")) { gaps.push("Missing section: ## Critical Context"); score -= 3; }
 
   const summaryFileRefs = (summary.match(/[\w.\/-]+\.[\w]+/g) ?? []).filter(
     p => p.includes("/") || p.match(/\.(ts|tsx|js|jsx|rs|py|go|java|rb|css|html|json|yaml|yml|toml|md|sh|sql)$/i)
@@ -111,7 +111,8 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
-  return { ok: gaps.length === 0, gaps, score: Math.max(0, score) };
+  const finalScore = Math.max(0, score);
+  return { ok: gaps.length === 0 && finalScore >= 85, gaps, score: finalScore };
 }
 
 /**
@@ -124,56 +125,73 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
   const errorGaps = gaps.filter(g => g.startsWith("Missing error:"));
   const constraintGaps = gaps.filter(g => g.startsWith("Missing constraint:"));
   const decisionGaps = gaps.filter(g => g.startsWith("Missing decision:"));
+  const sectionGaps = gaps.filter(g => g.startsWith("Missing section:"));
   const otherGaps = gaps.filter(g =>
     !g.startsWith("Missing modified file:") &&
     !g.startsWith("Missing error:") &&
     !g.startsWith("Missing constraint:") &&
     !g.startsWith("Missing decision:") &&
+    !g.startsWith("Missing section:") &&
     !g.startsWith("Potentially fabricated") &&
     !g.startsWith("Inconsistency")
   );
 
-  // Helper: find section header and return insertion point (cross-platform: tolerant to \r\n)
-  const findSectionInsert = (header: string): number | null => {
-    const re = new RegExp(header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\n", "i");
+  const escapeRe = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  // Helper: find section header and return insertion point. If the LLM used a
+  // non-standard format and the section is absent, create the canonical section
+  // deterministically instead of relying on a second LLM patch to repair it.
+  const findOrCreateSectionInsert = (header: string, defaultBody = ""): number => {
+    const re = new RegExp(escapeRe(header) + "\\s*\\n", "i");
     const m = patched.match(re);
-    return m?.index != null ? m.index + m[0].length : null;
+    if (m?.index != null) return m.index + m[0].length;
+    const prefix = patched.endsWith("\n") ? (patched.endsWith("\n\n") ? "" : "\n") : "\n\n";
+    patched += prefix + header + "\n" + (defaultBody ? defaultBody.replace(/\n?$/, "\n") : "");
+    return patched.length;
   };
+
+  const ensureMissingSection = (header: string): void => {
+    if (header === "## Goal") {
+      findOrCreateSectionInsert(header, (extraction.mainGoal ?? "Continue the current coding task.") + "\n");
+    } else if (header === "## Progress") {
+      findOrCreateSectionInsert(header, "### Done\n- See preceding summary.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n- None recorded.\n");
+    } else if (header === "## Critical Context") {
+      findOrCreateSectionInsert(header, "- None recorded.\n");
+    } else {
+      findOrCreateSectionInsert(header);
+    }
+  };
+
+  for (const gap of sectionGaps) {
+    ensureMissingSection(gap.replace("Missing section: ", ""));
+  }
 
   // Inject missing files into Files Modified section
   if (fileGaps.length > 0) {
-    const insertPos = findSectionInsert("## Files Modified");
-    if (insertPos != null) {
-      const entries = fileGaps.map(g => "- " + g.replace("Missing modified file: ", "")).join("\n") + "\n";
-      patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
-    }
+    const insertPos = findOrCreateSectionInsert("## Files Modified");
+    const entries = fileGaps.map(g => "- " + g.replace("Missing modified file: ", "")).join("\n") + "\n";
+    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
   }
 
   // Inject missing errors into Critical Context section
   if (errorGaps.length > 0) {
-    const insertPos = findSectionInsert("## Critical Context");
-    if (insertPos != null) {
-      const entries = errorGaps.map(g => "- " + g).join("\n") + "\n";
-      patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
-    }
+    const insertPos = findOrCreateSectionInsert("## Critical Context");
+    const entries = errorGaps.map(g => "- " + g).join("\n") + "\n";
+    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
   }
 
   // Inject missing constraints into Constraints section
   if (constraintGaps.length > 0) {
-    const insertPos = findSectionInsert("## Constraints & Preferences");
-    if (insertPos != null) {
-      const entries = constraintGaps.map(g => "- " + g).join("\n") + "\n";
-      patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
-    }
+    const insertPos = findOrCreateSectionInsert("## Constraints & Preferences");
+    const entries = constraintGaps.map(g => "- " + g).join("\n") + "\n";
+    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
   }
 
   // Inject missing decisions into Key Decisions section
   if (decisionGaps.length > 0) {
-    const insertPos = findSectionInsert("## Key Decisions");
-    if (insertPos != null) {
-      const entries = decisionGaps.map(g => "- **" + g.replace("Missing decision: ", "") + "**").join("\n") + "\n";
-      patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
-    }
+    const insertPos = findOrCreateSectionInsert("## Key Decisions");
+    const entries = decisionGaps.map(g => "- **" + g.replace("Missing decision: ", "") + "**").join("\n") + "\n";
+    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
   }
 
   // Append any remaining gaps as a verification note

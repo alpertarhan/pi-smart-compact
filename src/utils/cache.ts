@@ -58,6 +58,15 @@ export function resetMetrics(): void { _metrics.length = 0; }
 export function recordMetric(m: LLMCallMetric): void { _metrics.push(m); if (_metrics.length > 200) _metrics.splice(0, _metrics.length - 100); }
 export function getMetrics(): LLMCallMetric[] { return [..._metrics]; }
 
+export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: number): number {
+  // Provider usage semantics differ: some providers report `input` as total
+  // prompt tokens, while Anthropic-style cache accounting can report only the
+  // uncached/new input and expose cached prompt tokens separately as cacheRead.
+  // Use the larger plausible denominator so cache hit rate is never >100%.
+  if (cacheHitTokens <= 0) return Math.max(0, inputTokens);
+  return cacheHitTokens > inputTokens ? inputTokens + cacheHitTokens : inputTokens;
+}
+
 export function getMetricsSummary(): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
   const n = _metrics.length;
   if (!n) return { totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0, avgLatency: 0, cacheHitRate: 0 };
@@ -65,10 +74,11 @@ export function getMetricsSummary(): { totalCalls: number; totalInput: number; t
   const totalOutput = _metrics.reduce((s, m) => s + m.outputTokens, 0);
   const totalCacheHit = _metrics.reduce((s, m) => s + m.cacheHitTokens, 0);
   const avgLatency = _metrics.reduce((s, m) => s + m.latencyMs, 0) / n;
+  const cacheDenominator = effectivePromptInputTokens(totalInput, totalCacheHit);
   return {
     totalCalls: n, totalInput, totalOutput, totalCacheHit,
     avgLatency: Math.round(avgLatency),
-    cacheHitRate: totalInput > 0 ? totalCacheHit / totalInput : 0,
+    cacheHitRate: cacheDenominator > 0 ? Math.min(1, totalCacheHit / cacheDenominator) : 0,
   };
 }
 
@@ -351,18 +361,19 @@ function summarizeDashboard(entries: CompactMetricsEntry[]): MetricsDashboardSum
     successRate: entries.length ? success / entries.length : 0,
     avgDuration: Math.round(average(durations)),
     p95Duration: percentile(durations, 95),
-    totalCalls: entries.reduce((sum, e) => sum + e.totalCalls, 0),
-    totalInput: entries.reduce((sum, e) => sum + e.totalInput, 0),
-    totalOutput: entries.reduce((sum, e) => sum + e.totalOutput, 0),
+    totalCalls: entries.reduce((sum, e) => sum + (e.totalCalls ?? 0), 0),
+    totalInput: entries.reduce((sum, e) => sum + (e.totalInput ?? 0), 0),
+    totalOutput: entries.reduce((sum, e) => sum + (e.totalOutput ?? 0), 0),
     totalSaved: entries.reduce((sum, e) => sum + (e.tokensSaved ?? 0), 0),
     avgScore: Math.round(average(scored)),
   };
 }
 
-function groupMetrics(entries: CompactMetricsEntry[], keyFn: (entry: CompactMetricsEntry) => string): MetricsGroupSummary[] {
+function groupMetrics(entries: CompactMetricsEntry[], keyFn: (entry: CompactMetricsEntry) => string | undefined): MetricsGroupSummary[] {
   const groups = new Map<string, CompactMetricsEntry[]>();
   for (const entry of entries) {
-    const key = keyFn(entry) || "unknown";
+    const key = keyFn(entry);
+    if (!key) continue; // Legacy metrics may predate profile/provider fields; omit them from comparisons.
     groups.set(key, [...(groups.get(key) ?? []), entry]);
   }
   return [...groups.entries()].map(([name, group]) => {
@@ -376,7 +387,7 @@ function groupMetrics(entries: CompactMetricsEntry[], keyFn: (entry: CompactMetr
       p95Duration: percentile(durations, 95),
       avgScore: Math.round(average(scores)),
       totalSaved: group.reduce((sum, e) => sum + (e.tokensSaved ?? 0), 0),
-      totalCalls: group.reduce((sum, e) => sum + e.totalCalls, 0),
+      totalCalls: group.reduce((sum, e) => sum + (e.totalCalls ?? 0), 0),
       errorRate: group.length ? failures / group.length : 0,
     };
   }).sort((a, b) => b.runs - a.runs || a.name.localeCompare(b.name));
@@ -445,7 +456,7 @@ function recentRunRows(entries: CompactMetricsEntry[]): string {
     <td class="num">${escapeHtml(formatMs(durationOf(entry)))}</td>
     <td class="num">${typeof entry.verificationScore === "number" ? formatNumber(entry.verificationScore) : "—"}</td>
     <td class="num">${typeof entry.tokensSaved === "number" ? formatNumber(entry.tokensSaved) : "—"}</td>
-    <td class="num">${formatNumber(entry.totalCalls)}</td>
+    <td class="num">${formatNumber(entry.totalCalls ?? 0)}</td>
     <td class="num">${typeof entry.extractionCacheHitRate === "number" ? formatPercent(entry.extractionCacheHitRate) : "—"}</td>
     <td class="mono small reason">${escapeHtml(entry.fallbackReason ?? entry.extractionCacheMissReason ?? "")}</td>
   </tr>`).join("\n");
@@ -458,8 +469,8 @@ function dashboardCss(): string {
 export function buildMetricsReport(entries = readMetricsLog(100)): string {
   if (!entries.length) return "No smart-compact metrics recorded yet.";
   const summary = summarizeDashboard(entries);
-  const byProfile = groupMetrics(entries, e => e.profile ?? "unknown");
-  const byProvider = groupMetrics(entries, e => e.provider ?? e.model?.split("/")[0] ?? "unknown");
+  const byProfile = groupMetrics(entries, e => e.profile);
+  const byProvider = groupMetrics(entries, e => e.provider ?? e.model?.split("/")[0]);
   const summarizeGroup = (group: MetricsGroupSummary) => "- " + group.name + ": n=" + group.runs + ", avg=" + group.avgDuration + "ms, p95=" + group.p95Duration + "ms, score=" + group.avgScore + ", saved=" + group.totalSaved + "t, reliability=" + formatPercent(1 - group.errorRate);
   const extractionCacheRuns = entries.filter(e => typeof e.extractionCacheHitRate === "number");
   const extractionCacheAvg = average(extractionCacheRuns.map(e => e.extractionCacheHitRate ?? 0));
@@ -487,8 +498,8 @@ export function writeMetricsDashboard(entries = readMetricsLog(200)): string | n
     const summary = summarizeDashboard(entries);
     const latest = entries[entries.length - 1];
     const report = buildMetricsReport(entries);
-    const profileGroups = groupMetrics(entries, e => e.profile ?? "unknown");
-    const providerGroups = groupMetrics(entries, e => e.provider ?? e.model?.split("/")[0] ?? "unknown");
+    const profileGroups = groupMetrics(entries, e => e.profile);
+    const providerGroups = groupMetrics(entries, e => e.provider ?? e.model?.split("/")[0]);
     const healthTone = summary.error + summary.timeout > 0 ? "warn" : "good";
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Smart Compact Metrics</title><style>${dashboardCss()}</style></head><body><main>
       <header><div><div class="eyebrow">pi-smart-compact</div><h1>Operational Metrics</h1><div class="muted">Generated ${escapeHtml(new Date().toISOString())} · ${formatNumber(entries.length)} recent runs · local file dashboard</div></div><div>${badge(latest?.status)} ${latest ? `<span class="muted">latest ${escapeHtml(latest.profile ?? "unknown")}</span>` : ""}</div></header>

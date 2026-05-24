@@ -13,7 +13,7 @@ import { PROFILES, MIN_TOKEN_THRESHOLD, MAX_EXPLORATION_ROUNDS } from "./constan
 import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
 import {
   resetCompactSessionId, resetMetrics, resetExtractionCacheStats, appendMetricsLog, getMetricsSummary,
-  getExtractionCacheStats, recordExtractionCacheHit, recordExtractionCacheMiss,
+  effectivePromptInputTokens, getExtractionCacheStats, recordExtractionCacheHit, recordExtractionCacheMiss,
   saveCachedExtraction, loadCachedExtraction, mergeExtractions,
 } from "./utils/cache.ts";
 import { extractStructured, extractText, extractOpenLoops } from "./utils/extraction.ts";
@@ -548,7 +548,11 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     if (ms.totalCalls > 0) {
       const providerCacheRate = Math.round(ms.cacheHitRate * 100);
       const extractionCacheRate = Math.round(ecs.hitRate * 100);
-      notify("Metrics: " + ms.totalCalls + " calls, " + ms.totalInput + "t in, " + ms.totalOutput + "t out, provider-cache " + providerCacheRate + "% (internal phases disabled), extraction-cache " + extractionCacheRate + "%, " + ms.avgLatency + "ms avg", "info");
+      const promptInput = effectivePromptInputTokens(ms.totalInput, ms.totalCacheHit);
+      const inputLabel = ms.totalCacheHit > 0
+        ? promptInput + "t prompt (" + ms.totalInput + "t new, " + ms.totalCacheHit + "t cached)"
+        : ms.totalInput + "t in";
+      notify("Metrics: " + ms.totalCalls + " calls, " + inputLabel + ", " + ms.totalOutput + "t out, provider-cache " + providerCacheRate + "% (internal phases disabled), extraction-cache " + extractionCacheRate + "%, " + ms.avgLatency + "ms avg", "info");
     }
     if (!autoTriggered) {
       try {

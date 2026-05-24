@@ -1,5 +1,20 @@
 # Changelog
 
+## [7.13.0] - 2026-05-25
+
+### Added
+- **Interactive metrics dashboard TUI** — `/smart-compact dashboard` now opens an in-terminal dashboard with overview, latest-run details, current-session runs, recent runs, and an explicit HTML export action.
+- **Dashboard run detail formatting** — Added tested formatter helpers for legacy metrics, empty states, phase timings, compact run descriptions, and bounded percentage display.
+
+### Fixed
+- **Provider cache percentage accounting** — Provider prompt-cache hit rates now use an effective prompt-token denominator and are capped at 100%, preventing impossible values such as `572610%` when providers report cached tokens separately from new input tokens.
+- **Verification repair for malformed summaries** — Missing canonical sections are now reported as verification gaps and deterministic repair can create sections such as `## Goal`, `## Progress`, `## Critical Context`, and `## Files Modified` before injecting required facts.
+- **Dashboard comparison noise** — Legacy metrics entries without profile/provider metadata are omitted from profile/provider comparison groups instead of appearing as misleading `unknown` rows.
+
+### Changed
+- **Metrics readability** — Result overlays and notifications distinguish prompt, new, and cached input tokens when provider cache reads are present.
+- **Dashboard navigation** — The TUI supports keybinding-aware navigation plus page-up/page-down and home/end scrolling.
+
 ## [7.12.5] - 2026-05-23
 
 ### Fixed

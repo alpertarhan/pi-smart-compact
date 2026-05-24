@@ -98,7 +98,8 @@ Something
     const extraction = makeExtraction({});
     const summary = "Just some random text without headers";
     const result = verifySummary(summary, extraction);
-    expect(result.score).toBeLessThan(100);
+    expect(result.ok).toBe(false);
+    expect(result.gaps.some(g => g.includes("## Goal"))).toBe(true);
     expect(result.score).toBeLessThan(100);
   });
 
@@ -130,6 +131,25 @@ describe("patchDeterministic", () => {
     const patched = patchDeterministic(summary, gaps, extraction);
     expect(patched).toContain("/src/Auth.ts");
     expect(patched).toContain("## Files Modified");
+  });
+
+  it("creates canonical sections when deterministic patch target is missing", () => {
+    const extraction = makeExtraction({
+      modifiedFiles: [
+        { path: "/web/src/pages/sessions.tsx", toolCalls: 1, lastModifiedIndex: 2 },
+        { path: "/web/src/pages/compare.tsx", toolCalls: 1, lastModifiedIndex: 3 },
+      ],
+      mainGoal: "Improve dashboard UI",
+    });
+    const summary = "Goal: dashboard work\nChanged sessions and compare pages.";
+    const before = verifySummary(summary, extraction);
+    const patched = patchDeterministic(summary, before.gaps, extraction);
+    const after = verifySummary(patched, extraction);
+    expect(patched).toContain("## Files Modified");
+    expect(patched).toContain("/web/src/pages/sessions.tsx");
+    expect(patched).toContain("## Progress");
+    expect(after.gaps.some(g => g.startsWith("Missing section:"))).toBe(false);
+    expect(after.score).toBeGreaterThan(before.score);
   });
 
   it("injects missing errors into Critical Context section", () => {

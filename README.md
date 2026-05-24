@@ -186,7 +186,7 @@ The tool prepares a pending smart summary and lets Pi consume it on the next nat
 - pending summaries are kept in memory for **5 minutes**
 - exploration is adaptive and may be skipped for simple sessions
 - use `/smart-compact metrics` for profile/provider comparisons
-- use `/smart-compact dashboard` to write a local HTML report at `.cache/smart-compact-report.html`
+- use `/smart-compact dashboard` to open the interactive TUI dashboard (overview, latest run, current session, recent runs, or write HTML)
 
 This keeps the extension helpful without forcing extra work when it is not needed.
 

@@ -10,9 +10,9 @@ import type { CompressionProfile, PendingCompaction } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./constants.ts";
 import { loadConfig, extractUserNote } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
-import { buildMetricsReport, writeMetricsDashboard } from "./utils/cache.ts";
+import { buildMetricsReport, readMetricsLog, writeMetricsDashboard } from "./utils/cache.ts";
 import { runSmartCompact } from "./core.ts";
-import { showCompactUI } from "./ui/overlays.ts";
+import { showCompactUI, showMetricsDashboardUI } from "./ui/overlays.ts";
 import * as log from "./utils/logger.ts";
 
 function resolveModelArg(ctx: ExtensionCommandContext, modelArg: string): Model<Api> | undefined {
@@ -65,10 +65,21 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         const verbose = flags.includes("verbose") || flags.includes("debug");
         const dryRun = flags.includes("dry-run");
         if (flags.includes("metrics") || flags.includes("dashboard")) {
-          const dashboard = flags.includes("dashboard");
-          const report = buildMetricsReport();
-          const fp = dashboard ? writeMetricsDashboard() : null;
-          ctx.ui.notify(report + (fp ? "\n\nDashboard: " + fp : ""), "info");
+          if (flags.includes("dashboard")) {
+            const entries = readMetricsLog(200);
+            const sessionId = ctx.sessionManager.getSessionId?.() ?? "unknown";
+            const action = await showMetricsDashboardUI(ctx, {
+              entries,
+              currentSessionId: sessionId,
+              report: buildMetricsReport(entries),
+            });
+            if (action === "html") {
+              const fp = writeMetricsDashboard(entries);
+              ctx.ui.notify(fp ? "Dashboard written: " + fp : "Dashboard could not be written", fp ? "info" : "error");
+            }
+          } else {
+            ctx.ui.notify(buildMetricsReport(), "info");
+          }
           return;
         }
         const modelArg = tokens.find(t => t.includes("/"));

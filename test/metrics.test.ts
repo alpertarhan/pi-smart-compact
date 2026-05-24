@@ -35,6 +35,24 @@ describe("metrics reporting", () => {
     expect(fs.readFileSync(fp!, "utf8")).toContain("Smart Compact Metrics");
   });
 
+  it("caps provider cache hit rate when cacheRead exceeds uncached input", () => {
+    cache.resetMetrics();
+    cache.recordMetric({
+      phase: "batch",
+      model: "claude",
+      provider: "anthropic",
+      inputTokens: 21,
+      outputTokens: 100,
+      cacheHitTokens: 120248,
+      latencyMs: 10,
+      success: true,
+    });
+    const summary = cache.getMetricsSummary();
+    expect(summary.cacheHitRate).toBeGreaterThan(0.99);
+    expect(summary.cacheHitRate).toBeLessThanOrEqual(1);
+    expect(cache.effectivePromptInputTokens(summary.totalInput, summary.totalCacheHit)).toBe(120269);
+  });
+
   it("skips corrupt jsonl rows instead of dropping all metrics", () => {
     cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success" });
     const logPath = path.join(home, ".pi", "agent", ".cache", "compact-metrics.jsonl");
