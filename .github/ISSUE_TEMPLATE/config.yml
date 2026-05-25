@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Pi Coding Agent upstream
+    url: https://github.com/earendil-works/pi
+    about: Use Pi's upstream repository for core Pi bugs that reproduce without pi-smart-compact.
