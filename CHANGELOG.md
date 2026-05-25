@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.13.2] - 2026-05-26
+
+### Changed
+- **Package gallery presentation** — Replaced README badge images with plain text links so Pi package pages do not render badges as extra image cards.
+- **Logo asset cleanup** — Replaced the oversized logo with a square transparent icon-only PNG and reduced README display size.
+- **Repository hygiene** — Removed stale audit and archived planning markdown files from the tracked repository.
+- **CI maintenance** — Updated GitHub Actions checkout from v4 to v6.
+
 ## [7.13.1] - 2026-05-26
 
 ### Fixed
