@@ -322,16 +322,50 @@ At runtime, the extension writes to paths under `~/.pi/agent/`, including:
 ```text
 .
 ├── src/
-│   ├── index.ts
-│   ├── core.ts
-│   ├── phases/
-│   ├── ui/
-│   └── utils/
-├── test/
+│   ├── index.ts              # extension registration + command routing
+│   ├── constants.ts          # version, thresholds, prompts
+│   ├── types.ts              # shared types
+│   ├── app/                  # orchestration layer
+│   │   ├── run-smart-compact.ts   # pipeline orchestrator (was core.ts)
+│   │   ├── run-context.ts         # typed stage chain
+│   │   ├── explore-wrap.ts        # explore re-export shim
+│   │   └── steps/                 # 10 stage modules
+│   │       ├── prepare.ts   →   resolves config + auth
+│   │       ├── window.ts    →   picks compaction window
+│   │       ├── recover.ts   →   recovers truncated messages
+│   │       ├── tier.ts      →   chooses compaction tier
+│   │       ├── extract.ts   →   pruning + extraction + cache
+│   │       ├── synthesize.ts→   single-pass / EESV summarization
+│   │       ├── verify.ts    →   structural verify + repair
+│   │       ├── state.ts     →   state machine + open loops
+│   │       ├── persist.ts   →   apply compaction
+│   │       └── metrics.ts   →   success / failure metrics
+│   ├── domain/               # pure semantics (no I/O)
+│   │   ├── summary-schema.ts
+│   │   └── summary-parse.ts
+│   ├── phases/               # algorithms
+│   │   ├── explore.ts
+│   │   ├── synthesize.ts
+│   │   └── verify.ts
+│   ├── infra/                # external-world interaction
+│   │   ├── fs.ts                # atomic writes, advisory locks
+│   │   ├── paths.ts             # canonical paths
+│   │   ├── git.ts               # git-root discovery (cached)
+│   │   ├── clock.ts             # injectable clock
+│   │   ├── llm-client.ts        # LLM client seam
+│   │   ├── llm-retry.ts         # 429/5xx backoff
+│   │   └── services.ts          # per-run services container
+│   ├── ui/                   # TUI overlays + dashboard
+│   │   ├── overlays.ts
+│   │   └── dashboard-format.ts
+│   └── utils/                # 13 focused utility modules
+├── test/                     # 280+ tests across 28 files
 ├── docs/
 ├── dist/
 └── package.json
 ```
+
+See `ARCHITECTURE.md` for the full responsibility breakdown of each layer.
 
 ---
 

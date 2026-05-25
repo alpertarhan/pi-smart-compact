@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { validateSmartCompactConfig, selectCompactionTier } from "../src/utils/helpers.ts";
+import { validateSmartCompactConfig, selectCompactionTier, computeToolCharPercentage } from "../src/utils/helpers.ts";
 import { DEFAULT_CONFIG, VERSION, MIN_TOKEN_THRESHOLD } from "../src/constants.ts";
 import pkg from "../package.json";
 
@@ -118,6 +118,19 @@ describe("validateSmartCompactConfig", () => {
 
   it("has default minContextPercent of 60", () => {
     expect(DEFAULT_CONFIG.minContextPercent).toBe(60);
+  });
+});
+
+describe("computeToolCharPercentage", () => {
+  it("counts only text blocks and ignores tool-call text-like fields", () => {
+    const branch = [
+      { message: { role: "assistant", content: [
+        { type: "toolCall", text: "x".repeat(1000), name: "write", arguments: {} },
+        { type: "text", text: "assistant" },
+      ] } },
+      { message: { role: "toolResult", content: [{ type: "text", text: "tool" }] } },
+    ];
+    expect(computeToolCharPercentage(branch)).toBe(Math.round(4 / (9 + 4) * 100));
   });
 });
 

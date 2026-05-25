@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.13.1] - 2026-05-26
+
+### Fixed
+- **Run-scoped service isolation** — Smart compaction runs now create isolated service containers for LLM calls, metrics, extraction-cache stats, token calibration, and provider prompt-cache session ids, reducing cross-run state pollution in concurrent Pi sessions.
+- **Phase timing accuracy** — Prune, extract, explore, and synthesize timings are now measured at their actual phase boundaries instead of adjacent marker calls that could report near-zero durations.
+- **Tool/noise accounting** — Tool character percentages now count only text blocks, avoiding accidental inclusion of provider tool-call fields with text-like payloads.
+- **File operation extraction coverage** — File-change detection now recognizes common patch/create/append/update/apply-style tool names in addition to write/edit/delete/read variants.
+
+### Tests
+- Added regression coverage for run-scoped LLM metrics isolation, text-only tool character accounting, and broader file-operation tool matching.
+
 ## [7.13.0] - 2026-05-25
 
 ### Added

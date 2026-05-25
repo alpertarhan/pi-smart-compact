@@ -149,7 +149,16 @@ export interface ModelOption {
   value: string;
   label: string;
   model: Model<Api>;
-  supportsTools: boolean;
+  /**
+   * Tri-state tool support hint:
+   *   true   - confirmed (cached or known-good provider)
+   *   false  - confirmed unsupported (cached after a failed probe)
+   *   "probe" - unknown; will be runtime-probed during exploration
+   * The previous boolean form always set `true` in the UI, which silently
+   * lied to the user about providers like LM Studio that don't actually
+   * support function calling.
+   */
+  supportsTools: boolean | "probe";
 }
 
 export interface VerificationResult {
@@ -208,6 +217,13 @@ export interface LlmMessage {
   content?: unknown;
   isError?: boolean;
   toolCallId?: string;
+  /**
+   * Optional tool name on `toolResult` messages. Some providers require it
+   * alongside `toolCallId` (Anthropic), others ignore it. We store it when
+   * we know it so the explore-loop can round-trip the metadata back to the
+   * provider without re-fetching the original toolCall block.
+   */
+  toolName?: string;
   timestamp?: number;
 }
 
@@ -226,6 +242,25 @@ export interface CacheAwareOptions {
   sessionId?: string;
 }
 
+/**
+ * Compact summary of an entry-ID list used for cache prefix matching.
+ *
+ * Storing the full id array on disk balloons the cache file linearly with
+ * session length (5k msgs ⇒ ~100KB rewritten on every compact). The fingerprint
+ * captures everything `extractWithCache` actually checks:
+ *
+ *  - `count` — array length, used to bound the prefix verification.
+ *  - `prefixHash` — sha256 over `ids.join("\n")`, used to *prove* the cached
+ *    prefix is a prefix of the current run without storing the full list.
+ *  - `tail` — last few ids verbatim, used as a fast first-line sanity check
+ *    before computing the hash. Cheap O(K) string compare.
+ */
+export interface EntryIdFingerprint {
+  count: number;
+  prefixHash: string;
+  tail: string[];
+}
+
 export interface CachedExtraction {
   lastMessageIndex: number;
   extraction: StructuredExtraction;
@@ -234,10 +269,15 @@ export interface CachedExtraction {
   /** First/last entry IDs for branch-aware cache invalidation */
   firstEntryId?: string;
   lastEntryId?: string;
-  /** Original toCompact entry IDs for branch/pivot detection. */
+  /** Legacy: full id array. Kept on the type for backwards-compatible reads of
+   *  older cache files. New saves use {entryIdsFp, keptEntryIdsFp} instead. */
   entryIds?: string[];
-  /** Entry IDs that survived pruning; this is the index domain of `extraction`. */
+  /** Legacy: full kept-id array. See `entryIds`. */
   keptEntryIds?: string[];
+  /** Compact branch fingerprint (replaces `entryIds` for new caches). */
+  entryIdsFp?: EntryIdFingerprint;
+  /** Compact pruned fingerprint (replaces `keptEntryIds` for new caches). */
+  keptEntryIdsFp?: EntryIdFingerprint;
 }
 
 /** An open loop — unresolved task detected during compaction */

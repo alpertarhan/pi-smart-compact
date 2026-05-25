@@ -24,4 +24,9 @@ coverage/
 
 # OS
 .DS_Store
-dist/
+
+# Scratch / progress files used by sub-agents and chains
+progress.md
+context.md
+chain-runs/
+

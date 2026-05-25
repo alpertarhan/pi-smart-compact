@@ -70,6 +70,23 @@ describe("trackFileOps", () => {
     expect(ops.read[0]).toBe("/tmp/bar.ts");
   });
 
+  it("detects common patch/create/append/update file tools as modifications", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [
+        { type: "toolCall", id: "1", name: "patch_file", arguments: { path: "/tmp/a.ts" } },
+        { type: "toolCall", id: "2", name: "create_file", arguments: { path: "/tmp/b.ts" } },
+        { type: "toolCall", id: "3", name: "append_file", arguments: { path: "/tmp/c.ts" } },
+        { type: "toolCall", id: "4", name: "update_file", arguments: { path: "/tmp/d.ts" } },
+      ] },
+      { role: "toolResult", toolCallId: "1", content: "patched" },
+      { role: "toolResult", toolCallId: "2", content: "created" },
+      { role: "toolResult", toolCallId: "3", content: "appended" },
+      { role: "toolResult", toolCallId: "4", content: "updated" },
+    ];
+    const ops = trackFileOps(msgs);
+    expect(ops.modified.map(f => f.path).sort()).toEqual(["/tmp/a.ts", "/tmp/b.ts", "/tmp/c.ts", "/tmp/d.ts"]);
+  });
+
   it("ignores no-op edits", () => {
     const msgs: LlmMessage[] = [
       { role: "assistant", content: [{ type: "toolCall", id: "1", name: "edit", arguments: { path: "/tmp/x.ts" } }] },

@@ -5,7 +5,7 @@
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   LlmMessage, LlmChunk, ChunkSummary, StructuredExtraction,
-  ExplorationReport, ProfileConfig, CacheAwareOptions,
+  ExplorationReport, ProfileConfig,
 } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PROMPT_PREFIX, BATCH_PROMPT_SUFFIX, ASSEMBLY_PROMPT_PREFIX, ASSEMBLY_PROMPT_SUFFIX, SESSION_TYPE_INSTRUCTIONS } from "../constants.ts";
 import { estimateTokens, getProviderCaps } from "../utils/tokens.ts";
@@ -13,6 +13,7 @@ import { trackedComplete } from "../utils/cache.ts";
 import { extractText } from "../utils/extraction.ts";
 import { filterToolCalls } from "../utils/type-guards.ts";
 import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries, inferSessionType } from "../utils/helpers.ts";
+import type { SmartCompactServices } from "../infra/services.ts";
 
 /** Token estimation for a chunk of messages — uses text-only extraction, not JSON.stringify */
 function estimateChunkTokens(msgs: LlmMessage[]): number {
@@ -77,6 +78,7 @@ export async function singlePassCompact(
   convText: string, extraction: StructuredExtraction, report: ExplorationReport | null,
   prevContext: string,
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, budgetTokens: number, signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<{ summary: string; llmCalls: 1 }> {
   const extractionCtx = buildExtractionContext(extraction);
   const explorationCtx = report ? buildExplorationContext(report) : "";
@@ -96,7 +98,7 @@ export async function singlePassCompact(
       { role: "user" as const, content: [{ type: "text" as const, text: adaptedPrefix }], timestamp: Date.now() },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
-  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budgetTokens, getProviderCaps(model.provider).maxOutputTokens), signal });
+  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budgetTokens, getProviderCaps(model.provider).maxOutputTokens), signal }, services);
   const summary = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
   if (!summary.startsWith("##")) throw new Error("Single-pass malformed output");
   return { summary, llmCalls: 1 };
@@ -105,6 +107,7 @@ export async function singlePassCompact(
 export async function summarizeBatch(
   batch: LlmChunk[], extraction: StructuredExtraction,
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<ChunkSummary[]> {
   const range = { start: batch[0].startIndex, end: batch[batch.length - 1].endIndex };
   const extractionCtx = buildExtractionContext(extraction, range);
@@ -140,7 +143,7 @@ export async function summarizeBatch(
       { role: "user" as const, content: [{ type: "text" as const, text: promptPrefix }], timestamp: Date.now() },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
-  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(Math.max(4096, batch.length * 1500), getProviderCaps(model.provider).maxOutputTokens), signal });
+  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(Math.max(4096, batch.length * 1500), getProviderCaps(model.provider).maxOutputTokens), signal }, services);
   const output = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n");
 
   // ID-based parsing: map chunk number -> section content
@@ -174,7 +177,7 @@ export async function summarizeBatch(
 export async function assembleLLM(
   summaries: ChunkSummary[], extraction: StructuredExtraction, report: ExplorationReport | null,
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, budget: number,
-  prevContext: string, signal?: AbortSignal,
+  prevContext: string, signal?: AbortSignal, services?: SmartCompactServices,
 ): Promise<string> {
   const pp = preProcessSummaries(summaries, budget);
   const detModified = extraction.modifiedFiles.map(f => f.path);
@@ -194,7 +197,7 @@ export async function assembleLLM(
       { role: "user" as const, content: [{ type: "text" as const, text: ASSEMBLY_PROMPT_PREFIX }], timestamp: Date.now() },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
-  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budget, getProviderCaps(model.provider).maxOutputTokens), signal });
+  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(budget, getProviderCaps(model.provider).maxOutputTokens), signal }, services);
   return resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
 }
 

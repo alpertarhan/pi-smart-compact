@@ -11,7 +11,7 @@ import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./cons
 import { loadConfig, extractUserNote } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
 import { buildMetricsReport, readMetricsLog, writeMetricsDashboard } from "./utils/cache.ts";
-import { runSmartCompact } from "./core.ts";
+import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { showCompactUI, showMetricsDashboardUI } from "./ui/overlays.ts";
 import * as log from "./utils/logger.ts";
 
@@ -145,27 +145,49 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       if (!isRunning.value) {
         const caps = getProviderCaps(sumModel.provider);
         const effectiveTimeoutMs = Math.round(config.autoTriggerTimeoutMs * caps.timeoutMultiplier);
-        const compactPromise = runSmartCompact({ ctx: ctx as unknown as ExtensionCommandContext, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: config.profile, pendingRef, isRunning, autoTriggered: true, timeoutMs: effectiveTimeoutMs });
-        // Hard timeout: even if the LLM provider ignores AbortSignal, we won't block native compact.
-        let timeoutId: ReturnType<typeof setTimeout> | null = null;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutId = setTimeout(() => resolve("timeout"), effectiveTimeoutMs + 100);
-        });
-        let result: "done" | "timeout";
+
+        // Outer hard timeout: providers occasionally ignore AbortSignal, so we
+        // need a second line of defense that cannot be subverted from inside.
+        // We hand a shared cancellation handle to runSmartCompact; firing it
+        // sets `timedOut = true` on the run's context which propagates to:
+        //   - every cancellation gate in run-smart-compact.ts (skips compact, clears pending),
+        //   - the finally block (records a timeout metric, frees isRunning).
+        // No Promise.race is needed: we await the run normally and let the
+        // shared flag drive the bailout. This removes the race window where
+        // the outer race resolved "timeout" while the inner pipeline was
+        // still mid-applyCompaction.
+        const cancellationOut: { value: import("./app/run-smart-compact.ts").ExternalCancellation | null } = { value: null };
+        const timeoutId = setTimeout(() => {
+          // Fire well before the inner deadline so the inner pipeline never
+          // hits applyCompaction past the deadline. +100 was the old margin;
+          // we keep that semantics but assert through the shared flag instead
+          // of through Promise.race.
+          if (cancellationOut.value && !cancellationOut.value.timedOut) {
+            log.warn("Smart compact auto-trigger hard timeout after " + effectiveTimeoutMs + "ms");
+            cancellationOut.value.abort();
+          }
+        }, effectiveTimeoutMs + 100);
+
         try {
-          result = await Promise.race([compactPromise.then(() => "done" as const), timeoutPromise]);
+          await runSmartCompact({
+            ctx: ctx as unknown as ExtensionCommandContext,
+            summaryModel: sumModel,
+            segModel: segModel ?? sumModel,
+            profile: config.profile,
+            pendingRef, isRunning,
+            autoTriggered: true,
+            timeoutMs: effectiveTimeoutMs,
+            cancellationOut,
+          });
+        } catch (err) {
+          log.warn("Smart compact auto-trigger threw", err);
         } finally {
-          if (timeoutId) clearTimeout(timeoutId);
+          clearTimeout(timeoutId);
         }
-        if (result === "timeout") {
-          log.warn("Smart compact auto-trigger hard timeout after " + effectiveTimeoutMs + "ms");
-          // Do not reset isRunning here: runSmartCompact owns that lifecycle in
-          // its finally block. Resetting here can allow overlapping background
-          // smart compactions while the timed-out provider call is still unwinding.
-          pendingRef.value = null;
-          pendingRef.createdAt = 0;
-          return; // fall back to native compact
-        }
+
+        // If the outer timer fired, runSmartCompact's finally has already
+        // cleared pendingRef. Falling through to native compact is the right
+        // behavior — we don't need to re-check the timeout flag here.
         const pending = pendingRef.value as PendingCompaction | null;
         if (pending) {
           pendingRef.value = null;

@@ -1,5 +1,11 @@
 /**
  * Extraction cache, metrics, and cache-aware LLM options.
+ *
+ * Filesystem writes go through `src/infra/fs.ts` (atomic temp+rename for
+ * snapshots, advisory lock for the metrics append log) so that two pi
+ * sessions racing to compact the same project cannot corrupt each other's
+ * state. All LLM I/O routes through `getLlmClient()` so tests can swap a fake
+ * provider in without resolving the real peer dependency.
  */
 
 import fs from "node:fs";
@@ -8,9 +14,15 @@ import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, PipelinePhaseTiming, CompactMetricsEntry } from "../types.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import * as log from "./logger.ts";
-import { complete, type Model, type Api, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
-
-const CACHE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache");
+import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
+import { getLlmClient } from "../infra/llm-client.ts";
+import {
+  extractionCacheFile, metricsLogFile, damageReportsFile,
+  cacheDir as cacheDirPath, metricsDashboardFile,
+} from "../infra/paths.ts";
+import { appendLineLocked, ensureDir, readJsonSync, writeJsonSync, atomicWriteFileSync } from "../infra/fs.ts";
+import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
+import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 
 // ── Session ID ──
 let _compactSessionId: string | null = null;
@@ -37,6 +49,7 @@ export function cacheOpts(
   opts: CacheAwareOptions,
   provider?: string,
   phase?: LLMCallMetric["phase"],
+  services?: SmartCompactServices,
 ): CacheAwareOptions & { sessionId?: string } {
   // Internal compaction LLM calls are one-shot: cache write cost (1.25x–2x) is never amortized.
   if (phase && INTERNAL_PHASES.has(phase)) {
@@ -48,15 +61,24 @@ export function cacheOpts(
   if (retention === "none") {
     return { ...opts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: getCompactSessionId(), cacheRetention: retention };
+  return { ...opts, sessionId: services?.compactSessionId ?? getCompactSessionId(), cacheRetention: retention };
 }
 
 // ── Metrics ──
-const _metrics: LLMCallMetric[] = [];
+//
+// Metrics now live on the per-run services container. These functions remain
+// for backwards compatibility (overlays.ts, app/steps/metrics.ts call them by
+// name); they delegate to the active services bag, which is rotated on each
+// `resetMetrics` invocation by the orchestrator. The default container is also
+// what tests grab via `setDefaultServices` to inject a deterministic clock.
 
-export function resetMetrics(): void { _metrics.length = 0; }
-export function recordMetric(m: LLMCallMetric): void { _metrics.push(m); if (_metrics.length > 200) _metrics.splice(0, _metrics.length - 100); }
-export function getMetrics(): LLMCallMetric[] { return [..._metrics]; }
+export function resetMetrics(services = getDefaultServices()): void {
+  services.metrics.clear();
+  services.extractionCacheStats.clear();
+  services.tokenCalibration.clear();
+}
+export function recordMetric(m: LLMCallMetric, services = getDefaultServices()): void { services.metrics.record(m); }
+export function getMetrics(services = getDefaultServices()): LLMCallMetric[] { return services.metrics.snapshot(); }
 
 export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: number): number {
   // Provider usage semantics differ: some providers report `input` as total
@@ -67,32 +89,32 @@ export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: 
   return cacheHitTokens > inputTokens ? inputTokens + cacheHitTokens : inputTokens;
 }
 
-export function getMetricsSummary(): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
-  const n = _metrics.length;
-  if (!n) return { totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0, avgLatency: 0, cacheHitRate: 0 };
-  const totalInput = _metrics.reduce((s, m) => s + m.inputTokens, 0);
-  const totalOutput = _metrics.reduce((s, m) => s + m.outputTokens, 0);
-  const totalCacheHit = _metrics.reduce((s, m) => s + m.cacheHitTokens, 0);
-  const avgLatency = _metrics.reduce((s, m) => s + m.latencyMs, 0) / n;
-  const cacheDenominator = effectivePromptInputTokens(totalInput, totalCacheHit);
+export function getMetricsSummary(services = getDefaultServices()): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
+  const sum = services.metrics.summary();
+  // The services container computes a structurally identical summary but
+  // uses a slightly different cache-hit denominator. Keep the previously
+  // published denominator (capped at <=1) so dashboards don't show >100%.
+  const cacheDenominator = effectivePromptInputTokens(sum.totalInput, sum.totalCacheHit);
   return {
-    totalCalls: n, totalInput, totalOutput, totalCacheHit,
-    avgLatency: Math.round(avgLatency),
-    cacheHitRate: cacheDenominator > 0 ? Math.min(1, totalCacheHit / cacheDenominator) : 0,
+    ...sum,
+    cacheHitRate: cacheDenominator > 0 ? Math.min(1, sum.totalCacheHit / cacheDenominator) : 0,
   };
 }
 
 // ── Tracked complete wrapper ──
+// We resolve the LLM client on every call rather than caching the reference so
+// that tests which call `setLlmClient` mid-suite see their fake immediately.
 export async function trackedComplete(
   phase: LLMCallMetric["phase"],
   model: Model<Api>,
   reqBody: Context,
   opts: CacheAwareOptions,
+  services?: SmartCompactServices,
 ): Promise<AssistantMessage> {
   const start = Date.now();
   try {
-    const resolvedOpts = cacheOpts(opts, model.provider, phase);
-    const resp = await complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const resolvedOpts = cacheOpts(opts, model.provider, phase, services);
+    const resp = await (services?.llm ?? getLlmClient()).complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -101,11 +123,18 @@ export async function trackedComplete(
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: inputT, outputTokens: outputT,
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
-    });
+    }, services);
     try {
       if (inputT > 0 && "messages" in reqBody) {
         const rawText = JSON.stringify((reqBody as unknown as Record<string, unknown>).messages);
-        calibrateFromResponse(estimateTokens(rawText), inputT, model.provider);
+        const calibration = services?.tokenCalibration;
+        calibrateFromResponse(
+          estimateTokens(rawText, model.provider, model.id, calibration),
+          inputT,
+          model.provider,
+          model.id,
+          calibration,
+        );
       }
     } catch (e) { log.debug("token calibration failed", e); }
     return resp;
@@ -113,7 +142,7 @@ export async function trackedComplete(
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: 0, outputTokens: 0,
       cacheHitTokens: 0, latencyMs: Date.now() - start, success: false,
-    });
+    }, services);
     throw err;
   }
 }
@@ -121,31 +150,32 @@ export async function trackedComplete(
 // ── Extraction Cache ──
 
 function getCachePath(sessionId: string): string {
-  return path.join(CACHE_DIR, "compact-extraction-" + sessionId.replace(/[^a-zA-Z0-9-]/g, "_") + ".json");
+  return extractionCacheFile(sessionId);
 }
 
-let _extractionCacheHits = 0;
-let _extractionCacheMisses = 0;
-
-export function resetExtractionCacheStats(): void {
-  _extractionCacheHits = 0;
-  _extractionCacheMisses = 0;
+// Extraction cache stats delegate to the active services container. Resetting
+// the container (via resetMetrics) zeros these counters too, which matches
+// the previous module-level behaviour without leaking state across sessions.
+export function resetExtractionCacheStats(services = getDefaultServices()): void {
+  services.extractionCacheStats.clear();
 }
 
-export function getExtractionCacheStats(): { hits: number; misses: number; hitRate: number } {
-  const total = _extractionCacheHits + _extractionCacheMisses;
-  return {
-    hits: _extractionCacheHits,
-    misses: _extractionCacheMisses,
-    hitRate: total > 0 ? _extractionCacheHits / total : 0,
-  };
+export function getExtractionCacheStats(services = getDefaultServices()): { hits: number; misses: number; hitRate: number } {
+  return services.extractionCacheStats.snapshot();
 }
 
-export function recordExtractionCacheHit(): void { _extractionCacheHits++; }
-export function recordExtractionCacheMiss(): void { _extractionCacheMisses++; }
+export function recordExtractionCacheHit(services = getDefaultServices()): void { services.extractionCacheStats.recordHit(); }
+export function recordExtractionCacheMiss(services = getDefaultServices()): void { services.extractionCacheStats.recordMiss(); }
 
 /**
- * Save extraction cache with entry-id bounds for branch-aware invalidation.
+ * Save extraction cache with entry-id fingerprints for branch-aware
+ * invalidation.
+ *
+ * We store **compact fingerprints** rather than the raw id arrays so the cache
+ * file stays a few hundred bytes regardless of session size. The fingerprint
+ * carries enough information (count + tail + prefix hash) for the next run to
+ * prove that the cached extraction's domain is a strict prefix of the current
+ * pruned/unpruned conversation.
  *
  * @param msgCount — Length of the **pruned** llmMessages array. This is the
  *   domain for all index-bearing fields inside `extraction` (topics, errors,
@@ -165,23 +195,63 @@ export function saveCachedExtraction(
   keptEntryIds?: string[],
 ): void {
   try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
     const cached: CachedExtraction = {
       lastMessageIndex: msgCount - 1, extraction, messageCount: msgCount, timestamp: Date.now(),
-      firstEntryId, lastEntryId, entryIds, keptEntryIds,
+      firstEntryId, lastEntryId,
+      entryIdsFp: entryIds ? buildEntryIdFingerprint(entryIds) : undefined,
+      keptEntryIdsFp: keptEntryIds ? buildEntryIdFingerprint(keptEntryIds) : undefined,
     };
-    fs.writeFileSync(getCachePath(sessionId), JSON.stringify(cached));
+    writeJsonSync(getCachePath(sessionId), cached);
   } catch (e) { log.warn("saveCachedExtraction failed", e); }
 }
 
 export function loadCachedExtraction(sessionId: string): CachedExtraction | null {
-  try {
-    const fp = getCachePath(sessionId);
-    if (!fs.existsSync(fp)) return null;
-    const cached = JSON.parse(fs.readFileSync(fp, "utf8")) as CachedExtraction;
-    if (Date.now() - cached.timestamp > 3600000) return null; // 1hr TTL
-    return cached;
-  } catch (e) { log.warn("loadCachedExtraction failed", e); return null; }
+  const cached = readJsonSync<CachedExtraction>(getCachePath(sessionId));
+  if (!cached) return null;
+  if (Date.now() - cached.timestamp > EXTRACTION_CACHE_TTL_MS) return null; // 1hr TTL
+  // Piggyback on every cache load to opportunistically prune sibling caches.
+  // The actual scan is deferred to a microtask so the hot path stays
+  // synchronous; collapse repeated triggers with an in-flight guard.
+  scheduleExtractionCacheCleanup();
+  return cached;
+}
+
+const EXTRACTION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const EXTRACTION_CACHE_PRUNE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
+ * Stale extraction caches (sessions we'll never see again because the user
+ * closed pi) accumulate in `~/.pi/agent/cache/` indefinitely. The TTL check
+ * in `loadCachedExtraction` only filters at read time, never deletes; on a
+ * heavy user's machine this can grow to thousands of files. We deferred-
+ * prune on cache load, mirroring the backup-prune strategy in helpers.ts.
+ *
+ * - Schedule guard prevents repeated readdir during a single compaction.
+ * - Files older than 7 days are unlinked (way beyond the 1-hour TTL, so
+ *   we're only deleting caches that are definitely abandoned).
+ */
+let _extractionPruneInFlight = false;
+function scheduleExtractionCacheCleanup(): void {
+  if (_extractionPruneInFlight) return;
+  _extractionPruneInFlight = true;
+  queueMicrotask(() => {
+    try {
+      const dir = path.dirname(getCachePath("_")); // any sessionId gives us the dir
+      if (!fs.existsSync(dir)) return;
+      const now = Date.now();
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith("compact-extraction-") || !name.endsWith(".json")) continue;
+        const fp = path.join(dir, name);
+        try {
+          const stat = fs.statSync(fp);
+          if (now - stat.mtimeMs > EXTRACTION_CACHE_PRUNE_MAX_AGE_MS) {
+            try { fs.unlinkSync(fp); } catch (e) { log.debug("extraction-cache prune unlink failed", e); }
+          }
+        } catch (e) { log.debug("extraction-cache stat failed", e); }
+      }
+    } catch (e) { log.debug("extraction-cache cleanup failed", e); }
+    finally { _extractionPruneInFlight = false; }
+  });
 }
 
 /**
@@ -234,34 +304,69 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
 export function appendMetricsLog(
   sessionId: string,
   extra?: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "avgLatency" | "cacheHitRate">>,
+  services?: SmartCompactServices,
 ): void {
   try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const logPath = path.join(CACHE_DIR, "compact-metrics.jsonl");
-    const summary = getMetricsSummary();
+    const summary = getMetricsSummary(services);
     const entry: CompactMetricsEntry = {
       ts: new Date().toISOString(),
       sessionId,
       ...summary,
       ...extra,
     };
-    fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
+    // appendLineLocked keeps concurrent pi sessions from interleaving partial
+    // JSON inside the metrics log. Each line is either fully written or absent.
+    appendLineLocked(metricsLogFile(), JSON.stringify(entry));
   } catch (e) { log.warn("appendMetricsLog failed", e); }
 }
 
+/**
+ * Read the last `limit` valid entries from the metrics log without loading
+ * the whole file. We start from the tail, walking backwards in 64 KB chunks
+ * until we have enough lines (`limit * 4` raw lines is a generous safety
+ * factor against corrupt entries that get filtered out). The old
+ * implementation read the entire log into memory before slicing, which on
+ * a long-lived install with a multi-megabyte log was a noticeable IO + GC
+ * hit on every dashboard render.
+ *
+ * Behavior guarantees:
+ *   - At most `limit` entries returned (always sliced from the tail).
+ *   - Corrupt JSON lines are dropped with a warning, NOT counted toward limit.
+ *   - Returned in chronological order (oldest -> newest within the window).
+ */
 export function readMetricsLog(limit = 100): CompactMetricsEntry[] {
   try {
-    const logPath = path.join(CACHE_DIR, "compact-metrics.jsonl");
+    const logPath = metricsLogFile();
     if (!fs.existsSync(logPath)) return [];
-    const entries: CompactMetricsEntry[] = [];
-    for (const line of fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).slice(-limit * 2)) {
-      try {
-        entries.push(JSON.parse(line) as CompactMetricsEntry);
-      } catch {
-        log.warn("Skipping corrupt compact metrics line");
+    const stat = fs.statSync(logPath);
+    const TAIL_CHUNK = 64 * 1024;
+    // Heuristic budget: most lines are ~400 B; reading limit*8 lines worth of
+    // bytes gives plenty of headroom while staying well under a 1 MB read for
+    // limit=200. Cap by file size so we never read past the start.
+    const wantBytes = Math.min(stat.size, Math.max(TAIL_CHUNK, limit * 8 * 512));
+    const startPos = Math.max(0, stat.size - wantBytes);
+
+    const fd = fs.openSync(logPath, "r");
+    try {
+      const buf = Buffer.alloc(wantBytes);
+      fs.readSync(fd, buf, 0, wantBytes, startPos);
+      let text = buf.toString("utf8");
+      // Drop the (potentially) partial first line when we didn't start at
+      // byte 0; otherwise we'd half-parse it and emit a corrupt warning.
+      if (startPos > 0) {
+        const nl = text.indexOf("\n");
+        if (nl >= 0) text = text.slice(nl + 1);
       }
+      const lines = text.split("\n").filter(Boolean);
+      const entries: CompactMetricsEntry[] = [];
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line) as CompactMetricsEntry); }
+        catch { log.warn("Skipping corrupt compact metrics line"); }
+      }
+      return entries.slice(-limit);
+    } finally {
+      fs.closeSync(fd);
     }
-    return entries.slice(-limit);
   } catch (e) { log.warn("readMetricsLog failed", e); return []; }
 }
 
@@ -494,7 +599,7 @@ export function buildMetricsReport(entries = readMetricsLog(100)): string {
 
 export function writeMetricsDashboard(entries = readMetricsLog(200)): string | null {
   try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+    ensureDir(cacheDirPath());
     const summary = summarizeDashboard(entries);
     const latest = entries[entries.length - 1];
     const report = buildMetricsReport(entries);
@@ -520,8 +625,8 @@ export function writeMetricsDashboard(entries = readMetricsLog(200)): string | n
       <section class="panel section"><h2>Recent runs</h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Profile</th><th>Provider</th><th>Method</th><th>Run</th><th>Status</th><th class="num">Duration</th><th class="num">Score</th><th class="num">Saved</th><th class="num">Calls</th><th class="num">Ext cache</th><th>Reason</th></tr></thead><tbody>${recentRunRows(entries)}</tbody></table></div></section>
       <section class="section"><h2>Raw text report</h2><pre>${escapeHtml(report)}</pre></section>
     </main></body></html>`;
-    const fp = path.join(CACHE_DIR, "smart-compact-report.html");
-    fs.writeFileSync(fp, html);
+    const fp = metricsDashboardFile();
+    atomicWriteFileSync(fp, html);
     return fp;
   } catch (e) { log.warn("writeMetricsDashboard failed", e); return null; }
 }

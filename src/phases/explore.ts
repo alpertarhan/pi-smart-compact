@@ -2,18 +2,21 @@
  * Phase 2: Targeted LLM Exploration.
  */
 
-import type { Model, Api } from "@earendil-works/pi-ai";
-import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary, CacheAwareOptions } from "../types.ts";
+import type { Model, Api, ToolCall, TextContent, Message } from "@earendil-works/pi-ai";
+import type { LlmMessage, StructuredExtraction, ExplorationReport } from "../types.ts";
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
 import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import * as log from "../utils/logger.ts";
+import type { SmartCompactServices } from "../infra/services.ts";
+import { getDefaultServices } from "../infra/services.ts";
 
-// ── Tool Support Cache with TTL ──
-const _toolSupportCache = new Map<string, { result: boolean; timestamp: number }>();
-const TOOL_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+// Tool support is cached on the per-run services container. The previous
+// module-level `_toolSupportCache` leaked TTL'd state across pi sessions and
+// across tests; per-run scoping keeps a flaky provider state confined to the
+// session that observed it. See `infra/services.ts#ToolSupportCache`.
 
 /**
  * Determine whether exploration is worthwhile based on session complexity.
@@ -112,10 +115,23 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       for (let i = 0; i < llmMessages.length; i++) {
         const tcs = filterToolCalls(llmMessages[i]?.content);
         for (const block of tcs) {
-          if (block.name === "edit" && JSON.stringify(block).toLowerCase().includes(target)) {
+          // Look up file path fields by name rather than stringifying the
+          // whole block: JSON.stringify doesn't guarantee key ordering, and
+          // values that happen to contain the target substring (e.g. inside
+          // a `content` field of a `write` call) would otherwise produce
+          // false positives.
+          const a = block.arguments ?? {};
+          const fileFields = [
+            (a as Record<string, unknown>).path,
+            (a as Record<string, unknown>).file,
+            (a as Record<string, unknown>).filePath,
+            (a as Record<string, unknown>).file_path,
+          ].filter((v): v is string => typeof v === "string").map(v => v.toLowerCase());
+          const matchesPath = fileFields.some(f => f.includes(target));
+          if (block.name === "edit" && matchesPath) {
             results.push({ idx: i, role: "assistant", toolCall: "edit", args: block.arguments, preview: extractText(llmMessages[i]?.content).slice(0, 400) });
           }
-          if (block.name === "write" && JSON.stringify(block).toLowerCase().includes(target)) {
+          if (block.name === "write" && matchesPath) {
             results.push({ idx: i, role: "assistant", toolCall: "write", preview: extractText(llmMessages[i]?.content).slice(0, 400) });
           }
         }
@@ -148,7 +164,16 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
 
   try { return buildExplorationReportFromParsed(JSON.parse(rawJson), llmMessages); } catch (e) { log.debug("JSON parse attempt 1 failed", e); }
 
-  const cleaned = rawJson.replace(/,\s*([}\]])/g, "$1").replace(/'/g, "\"").replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  // Strip trailing commas + line/block comments. We deliberately do NOT do
+  // a blanket `'` -> `"` replacement: a model that returns valid JSON
+  // containing apostrophes inside string values (e.g. "don't refactor")
+  // would otherwise be corrupted into `"don"t refactor"`. If a model emits
+  // single-quoted JSON we'd rather fall through to the regex-based
+  // boundary-array recovery below than silently produce wrong text.
+  const cleaned = rawJson
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
   try { return buildExplorationReportFromParsed(JSON.parse(cleaned), llmMessages); } catch (e) { log.debug("JSON parse attempt 2 (cleaned) failed", e); }
 
   const boundaryMatch = rawJson.match(/"boundaries"\s*:\s*\[([\s\S]*?)\]/);
@@ -197,13 +222,26 @@ export function fallbackExplorationReport(llmMessages: LlmMessage[]): Exploratio
   };
 }
 
+/**
+ * Top-level exploration entry point.
+ *
+ * `services` is threaded in explicitly rather than reached via
+ * `getDefaultServices()` because `runSmartCompact` resets the default
+ * services container at the start of every run. Two concurrent pi sessions
+ * sharing the Node process would otherwise stomp on each other's
+ * `toolSupport` cache. The optional fallback to `getDefaultServices()` is
+ * preserved for direct callers that haven't been migrated yet (legacy
+ * tests, REPL use).
+ */
 export async function exploreConversation(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal, maxRounds = MAX_EXPLORATION_ROUNDS,
   notify?: (msg: string, type?: "info" | "success" | "warning" | "error") => void,
+  services?: SmartCompactServices,
 ): Promise<{ report: ExplorationReport; rounds: number; toolSupported: boolean }> {
+  const svc = services ?? getDefaultServices();
 
   const extractionContext = [
     "## Deterministic Extraction (verified facts)",
@@ -226,17 +264,18 @@ export async function exploreConversation(
 
   // Check tool support cache before probe
   const cacheKey = model.provider + "/" + model.id;
-  const cachedSupport = _toolSupportCache.get(cacheKey);
-  const cacheValid = cachedSupport && Date.now() - cachedSupport.timestamp < TOOL_CACHE_TTL;
+  const toolSupport = svc.toolSupport;
+  const now = svc.clock.now();
+  const cachedSupport = toolSupport.get(cacheKey, now);
 
   let supportsTools = false;
   try {
-    if (cacheValid && !cachedSupport!.result) {
+    if (cachedSupport === false) {
       // Provider known to not support tools — skip probe
       if (notify) notify("Tool support cached: unsupported (" + cacheKey + ")", "info");
-      const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+      const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
       if (!report.boundaries.length) {
-        const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal);
+        const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal, svc);
         if (retried.boundaries.length) return { report: retried, rounds: 1, toolSupported: false };
       }
       return { report, rounds: 1, toolSupported: false };
@@ -245,17 +284,21 @@ export async function exploreConversation(
     const probeResp = await trackedComplete("explore", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
-      tools: EXPLORATION_TOOLS as any,
-    }, { apiKey: auth.apiKey, headers: auth.headers, signal });
+      tools: EXPLORATION_TOOLS as unknown as Parameters<typeof trackedComplete>[2]["tools"],
+    }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
 
-    const toolCalls = probeResp.content.filter((c): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
+    const toolCalls = probeResp.content.filter((c): c is ToolCall => c.type === "toolCall");
 
     if (toolCalls.length > 0) {
       supportsTools = true;
-      _toolSupportCache.set(cacheKey, { result: true, timestamp: Date.now() });
-      const messages: any[] = [
+      toolSupport.set(cacheKey, true, svc.clock.now());
+      // Typed message buffer for the explore-tool feedback loop. Using
+      // `any[]` here previously masked a real shape divergence between
+      // pi-ai's `Message` and our internal `LlmMessage`; cast at the call
+      // site where the shapes are known to be compatible.
+      const messages: LlmMessage[] = [
         { role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() },
-        { role: "assistant", content: probeResp.content, timestamp: Date.now() },
+        { role: "assistant", content: probeResp.content as LlmMessage["content"], timestamp: Date.now() },
       ];
       for (const tc of toolCalls) {
         const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages);
@@ -265,61 +308,75 @@ export async function exploreConversation(
       let rounds = 1;
       while (rounds < maxRounds) {
         rounds++;
-        let response: any;
+        let response: Awaited<ReturnType<typeof trackedComplete>>;
         try {
           response = await trackedComplete("explore-loop", model, {
             systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
-            messages,
-            tools: EXPLORATION_TOOLS as any,
-          }, { apiKey: auth.apiKey, headers: auth.headers, signal });
+            messages: messages as unknown as Message[],
+            tools: EXPLORATION_TOOLS as unknown as Parameters<typeof trackedComplete>[2]["tools"],
+          }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
         } catch (err) {
           log.warn("Explore loop error", err);
           break;
         }
 
-        const nextToolCalls = response.content.filter((c: any): c is import("@earendil-works/pi-ai").ToolCall => c.type === "toolCall");
+        const nextToolCalls = response.content.filter((c): c is ToolCall => c.type === "toolCall");
         if (nextToolCalls.length === 0) {
-          const text = response.content.filter((c: any): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map((c: any) => c.text).join("\n").trim();
+          const text = response.content.filter((c): c is TextContent => c.type === "text").map(c => c.text).join("\n").trim();
           let report = parseExplorationReport(text, llmMessages);
           if (!report.boundaries.length) {
-            report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+            report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
             if (report.boundaries.length) rounds++;
           }
           return { report, rounds, toolSupported: true };
         }
 
-        messages.push({ role: "assistant", content: response.content, timestamp: Date.now() });
+        messages.push({ role: "assistant", content: response.content as LlmMessage["content"], timestamp: Date.now() });
         for (const tc of nextToolCalls) {
           const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages);
           messages.push({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: [{ type: "text", text: result }], isError: false, timestamp: Date.now() });
         }
       }
 
-      const lastAssistant = messages.filter((m: { role: string }) => m.role === "assistant").pop() as { content?: Array<{ type: string; text?: string }> } | undefined;
+      // Tool-call loop hit `maxRounds` without producing a parseable report.
+      // Try the last assistant message anyway; otherwise fall through to the
+      // direct-exploration fallback below. Provider IS tool-capable here
+      // (we did see toolCalls in the probe), so `supportsTools` stays true.
+      const lastAssistant = [...messages].reverse().find(m => m.role === "assistant");
       if (lastAssistant?.content) {
-        const text = lastAssistant.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map(c => c.text).join("\n").trim();
+        const text = (lastAssistant.content as readonly { type: string; text?: string }[])
+          .filter((c): c is { type: "text"; text: string } => c.type === "text")
+          .map(c => c.text).join("\n").trim();
         const report = parseExplorationReport(text, llmMessages);
         if (report.boundaries.length) return { report, rounds, toolSupported: true };
       }
     } else {
-      const text = probeResp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
+      // Probe responded without any toolCall blocks. Two cases:
+      //   1. Provider doesn't support function calling and just answered
+      //      with text.
+      //   2. Provider supports tools but chose not to call any (rare).
+      // If the text already parses into a usable boundary report we treat
+      // the provider as tool-capable for this session; otherwise we leave
+      // `supportsTools` false so the next session reprobes.
+      const text = probeResp.content.filter((c): c is TextContent => c.type === "text").map(c => c.text).join("\n").trim();
       let report = parseExplorationReport(text, llmMessages);
-      if (!report.boundaries.length) {
-        report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+      const parsedOk = report.boundaries.length > 0;
+      if (!parsedOk) {
+        report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
       }
-      return { report, rounds: 1, toolSupported: true };
+      if (parsedOk) toolSupport.set(cacheKey, true, svc.clock.now());
+      return { report, rounds: 1, toolSupported: parsedOk };
     }
-    // Provider responded without tool calls — still counts as tool-capable for this session
   } catch (e) {
-    // Probe failed — cache as unsupported
+    // Probe failed — cache as unsupported so the next run skips the probe.
     log.warn("Tool calling probe failed for " + cacheKey, e);
-    _toolSupportCache.set(cacheKey, { result: false, timestamp: Date.now() });
+    toolSupport.set(cacheKey, false, svc.clock.now());
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }
 
-  const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+  const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
   if (!report.boundaries.length) {
-    const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal);
+    const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal, svc);
     if (retried.boundaries.length) return { report: retried, rounds: 1, toolSupported: false };
   }
   return { report, rounds: 1, toolSupported: supportsTools };
@@ -330,6 +387,7 @@ export async function explorationRetry(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
   const last5 = llmMessages.slice(-5).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, 150)).join("\n");
   const retryPrompt = "IMPORTANT: Output ONLY valid raw JSON. No markdown. No explanation. No code fences. Just the JSON object.\n\n" +
@@ -343,7 +401,7 @@ export async function explorationRetry(
     const resp = await trackedComplete("explore-retry", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }], timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, services);
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
   } catch (e) { log.debug("explorationRetry failed", e); return fallbackExplorationReport(llmMessages); }
@@ -354,6 +412,7 @@ export async function directExploration(
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
   const first3 = llmMessages.filter((m) => m?.role === "user").slice(0, 3).map((m) => extractText(m?.content).slice(0, 200)).join("\n---\n");
   const last30 = llmMessages.slice(-30).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, 300)).join("\n");
@@ -372,7 +431,7 @@ export async function directExploration(
     const resp = await trackedComplete("explore-direct", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, services);
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);
   } catch (e) { log.debug("directExploration failed", e); return fallbackExplorationReport(llmMessages); }
