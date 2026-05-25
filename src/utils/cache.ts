@@ -1,16 +1,27 @@
 /**
  * Extraction cache, metrics, and cache-aware LLM options.
+ *
+ * Filesystem writes go through `src/infra/fs.ts` (atomic temp+rename for
+ * snapshots, advisory lock for the metrics append log) so that two pi
+ * sessions racing to compact the same project cannot corrupt each other's
+ * state. All LLM I/O routes through `getLlmClient()` so tests can swap a fake
+ * provider in without resolving the real peer dependency.
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, PipelinePhaseTiming, CompactMetricsEntry } from "../types.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import * as log from "./logger.ts";
-import { complete, type Model, type Api, type AssistantMessage, type Context } from "@earendil-works/pi-ai";
-
-const CACHE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache");
+import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
+import { getLlmClient } from "../infra/llm-client.ts";
+import {
+  extractionCacheFile, metricsLogFile, damageReportsFile,
+  cacheDir as cacheDirPath, metricsDashboardFile,
+} from "../infra/paths.ts";
+import { appendLineLocked, ensureDir, readJsonSync, writeJsonSync, atomicWriteFileSync } from "../infra/fs.ts";
+import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
+import { getDefaultServices, resetDefaultServices } from "../infra/services.ts";
 
 // ── Session ID ──
 let _compactSessionId: string | null = null;
@@ -52,11 +63,20 @@ export function cacheOpts(
 }
 
 // ── Metrics ──
-const _metrics: LLMCallMetric[] = [];
+//
+// Metrics now live on the per-run services container. These functions remain
+// for backwards compatibility (overlays.ts, app/steps/metrics.ts call them by
+// name); they delegate to the active services bag, which is rotated on each
+// `resetMetrics` invocation by the orchestrator. The default container is also
+// what tests grab via `setDefaultServices` to inject a deterministic clock.
 
-export function resetMetrics(): void { _metrics.length = 0; }
-export function recordMetric(m: LLMCallMetric): void { _metrics.push(m); if (_metrics.length > 200) _metrics.splice(0, _metrics.length - 100); }
-export function getMetrics(): LLMCallMetric[] { return [..._metrics]; }
+export function resetMetrics(): void {
+  // Clearing the sink is sufficient — but we also replace the *whole*
+  // container so per-run extraction cache stats reset alongside metrics.
+  resetDefaultServices();
+}
+export function recordMetric(m: LLMCallMetric): void { getDefaultServices().metrics.record(m); }
+export function getMetrics(): LLMCallMetric[] { return getDefaultServices().metrics.snapshot(); }
 
 export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: number): number {
   // Provider usage semantics differ: some providers report `input` as total
@@ -68,21 +88,20 @@ export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: 
 }
 
 export function getMetricsSummary(): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
-  const n = _metrics.length;
-  if (!n) return { totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0, avgLatency: 0, cacheHitRate: 0 };
-  const totalInput = _metrics.reduce((s, m) => s + m.inputTokens, 0);
-  const totalOutput = _metrics.reduce((s, m) => s + m.outputTokens, 0);
-  const totalCacheHit = _metrics.reduce((s, m) => s + m.cacheHitTokens, 0);
-  const avgLatency = _metrics.reduce((s, m) => s + m.latencyMs, 0) / n;
-  const cacheDenominator = effectivePromptInputTokens(totalInput, totalCacheHit);
+  const sum = getDefaultServices().metrics.summary();
+  // The services container computes a structurally identical summary but
+  // uses a slightly different cache-hit denominator. Keep the previously
+  // published denominator (capped at <=1) so dashboards don't show >100%.
+  const cacheDenominator = effectivePromptInputTokens(sum.totalInput, sum.totalCacheHit);
   return {
-    totalCalls: n, totalInput, totalOutput, totalCacheHit,
-    avgLatency: Math.round(avgLatency),
-    cacheHitRate: cacheDenominator > 0 ? Math.min(1, totalCacheHit / cacheDenominator) : 0,
+    ...sum,
+    cacheHitRate: cacheDenominator > 0 ? Math.min(1, sum.totalCacheHit / cacheDenominator) : 0,
   };
 }
 
 // ── Tracked complete wrapper ──
+// We resolve the LLM client on every call rather than caching the reference so
+// that tests which call `setLlmClient` mid-suite see their fake immediately.
 export async function trackedComplete(
   phase: LLMCallMetric["phase"],
   model: Model<Api>,
@@ -92,7 +111,7 @@ export async function trackedComplete(
   const start = Date.now();
   try {
     const resolvedOpts = cacheOpts(opts, model.provider, phase);
-    const resp = await complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const resp = await getLlmClient().complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -121,31 +140,32 @@ export async function trackedComplete(
 // ── Extraction Cache ──
 
 function getCachePath(sessionId: string): string {
-  return path.join(CACHE_DIR, "compact-extraction-" + sessionId.replace(/[^a-zA-Z0-9-]/g, "_") + ".json");
+  return extractionCacheFile(sessionId);
 }
 
-let _extractionCacheHits = 0;
-let _extractionCacheMisses = 0;
-
+// Extraction cache stats delegate to the active services container. Resetting
+// the container (via resetMetrics) zeros these counters too, which matches
+// the previous module-level behaviour without leaking state across sessions.
 export function resetExtractionCacheStats(): void {
-  _extractionCacheHits = 0;
-  _extractionCacheMisses = 0;
+  getDefaultServices().extractionCacheStats.clear();
 }
 
 export function getExtractionCacheStats(): { hits: number; misses: number; hitRate: number } {
-  const total = _extractionCacheHits + _extractionCacheMisses;
-  return {
-    hits: _extractionCacheHits,
-    misses: _extractionCacheMisses,
-    hitRate: total > 0 ? _extractionCacheHits / total : 0,
-  };
+  return getDefaultServices().extractionCacheStats.snapshot();
 }
 
-export function recordExtractionCacheHit(): void { _extractionCacheHits++; }
-export function recordExtractionCacheMiss(): void { _extractionCacheMisses++; }
+export function recordExtractionCacheHit(): void { getDefaultServices().extractionCacheStats.recordHit(); }
+export function recordExtractionCacheMiss(): void { getDefaultServices().extractionCacheStats.recordMiss(); }
 
 /**
- * Save extraction cache with entry-id bounds for branch-aware invalidation.
+ * Save extraction cache with entry-id fingerprints for branch-aware
+ * invalidation.
+ *
+ * We store **compact fingerprints** rather than the raw id arrays so the cache
+ * file stays a few hundred bytes regardless of session size. The fingerprint
+ * carries enough information (count + tail + prefix hash) for the next run to
+ * prove that the cached extraction's domain is a strict prefix of the current
+ * pruned/unpruned conversation.
  *
  * @param msgCount — Length of the **pruned** llmMessages array. This is the
  *   domain for all index-bearing fields inside `extraction` (topics, errors,
@@ -165,23 +185,21 @@ export function saveCachedExtraction(
   keptEntryIds?: string[],
 ): void {
   try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
     const cached: CachedExtraction = {
       lastMessageIndex: msgCount - 1, extraction, messageCount: msgCount, timestamp: Date.now(),
-      firstEntryId, lastEntryId, entryIds, keptEntryIds,
+      firstEntryId, lastEntryId,
+      entryIdsFp: entryIds ? buildEntryIdFingerprint(entryIds) : undefined,
+      keptEntryIdsFp: keptEntryIds ? buildEntryIdFingerprint(keptEntryIds) : undefined,
     };
-    fs.writeFileSync(getCachePath(sessionId), JSON.stringify(cached));
+    writeJsonSync(getCachePath(sessionId), cached);
   } catch (e) { log.warn("saveCachedExtraction failed", e); }
 }
 
 export function loadCachedExtraction(sessionId: string): CachedExtraction | null {
-  try {
-    const fp = getCachePath(sessionId);
-    if (!fs.existsSync(fp)) return null;
-    const cached = JSON.parse(fs.readFileSync(fp, "utf8")) as CachedExtraction;
-    if (Date.now() - cached.timestamp > 3600000) return null; // 1hr TTL
-    return cached;
-  } catch (e) { log.warn("loadCachedExtraction failed", e); return null; }
+  const cached = readJsonSync<CachedExtraction>(getCachePath(sessionId));
+  if (!cached) return null;
+  if (Date.now() - cached.timestamp > 3600000) return null; // 1hr TTL
+  return cached;
 }
 
 /**
@@ -236,8 +254,6 @@ export function appendMetricsLog(
   extra?: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "avgLatency" | "cacheHitRate">>,
 ): void {
   try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-    const logPath = path.join(CACHE_DIR, "compact-metrics.jsonl");
     const summary = getMetricsSummary();
     const entry: CompactMetricsEntry = {
       ts: new Date().toISOString(),
@@ -245,13 +261,15 @@ export function appendMetricsLog(
       ...summary,
       ...extra,
     };
-    fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
+    // appendLineLocked keeps concurrent pi sessions from interleaving partial
+    // JSON inside the metrics log. Each line is either fully written or absent.
+    appendLineLocked(metricsLogFile(), JSON.stringify(entry));
   } catch (e) { log.warn("appendMetricsLog failed", e); }
 }
 
 export function readMetricsLog(limit = 100): CompactMetricsEntry[] {
   try {
-    const logPath = path.join(CACHE_DIR, "compact-metrics.jsonl");
+    const logPath = metricsLogFile();
     if (!fs.existsSync(logPath)) return [];
     const entries: CompactMetricsEntry[] = [];
     for (const line of fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).slice(-limit * 2)) {
@@ -494,7 +512,7 @@ export function buildMetricsReport(entries = readMetricsLog(100)): string {
 
 export function writeMetricsDashboard(entries = readMetricsLog(200)): string | null {
   try {
-    if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+    ensureDir(cacheDirPath());
     const summary = summarizeDashboard(entries);
     const latest = entries[entries.length - 1];
     const report = buildMetricsReport(entries);
@@ -520,8 +538,8 @@ export function writeMetricsDashboard(entries = readMetricsLog(200)): string | n
       <section class="panel section"><h2>Recent runs</h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Profile</th><th>Provider</th><th>Method</th><th>Run</th><th>Status</th><th class="num">Duration</th><th class="num">Score</th><th class="num">Saved</th><th class="num">Calls</th><th class="num">Ext cache</th><th>Reason</th></tr></thead><tbody>${recentRunRows(entries)}</tbody></table></div></section>
       <section class="section"><h2>Raw text report</h2><pre>${escapeHtml(report)}</pre></section>
     </main></body></html>`;
-    const fp = path.join(CACHE_DIR, "smart-compact-report.html");
-    fs.writeFileSync(fp, html);
+    const fp = metricsDashboardFile();
+    atomicWriteFileSync(fp, html);
     return fp;
   } catch (e) { log.warn("writeMetricsDashboard failed", e); return null; }
 }

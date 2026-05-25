@@ -8,6 +8,8 @@ import crypto from "node:crypto";
 import type { CompactConfig, CompressionProfile, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionType, SessionMessageEntry } from "../types.ts";
 import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT } from "../constants.ts";
 import * as log from "./logger.ts";
+import { settingsFile, defaultBackupDir } from "../infra/paths.ts";
+import { atomicWriteFileSync, ensureDir } from "../infra/fs.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
@@ -88,37 +90,109 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
   }
 }
 
+// Module-level config cache keyed by file mtime. Kept private so tests cannot
+// accidentally observe stale config across HOME swaps; `resetConfigCache`
+// gives them an explicit hook.
 let _cfg: CompactConfig | null = null;
 let _cfgMtime = 0;
+let _cfgPath: string | null = null;
+
+/** Test helper — forces the next loadConfig() to re-read settings.json. */
+export function resetConfigCache(): void {
+  _cfg = null;
+  _cfgMtime = 0;
+  _cfgPath = null;
+}
 
 export function loadConfig(): CompactConfig {
   try {
-    const p = path.join(process.env.HOME ?? "/tmp", ".pi/agent/settings.json");
+    const p = settingsFile();
     const stat = fs.statSync(p);
-    if (_cfg && stat.mtimeMs === _cfgMtime) return _cfg;
+    // Re-key the cache on file path so swapping HOME in tests invalidates it.
+    if (_cfg && _cfgPath === p && stat.mtimeMs === _cfgMtime) return _cfg;
     const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
     const sc = raw[CONFIG_KEY] ?? raw[CONFIG_KEY_ALT] ?? {};
     validateSmartCompactConfig(sc as Record<string, unknown>);
     const merged = { ...DEFAULT_CONFIG, ...sc } as CompactConfig;
     if (sc.profiles) merged.profiles = { ...PROFILES, ...sc.profiles } as Record<CompressionProfile, import("../types.ts").ProfileConfig>;
-    if (!merged.backupDir) merged.backupDir = path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups");
-    _cfg = merged; _cfgMtime = stat.mtimeMs; return _cfg;
+    if (!merged.backupDir) merged.backupDir = defaultBackupDir();
+    _cfg = merged; _cfgMtime = stat.mtimeMs; _cfgPath = p; return _cfg;
   } catch (e) {
     log.debug("loadConfig: settings.json not found or unreadable, using defaults", e);
-    const fallback: CompactConfig = { ...DEFAULT_CONFIG, backupDir: path.join(process.env.HOME ?? "/tmp", ".pi/agent/compact-backups") } as CompactConfig;
+    const fallback: CompactConfig = { ...DEFAULT_CONFIG, backupDir: defaultBackupDir() } as CompactConfig;
     _cfg = fallback;
+    _cfgPath = null;
     return fallback;
   }
+}
+
+/**
+ * Asynchronous deferred backup pruning.
+ *
+ * The previous implementation called `pruneOldBackups` synchronously right
+ * after every backup write. That works fine when the directory has <20 files,
+ * but a long-lived install with 1000+ orphan backups would readdir + statSync
+ * every single entry on every compaction — a 20-50ms event-loop block on the
+ * hot path. We now defer to `queueMicrotask` so the synchronous compaction
+ * finishes first, and the prune happens on the next tick.
+ *
+ * Concurrency: we guard with a per-directory in-flight flag so two pi
+ * sessions writing to the same backup directory don't double-prune. We don't
+ * use a filesystem lock here because pruning is idempotent — the worst case
+ * is one extra readdir.
+ */
+import { BACKUP_MAX_FILES, BACKUP_MAX_AGE_MS } from "../constants.ts";
+
+const _pruneInFlight = new Set<string>();
+
+function prunePass(dir: string): void {
+  try {
+    const entries = fs.readdirSync(dir)
+      .filter(name => name.endsWith(".md"))
+      .map(name => {
+        const full = path.join(dir, name);
+        try { return { full, mtimeMs: fs.statSync(full).mtimeMs }; } catch { return null; }
+      })
+      .filter((v): v is { full: string; mtimeMs: number } => v !== null);
+
+    const now = Date.now();
+    const overAge = entries.filter(e => now - e.mtimeMs > BACKUP_MAX_AGE_MS);
+    // Sort newest first so older entries get dropped past the count cap.
+    const sorted = entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const overCount = sorted.slice(BACKUP_MAX_FILES);
+    const toRemove = new Set([...overAge, ...overCount].map(e => e.full));
+    for (const full of toRemove) {
+      try { fs.unlinkSync(full); } catch (e) { log.debug("prunePass unlink failed", e); }
+    }
+  } catch (e) { log.debug("prunePass scan failed", e); }
+}
+
+/**
+ * Queue an asynchronous prune. Returns immediately; the actual scan runs on
+ * the next microtask. Multiple queued calls for the same directory collapse
+ * to a single pass.
+ */
+function schedulePruneBackups(dir: string): void {
+  if (_pruneInFlight.has(dir)) return;
+  _pruneInFlight.add(dir);
+  queueMicrotask(() => {
+    try { prunePass(dir); } finally { _pruneInFlight.delete(dir); }
+  });
 }
 
 export function backupConversation(convText: string, sessionId: string): string | null {
   try {
     const cfg = loadConfig(); if (!cfg.backupEnabled) return null;
-    const dir = cfg.backupDir; fs.mkdirSync(dir, { recursive: true });
+    const dir = cfg.backupDir;
+    ensureDir(dir);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const hash = crypto.createHash("sha256").update(convText).digest("hex").slice(0, 8);
     const fp = path.join(dir, sessionId + "-" + ts + "-" + hash + ".md");
-    fs.writeFileSync(fp, "# Smart Compact Backup\n# Date: " + new Date().toISOString() + "\n# Session: " + sessionId + "\n\n" + convText);
+    // Atomic write so a crash mid-write never leaves a half-readable backup.
+    atomicWriteFileSync(fp, "# Smart Compact Backup\n# Date: " + new Date().toISOString() + "\n# Session: " + sessionId + "\n\n" + convText);
+    // Defer pruning so the hot path returns instantly. Worst case we keep one
+    // extra backup until the next compaction triggers a prune.
+    schedulePruneBackups(dir);
     return fp;
   } catch (e) { log.warn("backupConversation failed", e); return null; }
 }

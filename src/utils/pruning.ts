@@ -5,7 +5,7 @@
 
 import type { LlmMessage } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
-import { extractText, buildToolCallIndex } from "./extraction.ts";
+import { extractText, buildToolCallIndex, type ToolCallIndex } from "./extraction.ts";
 import { estimateTokens } from "./tokens.ts";
 
 export interface PruningResult {
@@ -15,6 +15,15 @@ export interface PruningResult {
   prunedCount: number;
   prunedTokenSaving: number;
   reasons: Array<{ count: number; reason: string }>;
+  /**
+   * ToolCallIndex computed during pruning, keyed by **input** (unpruned)
+   * message offsets. Downstream consumers that work against the pruned
+   * message list (e.g. `extractStructured`) MUST NOT reuse this map verbatim
+   * because `msgIndex` values refer to the pre-prune positions. It is still
+   * useful for callers that want a quick `toolCallId → {name, arguments}`
+   * lookup over the original list.
+   */
+  toolCallIndex: ToolCallIndex;
 }
 
 // Pattern for agent acknowledgment messages with no information
@@ -24,15 +33,34 @@ const ACK_RE = /^(?:I'?ll |let me |sure|ok[,.]?|got it|i understand|i see|now i|
 const PI_STATUS_RE = /^\[pi-auto-context\]/;
 
 // Maximum chars to keep from a tool result output
-const MAX_TOOL_OUTPUT_CHARS = 800;
+import { MAX_TOOL_OUTPUT_CHARS } from "../constants.ts";
 
 /**
  * Detect and collapse redundant message sequences.
+ *
+ * @param msgs   Input message list (unpruned).
+ * @param tcIdx  Optional pre-computed tool-call index. When the caller has
+ *               already built the index (e.g. orchestrator caching it on the
+ *               RunContext), passing it here avoids a second O(n) walk over
+ *               every assistant message.
  */
-export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
-  if (msgs.length < 5) return { messages: msgs, keptIndices: msgs.map((_, i) => i), prunedCount: 0, prunedTokenSaving: 0, reasons: [] };
+export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIndex): PruningResult {
+  const ensuredIndex = precomputedTcIdx ?? buildToolCallIndex(msgs);
+  if (msgs.length < 5) {
+    return {
+      messages: msgs,
+      keptIndices: msgs.map((_, i) => i),
+      prunedCount: 0,
+      prunedTokenSaving: 0,
+      reasons: [],
+      toolCallIndex: ensuredIndex,
+    };
+  }
 
-  const tcIdx = buildToolCallIndex(msgs);
+  // Reuse the index from above; the original implementation called
+  // buildToolCallIndex() a second time here, which doubled the cost on every
+  // compaction.
+  const tcIdx = ensuredIndex;
   const keep = new Set<number>(msgs.map((_, i) => i));
   const reasonMap = new Map<string, number>();
 
@@ -125,7 +153,7 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
       // Keep first 400 chars + last 400 chars with truncation marker
       const head = text.slice(0, 400);
       const tail = text.slice(-400);
-      const truncated = head + "\n... [truncated " + (text.length - 800) + " chars] ...\n" + tail;
+      const truncated = head + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n" + tail;
       return { ...m, content: [{ type: "text" as const, text: truncated }] };
     }
     return m;
@@ -154,5 +182,6 @@ export function pruneRedundant(msgs: LlmMessage[]): PruningResult {
     prunedCount,
     prunedTokenSaving: Math.max(0, originalTokens - prunedTokens),
     reasons,
+    toolCallIndex: tcIdx,
   };
 }

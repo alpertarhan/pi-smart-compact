@@ -360,7 +360,9 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   }
 
   // ── 2. User "next step" / follow-up patterns → follow-up loops ──
-  const FOLLOWUP_RE = /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|gotta|yapalim|yapmamiz|gerekiyor|eklenecek|düzeltilecek|bitmedi|kaldi)/i;
+  // Match English + Turkish follow-up cues; allow both ASCII-only and diacritic spellings
+  // because users mix the two and we never want to miss an open loop.
+  const FOLLOWUP_RE = /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|yapalim|yapalım|yapmamiz|yapmamız|gerekiyor|eklenecek|düzeltilecek|duzeltilecek|bitmedi|kaldi|kaldı)/iu;
   for (let idx = 0; idx < msgs.length; idx++) {
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
@@ -425,8 +427,18 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   return loops;
 }
 
-export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig): StructuredExtraction {
-  const tcIdx = buildToolCallIndex(msgs);
+/**
+ * Run all extractors over a (typically pruned) message list. Accepts an
+ * optional pre-built `ToolCallIndex` so callers that have already walked the
+ * messages (e.g. the orchestrator caching it on the RunContext) can skip the
+ * O(n) rebuild.
+ *
+ * Important: `tcIdx` must be keyed by the **same** message offsets as `msgs`.
+ * Pruning produces an index against the unpruned list; that index is not safe
+ * to pass here — build a fresh one over the pruned messages instead.
+ */
+export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomputedTcIdx?: ToolCallIndex): StructuredExtraction {
+  const tcIdx = precomputedTcIdx ?? buildToolCallIndex(msgs);
   const { modified, read, deleted } = trackFileOps(msgs, tcIdx);
   const errors = catalogErrors(msgs, tcIdx);
   const decisions = extractDecisions(msgs, tcIdx);

@@ -10,10 +10,12 @@ import { extractText, extractMainGoal, extractStructured } from "../utils/extrac
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import * as log from "../utils/logger.ts";
+import { getDefaultServices } from "../infra/services.ts";
 
-// ── Tool Support Cache with TTL ──
-const _toolSupportCache = new Map<string, { result: boolean; timestamp: number }>();
-const TOOL_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+// Tool support is cached on the per-run services container. The previous
+// module-level `_toolSupportCache` leaked TTL'd state across pi sessions and
+// across tests; per-run scoping keeps a flaky provider state confined to the
+// session that observed it. See `infra/services.ts#ToolSupportCache`.
 
 /**
  * Determine whether exploration is worthwhile based on session complexity.
@@ -226,12 +228,13 @@ export async function exploreConversation(
 
   // Check tool support cache before probe
   const cacheKey = model.provider + "/" + model.id;
-  const cachedSupport = _toolSupportCache.get(cacheKey);
-  const cacheValid = cachedSupport && Date.now() - cachedSupport.timestamp < TOOL_CACHE_TTL;
+  const toolSupport = getDefaultServices().toolSupport;
+  const now = getDefaultServices().clock.now();
+  const cachedSupport = toolSupport.get(cacheKey, now);
 
   let supportsTools = false;
   try {
-    if (cacheValid && !cachedSupport!.result) {
+    if (cachedSupport === false) {
       // Provider known to not support tools — skip probe
       if (notify) notify("Tool support cached: unsupported (" + cacheKey + ")", "info");
       const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
@@ -252,7 +255,7 @@ export async function exploreConversation(
 
     if (toolCalls.length > 0) {
       supportsTools = true;
-      _toolSupportCache.set(cacheKey, { result: true, timestamp: Date.now() });
+      toolSupport.set(cacheKey, true, getDefaultServices().clock.now());
       const messages: any[] = [
         { role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() },
         { role: "assistant", content: probeResp.content, timestamp: Date.now() },
@@ -313,7 +316,7 @@ export async function exploreConversation(
   } catch (e) {
     // Probe failed — cache as unsupported
     log.warn("Tool calling probe failed for " + cacheKey, e);
-    _toolSupportCache.set(cacheKey, { result: false, timestamp: Date.now() });
+    toolSupport.set(cacheKey, false, getDefaultServices().clock.now());
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }
 

@@ -5,25 +5,28 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType } from "../types.ts";
 import { VERSION } from "../constants.ts";
 import { inferSessionType } from "./helpers.ts";
 import * as log from "./logger.ts";
-
-const STATE_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states");
+import { compactionStateFile } from "../infra/paths.ts";
+import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { parseSummary, upsertSection, renderSummary } from "../domain/summary-parse.ts";
 
 function getStatePath(projectId: string): string {
-  return path.join(STATE_DIR, projectId + ".json");
+  return compactionStateFile(projectId);
 }
 
 /**
  * Persist compaction state for cross-compaction tracking.
+ *
+ * Atomic temp+rename writes via writeJsonSync ensure that a crash mid-save
+ * leaves the previous valid state file untouched instead of a truncated JSON
+ * blob that would crash the next loadCompactionState parse.
  */
 export function saveCompactionState(projectId: string, state: CompactionState): void {
   try {
-    if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(getStatePath(projectId), JSON.stringify(state, null, 2));
+    writeJsonSync(getStatePath(projectId), state, true);
   } catch (e) { log.warn("saveCompactionState failed", e); }
 }
 
@@ -31,20 +34,18 @@ export function saveCompactionState(projectId: string, state: CompactionState): 
  * Load previous compaction state for delta computation.
  */
 export function loadCompactionState(projectId: string): CompactionState | null {
-  try {
-    const fp = getStatePath(projectId);
-    if (!fs.existsSync(fp)) return null;
-    const data = JSON.parse(fs.readFileSync(fp, "utf8")) as CompactionState;
-    // Expire after 7 days — updatedAt from v7.8.0+, fallback to file mtime for older states
-    if (data.compactionVersion) {
-      let updatedAt = data.updatedAt;
-      if (!updatedAt) {
-        try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
-      }
-      if (Date.now() - updatedAt > 7 * 24 * 60 * 60 * 1000) return null;
+  const fp = getStatePath(projectId);
+  const data = readJsonSync<CompactionState>(fp);
+  if (!data) return null;
+  // Expire after 7 days — updatedAt from v7.8.0+, fallback to file mtime for older states
+  if (data.compactionVersion) {
+    let updatedAt = data.updatedAt;
+    if (!updatedAt) {
+      try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
     }
-    return data;
-  } catch (e) { log.warn("loadCompactionState failed", e); return null; }
+    if (Date.now() - updatedAt > 7 * 24 * 60 * 60 * 1000) return null;
+  }
+  return data;
 }
 
 export function buildCompactionState(
@@ -105,29 +106,24 @@ export function buildCompactionState(
 
 /**
  * Inject Open Loops section into the Markdown summary.
+ *
+ * Implementation goes through the canonical summary parser so that string
+ * variants of "## Next Steps" (different capitalization, an extra blank line,
+ * H3 instead of H2) still result in `Open Loops` being placed *before* the
+ * next-steps section. Falls back to append-at-end when the section is absent.
  */
 export function injectOpenLoopsSection(summary: string, openLoops: OpenLoop[]): string {
   if (!openLoops.length) return summary;
 
-  const lines = [
-    "## Open Loops",
-    "",
-    ...openLoops.map(l => {
-      const prio = l.priority === "critical" || l.priority === "high" ? "[" + l.priority + "] " : "";
-      const files = l.files.length ? " — " + l.files.join(", ") : "";
-      return "- " + prio + l.summary + files;
-    }),
-    "",
-  ];
+  const body = openLoops.map(l => {
+    const prio = l.priority === "critical" || l.priority === "high" ? "[" + l.priority + "] " : "";
+    const files = l.files.length ? " — " + l.files.join(", ") : "";
+    return "- " + prio + l.summary + files;
+  }).join("\n");
 
-  // Insert before Next Steps
-  const nextStepsIdx = summary.indexOf("## Next Steps");
-  if (nextStepsIdx >= 0) {
-    return summary.slice(0, nextStepsIdx) + lines.join("\n") + summary.slice(nextStepsIdx);
-  }
-
-  // Fallback: append at the end
-  return summary + "\n" + lines.join("\n");
+  const parsed = parseSummary(summary);
+  const updated = upsertSection(parsed, "open-loops", body, "next-steps");
+  return renderSummary(updated);
 }
 
 /**
@@ -246,12 +242,17 @@ export function formatDeltaSection(delta: CompactionDelta): string {
 }
 
 /**
- * Inject delta section into summary, after Open Loops (or before Next Steps).
+ * Inject delta section into summary.
+ *
+ * Placement priority:
+ *  1. Immediately after `## Open Loops` if present.
+ *  2. Immediately before `## Next Steps` otherwise.
+ *  3. Append at the end.
+ *
+ * Works on the canonical parsed form, so heading-format drift cannot misorder
+ * the delta section.
  */
 export function injectDeltaSection(summary: string, delta: CompactionDelta): string {
-  const section = formatDeltaSection(delta);
-
-  // Check if there's anything to report
   const hasChanges = delta.goalChanged
     || delta.resolvedLoops.length > 0
     || delta.newLoops.length > 0
@@ -260,21 +261,19 @@ export function injectDeltaSection(summary: string, delta: CompactionDelta): str
     || delta.newModifiedFiles.length > 0;
   if (!hasChanges) return summary;
 
-  // Insert after Open Loops or before Next Steps
-  const openLoopsIdx = summary.indexOf("## Open Loops");
-  const nextStepsIdx = summary.indexOf("## Next Steps");
+  const body = formatDeltaSection(delta)
+    // Drop the heading line; upsertSection adds the canonical one back.
+    .replace(/^## Changes Since Last Compaction\s*\n?/i, "")
+    .trim();
+  if (!body) return summary;
 
-  if (openLoopsIdx >= 0) {
-    // Find end of Open Loops section
-    const afterOL = summary.indexOf("## ", openLoopsIdx + 1);
-    if (afterOL >= 0) {
-      return summary.slice(0, afterOL) + section + summary.slice(afterOL);
-    }
-  }
-  if (nextStepsIdx >= 0) {
-    return summary.slice(0, nextStepsIdx) + section + summary.slice(nextStepsIdx);
-  }
-  return summary + "\n" + section;
+  const parsed = parseSummary(summary);
+  const hasOpenLoops = parsed.sections.some(s => s.kind === "open-loops");
+  // Place after Open Loops by anchoring before Next Steps when Open Loops
+  // exists; otherwise straight before Next Steps. The upsert helper falls
+  // back to append when neither anchor is found.
+  const updated = upsertSection(parsed, "changes", body, hasOpenLoops ? "next-steps" : "next-steps");
+  return renderSummary(updated);
 }
 
 /**

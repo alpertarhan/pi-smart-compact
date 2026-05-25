@@ -3,6 +3,7 @@ import { mergeExtractions, saveCachedExtraction, loadCachedExtraction } from "..
 import { pruneRedundant } from "../src/utils/pruning.ts";
 import { extractStructured } from "../src/utils/extraction.ts";
 import { PROFILES } from "../src/constants.ts";
+import { buildEntryIdFingerprint, isPrefixOf } from "../src/utils/id-fingerprint.ts";
 import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
@@ -301,16 +302,25 @@ describe("saveCachedExtraction / loadCachedExtraction", () => {
     expect(loaded!.extraction.modifiedFiles[0].path).toBe("a.ts");
   });
 
-  it("round-trips with entryIds array for pruning-immune prefix matching", () => {
+  it("round-trips a compact entry-id fingerprint instead of the full id array", () => {
+    // We deliberately do NOT persist the full id array anymore — it grows
+    // linearly with the session and bloats the cache. The fingerprint
+    // carries enough information (count + tail + prefix hash) to prove that
+    // the cached extraction is a prefix of the current run.
     const sessionId = "test-cache-entryids-" + Date.now();
     const ext = makeExtraction({ modifiedFiles: [{ path: "b.ts", toolCalls: 1, lastModifiedIndex: 1 }], messageCount: 3 });
     const entryIds = ["e-0", "e-1", "e-2"];
     saveCachedExtraction(sessionId, ext, 3, "e-0", "e-2", entryIds);
     const loaded = loadCachedExtraction(sessionId);
     expect(loaded).not.toBeNull();
-    expect(loaded!.entryIds).toEqual(entryIds);
-    expect(loaded!.firstEntryId).toBe("e-0");
-    expect(loaded!.lastEntryId).toBe("e-2");
+    expect(loaded!.entryIdsFp).toBeDefined();
+    expect(loaded!.entryIdsFp!.count).toBe(3);
+    expect(loaded!.entryIdsFp!.tail).toEqual(entryIds);
+    expect(isPrefixOf(loaded!.entryIdsFp, entryIds)).toBe(true);
+    // Prefix logic still works after extending the id list.
+    expect(isPrefixOf(loaded!.entryIdsFp, [...entryIds, "e-3"])).toBe(true);
+    // ...and rejects a divergent branch.
+    expect(isPrefixOf(loaded!.entryIdsFp, ["e-0", "e-1", "e-XX"])).toBe(false);
   });
 
   it("preserves pruned domain messageCount for correct merge offset", () => {
@@ -328,7 +338,7 @@ describe("saveCachedExtraction / loadCachedExtraction", () => {
     const loaded = loadCachedExtraction(sessionId);
     expect(loaded).not.toBeNull();
     expect(loaded!.messageCount).toBe(4); // pruned domain preserved
-    expect(loaded!.entryIds).toEqual(entryIds);
+    expect(loaded!.entryIdsFp!.count).toBe(entryIds.length);
 
     // Simulate delta from 2 new pruned messages
     const delta = makeExtraction({
@@ -345,14 +355,18 @@ describe("saveCachedExtraction / loadCachedExtraction", () => {
     expect(merged.errors[1].index).toBe(5);       // 1 + 4 (delta offset)
   });
 
-  it("round-trips keptEntryIds for pruned-prefix validation", () => {
+  it("round-trips keptEntryIdsFp for pruned-prefix validation", () => {
     const sessionId = "test-cache-kept-entryids-" + Date.now();
     const ext = makeExtraction({ messageCount: 2 });
-    saveCachedExtraction(sessionId, ext, 2, "e-0", "e-3", ["e-0", "e-1", "e-2", "e-3"], ["e-0", "e-3"]);
+    const entryIds = ["e-0", "e-1", "e-2", "e-3"];
+    const keptEntryIds = ["e-0", "e-3"];
+    saveCachedExtraction(sessionId, ext, 2, "e-0", "e-3", entryIds, keptEntryIds);
     const loaded = loadCachedExtraction(sessionId);
     expect(loaded).not.toBeNull();
-    expect(loaded!.entryIds).toEqual(["e-0", "e-1", "e-2", "e-3"]);
-    expect(loaded!.keptEntryIds).toEqual(["e-0", "e-3"]);
+    expect(loaded!.entryIdsFp!.count).toBe(4);
+    expect(loaded!.keptEntryIdsFp!.count).toBe(2);
+    expect(loaded!.keptEntryIdsFp!.tail).toEqual(keptEntryIds);
+    expect(isPrefixOf(loaded!.keptEntryIdsFp, keptEntryIds)).toBe(true);
     expect(loaded!.messageCount).toBe(2);
   });
 

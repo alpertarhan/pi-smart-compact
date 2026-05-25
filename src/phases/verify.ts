@@ -1,5 +1,18 @@
 /**
  * Phase 4: Verification + Quality Score.
+ *
+ * Verification was historically a long chain of `summary.toLowerCase().includes(...)`
+ * checks. That worked but coupled the score to the exact markdown wording, so
+ * `### Goal` instead of `## Goal` registered as a missing section even though
+ * the content was right there. We now parse the summary once into a
+ * `CanonicalSummary` (see `domain/summary-schema.ts`) and run section-level
+ * checks against the structured form. The text-content checks (file names,
+ * error snippets, decisions) still run on the body string, but only after the
+ * section has been positively identified by `kind`.
+ *
+ * Deterministic patching writes structured sections back into the summary via
+ * `appendToSection` / `upsertSection`, so a follow-up parse round always sees
+ * the canonical headings even when the LLM produced something idiosyncratic.
  */
 
 import type { Model, Api } from "@earendil-works/pi-ai";
@@ -7,15 +20,31 @@ import type { StructuredExtraction, VerificationResult, CacheAwareOptions } from
 import { COMPACT_SYSTEM_PREFIX } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import * as log from "../utils/logger.ts";
+import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
+import type { CanonicalSummary } from "../domain/summary-schema.ts";
 
 export function verifySummary(summary: string, extraction: StructuredExtraction): VerificationResult {
+  const parsed = parseSummary(summary);
   const gaps: string[] = [];
   const lower = summary.toLowerCase();
   let score = 100;
 
+  // Section presence checks now run on parsed kinds, which means `### Goal`
+  // and `## Goals` both satisfy the `goal` requirement.
+  const requiredSections: Array<{ kind: import("../domain/summary-schema.ts").SectionKind; label: string; penalty: number }> = [
+    { kind: "goal", label: "## Goal", penalty: 5 },
+    { kind: "progress", label: "## Progress", penalty: 5 },
+    { kind: "critical-context", label: "## Critical Context", penalty: 3 },
+  ];
+  for (const req of requiredSections) {
+    if (!findSection(parsed, req.kind)) {
+      gaps.push("Missing section: " + req.label);
+      score -= req.penalty;
+    }
+  }
+
   for (const f of extraction.modifiedFiles) {
     const pathLower = f.path.toLowerCase();
-    // Build path suffix array: "src/index.ts", "index.ts", "index"
     const parts = pathLower.split("/");
     const suffixes: string[] = [];
     for (let j = 0; j < parts.length; j++) {
@@ -51,10 +80,6 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     if (!goalFound) { gaps.push("Main goal may be missing from summary"); score -= 10; }
   }
 
-  if (!lower.includes("## goal")) { gaps.push("Missing section: ## Goal"); score -= 5; }
-  if (!lower.includes("## progress")) { gaps.push("Missing section: ## Progress"); score -= 5; }
-  if (!lower.includes("## critical context")) { gaps.push("Missing section: ## Critical Context"); score -= 3; }
-
   const summaryFileRefs = (summary.match(/[\w.\/-]+\.[\w]+/g) ?? []).filter(
     p => p.includes("/") || p.match(/\.(ts|tsx|js|jsx|rs|py|go|java|rb|css|html|json|yaml|yml|toml|md|sh|sql)$/i)
   );
@@ -71,20 +96,22 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
-  const errorFiles = new Set(extraction.errors.map(e => e.message));
-  if (errorFiles.size > 0) {
-    const doneSection = (summary.match(/### Done[\s\S]*?(?=###|$)/i) ?? [""])[0];
+  // Inconsistency check: a file marked Done that has an unresolved error in
+  // the extraction signals stale completion claims. We pull the Progress
+  // section structurally so heading-case differences don't bypass the check.
+  const progressSection = findSection(parsed, "progress");
+  if (progressSection) {
+    const doneMatch = progressSection.body.match(/###\s*Done[\s\S]*?(?=###|$)/i);
+    const doneSection = doneMatch?.[0] ?? "";
     if (doneSection) {
       for (const f of extraction.modifiedFiles) {
         const bn = f.path.split("/").pop() ?? "";
-        const hasError = [...errorFiles].some(e => e.toLowerCase().includes(bn.toLowerCase()));
         const markedDone = doneSection.toLowerCase().includes(bn.toLowerCase());
-        if (hasError && markedDone) {
-          const unresolved = extraction.errors.find(e => e.message.toLowerCase().includes(bn.toLowerCase()) && !e.resolved);
-          if (unresolved) {
-            gaps.push("Inconsistency: " + bn + " marked Done but has unresolved error");
-            score -= 5;
-          }
+        if (!markedDone) continue;
+        const unresolved = extraction.errors.find(e => e.message.toLowerCase().includes(bn.toLowerCase()) && !e.resolved);
+        if (unresolved) {
+          gaps.push("Inconsistency: " + bn + " marked Done but has unresolved error");
+          score -= 5;
         }
       }
     }
@@ -92,21 +119,25 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
 
   const highConfDecisions = extraction.decisions.filter(d => d.type === "explicit");
   if (highConfDecisions.length > 0) {
-    const decisionSection = (summary.match(/## Key Decisions[\s\S]*?(?=##|$)/i) ?? [""])[0];
+    const decisionSection = findSection(parsed, "decisions");
+    const decisionBody = decisionSection?.body.toLowerCase() ?? "";
     for (const d of highConfDecisions) {
       const keywords = d.summary.split(/\s+/).filter(w => w.length > 4).slice(0, 3);
-      if (keywords.length > 0 && !keywords.some(k => decisionSection.toLowerCase().includes(k.toLowerCase()))) {
+      if (keywords.length > 0 && !keywords.some(k => decisionBody.includes(k.toLowerCase()))) {
         gaps.push("Missing decision: " + d.summary.slice(0, 100));
         score -= 3;
       }
     }
   }
 
-  // ── Open Loop coverage ──
-  if (extraction.errors.some(e => !e.resolved)) {
-    const hasOpenLoops = lower.includes("## open loops") || lower.includes("unresolved") || lower.includes("open loop");
-    if (!hasOpenLoops && extraction.errors.filter(e => !e.resolved).length >= 2) {
-      gaps.push("Missing Open Loops section despite " + extraction.errors.filter(e => !e.resolved).length + " unresolved errors");
+  // Open Loop coverage: if extraction surfaces multiple unresolved errors but
+  // the summary has no dedicated open-loop section (or any unresolved-style
+  // language), call out the gap structurally.
+  const unresolvedCount = extraction.errors.filter(e => !e.resolved).length;
+  if (unresolvedCount >= 2) {
+    const hasOpenLoops = findSection(parsed, "open-loops") || lower.includes("unresolved");
+    if (!hasOpenLoops) {
+      gaps.push("Missing Open Loops section despite " + unresolvedCount + " unresolved errors");
       score -= 5;
     }
   }
@@ -117,10 +148,13 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
 
 /**
  * Deterministic patch — injects missing items directly into the summary
- * without an LLM call. Appends gaps to the relevant sections.
+ * without an LLM call. All structural mutations go through the canonical
+ * parse/upsert path so the resulting markdown always has the canonical
+ * headings, even if the LLM produced lowercase or differently punctuated ones.
  */
 export function patchDeterministic(summary: string, gaps: string[], extraction: StructuredExtraction): string {
-  let patched = summary;
+  let canonical: CanonicalSummary = parseSummary(summary);
+
   const fileGaps = gaps.filter(g => g.startsWith("Missing modified file:"));
   const errorGaps = gaps.filter(g => g.startsWith("Missing error:"));
   const constraintGaps = gaps.filter(g => g.startsWith("Missing constraint:"));
@@ -136,29 +170,15 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
     !g.startsWith("Inconsistency")
   );
 
-  const escapeRe = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-  // Helper: find section header and return insertion point. If the LLM used a
-  // non-standard format and the section is absent, create the canonical section
-  // deterministically instead of relying on a second LLM patch to repair it.
-  const findOrCreateSectionInsert = (header: string, defaultBody = ""): number => {
-    const re = new RegExp(escapeRe(header) + "\\s*\\n", "i");
-    const m = patched.match(re);
-    if (m?.index != null) return m.index + m[0].length;
-    const prefix = patched.endsWith("\n") ? (patched.endsWith("\n\n") ? "" : "\n") : "\n\n";
-    patched += prefix + header + "\n" + (defaultBody ? defaultBody.replace(/\n?$/, "\n") : "");
-    return patched.length;
-  };
-
   const ensureMissingSection = (header: string): void => {
+    // Map the heading literal back to a structural kind so upsertSection can
+    // produce canonical markdown regardless of what the LLM emitted before.
     if (header === "## Goal") {
-      findOrCreateSectionInsert(header, (extraction.mainGoal ?? "Continue the current coding task.") + "\n");
+      canonical = upsertSection(canonical, "goal", (extraction.mainGoal ?? "Continue the current coding task.") + "\n");
     } else if (header === "## Progress") {
-      findOrCreateSectionInsert(header, "### Done\n- See preceding summary.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n- None recorded.\n");
+      canonical = upsertSection(canonical, "progress", "### Done\n- See preceding summary.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n- None recorded.\n");
     } else if (header === "## Critical Context") {
-      findOrCreateSectionInsert(header, "- None recorded.\n");
-    } else {
-      findOrCreateSectionInsert(header);
+      canonical = upsertSection(canonical, "critical-context", "- None recorded.\n");
     }
   };
 
@@ -166,40 +186,33 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
     ensureMissingSection(gap.replace("Missing section: ", ""));
   }
 
-  // Inject missing files into Files Modified section
   if (fileGaps.length > 0) {
-    const insertPos = findOrCreateSectionInsert("## Files Modified");
-    const entries = fileGaps.map(g => "- " + g.replace("Missing modified file: ", "")).join("\n") + "\n";
-    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
+    const entries = fileGaps.map(g => "- " + g.replace("Missing modified file: ", "")).join("\n");
+    canonical = appendToSection(canonical, "files-modified", entries);
   }
 
-  // Inject missing errors into Critical Context section
   if (errorGaps.length > 0) {
-    const insertPos = findOrCreateSectionInsert("## Critical Context");
-    const entries = errorGaps.map(g => "- " + g).join("\n") + "\n";
-    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
+    const entries = errorGaps.map(g => "- " + g).join("\n");
+    canonical = appendToSection(canonical, "critical-context", entries);
   }
 
-  // Inject missing constraints into Constraints section
   if (constraintGaps.length > 0) {
-    const insertPos = findOrCreateSectionInsert("## Constraints & Preferences");
-    const entries = constraintGaps.map(g => "- " + g).join("\n") + "\n";
-    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
+    const entries = constraintGaps.map(g => "- " + g).join("\n");
+    canonical = appendToSection(canonical, "constraints", entries);
   }
 
-  // Inject missing decisions into Key Decisions section
   if (decisionGaps.length > 0) {
-    const insertPos = findOrCreateSectionInsert("## Key Decisions");
-    const entries = decisionGaps.map(g => "- **" + g.replace("Missing decision: ", "") + "**").join("\n") + "\n";
-    patched = patched.slice(0, insertPos) + entries + patched.slice(insertPos);
+    const entries = decisionGaps.map(g => "- **" + g.replace("Missing decision: ", "") + "**").join("\n");
+    canonical = appendToSection(canonical, "decisions", entries);
   }
 
-  // Append any remaining gaps as a verification note
+  // Patching renders with canonical headings so a later verify pass cannot
+  // miss a section because the original markdown used `### Goal` or `Goals:`.
+  let rendered = renderSummary(canonical, { canonicalHeadings: true });
   if (otherGaps.length > 0) {
-    patched += "\n## Verification Note\n" + otherGaps.map(g => "- " + g).join("\n");
+    rendered += "\n## Verification Note\n" + otherGaps.map(g => "- " + g).join("\n") + "\n";
   }
-
-  return patched;
+  return rendered;
 }
 
 export async function patchSummary(

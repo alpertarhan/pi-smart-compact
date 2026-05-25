@@ -7,8 +7,8 @@ import type { LlmMessage, SmartCompactDetails } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 import { extractText } from "./extraction.ts";
 import * as log from "./logger.ts";
-import fs from "node:fs";
-import path from "node:path";
+import { damageReportsFile } from "../infra/paths.ts";
+import { appendLineLocked } from "../infra/fs.ts";
 
 export interface RegressionSignal {
   type: "re-read" | "re-question" | "contradiction" | "user-complaint";
@@ -131,9 +131,6 @@ export function logDamageReport(
   details: SmartCompactDetails,
 ): void {
   try {
-    const dir = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact");
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const logPath = path.join(dir, "damage-reports.jsonl");
     const entry = {
       ts: new Date().toISOString(),
       sessionId,
@@ -144,6 +141,7 @@ export function logDamageReport(
       signals: report.signals.length,
       summary: report.summary,
     };
-    fs.appendFileSync(logPath, JSON.stringify(entry) + "\n");
+    // Lock the JSONL append so concurrent pi sessions cannot interleave bytes.
+    appendLineLocked(damageReportsFile(), JSON.stringify(entry));
   } catch (e) { log.warn("logDamageReport failed", e); }
 }

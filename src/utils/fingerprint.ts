@@ -3,12 +3,13 @@
  * Stores basic project metadata to improve compaction accuracy.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync } from "node:child_process";
 import type { StructuredExtraction } from "../types.ts";
 import * as log from "./logger.ts";
+import { projectFingerprintFile } from "../infra/paths.ts";
+import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { findGitRoot as findGitRootCached } from "../infra/git.ts";
 
 export interface ProjectFingerprint {
   id: string;
@@ -20,7 +21,6 @@ export interface ProjectFingerprint {
   updatedAt: number;
 }
 
-const FINGERPRINT_DIR = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "projects");
 
 // Language detection heuristics from file extensions
 const LANG_MAP: Record<string, string> = {
@@ -54,7 +54,7 @@ const FRAMEWORK_SIGNALS: Array<{ pattern: RegExp; framework: string }> = [
 ];
 
 function getFingerprintPath(projectId: string): string {
-  return path.join(FINGERPRINT_DIR, projectId + ".json");
+  return projectFingerprintFile(projectId);
 }
 
 /**
@@ -75,14 +75,12 @@ function hashProjectId(seed: string): string {
 /**
  * Find the git root for the current working directory.
  * Returns null if not in a git repo.
+ *
+ * Implementation is delegated to `infra/git.ts` which caches per cwd so that
+ * the auto-trigger code path does not pay the execSync cost on every run.
  */
 export function findGitRoot(cwd: string): string | null {
-  try {
-    const out = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf-8", timeout: 2000 });
-    return out.trim();
-  } catch {
-    return null;
-  }
+  return findGitRootCached(cwd);
 }
 
 /**
@@ -247,26 +245,24 @@ function extractKeyDirs(extraction: StructuredExtraction, maxDirs = 8): string[]
  * Load project fingerprint from cache.
  */
 export function loadProjectFingerprint(projectId: string): ProjectFingerprint | null {
-  try {
-    const fp = getFingerprintPath(projectId);
-    if (!fs.existsSync(fp)) return null;
-    const data = JSON.parse(fs.readFileSync(fp, "utf8")) as ProjectFingerprint;
-    // Expire after 30 days
-    if (Date.now() - data.updatedAt > 30 * 24 * 60 * 60 * 1000) return null;
-    return data;
-  } catch (e) { log.warn("loadProjectFingerprint failed", e); return null; }
+  const data = readJsonSync<ProjectFingerprint>(getFingerprintPath(projectId));
+  if (!data) return null;
+  if (Date.now() - data.updatedAt > 30 * 24 * 60 * 60 * 1000) return null;
+  return data;
 }
 
 /**
  * Save/update project fingerprint after compaction.
+ *
+ * Atomic temp+rename via writeJsonSync prevents a crash from leaving a
+ * truncated JSON file behind. The next session would otherwise lose the
+ * sessionCount counter or worse, throw on parse.
  */
 export function saveProjectFingerprint(
   projectId: string,
   extraction: StructuredExtraction,
 ): void {
   try {
-    if (!fs.existsSync(FINGERPRINT_DIR)) fs.mkdirSync(FINGERPRINT_DIR, { recursive: true });
-
     const existing = loadProjectFingerprint(projectId);
     const newKnownFiles = [...new Set([
       ...(existing?.knownFiles ?? []),
@@ -286,7 +282,7 @@ export function saveProjectFingerprint(
       updatedAt: Date.now(),
     };
 
-    fs.writeFileSync(getFingerprintPath(projectId), JSON.stringify(fingerprint, null, 2));
+    writeJsonSync(getFingerprintPath(projectId), fingerprint, true);
   } catch (e) { log.warn("saveProjectFingerprint failed", e); }
 }
 

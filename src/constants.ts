@@ -149,6 +149,41 @@ export const LOG_PREFIX = "[smart-compact]";
 export const MIN_TOKEN_THRESHOLD = 5000;
 export const MAX_EXPLORATION_ROUNDS = 8;
 
+// ── Backup retention policy ──
+//
+// Backups are written every successful compaction; without retention the
+// directory grows without bound. We cap by both count (most recent N kept)
+// and age (anything older is dropped). Pruning runs asynchronously so the
+// compact path doesn't pay the readdir/stat cost in the hot loop.
+export const BACKUP_MAX_FILES = 20;
+export const BACKUP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+// ── Truncation lengths used by extraction and damage paths ──
+//
+// These were scattered as inline magic numbers (`slice(0, 100)`,
+// `slice(0, 60)`). Centralizing them documents intent and lets tests assert
+// against the same constant the production code uses.
+export const SUMMARY_SNIPPET_LEN = 100;
+export const SHORT_SUMMARY_LEN = 60;
+export const ERROR_FUZZY_MATCH_LEN = 30;
+export const DAMAGE_RECENT_MSG_WINDOW = 15;
+
+// ── Pruning ──
+export const MAX_TOOL_OUTPUT_CHARS = 800;
+
+// ── Per-run metrics buffer ──
+//
+// MetricsSink keeps at most this many records; once exceeded it trims down
+// to half. The cap protects against runaway batches without losing the
+// recent history the result screen needs.
+export const METRICS_BUFFER_MAX = 200;
+
+// ── Damage detection window ──
+export const DAMAGE_LOOKBACK_MSGS = 15;
+
+// ── Damage report regex slicing ──
+export const VERIFICATION_GAP_SNIPPET_LEN = 80;
+
 // ── Config keys ──
 export const CONFIG_KEY = "smartCompact";
 export const CONFIG_KEY_ALT = "semanticCompact";
