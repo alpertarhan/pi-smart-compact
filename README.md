@@ -1,13 +1,9 @@
 # pi-smart-compact
 
-[![CI](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml/badge.svg)](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/pi-smart-compact.svg)](https://www.npmjs.com/package/pi-smart-compact)
-[![npm downloads](https://img.shields.io/npm/dm/pi-smart-compact.svg)](https://www.npmjs.com/package/pi-smart-compact)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Pi extension](https://img.shields.io/badge/Pi-extension-6f42c1)](https://github.com/earendil-works/pi)
+[CI](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml) · [npm](https://www.npmjs.com/package/pi-smart-compact) · [MIT License](./LICENSE) · [Pi extension](https://github.com/earendil-works/pi)
 
 <p align="center">
-  <img src="./docs/assets/pi-smart-compact.png" alt="pi-smart-compact" width="760" />
+  <img src="./docs/assets/pi-smart-compact.png" alt="pi-smart-compact" width="420" />
 </p>
 
 > Verification-oriented smart compaction for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
@@ -390,8 +386,6 @@ Build output is published from `dist/`. Pull requests are expected to pass the s
 - [`SECURITY.md`](./SECURITY.md) — vulnerability reporting and data-handling notes
 - [`SUPPORT.md`](./SUPPORT.md) — where to ask for help
 - [`docs/RELEASE.md`](./docs/RELEASE.md) — release checklist
-- [`ROADMAP.md`](./ROADMAP.md) — current priorities
-- [`DEVPLAN.md`](./DEVPLAN.md) — archived implementation plan
 
 ---
 
