@@ -9,6 +9,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, PipelinePhaseTiming, CompactMetricsEntry } from "../types.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
@@ -198,8 +199,50 @@ export function saveCachedExtraction(
 export function loadCachedExtraction(sessionId: string): CachedExtraction | null {
   const cached = readJsonSync<CachedExtraction>(getCachePath(sessionId));
   if (!cached) return null;
-  if (Date.now() - cached.timestamp > 3600000) return null; // 1hr TTL
+  if (Date.now() - cached.timestamp > EXTRACTION_CACHE_TTL_MS) return null; // 1hr TTL
+  // Piggyback on every cache load to opportunistically prune sibling caches.
+  // The actual scan is deferred to a microtask so the hot path stays
+  // synchronous; collapse repeated triggers with an in-flight guard.
+  scheduleExtractionCacheCleanup();
   return cached;
+}
+
+const EXTRACTION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const EXTRACTION_CACHE_PRUNE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
+ * Stale extraction caches (sessions we'll never see again because the user
+ * closed pi) accumulate in `~/.pi/agent/cache/` indefinitely. The TTL check
+ * in `loadCachedExtraction` only filters at read time, never deletes; on a
+ * heavy user's machine this can grow to thousands of files. We deferred-
+ * prune on cache load, mirroring the backup-prune strategy in helpers.ts.
+ *
+ * - Schedule guard prevents repeated readdir during a single compaction.
+ * - Files older than 7 days are unlinked (way beyond the 1-hour TTL, so
+ *   we're only deleting caches that are definitely abandoned).
+ */
+let _extractionPruneInFlight = false;
+function scheduleExtractionCacheCleanup(): void {
+  if (_extractionPruneInFlight) return;
+  _extractionPruneInFlight = true;
+  queueMicrotask(() => {
+    try {
+      const dir = path.dirname(getCachePath("_")); // any sessionId gives us the dir
+      if (!fs.existsSync(dir)) return;
+      const now = Date.now();
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.startsWith("compact-extraction-") || !name.endsWith(".json")) continue;
+        const fp = path.join(dir, name);
+        try {
+          const stat = fs.statSync(fp);
+          if (now - stat.mtimeMs > EXTRACTION_CACHE_PRUNE_MAX_AGE_MS) {
+            try { fs.unlinkSync(fp); } catch (e) { log.debug("extraction-cache prune unlink failed", e); }
+          }
+        } catch (e) { log.debug("extraction-cache stat failed", e); }
+      }
+    } catch (e) { log.debug("extraction-cache cleanup failed", e); }
+    finally { _extractionPruneInFlight = false; }
+  });
 }
 
 /**
@@ -267,19 +310,53 @@ export function appendMetricsLog(
   } catch (e) { log.warn("appendMetricsLog failed", e); }
 }
 
+/**
+ * Read the last `limit` valid entries from the metrics log without loading
+ * the whole file. We start from the tail, walking backwards in 64 KB chunks
+ * until we have enough lines (`limit * 4` raw lines is a generous safety
+ * factor against corrupt entries that get filtered out). The old
+ * implementation read the entire log into memory before slicing, which on
+ * a long-lived install with a multi-megabyte log was a noticeable IO + GC
+ * hit on every dashboard render.
+ *
+ * Behavior guarantees:
+ *   - At most `limit` entries returned (always sliced from the tail).
+ *   - Corrupt JSON lines are dropped with a warning, NOT counted toward limit.
+ *   - Returned in chronological order (oldest -> newest within the window).
+ */
 export function readMetricsLog(limit = 100): CompactMetricsEntry[] {
   try {
     const logPath = metricsLogFile();
     if (!fs.existsSync(logPath)) return [];
-    const entries: CompactMetricsEntry[] = [];
-    for (const line of fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).slice(-limit * 2)) {
-      try {
-        entries.push(JSON.parse(line) as CompactMetricsEntry);
-      } catch {
-        log.warn("Skipping corrupt compact metrics line");
+    const stat = fs.statSync(logPath);
+    const TAIL_CHUNK = 64 * 1024;
+    // Heuristic budget: most lines are ~400 B; reading limit*8 lines worth of
+    // bytes gives plenty of headroom while staying well under a 1 MB read for
+    // limit=200. Cap by file size so we never read past the start.
+    const wantBytes = Math.min(stat.size, Math.max(TAIL_CHUNK, limit * 8 * 512));
+    const startPos = Math.max(0, stat.size - wantBytes);
+
+    const fd = fs.openSync(logPath, "r");
+    try {
+      const buf = Buffer.alloc(wantBytes);
+      fs.readSync(fd, buf, 0, wantBytes, startPos);
+      let text = buf.toString("utf8");
+      // Drop the (potentially) partial first line when we didn't start at
+      // byte 0; otherwise we'd half-parse it and emit a corrupt warning.
+      if (startPos > 0) {
+        const nl = text.indexOf("\n");
+        if (nl >= 0) text = text.slice(nl + 1);
       }
+      const lines = text.split("\n").filter(Boolean);
+      const entries: CompactMetricsEntry[] = [];
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line) as CompactMetricsEntry); }
+        catch { log.warn("Skipping corrupt compact metrics line"); }
+      }
+      return entries.slice(-limit);
+    } finally {
+      fs.closeSync(fd);
     }
-    return entries.slice(-limit);
   } catch (e) { log.warn("readMetricsLog failed", e); return []; }
 }
 

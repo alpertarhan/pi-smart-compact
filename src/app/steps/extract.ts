@@ -166,6 +166,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     prevContext: string;
     projectCtx: string;
     projectId: string;
+    convText: string;
     convTokens: number;
     backupPath: string | null;
   };
@@ -178,6 +179,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   out.prevContext = prevContext;
   out.projectCtx = projectCtx;
   out.projectId = projectId;
+  out.convText = convText;
   out.convTokens = convTokens;
   out.backupPath = backupPath;
   return advance<TieredRc, ExtractedRc>(out, "_extracted");

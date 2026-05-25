@@ -18,12 +18,11 @@
  * once you exceed 2-3 concurrent calls.
  */
 
-import type { ChunkSummary, TopicBoundary, LlmMessage } from "../../types.ts";
+import type { ChunkSummary, TopicBoundary } from "../../types.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import { exploreConversation, shouldExplore } from "../explore-wrap.ts";
 import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback } from "../../phases/synthesize.ts";
 import { MAX_EXPLORATION_ROUNDS } from "../../constants.ts";
-import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { createBatches } from "../../utils/helpers.ts";
 import { extractText } from "../../utils/extraction.ts";
 import * as log from "../../utils/logger.ts";
@@ -34,7 +33,10 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   const extraction = rc.extraction;
   const pc = rc.profileCfg;
   const shouldSkipExplore = rc.tier === "light";
-  const convText = serializeConversation(rc.llmMessages as unknown as import("@earendil-works/pi-ai").Message[]);
+  // convText was computed and cached on `rc` in extractWithCache to avoid a
+  // second `serializeConversation` over the same pruned array (~50ms on
+  // 5k-message sessions).
+  const convText = rc.convText;
   const singlePassMaxTokens = Math.round(pc.singlePassMaxTokens * rc.providerCaps.singlePassTokenMultiplier);
   rc.vlog("Tier=" + rc.tier + " | convTokens=" + rc.convTokens + " | singlePassMax=" + singlePassMaxTokens);
 
@@ -78,7 +80,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         const expResult = await exploreConversation(
           rc.llmMessages, extraction, rc.segModel, rc.segAuth,
           rc.prevContext || undefined, rc.userNote, rc.cancellation.signal,
-          MAX_EXPLORATION_ROUNDS, rc.notify,
+          MAX_EXPLORATION_ROUNDS, rc.notify, rc.services,
         );
         explorationReport = expResult.report;
         explorationRounds = expResult.rounds;
@@ -230,7 +232,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
 function failedChunkSummary(ch: import("../../types.ts").LlmChunk): ChunkSummary {
   return {
     topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
-    summary: "[Failed] " + ch.messages.map(m => extractText((m as LlmMessage).content)).join("\n").slice(0, 300),
+    summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, 300),
     keyDecisions: [], filesModified: [], filesRead: [], priority: ch.priority,
   };
 }

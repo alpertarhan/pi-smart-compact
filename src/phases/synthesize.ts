@@ -5,7 +5,7 @@
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   LlmMessage, LlmChunk, ChunkSummary, StructuredExtraction,
-  ExplorationReport, ProfileConfig, CacheAwareOptions,
+  ExplorationReport, ProfileConfig,
 } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PROMPT_PREFIX, BATCH_PROMPT_SUFFIX, ASSEMBLY_PROMPT_PREFIX, ASSEMBLY_PROMPT_SUFFIX, SESSION_TYPE_INSTRUCTIONS } from "../constants.ts";
 import { estimateTokens, getProviderCaps } from "../utils/tokens.ts";

@@ -120,10 +120,24 @@ export function acquireLockSync(target: string): () => void {
           continue;
         }
       } catch { /* lock vanished between EEXIST and stat */ }
-      // Busy-wait briefly; this is only contended when multiple pi sessions
-      // append metrics simultaneously, which is rare.
-      const until = Date.now() + LOCK_RETRY_MS;
-      while (Date.now() < until) { /* spin */ }
+      // Yield the CPU between retries instead of spinning. `Atomics.wait`
+      // on a tiny SharedArrayBuffer parks the thread without burning a core
+      // — the previous spin loop could pin a CPU at 100% for up to 2 s
+      // (80 retries x 25 ms) during contention from multiple pi sessions
+      // appending metrics simultaneously.
+      try {
+        const sab = new SharedArrayBuffer(4);
+        const view = new Int32Array(sab);
+        // Wait until either the timeout elapses or the value at index 0
+        // changes (we never notify, so this always times out). The return
+        // value is "timed-out" in the normal contention path.
+        Atomics.wait(view, 0, 0, LOCK_RETRY_MS);
+      } catch {
+        // SharedArrayBuffer is unavailable in some sandboxed environments;
+        // fall back to the original spin so the lock still works.
+        const until = Date.now() + LOCK_RETRY_MS;
+        while (Date.now() < until) { /* spin */ }
+      }
     }
   }
   log.warn("acquireLockSync gave up waiting for " + target);

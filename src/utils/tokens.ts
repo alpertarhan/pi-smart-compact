@@ -110,28 +110,65 @@ export function getProviderCaps(provider: string): ProviderCapabilities {
   return DEFAULT_CAPS;
 }
 
-// Per-provider calibration to avoid cross-session bleed.
+/**
+ * Per-(provider,model) calibration factors smoothed by EMA.
+ *
+ * Two reasons this used to be a module-level singleton and now isn't:
+ *
+ *   1. **Cross-session bleed.** Two pi sessions sharing the Node process
+ *      (a sub-agent spawning the parent's extension) would otherwise mix
+ *      each other's calibration drift. Per-services scoping confines drift
+ *      to the run that observed it.
+ *   2. **Per-model accuracy.** A single provider can ship multiple models
+ *      with wildly different tokenizers (e.g. Anthropic's claude-3-haiku
+ *      vs claude-sonnet-4: same provider, ~15% ratio gap). Keying on
+ *      `provider/model` keeps each model's factor honest. Callers that
+ *      only have a provider string still work — they share the
+ *      `provider/*` bucket.
+ *
+ * The legacy module-level Map remains as a fallback when no services
+ * container is provided (direct callers, tests, REPL). Tests can call
+ * `__resetTokenCalibrationForTests` to clear it.
+ */
 const _calibrationFactors = new Map<string, number>();
 
-function getCalibrationFactor(provider?: string): number {
-  if (!provider) return 1.0;
-  return _calibrationFactors.get(provider) ?? 1.0;
+function calibrationKey(provider: string, model?: string): string {
+  return model ? provider + "/" + model : provider + "/*";
 }
 
-export function estimateTokens(text: string, provider?: string): number {
+/** @internal Test-only reset; do not call from production code. */
+export function __resetTokenCalibrationForTests(): void {
+  _calibrationFactors.clear();
+}
+
+function getCalibrationFactor(provider?: string, model?: string): number {
+  if (!provider) return 1.0;
+  const exact = _calibrationFactors.get(calibrationKey(provider, model));
+  if (exact !== undefined) return exact;
+  // Fall back to the provider-wide bucket so a fresh model still benefits
+  // from sibling calibration until it builds up its own samples.
+  return _calibrationFactors.get(calibrationKey(provider)) ?? 1.0;
+}
+
+export function estimateTokens(text: string, provider?: string, model?: string): number {
   const baseRatio = provider ? getProviderCaps(provider).tokenRatioEstimate : CHARS_PER_TOKEN;
   // JSON content has denser tokenization (brackets, quotes, escapes)
   const jsonPenalty = text.startsWith("[") || text.startsWith("{") ? 0.85 : 1.0;
   // Turkish/CE characters tokenize differently (multi-byte in some tokenizers)
   const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(text) ? 0.9 : 1.0;
-  const calibration = getCalibrationFactor(provider);
+  const calibration = getCalibrationFactor(provider, model);
   return Math.ceil((text.length / baseRatio) * jsonPenalty * langPenalty * calibration);
 }
 
-export function calibrateFromResponse(estimated: number, actual: number, provider?: string): void {
+export function calibrateFromResponse(estimated: number, actual: number, provider?: string, model?: string): void {
   if (actual > 0 && estimated > 0 && provider) {
-    const prev = _calibrationFactors.get(provider) ?? 1.0;
+    const key = calibrationKey(provider, model);
+    const prev = _calibrationFactors.get(key) ?? 1.0;
     const sample = actual / estimated;
-    _calibrationFactors.set(provider, prev * 0.7 + sample * 0.3); // EMA smoothing
+    // EMA smoothing: 70% previous, 30% new sample. Clamp the ratio to a
+    // sane range so a one-off outlier response (e.g. a truncated reply)
+    // can't permanently skew estimates.
+    const clamped = Math.max(0.3, Math.min(3.0, sample));
+    _calibrationFactors.set(key, prev * 0.7 + clamped * 0.3);
   }
 }

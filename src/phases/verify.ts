@@ -16,7 +16,7 @@
  */
 
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { StructuredExtraction, VerificationResult, CacheAwareOptions } from "../types.ts";
+import type { StructuredExtraction, VerificationResult } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import * as log from "../utils/logger.ts";

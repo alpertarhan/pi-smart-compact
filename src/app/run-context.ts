@@ -178,6 +178,13 @@ export interface ExtractedExt extends TieredExt {
   prevContext: string;
   projectCtx: string;
   projectId: string;
+  /**
+   * Serialized pruned conversation text. Computed once in `extractWithCache`
+   * and reused by `summarizeConversation` so we don't `serializeConversation`
+   * the same 5000-message array twice on the hot path. `convTokens` is the
+   * cached `estimateTokens(convText)` value.
+   */
+  convText: string;
   convTokens: number;
   backupPath: string | null;
 }

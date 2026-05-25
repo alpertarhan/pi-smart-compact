@@ -150,9 +150,13 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     if (m.role !== "toolResult") return m;
     const text = extractText(m.content);
     if (text.length > MAX_TOOL_OUTPUT_CHARS) {
-      // Keep first 400 chars + last 400 chars with truncation marker
-      const head = text.slice(0, 400);
-      const tail = text.slice(-400);
+      // Split the budget evenly between head and tail. Computed from
+      // MAX_TOOL_OUTPUT_CHARS so future bumps to the constant don't silently
+      // leave the slice sizes out of date — the previous hard-coded 400/400
+      // was correct only as long as MAX_TOOL_OUTPUT_CHARS stayed 800.
+      const half = Math.floor(MAX_TOOL_OUTPUT_CHARS / 2);
+      const head = text.slice(0, half);
+      const tail = text.slice(-half);
       const truncated = head + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n" + tail;
       return { ...m, content: [{ type: "text" as const, text: truncated }] };
     }

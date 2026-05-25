@@ -149,7 +149,16 @@ export interface ModelOption {
   value: string;
   label: string;
   model: Model<Api>;
-  supportsTools: boolean;
+  /**
+   * Tri-state tool support hint:
+   *   true   - confirmed (cached or known-good provider)
+   *   false  - confirmed unsupported (cached after a failed probe)
+   *   "probe" - unknown; will be runtime-probed during exploration
+   * The previous boolean form always set `true` in the UI, which silently
+   * lied to the user about providers like LM Studio that don't actually
+   * support function calling.
+   */
+  supportsTools: boolean | "probe";
 }
 
 export interface VerificationResult {
@@ -208,6 +217,13 @@ export interface LlmMessage {
   content?: unknown;
   isError?: boolean;
   toolCallId?: string;
+  /**
+   * Optional tool name on `toolResult` messages. Some providers require it
+   * alongside `toolCallId` (Anthropic), others ignore it. We store it when
+   * we know it so the explore-loop can round-trip the metadata back to the
+   * provider without re-fetching the original toolCall block.
+   */
+  toolName?: string;
   timestamp?: number;
 }
 

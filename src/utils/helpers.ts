@@ -337,7 +337,20 @@ export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: num
 
   let adjusted = keepFrom;
   let changed = true;
+  // Bound the transitive walk. Each iteration MUST shrink `adjusted` (we
+  // only set `changed = true` when `tcIdx < adjusted`), so in practice this
+  // converges in at most `keepFrom` steps. The explicit cap defends against
+  // a corrupted session where a toolCall index would point past itself,
+  // which would otherwise spin until process termination.
+  const MAX_ITER = msgs.length + 1;
+  let iter = 0;
   while (changed) {
+    if (++iter > MAX_ITER) {
+      // Should be unreachable; log loudly so a real upstream regression
+      // surfaces in the metrics rather than as a silent hang.
+      log.warn("guardToolCallBoundary hit MAX_ITER=" + MAX_ITER + " at adjusted=" + adjusted);
+      break;
+    }
     changed = false;
     for (let i = adjusted; i < msgs.length; i++) {
       const m = msgs[i].message as Record<string, unknown>;
@@ -359,7 +372,16 @@ export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: num
 export function extractUserNote(args: string): string | undefined {
   const SKIP = new Set(["verbose", "debug", "dry-run", "light", "balanced", "aggressive"]);
   const tokens = args.trim().split(/\s+/).filter(Boolean);
-  const nonFlags = tokens.filter(t => !t.includes("/") && !SKIP.has(t.toLowerCase()));
+  // We only want to strip the *first* token if it looks like a
+  // `--flag` / `provider/model` style argument; user notes themselves
+  // routinely contain file paths (e.g. "src/auth.ts" or "fix utils/x").
+  // The earlier `!t.includes("/")` blanket filter was eating those tokens
+  // and silently corrupting the user's steering text.
+  const isOptionToken = (t: string): boolean =>
+    t.startsWith("--") || SKIP.has(t.toLowerCase()) ||
+    // provider/model pattern: one slash, no spaces, slug-y on both sides.
+    /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(t);
+  const nonFlags = tokens.filter(t => !isOptionToken(t));
   return nonFlags.length > 0 ? nonFlags.join(" ") : undefined;
 }
 

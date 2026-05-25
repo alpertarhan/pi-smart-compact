@@ -47,13 +47,13 @@ flowchart LR
 
 ### 1. Entry and context gate
 
-`src/index.ts` resolves models, parses command arguments, and routes work into `runSmartCompact()` in `src/core.ts`.
+`src/index.ts` resolves models, parses command arguments, and routes work into `runSmartCompact()` in `src/app/run-smart-compact.ts`. The orchestrator is a thin pipeline of typed stages (see `src/app/run-context.ts`); each stage is a separate module under `src/app/steps/`.
 
 Before doing expensive work, the system checks context size. If usage is below the threshold in `src/constants.ts`, compaction is skipped.
 
 ## 2. Keep window and preprocessing
 
-`src/core.ts` keeps a recent tail of messages untouched so very recent context stays live.
+`src/app/steps/window.ts` keeps a recent tail of messages untouched so very recent context stays live.
 
 Before summarization, the pipeline also:
 
@@ -154,7 +154,7 @@ Repair order is intentional:
 
 ## 7. Post-processing and persistence
 
-After verification, `src/core.ts` and `src/utils/state.ts` enrich the summary and persist reusable state.
+After verification, `src/app/steps/state.ts` and `src/utils/state.ts` enrich the summary, and `src/app/steps/persist.ts` plus `runDamageDetection` apply the compaction and persist reusable state.
 
 Post-processing includes:
 
@@ -187,21 +187,88 @@ Important TTLs in the current design:
 
 ## Key files
 
+The code is organized into five layers, each with a single responsibility:
+
+### Entry layer
+
 | File | Responsibility |
 | --- | --- |
-| `src/index.ts` | extension registration and entry surfaces |
-| `src/core.ts` | pipeline orchestration |
+| `src/index.ts` | extension registration, command parsing, auto-trigger hook |
 | `src/constants.ts` | version, thresholds, prompts, config keys |
-| `src/phases/explore.ts` | targeted exploration |
-| `src/phases/synthesize.ts` | chunking and summary generation |
-| `src/phases/verify.ts` | scoring and repair |
-| `src/utils/extraction.ts` | deterministic fact extraction |
+| `src/types.ts` | shared types and discriminated unions |
+
+### Orchestration layer (`src/app/`)
+
+| File | Responsibility |
+| --- | --- |
+| `src/app/run-smart-compact.ts` | top-level pipeline orchestrator (was `src/core.ts`) |
+| `src/app/run-context.ts` | typed stage chain (`RcBase → Prepared → Windowed → … → Stated`) |
+| `src/app/steps/prepare.ts` | resolve config, auth, provider caps |
+| `src/app/steps/window.ts` | pick the prefix of messages to compact |
+| `src/app/steps/recover.ts` | recover full content for log-truncated messages |
+| `src/app/steps/tier.ts` | choose compaction tier (none/light/balanced/aggressive) |
+| `src/app/steps/extract.ts` | pruning + deterministic extraction with incremental cache |
+| `src/app/steps/synthesize.ts` | single-pass / EESV synthesis |
+| `src/app/steps/verify.ts` | structural verification + repair |
+| `src/app/steps/state.ts` | enrich summary with state machine + open loops |
+| `src/app/steps/persist.ts` | apply compaction, save fingerprint, persist state |
+| `src/app/steps/metrics.ts` | record success / failure metrics |
+
+### Domain layer (`src/domain/`)
+
+Pure semantics; no I/O, no async, no globals.
+
+| File | Responsibility |
+| --- | --- |
+| `src/domain/summary-schema.ts` | canonical section list + heading regex |
+| `src/domain/summary-parse.ts` | parse/serialize summary into structured sections |
+
+### Algorithm layer (`src/phases/`)
+
+| File | Responsibility |
+| --- | --- |
+| `src/phases/explore.ts` | targeted exploration with tool-call probing |
+| `src/phases/synthesize.ts` | chunking, single-pass compact, batch summarization, assembly |
+| `src/phases/verify.ts` | scoring, gap detection, summary patching |
+
+### Infrastructure layer (`src/infra/`)
+
+All external-world interaction (fs, time, network, services container).
+
+| File | Responsibility |
+| --- | --- |
+| `src/infra/fs.ts` | atomic writes, advisory locks |
+| `src/infra/paths.ts` | canonical cache/session/backup paths |
+| `src/infra/git.ts` | cached git-root discovery |
+| `src/infra/clock.ts` | injectable wall clock |
+| `src/infra/llm-client.ts` | LLM client seam (production wraps with retry) |
+| `src/infra/llm-retry.ts` | 429/5xx exponential backoff + jitter + Retry-After |
+| `src/infra/services.ts` | per-run services container (metrics, clock, llm, tool-support cache) |
+
+### Utility layer (`src/utils/`)
+
+| File | Responsibility |
+| --- | --- |
+| `src/utils/extraction.ts` | deterministic fact extraction (files, errors, decisions) |
+| `src/utils/pruning.ts` | redundancy removal on the message list |
 | `src/utils/state.ts` | structured state, open loops, delta |
 | `src/utils/helpers.ts` | config, backups, batching, shared helpers |
-| `src/utils/cache.ts` | metrics and extraction cache |
-| `src/utils/fingerprint.ts` | project fingerprinting |
+| `src/utils/cache.ts` | metrics log + extraction prefix cache |
+| `src/utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
 | `src/utils/damage.ts` | post-compaction regression signals |
-| `src/ui/overlays.ts` | UI picker, progress, result screen |
+| `src/utils/id-fingerprint.ts` | compact SHA-256 fingerprint of entry-id arrays |
+| `src/utils/session-log.ts` | streaming JSONL parser for the Pi session log |
+| `src/utils/tokens.ts` | per-(provider,model) token estimation with EMA calibration |
+| `src/utils/type-guards.ts` | runtime validators for cross-version compatibility |
+| `src/utils/logger.ts` | stderr-prefixed log shim |
+| `src/utils/fingerprint.ts` | project fingerprint cache |
+
+### UI layer (`src/ui/`)
+
+| File | Responsibility |
+| --- | --- |
+| `src/ui/overlays.ts` | model/profile pickers, progress, result, dashboard screens |
+| `src/ui/dashboard-format.ts` | pure formatters for the metrics dashboard |
 
 ## Safety properties
 

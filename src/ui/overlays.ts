@@ -11,6 +11,7 @@ import type {
   SmartCompactDetails, StructuredExtraction,
 } from "../types.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
+import { getProviderCaps } from "../utils/tokens.ts";
 import {
   DASHBOARD_PAGE_SIZE,
   formatCurrentSession,
@@ -48,12 +49,18 @@ export async function selectModel(
   opts: { contextTokens: number; contextPercent: number; currentModel: string; defaultModelIndex: number },
 ): Promise<ModelOption | null> {
   const available = ctx.modelRegistry.getAvailable();
-  const options: ModelOption[] = available.map(m => ({
-    value: m.provider + "/" + m.id,
-    label: m.provider + "/" + m.id + (m.contextWindow >= 200000 ? " (" + Math.round(m.contextWindow / 1000) + "K)" : ""),
-    model: m,
-    supportsTools: true,
-  }));
+  const options: ModelOption[] = available.map(m => {
+    // Mirror the provider caps table: known-tool-capable providers get
+    // `true`, unknown ones get "probe" so exploration runtime-probes them
+    // exactly once and caches the result on the per-run services container.
+    const caps = getProviderCaps(m.provider);
+    return {
+      value: m.provider + "/" + m.id,
+      label: m.provider + "/" + m.id + (m.contextWindow >= 200000 ? " (" + Math.round(m.contextWindow / 1000) + "K)" : ""),
+      model: m,
+      supportsTools: caps.supportsTools,
+    };
+  });
   const items: SelectItem[] = options.map((o, i) => ({
     value: "model:" + i,
     label: o.label,
