@@ -390,8 +390,6 @@ Build output is published from `dist/`. Pull requests are expected to pass the s
 - [`SECURITY.md`](./SECURITY.md) — vulnerability reporting and data-handling notes
 - [`SUPPORT.md`](./SUPPORT.md) — where to ask for help
 - [`docs/RELEASE.md`](./docs/RELEASE.md) — release checklist
-- [`ROADMAP.md`](./ROADMAP.md) — current priorities
-- [`DEVPLAN.md`](./DEVPLAN.md) — archived implementation plan
 
 ---
 
