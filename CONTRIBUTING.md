@@ -64,6 +64,9 @@ Depending on the change, update the relevant docs:
 - `README.md` — package overview, install, usage, config
 - `ARCHITECTURE.md` — system design and execution model
 - `CONTRIBUTING.md` — contributor workflow and expectations
+- `SECURITY.md` — vulnerability reporting and sensitive-data guidance
+- `SUPPORT.md` — support routing
+- `docs/RELEASE.md` — release checklist
 - `DEVPLAN.md` — archival implementation plan only
 - `ROADMAP.md` — current forward-looking priorities
 
@@ -71,10 +74,12 @@ Depending on the change, update the relevant docs:
 Minimum expectation:
 
 ```bash
+bun run typecheck
 bun test
 bun run build
-bun run typecheck
 ```
+
+The `verify` GitHub Actions check runs the same validation for pull requests.
 
 ## Testing guidance
 
@@ -107,6 +112,10 @@ Before a release:
 4. run tests
 5. run typecheck
 6. spot-check `README.md` for drift
+
+## Security and privacy
+
+Do not include secrets, private session logs, proprietary source, or unredacted tool output in issues, pull requests, tests, or screenshots. Use GitHub Security Advisories for vulnerabilities; see `SECURITY.md`.
 
 ## Pull request expectations
 

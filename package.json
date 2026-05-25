@@ -1,7 +1,8 @@
 {
   "name": "pi-smart-compact",
   "version": "7.13.0",
-  "description": "EESV smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification with redundancy pruning, project fingerprinting, and damage detection.",
+  "description": "Verification-oriented smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification, metrics, and safety checks.",
+  "packageManager": "bun@1.3.14",
   "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -37,7 +38,9 @@
     "docs",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "SUPPORT.md"
   ],
   "scripts": {
     "build": "rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",

@@ -1,8 +1,10 @@
 # pi-smart-compact
 
+[![CI](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml/badge.svg)](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/pi-smart-compact.svg)](https://www.npmjs.com/package/pi-smart-compact)
+[![npm downloads](https://img.shields.io/npm/dm/pi-smart-compact.svg)](https://www.npmjs.com/package/pi-smart-compact)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![GitHub](https://img.shields.io/badge/GitHub-alpertarhan%2Fpi--smart--compact-blue)](https://github.com/alpertarhan/pi-smart-compact)
+[![Pi extension](https://img.shields.io/badge/Pi-extension-6f42c1)](https://github.com/earendil-works/pi)
 
 <p align="center">
   <img src="./docs/assets/pi-smart-compact.png" alt="pi-smart-compact" width="760" />
@@ -15,6 +17,14 @@
 It uses an **EESV** pipeline:
 
 **Extract → Explore → Synthesize → Verify**
+
+## Highlights
+
+- **Pi-native integration** — `/smart-compact`, `smart_compact`, and `session_before_compact` support.
+- **Verification-oriented output** — deterministic extraction and repair before trusting LLM synthesis.
+- **Adaptive cost profile** — skips unnecessary work on small sessions and uses chunking only when useful.
+- **Operational safety** — pending summaries expire, backups are available, and metrics make regressions visible.
+- **Companion-friendly** — designed to coexist with context hygiene tools such as `pi-toolkit`.
 
 Under the hood, the design is grounded in two core ideas:
 
@@ -36,6 +46,10 @@ This package is a **Pi extension** with three integration surfaces:
 The extension stages a short-lived pending summary in memory, then hands it back to Pi when compaction is applied.
 
 ---
+
+## Project status
+
+This is an actively maintained Pi extension. The public API is intentionally small, but the internals are still evolving as Pi's compaction lifecycle and extension APIs mature. Pin versions in production workflows if compaction behavior is mission-critical.
 
 ## Compatibility note
 
@@ -330,7 +344,7 @@ bun run build
 bun run typecheck
 ```
 
-Build output is published from `dist/`.
+Build output is published from `dist/`. Pull requests are expected to pass the same verification in GitHub Actions before merge.
 
 ---
 
@@ -339,6 +353,9 @@ Build output is published from `dist/`.
 - [`CHANGELOG.md`](./CHANGELOG.md) — release history
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system design and execution model
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contributor workflow and expectations
+- [`SECURITY.md`](./SECURITY.md) — vulnerability reporting and data-handling notes
+- [`SUPPORT.md`](./SUPPORT.md) — where to ask for help
+- [`docs/RELEASE.md`](./docs/RELEASE.md) — release checklist
 - [`ROADMAP.md`](./ROADMAP.md) — current priorities
 - [`DEVPLAN.md`](./DEVPLAN.md) — archived implementation plan
 

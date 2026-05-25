@@ -6,6 +6,7 @@ dist/
 *.v*-backup
 
 # Dependencies
+node_modules
 node_modules/
 
 # Environment
