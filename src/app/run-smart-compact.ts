@@ -20,8 +20,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile } from "../types.ts";
-import { resetMetrics, resetExtractionCacheStats } from "../utils/cache.ts";
-import { resetCompactSessionId } from "../utils/cache.ts";
 import { showResultScreen } from "../ui/overlays.ts";
 import * as log from "../utils/logger.ts";
 
@@ -29,7 +27,7 @@ import type {
   Notifier, RcBase, PendingRef, StatedRc,
 } from "./run-context.ts";
 import { markPhase } from "./run-context.ts";
-import { getDefaultServices } from "../infra/services.ts";
+import { createServices } from "../infra/services.ts";
 import { prepareRun } from "./steps/prepare.ts";
 import { resolveCompactionWindow } from "./steps/window.ts";
 import { recoverSessionLog } from "./steps/recover.ts";
@@ -99,7 +97,7 @@ function makeBase(opts: SmartCompactOptions): RcBase {
     ctx: opts.ctx,
     notify,
     vlog,
-    services: getDefaultServices(),
+    services: createServices(),
     cancellation: { controller: ctrl, signal: ctrl.signal, timedOut: false, timeoutId: null },
     pendingRef: opts.pendingRef,
     isRunning: opts.isRunning,
@@ -129,10 +127,6 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     return;
   }
   opts.isRunning.value = true;
-
-  resetCompactSessionId();
-  resetMetrics();
-  resetExtractionCacheStats();
 
   const base = makeBase(opts);
   // Late-bound StatedRc reference so the finally block can record failure
@@ -193,14 +187,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     failureSummaryFields = { ...failureSummaryFields, tier: tiered.tier, toolPercent: tiered.toolPercent };
 
     const extracted = extractWithCache(tiered);
-    markPhase(extracted, "prune");
-    markPhase(extracted, "extract");
 
     const synthesized = await summarizeConversation(extracted);
-    if (synthesized.method === "single-pass" || synthesized.method === "heuristic") {
-      markPhase(synthesized, "explore");
-    }
-    markPhase(synthesized, "synthesize");
     failureSummaryFields = { ...failureSummaryFields, methodForMetrics: synthesized.methodForMetrics };
 
     const verified = await verifyAndPatch(synthesized);
@@ -256,7 +244,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     if (!stated.flags.autoTriggered) {
       try {
         const timeoutPromise = new Promise<void>(resolve => setTimeout(resolve, 5000));
-        await Promise.race([showResultScreen(stated.ctx, stated.details, stated.extraction), timeoutPromise]);
+        await Promise.race([showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services), timeoutPromise]);
       } catch (err) {
         log.warn("Result screen error", err);
         stated.notify("Result screen skipped", "info");

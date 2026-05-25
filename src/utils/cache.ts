@@ -22,7 +22,7 @@ import {
 } from "../infra/paths.ts";
 import { appendLineLocked, ensureDir, readJsonSync, writeJsonSync, atomicWriteFileSync } from "../infra/fs.ts";
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
-import { getDefaultServices, resetDefaultServices } from "../infra/services.ts";
+import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 
 // ── Session ID ──
 let _compactSessionId: string | null = null;
@@ -49,6 +49,7 @@ export function cacheOpts(
   opts: CacheAwareOptions,
   provider?: string,
   phase?: LLMCallMetric["phase"],
+  services?: SmartCompactServices,
 ): CacheAwareOptions & { sessionId?: string } {
   // Internal compaction LLM calls are one-shot: cache write cost (1.25x–2x) is never amortized.
   if (phase && INTERNAL_PHASES.has(phase)) {
@@ -60,7 +61,7 @@ export function cacheOpts(
   if (retention === "none") {
     return { ...opts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: getCompactSessionId(), cacheRetention: retention };
+  return { ...opts, sessionId: services?.compactSessionId ?? getCompactSessionId(), cacheRetention: retention };
 }
 
 // ── Metrics ──
@@ -71,13 +72,13 @@ export function cacheOpts(
 // `resetMetrics` invocation by the orchestrator. The default container is also
 // what tests grab via `setDefaultServices` to inject a deterministic clock.
 
-export function resetMetrics(): void {
-  // Clearing the sink is sufficient — but we also replace the *whole*
-  // container so per-run extraction cache stats reset alongside metrics.
-  resetDefaultServices();
+export function resetMetrics(services = getDefaultServices()): void {
+  services.metrics.clear();
+  services.extractionCacheStats.clear();
+  services.tokenCalibration.clear();
 }
-export function recordMetric(m: LLMCallMetric): void { getDefaultServices().metrics.record(m); }
-export function getMetrics(): LLMCallMetric[] { return getDefaultServices().metrics.snapshot(); }
+export function recordMetric(m: LLMCallMetric, services = getDefaultServices()): void { services.metrics.record(m); }
+export function getMetrics(services = getDefaultServices()): LLMCallMetric[] { return services.metrics.snapshot(); }
 
 export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: number): number {
   // Provider usage semantics differ: some providers report `input` as total
@@ -88,8 +89,8 @@ export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: 
   return cacheHitTokens > inputTokens ? inputTokens + cacheHitTokens : inputTokens;
 }
 
-export function getMetricsSummary(): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
-  const sum = getDefaultServices().metrics.summary();
+export function getMetricsSummary(services = getDefaultServices()): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
+  const sum = services.metrics.summary();
   // The services container computes a structurally identical summary but
   // uses a slightly different cache-hit denominator. Keep the previously
   // published denominator (capped at <=1) so dashboards don't show >100%.
@@ -108,11 +109,12 @@ export async function trackedComplete(
   model: Model<Api>,
   reqBody: Context,
   opts: CacheAwareOptions,
+  services?: SmartCompactServices,
 ): Promise<AssistantMessage> {
   const start = Date.now();
   try {
-    const resolvedOpts = cacheOpts(opts, model.provider, phase);
-    const resp = await getLlmClient().complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const resolvedOpts = cacheOpts(opts, model.provider, phase, services);
+    const resp = await (services?.llm ?? getLlmClient()).complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -121,11 +123,18 @@ export async function trackedComplete(
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: inputT, outputTokens: outputT,
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
-    });
+    }, services);
     try {
       if (inputT > 0 && "messages" in reqBody) {
         const rawText = JSON.stringify((reqBody as unknown as Record<string, unknown>).messages);
-        calibrateFromResponse(estimateTokens(rawText), inputT, model.provider);
+        const calibration = services?.tokenCalibration;
+        calibrateFromResponse(
+          estimateTokens(rawText, model.provider, model.id, calibration),
+          inputT,
+          model.provider,
+          model.id,
+          calibration,
+        );
       }
     } catch (e) { log.debug("token calibration failed", e); }
     return resp;
@@ -133,7 +142,7 @@ export async function trackedComplete(
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: 0, outputTokens: 0,
       cacheHitTokens: 0, latencyMs: Date.now() - start, success: false,
-    });
+    }, services);
     throw err;
   }
 }
@@ -147,16 +156,16 @@ function getCachePath(sessionId: string): string {
 // Extraction cache stats delegate to the active services container. Resetting
 // the container (via resetMetrics) zeros these counters too, which matches
 // the previous module-level behaviour without leaking state across sessions.
-export function resetExtractionCacheStats(): void {
-  getDefaultServices().extractionCacheStats.clear();
+export function resetExtractionCacheStats(services = getDefaultServices()): void {
+  services.extractionCacheStats.clear();
 }
 
-export function getExtractionCacheStats(): { hits: number; misses: number; hitRate: number } {
-  return getDefaultServices().extractionCacheStats.snapshot();
+export function getExtractionCacheStats(services = getDefaultServices()): { hits: number; misses: number; hitRate: number } {
+  return services.extractionCacheStats.snapshot();
 }
 
-export function recordExtractionCacheHit(): void { getDefaultServices().extractionCacheStats.recordHit(); }
-export function recordExtractionCacheMiss(): void { getDefaultServices().extractionCacheStats.recordMiss(); }
+export function recordExtractionCacheHit(services = getDefaultServices()): void { services.extractionCacheStats.recordHit(); }
+export function recordExtractionCacheMiss(services = getDefaultServices()): void { services.extractionCacheStats.recordMiss(); }
 
 /**
  * Save extraction cache with entry-id fingerprints for branch-aware
@@ -295,9 +304,10 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
 export function appendMetricsLog(
   sessionId: string,
   extra?: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "avgLatency" | "cacheHitRate">>,
+  services?: SmartCompactServices,
 ): void {
   try {
-    const summary = getMetricsSummary();
+    const summary = getMetricsSummary(services);
     const entry: CompactMetricsEntry = {
       ts: new Date().toISOString(),
       sessionId,

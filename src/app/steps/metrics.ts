@@ -26,7 +26,7 @@ function runType(rc: RcBase): "manual" | "auto" | "tool" {
 }
 
 export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run"): void {
-  const ecs = getExtractionCacheStats();
+  const ecs = getExtractionCacheStats(rc.services);
   appendMetricsLog(rc.sessionId, {
     profile: rc.profile, tier: rc.tier,
     contextPercent: Math.round(rc.contextPercent),
@@ -48,9 +48,9 @@ export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run"
     extractionCacheMisses: ecs.misses,
     extractionCacheHitRate: ecs.hitRate,
     extractionCacheMissReason: rc.extractionCacheMissReason,
-  });
+  }, rc.services);
 
-  const ms = getMetricsSummary();
+  const ms = getMetricsSummary(rc.services);
   if (status === "success" && ms.totalCalls > 0) {
     const providerCacheRate = Math.round(ms.cacheHitRate * 100);
     const extractionCacheRate = Math.round(ecs.hitRate * 100);
@@ -100,5 +100,5 @@ export function recordFailureMetrics(
     fallbackReason: err instanceof Error ? err.message : String(err),
     phaseTimings: rc.phaseTimings,
     durationMs: Date.now() - rc.pipelineStart,
-  });
+  }, rc.services);
 }

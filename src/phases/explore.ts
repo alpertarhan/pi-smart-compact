@@ -273,9 +273,9 @@ export async function exploreConversation(
     if (cachedSupport === false) {
       // Provider known to not support tools — skip probe
       if (notify) notify("Tool support cached: unsupported (" + cacheKey + ")", "info");
-      const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+      const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
       if (!report.boundaries.length) {
-        const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal);
+        const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal, svc);
         if (retried.boundaries.length) return { report: retried, rounds: 1, toolSupported: false };
       }
       return { report, rounds: 1, toolSupported: false };
@@ -285,7 +285,7 @@ export async function exploreConversation(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
       tools: EXPLORATION_TOOLS as unknown as Parameters<typeof trackedComplete>[2]["tools"],
-    }, { apiKey: auth.apiKey, headers: auth.headers, signal });
+    }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
 
     const toolCalls = probeResp.content.filter((c): c is ToolCall => c.type === "toolCall");
 
@@ -314,7 +314,7 @@ export async function exploreConversation(
             systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
             messages: messages as unknown as Message[],
             tools: EXPLORATION_TOOLS as unknown as Parameters<typeof trackedComplete>[2]["tools"],
-          }, { apiKey: auth.apiKey, headers: auth.headers, signal });
+          }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
         } catch (err) {
           log.warn("Explore loop error", err);
           break;
@@ -325,7 +325,7 @@ export async function exploreConversation(
           const text = response.content.filter((c): c is TextContent => c.type === "text").map(c => c.text).join("\n").trim();
           let report = parseExplorationReport(text, llmMessages);
           if (!report.boundaries.length) {
-            report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+            report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
             if (report.boundaries.length) rounds++;
           }
           return { report, rounds, toolSupported: true };
@@ -362,7 +362,7 @@ export async function exploreConversation(
       let report = parseExplorationReport(text, llmMessages);
       const parsedOk = report.boundaries.length > 0;
       if (!parsedOk) {
-        report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+        report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
       }
       if (parsedOk) toolSupport.set(cacheKey, true, svc.clock.now());
       return { report, rounds: 1, toolSupported: parsedOk };
@@ -374,9 +374,9 @@ export async function exploreConversation(
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }
 
-  const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal);
+  const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
   if (!report.boundaries.length) {
-    const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal);
+    const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal, svc);
     if (retried.boundaries.length) return { report: retried, rounds: 1, toolSupported: false };
   }
   return { report, rounds: 1, toolSupported: supportsTools };
@@ -387,6 +387,7 @@ export async function explorationRetry(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
   const last5 = llmMessages.slice(-5).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, 150)).join("\n");
   const retryPrompt = "IMPORTANT: Output ONLY valid raw JSON. No markdown. No explanation. No code fences. Just the JSON object.\n\n" +
@@ -400,7 +401,7 @@ export async function explorationRetry(
     const resp = await trackedComplete("explore-retry", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: retryPrompt }], timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, services);
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("").trim();
     return parseExplorationReport(text, llmMessages);
   } catch (e) { log.debug("explorationRetry failed", e); return fallbackExplorationReport(llmMessages); }
@@ -411,6 +412,7 @@ export async function directExploration(
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
   const first3 = llmMessages.filter((m) => m?.role === "user").slice(0, 3).map((m) => extractText(m?.content).slice(0, 200)).join("\n---\n");
   const last30 = llmMessages.slice(-30).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, 300)).join("\n");
@@ -429,7 +431,7 @@ export async function directExploration(
     const resp = await trackedComplete("explore-direct", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal });
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens), signal }, services);
     const text = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return parseExplorationReport(text, llmMessages);
   } catch (e) { log.debug("directExploration failed", e); return fallbackExplorationReport(llmMessages); }

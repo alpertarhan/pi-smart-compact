@@ -29,8 +29,10 @@ import type { Clock } from "./clock.ts";
 import { systemClock } from "./clock.ts";
 import type { LlmClient } from "./llm-client.ts";
 import { getLlmClient } from "./llm-client.ts";
+import crypto from "node:crypto";
 import type { LLMCallMetric } from "../types.ts";
 import { METRICS_BUFFER_MAX } from "../constants.ts";
+import { TokenCalibrationStore } from "../utils/tokens.ts";
 
 /**
  * In-memory cache for "does this provider support tools?".
@@ -140,6 +142,13 @@ export interface SmartCompactServices {
   toolSupport: ToolSupportCache;
   metrics: MetricsSink;
   extractionCacheStats: ExtractionCacheStats;
+  tokenCalibration: TokenCalibrationStore;
+  /** Per-run prompt-cache namespace for providers that support prompt caching. */
+  compactSessionId: string;
+}
+
+function makeCompactSessionId(): string {
+  return "sc-" + Date.now().toString(36) + "-" + crypto.randomBytes(4).toString("hex");
 }
 
 export function createServices(overrides: Partial<SmartCompactServices> = {}): SmartCompactServices {
@@ -149,6 +158,8 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
     toolSupport: overrides.toolSupport ?? new ToolSupportCache(),
     metrics: overrides.metrics ?? new MetricsSink(),
     extractionCacheStats: overrides.extractionCacheStats ?? new ExtractionCacheStats(),
+    tokenCalibration: overrides.tokenCalibration ?? new TokenCalibrationStore(),
+    compactSessionId: overrides.compactSessionId ?? makeCompactSessionId(),
   };
 }
 

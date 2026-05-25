@@ -27,9 +27,10 @@ import { createBatches } from "../../utils/helpers.ts";
 import { extractText } from "../../utils/extraction.ts";
 import * as log from "../../utils/logger.ts";
 import type { ExtractedRc, SynthesizedRc } from "../run-context.ts";
-import { advance } from "../run-context.ts";
+import { advance, markMeasuredPhase } from "../run-context.ts";
 
 export async function summarizeConversation(rc: ExtractedRc): Promise<SynthesizedRc> {
+  let synthPhaseStart = Date.now();
   const extraction = rc.extraction;
   const pc = rc.profileCfg;
   const shouldSkipExplore = rc.tier === "light";
@@ -59,7 +60,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     try {
       const r = await singlePassCompact(
         convText, extraction, null, rc.prevContext + rc.projectCtx,
-        rc.summaryModel, rc.summaryAuth, pc.summaryBudgetTokens, rc.cancellation.signal,
+        rc.summaryModel, rc.summaryAuth, pc.summaryBudgetTokens, rc.cancellation.signal, rc.services,
       );
       finalSummary = r.summary; method = "single-pass"; llmCalls = r.llmCalls;
     } catch (err) {
@@ -70,6 +71,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   } else {
     const needsExploration = !shouldSkipExplore && shouldExplore(extraction);
     if (needsExploration) {
+      const exploreStart = Date.now();
       if (!rc.flags.autoTriggered) {
         showProgressOverlay(rc.ctx, {
           phase: 2, phaseName: "Explore", detail: "Exploring...",
@@ -94,6 +96,10 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
           .map(b => b.afterIndex + "(" + b.confidence.toFixed(2) + ")").join(", "));
       } catch (err) {
         rc.notify("Phase 2 Explore: failed - " + (err instanceof Error ? err.message : String(err)), "warning");
+      } finally {
+        const exploreEnd = Date.now();
+        markMeasuredPhase(rc, "explore", exploreStart, exploreEnd);
+        synthPhaseStart = exploreEnd;
       }
     } else {
       rc.notify(
@@ -152,7 +158,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
 
     if (totalBatches <= 1) {
       try {
-        summaries.push(...await summarizeBatch(batches[0], extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal));
+        summaries.push(...await summarizeBatch(batches[0], extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services));
       } catch (err) {
         summaries.push(...batches[0].map(ch => failedChunkSummary(ch)));
       }
@@ -165,7 +171,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         const wavePromises = waveBatches.map(async (batch, i) => {
           const idx = wave + i;
           try {
-            results[idx] = await summarizeBatch(batch, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal);
+            results[idx] = await summarizeBatch(batch, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services);
           } catch (err) {
             errors[idx] = err instanceof Error ? err : new Error(String(err));
             results[idx] = batch.map(ch => failedChunkSummary(ch));
@@ -196,7 +202,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     try {
       const r = await assembleLLM(
         summaries, extraction, explorationReport, rc.summaryModel, rc.summaryAuth,
-        pc.summaryBudgetTokens, rc.prevContext, rc.cancellation.signal,
+        pc.summaryBudgetTokens, rc.prevContext, rc.cancellation.signal, rc.services,
       );
       if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
     } catch (err) {
@@ -226,6 +232,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   out.explorationReport = explorationReport;
   out.explorationRounds = explorationRounds;
   out.chunkCount = chunkCount;
+  markMeasuredPhase(out, "synthesize", synthPhaseStart);
   return advance<ExtractedRc, SynthesizedRc>(out, "_synthesized");
 }
 

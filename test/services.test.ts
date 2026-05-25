@@ -12,6 +12,8 @@ import {
   ToolSupportCache, MetricsSink, ExtractionCacheStats,
   createServices, getDefaultServices, resetDefaultServices, setDefaultServices,
 } from "../src/infra/services.ts";
+import { getMetricsSummary, trackedComplete } from "../src/utils/cache.ts";
+import type { Model, Api } from "@earendil-works/pi-ai";
 
 beforeEach(() => { resetDefaultServices(); });
 
@@ -93,6 +95,29 @@ describe("ExtractionCacheStats", () => {
     stats.recordHit();
     stats.clear();
     expect(stats.snapshot()).toEqual({ hits: 0, misses: 0, hitRate: 0 });
+  });
+});
+
+describe("run-scoped services", () => {
+  it("trackedComplete records metrics and calibration only on the supplied services", async () => {
+    const model = { id: "m", provider: "openai", contextWindow: 128000 } as Model<Api>;
+    const mk = (input: number) => createServices({
+      llm: {
+        complete: async () => ({
+          content: [{ type: "text" as const, text: "ok" }],
+          usage: { input, output: 5, cacheRead: 0 },
+        }) as any,
+      },
+    });
+    const a = mk(10);
+    const b = mk(20);
+
+    await trackedComplete("batch", model, { systemPrompt: "x", messages: [] } as any, { apiKey: "k" } as any, a);
+    await trackedComplete("batch", model, { systemPrompt: "x", messages: [] } as any, { apiKey: "k" } as any, b);
+
+    expect(getMetricsSummary(a).totalInput).toBe(10);
+    expect(getMetricsSummary(b).totalInput).toBe(20);
+    expect(getMetricsSummary().totalCalls).toBe(0);
   });
 });
 

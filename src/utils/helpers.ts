@@ -488,8 +488,10 @@ export function computeToolCharPercentage(branchEntries: unknown[]): number {
       mc = m.content.length;
     } else if (Array.isArray(m.content)) {
       for (const part of m.content) {
-        if (typeof part?.text === "string") mc += part.text.length;
-        else if (typeof part?.content === "string") mc += part.content.length;
+        if (!part || typeof part !== "object") continue;
+        const block = part as Record<string, unknown>;
+        if (block.type === "text" && typeof block.text === "string") mc += block.text.length;
+        else if (block.type === "text" && typeof block.content === "string") mc += block.content.length;
       }
     }
     totalChars += mc;

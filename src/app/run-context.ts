@@ -239,11 +239,20 @@ export type StatedRc = RcBase & StatedExt;
  */
 export type RunContext = StatedRc;
 
+/** Record an already-measured phase and advance the phase boundary. */
+export function markMeasuredPhase(
+  rc: RcBase,
+  phase: PipelinePhaseTiming["phase"],
+  startMs: number,
+  endMs = Date.now(),
+): void {
+  rc.phaseTimings.push({ phase, durationMs: Math.max(0, endMs - startMs) });
+  rc.phaseStart = endMs;
+}
+
 /** Mark the boundary between two pipeline phases for the metrics log. */
 export function markPhase(rc: RcBase, phase: PipelinePhaseTiming["phase"]): void {
-  const now = Date.now();
-  rc.phaseTimings.push({ phase, durationMs: now - rc.phaseStart });
-  rc.phaseStart = now;
+  markMeasuredPhase(rc, phase, rc.phaseStart);
 }
 
 /**

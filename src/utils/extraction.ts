@@ -15,6 +15,14 @@ export function isTruncated(content: unknown): boolean {
   return TRUNCATE_RE.test(extractText(content));
 }
 
+const WRITE_TOOL_HINTS = ["write", "edit", "patch", "create", "append", "update", "apply"];
+const DELETE_TOOL_HINTS = ["delete", "remove", "unlink"];
+const READ_TOOL_HINTS = ["read", "view", "open"];
+
+function hasToolHint(tool: string, hints: readonly string[]): boolean {
+  return hints.some(hint => tool.includes(hint));
+}
+
 /** Reusable tool call index type */
 export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
 
@@ -106,7 +114,7 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
     if (!filePath) continue;
     const tool = tc.name.toLowerCase();
 
-    if (tool.includes("write") || tool.includes("edit")) {
+    if (hasToolHint(tool, WRITE_TOOL_HINTS)) {
       const resultText = extractText(m.content);
       if (isTruncated(resultText)) {
         // pi-toolkit truncated the result — we cannot verify no-op vs actual write.
@@ -117,9 +125,9 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
         const existing = modMap.get(filePath);
         modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
       }
-    } else if (tool.includes("delete") || tool.includes("remove")) {
+    } else if (hasToolHint(tool, DELETE_TOOL_HINTS)) {
       delSet.add(filePath);
-    } else if (tool.includes("read")) {
+    } else if (hasToolHint(tool, READ_TOOL_HINTS)) {
       readSet.add(filePath);
     }
   }

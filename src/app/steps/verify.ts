@@ -51,7 +51,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
           "warning",
         );
         try {
-          summary = await patchSummary(summary, recheck.gaps, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal);
+          summary = await patchSummary(summary, recheck.gaps, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services);
           rc.llmCalls += 1;
         } catch (err) { log.warn("LLM patch failed", err); }
         recheck = verifySummary(summary, extraction);

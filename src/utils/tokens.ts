@@ -130,7 +130,34 @@ export function getProviderCaps(provider: string): ProviderCapabilities {
  * container is provided (direct callers, tests, REPL). Tests can call
  * `__resetTokenCalibrationForTests` to clear it.
  */
-const _calibrationFactors = new Map<string, number>();
+export class TokenCalibrationStore {
+  private readonly factors = new Map<string, number>();
+
+  clear(): void { this.factors.clear(); }
+
+  get(provider?: string, model?: string): number {
+    if (!provider) return 1.0;
+    const exact = this.factors.get(calibrationKey(provider, model));
+    if (exact !== undefined) return exact;
+    // Fall back to the provider-wide bucket so a fresh model still benefits
+    // from sibling calibration until it builds up its own samples.
+    return this.factors.get(calibrationKey(provider)) ?? 1.0;
+  }
+
+  calibrate(estimated: number, actual: number, provider?: string, model?: string): void {
+    if (actual <= 0 || estimated <= 0 || !provider) return;
+    const key = calibrationKey(provider, model);
+    const prev = this.factors.get(key) ?? 1.0;
+    const sample = actual / estimated;
+    // EMA smoothing: 70% previous, 30% new sample. Clamp the ratio to a
+    // sane range so a one-off outlier response (e.g. a truncated reply)
+    // can't permanently skew estimates.
+    const clamped = Math.max(0.3, Math.min(3.0, sample));
+    this.factors.set(key, prev * 0.7 + clamped * 0.3);
+  }
+}
+
+const _fallbackCalibration = new TokenCalibrationStore();
 
 function calibrationKey(provider: string, model?: string): string {
   return model ? provider + "/" + model : provider + "/*";
@@ -138,37 +165,19 @@ function calibrationKey(provider: string, model?: string): string {
 
 /** @internal Test-only reset; do not call from production code. */
 export function __resetTokenCalibrationForTests(): void {
-  _calibrationFactors.clear();
+  _fallbackCalibration.clear();
 }
 
-function getCalibrationFactor(provider?: string, model?: string): number {
-  if (!provider) return 1.0;
-  const exact = _calibrationFactors.get(calibrationKey(provider, model));
-  if (exact !== undefined) return exact;
-  // Fall back to the provider-wide bucket so a fresh model still benefits
-  // from sibling calibration until it builds up its own samples.
-  return _calibrationFactors.get(calibrationKey(provider)) ?? 1.0;
-}
-
-export function estimateTokens(text: string, provider?: string, model?: string): number {
+export function estimateTokens(text: string, provider?: string, model?: string, calibration = _fallbackCalibration): number {
   const baseRatio = provider ? getProviderCaps(provider).tokenRatioEstimate : CHARS_PER_TOKEN;
   // JSON content has denser tokenization (brackets, quotes, escapes)
   const jsonPenalty = text.startsWith("[") || text.startsWith("{") ? 0.85 : 1.0;
   // Turkish/CE characters tokenize differently (multi-byte in some tokenizers)
   const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(text) ? 0.9 : 1.0;
-  const calibration = getCalibrationFactor(provider, model);
-  return Math.ceil((text.length / baseRatio) * jsonPenalty * langPenalty * calibration);
+  const factor = calibration.get(provider, model);
+  return Math.ceil((text.length / baseRatio) * jsonPenalty * langPenalty * factor);
 }
 
-export function calibrateFromResponse(estimated: number, actual: number, provider?: string, model?: string): void {
-  if (actual > 0 && estimated > 0 && provider) {
-    const key = calibrationKey(provider, model);
-    const prev = _calibrationFactors.get(key) ?? 1.0;
-    const sample = actual / estimated;
-    // EMA smoothing: 70% previous, 30% new sample. Clamp the ratio to a
-    // sane range so a one-off outlier response (e.g. a truncated reply)
-    // can't permanently skew estimates.
-    const clamped = Math.max(0.3, Math.min(3.0, sample));
-    _calibrationFactors.set(key, prev * 0.7 + clamped * 0.3);
-  }
+export function calibrateFromResponse(estimated: number, actual: number, provider?: string, model?: string, calibration = _fallbackCalibration): void {
+  calibration.calibrate(estimated, actual, provider, model);
 }

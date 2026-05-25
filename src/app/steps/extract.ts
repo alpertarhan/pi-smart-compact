@@ -18,7 +18,7 @@
  */
 
 import type { TieredRc, ExtractedRc } from "../run-context.ts";
-import { advance } from "../run-context.ts";
+import { advance, markMeasuredPhase } from "../run-context.ts";
 import type { StructuredExtraction } from "../../types.ts";
 import { pruneRedundant } from "../../utils/pruning.ts";
 import { extractStructured, buildToolCallIndex, type ToolCallIndex } from "../../utils/extraction.ts";
@@ -35,6 +35,7 @@ import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { backupConversation } from "../../utils/helpers.ts";
 
 export function extractWithCache(rc: TieredRc): ExtractedRc {
+  const extractStepStart = Date.now();
   const currentEntryIds = rc.toCompact.map(e => e.id);
 
   // Pruning rebuilds the tool-call index from scratch when none is provided.
@@ -55,7 +56,10 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     );
   }
   rc.llmMessages = pruning.messages;
+  const pruneEnd = Date.now();
+  markMeasuredPhase(rc, "prune", extractStepStart, pruneEnd);
 
+  const extractionStart = pruneEnd;
   const convText = serializeConversation(rc.llmMessages as unknown as import("@earendil-works/pi-ai").Message[]);
   const convTokens = estimateTokens(convText);
 
@@ -126,7 +130,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
         ", current pruned: " + rc.llmMessages.length,
     );
     missReason = undefined;
-    recordExtractionCacheHit();
+    recordExtractionCacheHit(rc.services);
   } else {
     extraction = extractStructured(rc.llmMessages, rc.profileCfg, prunedTcIdx);
     rc.notify(
@@ -134,7 +138,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
       "info",
     );
     rc.vlog("Full extraction — " + rc.llmMessages.length + " messages, tier=" + rc.tier);
-    recordExtractionCacheMiss();
+    recordExtractionCacheMiss(rc.services);
   }
 
   // messageCount is the pruned domain; entryIds is unpruned; keptEntryIds is
@@ -182,5 +186,6 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   out.convText = convText;
   out.convTokens = convTokens;
   out.backupPath = backupPath;
+  markMeasuredPhase(out, "extract", extractionStart);
   return advance<TieredRc, ExtractedRc>(out, "_extracted");
 }

@@ -10,6 +10,7 @@ import type {
   CompactMetricsEntry, CompressionProfile, ModelOption, ProgressState,
   SmartCompactDetails, StructuredExtraction,
 } from "../types.ts";
+import type { SmartCompactServices } from "../infra/services.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import {
@@ -163,6 +164,7 @@ export async function showResultScreen(
   ctx: ExtensionCommandContext,
   details: SmartCompactDetails,
   extraction: StructuredExtraction,
+  services?: SmartCompactServices,
 ): Promise<void> {
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
     const c = new Container();
@@ -192,8 +194,8 @@ export async function showResultScreen(
     c.addChild(new Text("", 0, 0));
 
     c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDCCB Extraction")), 0, 0));
-    const ms = getMetricsSummary();
-    const ecs = getExtractionCacheStats();
+    const ms = getMetricsSummary(services);
+    const ecs = getExtractionCacheStats(services);
     if (ms.totalCalls > 0) {
       const providerCachePct = Math.round(ms.cacheHitRate * 100);
       const extractionCachePct = Math.round(ecs.hitRate * 100);

@@ -22,6 +22,7 @@ import { trackedComplete } from "../utils/cache.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
+import type { SmartCompactServices } from "../infra/services.ts";
 
 export function verifySummary(summary: string, extraction: StructuredExtraction): VerificationResult {
   const parsed = parseSummary(summary);
@@ -218,6 +219,7 @@ export function patchDeterministic(summary: string, gaps: string[], extraction: 
 export async function patchSummary(
   summary: string, gaps: string[],
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, signal?: AbortSignal,
+  services?: SmartCompactServices,
 ): Promise<string> {
   const patchPrompt = "The summary below is missing some critical information. Add the missing items WITHOUT restructuring the summary.\n\nMissing items:\n" +
     gaps.map((g, i) => (i + 1) + ". " + g).join("\n") +
@@ -228,7 +230,7 @@ export async function patchSummary(
     const resp = await trackedComplete("patch", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user" as const, content: [{ type: "text" as const, text: patchPrompt }], timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal });
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }, services);
     const patched = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return patched.startsWith("##") ? patched : summary;
   } catch (e) { log.debug("patchSummary LLM failed", e); return summary; }
