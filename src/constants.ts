@@ -4,6 +4,12 @@
 
 import type { CompressionProfile, ProfileConfig } from "./types.ts";
 
+/**
+ * Single-source-of-truth note: this literal is rewritten in place by
+ * `scripts/sync-version.ts` (wired to `prebuild`/`prepublishOnly`) from
+ * `package.json#version`. Do not hand-edit this line for releases; bump
+ * package.json and run `bun run sync-version`.
+ */
 export const VERSION = "7.13.2";
 export const CHARS_PER_TOKEN = 3.8;
 
