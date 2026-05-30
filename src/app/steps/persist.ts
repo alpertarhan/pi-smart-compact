@@ -90,9 +90,9 @@ export function stagePendingCompaction(rc: RunContext): PendingCompaction {
     tokensBefore: rc.totalTokens,
     details: rc.details,
     compactionState: rc.compactionState,
+    sessionId: rc.sessionId,
   };
-  rc.pendingRef.value = pending;
-  rc.pendingRef.createdAt = Date.now();
+  rc.pendingRef.set(pending);
   return pending;
 }
 
@@ -116,8 +116,7 @@ export function applyCompaction(rc: RunContext): void {
     onError: e => {
       // Clear the pending summary so a later `session_before_compact` event
       // can't apply a half-rotten payload that Pi already refused.
-      rc.pendingRef.value = null;
-      rc.pendingRef.createdAt = 0;
+      rc.pendingRef.clear();
       rc.ctx.ui.notify("Failed: " + e.message, "error");
     },
   });

@@ -2,7 +2,7 @@
  * TUI overlays: model/profile selection, progress, result screen.
  */
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
@@ -152,7 +152,11 @@ export async function selectProfile(
   return profiles.find(p => p.value === result)?.value ?? null;
 }
 
-export function showProgressOverlay(ctx: ExtensionCommandContext, state: ProgressState): void {
+// `ExtensionContext` is the narrower base type used by the pipeline so that
+// both interactive command runs and `session_before_compact` event runs can
+// emit progress without a cast. The function only touches `ctx.ui.notify`,
+// which is part of the shared surface.
+export function showProgressOverlay(ctx: ExtensionContext, state: ProgressState): void {
   const phaseNames = ["Extract", "Explore", "Synthesize", "Verify"];
   const progress = Math.round((state.phase / 4) * 100);
   const name = phaseNames[state.phase - 1] ?? "?";
@@ -160,8 +164,10 @@ export function showProgressOverlay(ctx: ExtensionCommandContext, state: Progres
   ctx.ui.notify("EESV [" + progress + "%] Phase " + state.phase + "/4: " + name + detail, state.phase >= 4 ? "info" : "info");
 }
 
+// Same narrowing rationale as showProgressOverlay: only ctx.ui.custom is
+// touched, which belongs to ExtensionContext.
 export async function showResultScreen(
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   details: SmartCompactDetails,
   extraction: StructuredExtraction,
   services?: SmartCompactServices,

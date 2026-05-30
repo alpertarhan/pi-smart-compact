@@ -17,11 +17,14 @@
  */
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { extractText, TRUNCATE_RE } from "./extraction.ts";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
 import * as log from "./logger.ts";
 import { sessionsDir as sessionsDirPath } from "../infra/paths.ts";
-import * as path from "node:path";
+// LRU helpers live in a sibling module so they can be unit-tested in
+// isolation and reused by other bounded caches.
+import { lruGet, lruSet } from "./lru.ts";
 
 function getSessionsDir(): string {
   return sessionsDirPath();
@@ -104,8 +107,58 @@ interface LogMessage {
 }
 
 const LOG_PATH_CACHE_TTL_MS = 30_000;
+
+const DEFAULT_CACHE_MAX_ENTRIES = 8;
+
+/**
+ * Maximum entries kept per cache. Both caches were previously unbounded:
+ * `logPathCache` had a TTL but no size cap, and `messageMapCache` had no
+ * eviction at all (only mtime-driven overwrite). In long-running pi
+ * processes that hop between many sessions — sub-agent workflows are a
+ * common offender — the message-map cache can hold dozens of giant
+ * Map<entryId, LlmMessage> instances indefinitely, each potentially many
+ * megabytes. We cap both with a tiny LRU: cheap to maintain, never holds
+ * more than `getMaxEntries()` sessions, and re-fetching an evicted entry
+ * is a single mtime+stream-parse — already fast and rarely triggered.
+ *
+ * The default (8) is tuned for a typical interactive workflow. Heavy
+ * sub-agent orchestration may want a larger window; set
+ * `SMART_COMPACT_LOG_CACHE_MAX` in the environment to override. Invalid
+ * values (non-numeric, <=0) silently fall back to the default so a typo
+ * in `.env` never disables the cache entirely.
+ *
+ * We read the env on every call (rather than memoizing at module load) so
+ * tests can mutate `process.env.SMART_COMPACT_LOG_CACHE_MAX` between cases
+ * without reloading the module. The cost is one env lookup + one parseInt
+ * per cache write, which is negligible compared with the surrounding fs
+ * stat + JSONL parse.
+ */
+/**
+ * @internal Exposed for unit tests; production callers should NOT depend on
+ * this directly. Reads `SMART_COMPACT_LOG_CACHE_MAX` from the environment
+ * on every call so tests can mutate process.env between cases.
+ */
+export function _getMaxEntriesForTests(): number {
+  return getMaxEntries();
+}
+
+function getMaxEntries(): number {
+  const raw = process.env.SMART_COMPACT_LOG_CACHE_MAX;
+  if (!raw) return DEFAULT_CACHE_MAX_ENTRIES;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_CACHE_MAX_ENTRIES;
+}
+
+
+
 const logPathCache = new Map<string, { path: string | null; expiresAt: number; home: string }>();
 const messageMapCache = new Map<string, { logPath: string; mtimeMs: number; size: number; map: Map<string, LlmMessage> }>();
+
+/** @internal Test-only: drop both module caches between cases. */
+export function __resetSessionLogCachesForTests(): void {
+  logPathCache.clear();
+  messageMapCache.clear();
+}
 
 /**
  * Find the session .jsonl log file for a given session ID.
@@ -115,16 +168,20 @@ const messageMapCache = new Map<string, { logPath: string; mtimeMs: number; size
  * We try the bare id first, then the glob suffix pattern.
  */
 function findSessionLogFile(sessionId: string): string | null {
+  const home = process.env.HOME ?? "/tmp";
+  const now = Date.now();
+  const remember = (path: string | null) => {
+    lruSet(logPathCache, sessionId, { path, expiresAt: now + LOG_PATH_CACHE_TTL_MS, home }, getMaxEntries());
+    return path;
+  };
+
   try {
-    const home = process.env.HOME ?? "/tmp";
-    const cached = logPathCache.get(sessionId);
-    if (cached && cached.home === home && cached.expiresAt > Date.now()) return cached.path;
+    const cached = lruGet(logPathCache, sessionId);
+    if (cached && cached.home === home && cached.expiresAt > now) return cached.path;
 
     const sessionsDir = getSessionsDir();
-    if (!fs.existsSync(sessionsDir)) {
-      logPathCache.set(sessionId, { path: null, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home });
-      return null;
-    }
+    if (!fs.existsSync(sessionsDir)) return remember(null);
+
     for (const subdir of fs.readdirSync(sessionsDir)) {
       const subdirPath = path.join(sessionsDir, subdir);
       const stat = fs.statSync(subdirPath);
@@ -132,25 +189,17 @@ function findSessionLogFile(sessionId: string): string | null {
 
       // Try exact match first (future / alternative layout)
       const exact = path.join(subdirPath, sessionId + ".jsonl");
-      if (fs.existsSync(exact)) {
-        logPathCache.set(sessionId, { path: exact, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home });
-        return exact;
-      }
+      if (fs.existsSync(exact)) return remember(exact);
 
       // Try glob suffix: *_<sessionId>.jsonl
       const files = fs.readdirSync(subdirPath);
       const match = files.find(f => f.endsWith("_" + sessionId + ".jsonl"));
-      if (match) {
-        const found = path.join(subdirPath, match);
-        logPathCache.set(sessionId, { path: found, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home });
-        return found;
-      }
+      if (match) return remember(path.join(subdirPath, match));
     }
   } catch (e) {
     log.debug("findSessionLogFile failed", e);
   }
-  logPathCache.set(sessionId, { path: null, expiresAt: Date.now() + LOG_PATH_CACHE_TTL_MS, home: process.env.HOME ?? "/tmp" });
-  return null;
+  return remember(null);
 }
 
 /**
@@ -197,7 +246,7 @@ function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | nu
 
   try {
     const stat = fs.statSync(logPath);
-    const cached = messageMapCache.get(sessionId);
+    const cached = lruGet(messageMapCache, sessionId);
     if (cached && cached.logPath === logPath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
       return cached.map;
     }
@@ -222,7 +271,7 @@ function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | nu
 
     log.debug("readOriginalMessageMap: " + map.size + " msgs from " + logPath);
     if (map.size > 0) {
-      messageMapCache.set(sessionId, { logPath, mtimeMs: stat.mtimeMs, size: stat.size, map });
+      lruSet(messageMapCache, sessionId, { logPath, mtimeMs: stat.mtimeMs, size: stat.size, map }, getMaxEntries());
       return map;
     }
     return null;

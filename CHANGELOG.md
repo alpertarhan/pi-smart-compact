@@ -1,5 +1,40 @@
 # Changelog
 
+## [7.14.0] - 2026-05-30
+
+### Fixed
+- **Cross-session leak guard** — The pending compaction payload now carries the originating pi session id and is refused if the consuming session does not match. Two pi sessions sharing the same Node process (a common sub-agent setup) can no longer apply each other's prepared summaries. The fallback identifier for sessions that the host cannot resolve is per-call unique (`unresolved:<uuid>`) so two unresolved sessions never collide.
+- **`patchSummary` provider cap** — The verifier's repair LLM call now clamps `maxTokens` to the active provider's true output ceiling instead of a hard-coded 8192, preventing provider-side errors on DeepSeek/MiniMax (cap 4096) and wasted budget elsewhere.
+- **File-reference heuristic** — Verification no longer flags version strings (`v7.13.2`, `0.78.0`), runtime versions (`node 22.19.19`), or package identifiers as "potentially fabricated files". The classifier now rejects SemVer-shaped tokens, requires the last path segment to be a non-version when a slash is present, and otherwise requires a known source/config extension.
+- **Bugfix-loop file attribution** — Unresolved errors are no longer attached to every file in the tree whose basename happens to appear in the error message. Attribution now uses progressively-longer path-suffix needles and skips generic basenames (`index.ts`, `types.ts`, ...) unless the error mentions the full `dir/<basename>` segment.
+- **Auto-trigger notification wording** — The post-pipeline toast no longer claims "Compaction completed" when only the smart summary has been staged (the native compact has not yet run). The wording now reflects whether a payload is pending ("Smart compact prepared in ... — awaiting native /compact") or no payload was produced ("run finished").
+- **LRU promotion correctness** — The session-log cache promotion check now gates on `Map.has`, not `value !== undefined`, so future cache value types that legitimately include `undefined` are still promoted to the most-recent slot.
+
+### Added
+- **Encapsulated `PendingSlot` API** — The pending compaction payload now lives in a closure-based factory (`src/app/pending-slot.ts`) with a discriminated `ConsumeResult` (`ok` | `empty` | `expired` | `mismatch`). The slot owns its entire lifecycle (set / consume / clear / expire / mismatch) inside a single file, exposes a side-effect-free `peek()` for read-only display paths, accepts an injectable clock for deterministic tests, and is fully host-agnostic.
+- **Bounded session-log caches with env override** — Both `logPathCache` and `messageMapCache` are now LRU-bounded (default 8 entries). The cap is tunable via the `SMART_COMPACT_LOG_CACHE_MAX` environment variable; invalid values silently fall back to the default so a `.env` typo never disables the cache. LRU helpers extracted to `src/utils/lru.ts` for isolation and reuse.
+- **Single-source-of-truth `VERSION`** — The version literal in `src/constants.ts` is regenerated from `package.json` at `prebuild` time by `scripts/sync-version.ts`. The validator refuses any non-SemVer value, defending the generated source line against an attacker-controlled or merge-corrupted `package.json`. Pure validation/rewrite logic lives in `scripts/sync-version-lib.ts` and is unit-tested without filesystem access.
+- **Test-only resets** — `__resetSessionLogCachesForTests` and `_getMaxEntriesForTests` allow deterministic test setup of the session-log module.
+
+### Changed
+- **Pipeline narrowed to `ExtensionContext`** — The smart-compact orchestrator no longer requires `ExtensionCommandContext`; the same code path now serves both interactive commands and the `session_before_compact` event handler with zero `as unknown as` casts. The narrower type makes "the pipeline only touches the shared host surface" a compile-time invariant.
+- **Module-level singletons removed** — The historical `_compactSessionId` cache singleton was redundant with the per-run `services.compactSessionId` and has been deleted. Production callers always flow through the services container; a private `fallbackSessionId()` is retained only for callers that omit `services` entirely.
+- **`extractText` / `flattenToolCallBlock` deduplicated** — The `multi_tool_use.parallel` flatten logic that was previously inlined in three places is now a single module-level helper with a typed `FlatToolCall` interface. `extractText` uses the shared `isTextBlock` type guard rather than inline structural casts.
+- **`Cell<T>` type alias** — Shared mutable single-slot ref cells (`isRunning`, `cancellationOut`) are now typed as `Cell<T>` instead of `{ value: T }` inline literals.
+
+### Performance
+- **Pruning single-pass walk** — `pruneRedundant` previously walked the message list up to four times (build kept list, build final list, two `estimateTokens(map+join)` calls) for ~40-60ms of overhead on 5k-message sessions. Now folded into a single forward pass. As a side effect the rewrite **fixes a latent token-accuracy bug**: `estimateTokens` only applies the JSON-shape penalty when the input *starts* with `{`/`[`, so the previous global-string concatenation under-counted JSON-heavy tool outputs. Per-message estimation now reflects the true token count.
+- **Open-loop attribution** — File-needle generation is hoisted out of the inner error loop, eliminating the prior N(errors) × M(files) re-computation.
+
+### Tests
+- **115 new test cases (289 → 404)** across seven new files covering `resolveSessionId` (1000-iteration uniqueness loop), `PendingSlot` lifecycle (15 cases including TTL boundary, set overwrite, cross-session mismatch), `lruGet`/`lruSet` (undefined/null value regressions), `getMaxEntries` env override, file-reference heuristic (SemVer rejection integration), file-needle generator (generic-basename gate, length threshold), and `sync-version` SemVer validation (injection vector).
+
+### Build
+- **TypeScript 6.0** — Upgraded from 5.9 with no source changes required; the project's `tsconfig.json` was already aligned with every 6.0 mandatory default.
+- **`@earendil-works/pi-*` 0.78.0** — Pi runtime peers upgraded from 0.75.5. Peer dependency ranges remain wide (`*`).
+- **`@types/node` 24 LTS** — Upgraded from 22. Node 25 deliberately skipped (not LTS).
+- **`typebox` 1.1.39** — Patch upgrade.
+
 ## [7.13.2] - 2026-05-26
 
 ### Changed
