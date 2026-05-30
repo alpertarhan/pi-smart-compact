@@ -6,7 +6,8 @@ import path from "node:path";
 import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop, MediaAttachment } from "../types.ts";
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
-import { isToolCallBlock } from "../utils/type-guards.ts";
+import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
+import { buildPathNeedles } from "./file-needles.ts";
 
 /** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
 export const TRUNCATE_RE = /…✂\d+$/;
@@ -26,14 +27,51 @@ function hasToolHint(tool: string, hints: readonly string[]): boolean {
 /** Reusable tool call index type */
 export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
 
+/** Flattened tool-call descriptor (post `multi_tool_use.parallel` expansion). */
+export interface FlatToolCall {
+  name: string;
+  id?: string;
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * Flatten a single assistant content block into one or more tool-call descriptors.
+ * Transparently expands `multi_tool_use.parallel` wrappers into their nested tool_uses.
+ * Returns [] for non-tool-call blocks. Used by extraction, topic segmentation, and
+ * error-retry detection to avoid re-implementing the parallel-flatten contract.
+ */
+export function flattenToolCallBlock(b: unknown): FlatToolCall[] {
+  if (!isToolCallBlock(b)) return [];
+  if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
+    return (b.arguments.tool_uses as Record<string, unknown>[]).map((u) => {
+      const recipient = (u?.recipient_name as string) ?? "";
+      return {
+        name: recipient.replace(/^functions\./, ""),
+        id: (u?.id as string) ?? undefined,
+        arguments: (u?.parameters as Record<string, unknown>) ?? {},
+      };
+    });
+  }
+  return [{ name: b.name, id: b.id, arguments: b.arguments }];
+}
+
+/**
+ * Flatten an LLM message content payload into a plain string.
+ *
+ * Accepts `string`, `Array<string | TextBlock | ToolCallBlock | ...>`, or
+ * any other shape (which collapses to `""`). Uses `isTextBlock` so the
+ * narrowing logic stays in one place — the previous inline
+ * `(b as Record<string, unknown>)?.type === "text"` cast trio had to be
+ * kept in sync with the real text-block shape by hand.
+ */
 export function extractText(content: unknown): string {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((b: unknown) => {
+  if (!Array.isArray(content)) return "";
+  return content.map((b: unknown) => {
     if (typeof b === "string") return b;
-    if ((b as Record<string, unknown>)?.type === "text") return (b as { text?: string }).text ?? "";
+    if (isTextBlock(b)) return b.text;
     return "";
   }).join("");
-  return "";
 }
 
 function mediaKind(type: string, mime?: string): MediaAttachment["kind"] {
@@ -83,14 +121,11 @@ export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
       // Prefer the real tool_use id if present (matches downstream toolResult.toolCallId),
       // otherwise fall back to a deterministic synthetic id.
       if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
-        for (let t = 0; t < b.arguments.tool_uses.length; t++) {
-          const use = b.arguments.tool_uses[t] as Record<string, unknown>;
-          const recipient = (use?.recipient_name as string) ?? "";
-          const toolName = recipient.replace(/^functions\./, "");
-          const params = (use?.parameters as Record<string, unknown>) ?? {};
-          const realId = (use?.id as string) ?? undefined;
+        const nested = flattenToolCallBlock(b);
+        for (let t = 0; t < nested.length; t++) {
+          const tool = nested[t];
           const syntheticId = b.id ? b.id + "_" + t : "mtu_" + i + "_" + t;
-          idx.set(realId || syntheticId, { name: toolName, arguments: params, msgIndex: i });
+          idx.set(tool.id || syntheticId, { name: tool.name, arguments: tool.arguments, msgIndex: i });
         }
       }
     }
@@ -160,24 +195,6 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
       }
     }
   }
-
-/**
- * Flatten a single tool-call block (including multi_tool_use.parallel) into
- * an array of { name, id } for retry/resolution detection.
- */
-function flattenToolCallBlock(b: unknown): Array<{ name: string; id?: string }> {
-  if (!isToolCallBlock(b)) return [];
-  if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
-    return (b.arguments.tool_uses as Record<string, unknown>[]).map((u) => {
-      const recipient = (u?.recipient_name as string) ?? "";
-      return {
-        name: recipient.replace(/^functions\./, ""),
-        id: (u?.id as string) ?? undefined,
-      };
-    });
-  }
-  return [{ name: b.name, id: b.id }];
-}
 
   for (const err of errors) {
     for (let j = err.index + 1; j < Math.min(msgs.length, err.index + 6); j++) {
@@ -276,28 +293,15 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
     if (m.role === "assistant") {
       const blocks = Array.isArray(m.content) ? m.content : [];
       for (const b of blocks) {
-        if (!isToolCallBlock(b)) continue;
-        // Flatten multi_tool_use.parallel
-        const nested: Array<{ name: string; args: Record<string, unknown> }> =
-          b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)
-            ? (b.arguments.tool_uses as Record<string, unknown>[]).map((u) => {
-                const recipient = (u?.recipient_name as string) ?? "";
-                return {
-                  name: recipient.replace(/^functions\./, ""),
-                  args: (u?.parameters as Record<string, unknown>) ?? {},
-                };
-              })
-            : [{ name: b.name, args: b.arguments }];
-        for (const tool of nested) {
-          const fp = (tool.args?.path ?? tool.args?.file_path) as string | undefined;
-          if (fp) {
-            const fn = path.basename(fp);
-            if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
-            lastFile = fn;
-            primaryFile = fp; currentPrimaryFile = fp;
-            if (tool.name?.includes("write") || tool.name?.includes("edit")) { type = "implementation"; if (currentType !== "implementation") currentType = "implementation"; }
-            else if (tool.name?.includes("read")) { type = "review"; if (currentType === "exploration") currentType = "review"; }
-          }
+        for (const tool of flattenToolCallBlock(b)) {
+          const fp = (tool.arguments?.path ?? tool.arguments?.file_path) as string | undefined;
+          if (!fp) continue;
+          const fn = path.basename(fp);
+          if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
+          lastFile = fn;
+          primaryFile = fp; currentPrimaryFile = fp;
+          if (tool.name?.includes("write") || tool.name?.includes("edit")) { type = "implementation"; if (currentType !== "implementation") currentType = "implementation"; }
+          else if (tool.name?.includes("read")) { type = "review"; if (currentType === "exploration") currentType = "review"; }
         }
       }
     }
@@ -352,10 +356,25 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   let loopId = 0;
 
   // ── 1. Unresolved errors → bugfix loops ──
+  // File-attribution heuristic delegated to `utils/file-needles.ts` so the
+  // path-suffix logic can be unit-tested in isolation. Briefly: a bare
+  // basename ("index.ts") is too generic to attach — we require a
+  // containing directory in the error message.
+  //
+  // Pre-compute needles once per modified file. Otherwise we'd rebuild the
+  // same needles array N (errors) × M (files) times — cheap per call, but
+  // pathological for sessions with dozens of unresolved errors and many
+  // touched files. With pre-computation the inner loop is a pure substring
+  // scan over a fixed-size array.
+  const fileNeedles = extraction.modifiedFiles.map(f => ({
+    path: f.path,
+    needles: buildPathNeedles(f.path),
+  }));
   for (const err of extraction.errors.filter(e => !e.resolved)) {
-    const errFiles = extraction.modifiedFiles
-      .filter(f => err.message.toLowerCase().includes(f.path.split("/").pop()?.toLowerCase() ?? "__none__"))
-      .map(f => f.path);
+    const errLower = err.message.toLowerCase();
+    const errFiles = fileNeedles
+      .filter(({ needles }) => needles.some(n => errLower.includes(n)))
+      .map(({ path }) => path);
     loops.push({
       id: "loop-" + (++loopId),
       type: "bugfix",
