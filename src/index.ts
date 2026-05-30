@@ -4,24 +4,58 @@
  * Architecture: Extract -> Explore -> Synthesize -> Verify
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { CompressionProfile, PendingCompaction } from "./types.ts";
+import type { CompressionProfile, PendingCompaction, Cell } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./constants.ts";
 import { loadConfig, extractUserNote } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
 import { buildMetricsReport, readMetricsLog, writeMetricsDashboard } from "./utils/cache.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { showCompactUI, showMetricsDashboardUI } from "./ui/overlays.ts";
+import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
+import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import * as log from "./utils/logger.ts";
 
-function resolveModelArg(ctx: ExtensionCommandContext, modelArg: string): Model<Api> | undefined {
+/**
+ * Translate a `ConsumeResult` into the side-effects the host expects:
+ *   - log the reason (warn for expired/mismatch, debug for empty)
+ *   - surface a user-facing notification *only* when something interesting
+ *     happened (we don't toast for the common "nothing pending" case)
+ *   - return the unwrapped payload, or `null` if no payload should be used
+ *
+ * Keeping this orchestration in the extension entry point — instead of
+ * inside `PendingSlot.consume` itself — lets the slot stay a pure,
+ * host-agnostic state machine that's trivial to unit-test.
+ */
+function unwrapConsumed(result: ConsumeResult, ctx: ExtensionContext): PendingCompaction | null {
+  switch (result.kind) {
+    case "ok":
+      return result.pending;
+    case "empty":
+      return null;
+    case "expired":
+      log.warn("Discarding expired pending smart compaction after " + Math.round(result.ageMs / 1000) + "s");
+      ctx.ui.notify("Expired pending smart compaction discarded", "warning");
+      return null;
+    case "mismatch":
+      log.warn(
+        "Discarding pending smart compaction prepared for a different session (" +
+        result.expected + " vs " + result.actual + ")",
+      );
+      return null;
+  }
+}
+
+// These helpers only depend on `modelRegistry` + `model`, which are part of
+// the shared `ExtensionContext` surface; no command-only methods are needed.
+function resolveModelArg(ctx: ExtensionContext, modelArg: string): Model<Api> | undefined {
   const [p, ...r] = modelArg.split("/");
   return ctx.modelRegistry.find(p, r.join("/"));
 }
 
 function resolveModels(
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   primary: Model<Api> | undefined,
   config: ReturnType<typeof loadConfig>,
 ): { segModel: Model<Api> | undefined; sumModel: Model<Api> | undefined } {
@@ -47,9 +81,12 @@ function resolveModels(
 }
 
 export default function smartCompactExtension(pi: ExtensionAPI) {
-  const pendingRef: { value: PendingCompaction | null; createdAt: number } = { value: null, createdAt: 0 };
-  const isRunning: { value: boolean } = { value: false };
   const PENDING_TTL_MS = 5 * 60 * 1000;
+  // Encapsulated slot: producers call `.set(...)`, the event handler calls
+  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
+  // entirely inside the slot factory — see src/app/pending-slot.ts.
+  const pendingRef: PendingSlot = createPendingSlot({ ttlMs: PENDING_TTL_MS });
+  const isRunning: Cell<boolean> = { value: false };
 
   pi.registerCommand("smart-compact", {
     description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [light|balanced|aggressive] [verbose|debug|dry-run] [note]",
@@ -67,7 +104,19 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         if (flags.includes("metrics") || flags.includes("dashboard")) {
           if (flags.includes("dashboard")) {
             const entries = readMetricsLog(200);
-            const sessionId = ctx.sessionManager.getSessionId?.() ?? "unknown";
+            // Dashboard read-only display: a real id when present, an
+            // opaque "(no session)" placeholder otherwise. We don't share
+            // resolveSessionId here because the unique-fallback id would
+            // surface as cryptic noise in the UI — leak-guard isn't a
+            // concern for a passive read.
+            // Dashboard read-only display: route through the shared
+            // resolver so we always get *some* opaque id, then collapse
+            // an `unresolved:*` sentinel into a human-friendly placeholder
+            // for the UI. This is the only legitimate consumer of
+            // `isUnresolvedSessionId` outside the slot — keeps the helper
+            // and its semantics co-located.
+            const resolved = resolveSessionId(ctx);
+            const sessionId = isUnresolvedSessionId(resolved) ? "(no session)" : resolved;
             const action = await showMetricsDashboardUI(ctx, {
               entries,
               currentSessionId: sessionId,
@@ -115,19 +164,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_before_compact", async (_event, ctx) => {
-    if (pendingRef.value) {
-      const age = Date.now() - pendingRef.createdAt;
-      if (age > PENDING_TTL_MS) {
-        log.warn("Discarding expired pending smart compaction after " + Math.round(age / 1000) + "s");
-        (ctx as unknown as ExtensionCommandContext).ui?.notify?.("Expired pending smart compaction discarded", "warning");
-        pendingRef.value = null;
-        pendingRef.createdAt = 0;
-      } else {
-        const c = pendingRef.value;
-        pendingRef.value = null;
-        pendingRef.createdAt = 0;
-        return { compaction: { summary: c.summary, firstKeptEntryId: c.firstKeptEntryId, tokensBefore: c.tokensBefore, details: c.details } };
-      }
+    const consumed = unwrapConsumed(pendingRef.consume(ctx), ctx);
+    if (consumed) {
+      return { compaction: { summary: consumed.summary, firstKeptEntryId: consumed.firstKeptEntryId, tokensBefore: consumed.tokensBefore, details: consumed.details } };
     }
     const config = loadConfig();
     if (!config.autoTrigger) return;
@@ -140,7 +179,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       if (pct < config.minContextPercent) return;
       const cur = ctx.model;
       if (!cur) return;
-      const { segModel, sumModel } = resolveModels(ctx as unknown as ExtensionCommandContext, cur, config);
+      const { segModel, sumModel } = resolveModels(ctx, cur, config);
       if (!sumModel) return;
       if (!isRunning.value) {
         const caps = getProviderCaps(sumModel.provider);
@@ -170,7 +209,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
 
         try {
           await runSmartCompact({
-            ctx: ctx as unknown as ExtensionCommandContext,
+            ctx,
             summaryModel: sumModel,
             segModel: segModel ?? sumModel,
             profile: config.profile,
@@ -188,11 +227,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // If the outer timer fired, runSmartCompact's finally has already
         // cleared pendingRef. Falling through to native compact is the right
         // behavior — we don't need to re-check the timeout flag here.
-        const pending = pendingRef.value as PendingCompaction | null;
-        if (pending) {
-          pendingRef.value = null;
-          pendingRef.createdAt = 0;
-          return { compaction: { summary: pending.summary, firstKeptEntryId: pending.firstKeptEntryId, tokensBefore: pending.tokensBefore, details: pending.details } };
+        const fresh = unwrapConsumed(pendingRef.consume(ctx), ctx);
+        if (fresh) {
+          return { compaction: { summary: fresh.summary, firstKeptEntryId: fresh.firstKeptEntryId, tokensBefore: fresh.tokensBefore, details: fresh.details } };
         }
       }
     } catch (e) { log.warn("session_before_compact error", e); }
@@ -228,7 +265,6 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       }
       const config = loadConfig();
       const resolvedProfile = profile ?? config.profile;
-      const cmdCtx = ctx as unknown as ExtensionCommandContext;
 
       // Check context usage — skip if not enough tokens or context too small
       const usage = ctx.getContextUsage?.();
@@ -243,8 +279,8 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "Context is only " + pct + "% full (" + totalTokens.toLocaleString() + " tokens). Compaction is not needed yet. The tool=97% in status means tool output ratio, NOT context usage." }], details: undefined };
       }
 
-      const cur = ('model' in ctx) ? (ctx as unknown as Record<string, unknown>).model as Model<Api> | undefined : undefined;
-      const { segModel, sumModel } = resolveModels(cmdCtx, cur, config);
+      const cur = ctx.model as Model<Api> | undefined;
+      const { segModel, sumModel } = resolveModels(ctx, cur, config);
       if (!sumModel) {
         return { content: [{ type: "text", text: "Error: Could not resolve model." }], details: undefined };
       }
@@ -256,10 +292,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // (b) tool_result referencing a tool_call in a message that no longer exists.
         // Instead, store the summary in pendingRef and let the session_before_compact
         // hook apply it on the next natural compact (or auto-trigger).
-        await runSmartCompact({ ctx: cmdCtx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true });
+        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true });
         const toolSecs = ((Date.now() - toolStart) / 1000).toFixed(1);
-        if (pendingRef.value) {
-          return { content: [{ type: "text", text: "Smart summary prepared (" + resolvedProfile + "). Tokens: " + (pendingRef.value.tokensBefore ?? 0).toLocaleString() + " — summary cached for " + Math.round(PENDING_TTL_MS / 60000) + " min. The next /compact will use this summary automatically." }], details: undefined };
+        const staged = pendingRef.peek();
+        if (staged) {
+          return { content: [{ type: "text", text: "Smart summary prepared (" + resolvedProfile + "). Tokens: " + (staged.tokensBefore ?? 0).toLocaleString() + " — summary cached for " + Math.round(PENDING_TTL_MS / 60000) + " min. The next /compact will use this summary automatically." }], details: undefined };
         }
         return { content: [{ type: "text", text: "Compaction finished (" + resolvedProfile + ") but no summary was generated." }], details: undefined };
       } catch (error) {

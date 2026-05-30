@@ -24,21 +24,23 @@ import { appendLineLocked, ensureDir, readJsonSync, writeJsonSync, atomicWriteFi
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
 import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 
-// ── Session ID ──
-let _compactSessionId: string | null = null;
-
-export function getCompactSessionId(): string {
-  if (!_compactSessionId) {
-    _compactSessionId = "sc-" + Date.now().toString(36) + "-" + crypto.randomBytes(4).toString("hex");
-  }
-  return _compactSessionId;
-}
-
-export function resetCompactSessionId(): void {
-  _compactSessionId = null;
-}
-
 // ── Cache Options ──
+
+/**
+ * Generate a one-shot session id used for prompt-cache namespacing when a
+ * caller didn't go through the services container.
+ *
+ * NOTE: historically this module memoized a single id at module scope, but
+ * that id leaked across all runs in the same Node process and collided with
+ * `services.compactSessionId` (which is freshly minted per `createServices()`).
+ * The right namespace identity belongs to the services container; this helper
+ * exists only as a defensive fallback for the rare path where `services` is
+ * undefined (e.g. ad-hoc test wiring) and intentionally returns a fresh id
+ * every call so two unrelated calls never share a cache namespace by accident.
+ */
+function fallbackSessionId(): string {
+  return "sc-" + Date.now().toString(36) + "-" + crypto.randomBytes(4).toString("hex");
+}
 /** Internal compaction phases that should never use prompt caching — one-shot, not worth write cost. */
 const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
   "explore", "explore-loop", "explore-retry", "explore-direct",
@@ -61,7 +63,7 @@ export function cacheOpts(
   if (retention === "none") {
     return { ...opts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: services?.compactSessionId ?? getCompactSessionId(), cacheRetention: retention };
+  return { ...opts, sessionId: services?.compactSessionId ?? fallbackSessionId(), cacheRetention: retention };
 }
 
 // ── Metrics ──
