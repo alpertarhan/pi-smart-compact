@@ -20,6 +20,7 @@ import type { SessionMessageEntry } from "../../types.ts";
 import { estimateTokens } from "../../utils/tokens.ts";
 import { smartKeepBoundary, guardToolCallBoundary } from "../../utils/helpers.ts";
 import { extractText } from "../../utils/extraction.ts";
+import { resolveSessionId } from "../../infra/session-identity.ts";
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   const usage = rc.ctx.getContextUsage();
@@ -51,7 +52,10 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
 
   const contextPercent = rc.ctx.model && totalTokens ? (totalTokens / rc.ctx.model.contextWindow) * 100 : 0;
   const firstKeptId = (msgs[keepFrom]?.id ?? msgs[msgs.length - 1]?.id) as string;
-  const sessionId = rc.ctx.sessionManager.getSessionId?.() ?? "unknown";
+  // Use the shared helper instead of a local sentinel. A literal fallback
+  // (e.g. "unknown") would compare equal across unrelated sessions and
+  // defeat the cross-session leak guard in `consumePending`.
+  const sessionId = resolveSessionId(rc.ctx);
 
   const out = rc as PreparedRc & {
     _windowed: true;

@@ -17,7 +17,8 @@
  * dependency is data on the stage type, every conditional is a boolean flag.
  */
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Cell } from "../types.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile } from "../types.ts";
 import { showResultScreen } from "../ui/overlays.ts";
@@ -58,14 +59,22 @@ export interface ExternalCancellation {
 
 /** Options for runSmartCompact — avoids 10-parameter positional calls. */
 export interface SmartCompactOptions {
-  ctx: ExtensionCommandContext;
+  /**
+   * The pipeline only touches members shared by `ExtensionContext` and
+   * `ExtensionCommandContext` (ui, cwd, sessionManager, modelRegistry,
+   * model, getContextUsage, compact). Using the narrower base type lets
+   * the `session_before_compact` event handler pass its context in without
+   * any cast, and makes the contract "what does the pipeline actually
+   * need?" explicit at the type level.
+   */
+  ctx: ExtensionContext;
   summaryModel: Model<Api>;
   segModel: Model<Api>;
   profile: CompressionProfile;
   verbose?: boolean;
   dryRun?: boolean;
   pendingRef: PendingRef;
-  isRunning: { value: boolean };
+  isRunning: Cell<boolean>;
   autoTriggered?: boolean;
   userNote?: string;
   skipCompact?: boolean;
@@ -79,7 +88,7 @@ export interface SmartCompactOptions {
    * its own hard timeout in addition to the in-pipeline one (some providers
    * ignore AbortSignal entirely).
    */
-  cancellationOut?: { value: ExternalCancellation | null };
+  cancellationOut?: Cell<ExternalCancellation | null>;
 }
 
 /**
@@ -229,8 +238,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // verify and persist. We don't want a late-arriving cancellation to leave
     // a fresh pendingRef alive after the caller has already given up on us.
     if (stated.cancellation.timedOut) {
-      stated.pendingRef.value = null;
-      stated.pendingRef.createdAt = 0;
+      stated.pendingRef.clear();
       return;
     }
 
@@ -256,8 +264,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // ctx.compact() now would attempt to apply a payload Pi has already
     // decided to bypass.
     if (stated.cancellation.timedOut) {
-      stated.pendingRef.value = null;
-      stated.pendingRef.createdAt = 0;
+      stated.pendingRef.clear();
       return;
     }
 
@@ -274,14 +281,22 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // If the timeout fired we always clear the pending summary so a stale
     // payload cannot be picked up by the next session_before_compact event.
     if (base.cancellation.timedOut) {
-      base.pendingRef.value = null;
-      base.pendingRef.createdAt = 0;
+      base.pendingRef.clear();
     }
     const pipelineMs = Date.now() - base.pipelineStart;
     if (base.flags.autoTriggered && !base.cancellation.timedOut) {
+      // Auto-trigger only prepares the summary; the native compact runs
+      // afterwards from `session_before_compact`. The previous wording
+      // ("Compaction completed in...") was misleading because the actual
+      // apply step hadn't run yet at this point. Use "prepared" to match
+      // the lifecycle a user actually sees (an `Applied ✓` toast follows
+      // when Pi confirms the compact).
+      const dur = pipelineMs < 1000 ? pipelineMs + "ms" : (pipelineMs / 1000).toFixed(1) + "s";
+      const hasPending = base.pendingRef.isPresent();
       base.ctx.ui.notify(
-        "Compaction completed in " +
-          (pipelineMs < 1000 ? pipelineMs + "ms" : (pipelineMs / 1000).toFixed(1) + "s"),
+        hasPending
+          ? "Smart compact prepared in " + dur + " — awaiting native /compact"
+          : "Smart compact run finished in " + dur,
         "info",
       );
     }

@@ -15,6 +15,8 @@
 import { describe, it, expect } from "bun:test";
 import { applyCompaction } from "../src/app/steps/persist.ts";
 import type { RunContext } from "../src/app/run-context.ts";
+import { createPendingSlot } from "../src/app/pending-slot.ts";
+import type { PendingCompaction } from "../src/types.ts";
 
 function makeFakeCtx(behaviour: "complete" | "error") {
   let onCompleteFn: (() => void) | undefined;
@@ -34,9 +36,21 @@ function makeFakeCtx(behaviour: "complete" | "error") {
 
 function makeRC(behaviour: "complete" | "error"): RunContext {
   const { ctx, calls } = makeFakeCtx(behaviour);
+  const slot = createPendingSlot({ ttlMs: 5 * 60 * 1000 });
+  // Pre-stage a payload so the onError path has something to clear and the
+  // happy-path tests can assert that applyCompaction does NOT clear on
+  // success (the agent loop consumes via session_before_compact).
+  const stagedPayload: PendingCompaction = {
+    summary: "x",
+    firstKeptEntryId: "id",
+    tokensBefore: 0,
+    details: {} as any,
+    sessionId: "test-session",
+  };
+  slot.set(stagedPayload);
   const rc: Partial<RunContext> = {
     ctx,
-    pendingRef: { value: { summary: "x", firstKeptEntryId: "id", tokensBefore: 0, details: {} as any }, createdAt: Date.now() },
+    pendingRef: slot,
     flags: { autoTriggered: false, skipCompact: false, verbose: false, dryRun: false, force: false },
     notify: () => { /* no-op */ },
     phaseTimings: [],
@@ -53,8 +67,8 @@ describe("applyCompaction onError", () => {
   it("clears pendingRef when the native compact rejects (audit P1 #4)", () => {
     const rc = makeRC("error");
     applyCompaction(rc);
-    expect(rc.pendingRef.value).toBeNull();
-    expect(rc.pendingRef.createdAt).toBe(0);
+    expect(rc.pendingRef.isPresent()).toBe(false);
+    expect(rc.pendingRef.peek()).toBeNull();
   });
 
   it("does not call ctx.compact when skipCompact is set", () => {
@@ -62,14 +76,14 @@ describe("applyCompaction onError", () => {
     rc.flags.skipCompact = true;
     // pendingRef survives because we never invoked compact at all.
     applyCompaction(rc);
-    expect(rc.pendingRef.value).not.toBeNull();
+    expect(rc.pendingRef.isPresent()).toBe(true);
   });
 
   it("leaves pendingRef in place when compaction succeeds (the agent loop consumes it)", () => {
     const rc = makeRC("complete");
     applyCompaction(rc);
     // pendingRef is consumed by session_before_compact, not by applyCompaction.
-    expect(rc.pendingRef.value).not.toBeNull();
+    expect(rc.pendingRef.isPresent()).toBe(true);
   });
 });
 
@@ -91,7 +105,7 @@ describe("external cancellation surface", () => {
       sessionManager: { getBranch: () => [], getSessionId: () => "sess" },
       getContextUsage: () => ({ tokens: 0 }),
     } as any;
-    const pendingRef = { value: null, createdAt: 0 };
+    const pendingRef = createPendingSlot({ ttlMs: 5 * 60 * 1000 });
     const isRunning = { value: false };
     const summaryModel = { id: "x", provider: "openai", contextWindow: 100000 } as any;
     const run = runSmartCompact({

@@ -33,14 +33,15 @@
  * working for the `applyCompaction` / metrics paths that ran post-`buildState`.
  */
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
-  CompressionProfile, PendingCompaction, LlmMessage, StructuredExtraction,
+  CompressionProfile, LlmMessage, StructuredExtraction,
   ExplorationReport, ChunkSummary, SessionMessageEntry, PipelinePhaseTiming,
   CompactConfig, ProfileConfig, ProviderCapabilities, SmartCompactDetails,
-  CompactionState, OpenLoop,
+  CompactionState, OpenLoop, Cell,
 } from "../types.ts";
+import type { PendingSlot } from "./pending-slot.ts";
 import type { PruningResult } from "../utils/pruning.ts";
 import type { CompactionTier } from "../utils/helpers.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
@@ -58,10 +59,13 @@ export interface CancellationToken {
   timeoutId: ReturnType<typeof setTimeout> | null;
 }
 
-export interface PendingRef {
-  value: PendingCompaction | null;
-  createdAt: number;
-}
+/**
+ * Backward-compat alias. The pipeline previously juggled a raw
+ * `{ value, createdAt }` ref-cell; the encapsulated `PendingSlot` API
+ * supersedes it. We keep the name in the run-context so existing wiring
+ * stays readable while every mutation goes through the slot's invariants.
+ */
+export type PendingRef = PendingSlot;
 
 export interface RunFlags {
   verbose: boolean;
@@ -83,13 +87,18 @@ export interface ResolvedAuth {
 // adds to this base via intersection types.
 
 export interface RcBase {
-  ctx: ExtensionCommandContext;
+  // ExtensionContext is the narrower base shared with the event-handler ctx.
+  // The pipeline never calls command-only methods (waitForIdle, newSession,
+  // fork, navigate), so narrowing here lets both interactive commands and
+  // `session_before_compact` events feed this same orchestrator without a
+  // cast — the type system enforces the "shared surface" invariant.
+  ctx: ExtensionContext;
   notify: Notifier;
   vlog: (msg: string) => void;
   services: SmartCompactServices;
   cancellation: CancellationToken;
   pendingRef: PendingRef;
-  isRunning: { value: boolean };
+  isRunning: Cell<boolean>;
   flags: RunFlags;
   userNote?: string;
   timeoutMs: number;
