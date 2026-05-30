@@ -19,6 +19,8 @@ import type { Model, Api } from "@earendil-works/pi-ai";
 import type { StructuredExtraction, VerificationResult } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
+import { getProviderCaps } from "../utils/tokens.ts";
+import { extractFileRefs } from "../utils/file-ref-detect.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
@@ -81,9 +83,11 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     if (!goalFound) { gaps.push("Main goal may be missing from summary"); score -= 10; }
   }
 
-  const summaryFileRefs = (summary.match(/[\w.\/-]+\.[\w]+/g) ?? []).filter(
-    p => p.includes("/") || p.match(/\.(ts|tsx|js|jsx|rs|py|go|java|rb|css|html|json|yaml|yml|toml|md|sh|sql)$/i)
-  );
+  // File-ref heuristic delegated to `utils/file-ref-detect.ts` so the
+  // version-vs-path classifier can be unit-tested in isolation. The
+  // contract is the same: only return tokens that look like real file
+  // references (no SemVer literals, no bare names without an extension).
+  const summaryFileRefs = extractFileRefs(summary);
   const knownFiles = new Set([
     ...extraction.modifiedFiles.map(f => f.path.toLowerCase()),
     ...extraction.readFiles.map(f => f.toLowerCase()),
@@ -227,10 +231,15 @@ export async function patchSummary(
     "\n\nReturn the COMPLETE updated summary with missing items integrated. Keep the same format.";
 
   try {
+    // Cap maxTokens to the provider's true output ceiling. The previous
+    // hard-coded 8192 caused provider-side errors for DeepSeek/MiniMax
+    // (4096) and silently wasted budget on providers with higher ceilings.
+    const providerCap = getProviderCaps(model.provider).maxOutputTokens;
+    const maxTokens = Math.min(8192, providerCap);
     const resp = await trackedComplete("patch", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user" as const, content: [{ type: "text" as const, text: patchPrompt }], timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: 8192, signal }, services);
+    }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens, signal }, services);
     const patched = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
     return patched.startsWith("##") ? patched : summary;
   } catch (e) { log.debug("patchSummary LLM failed", e); return summary; }
