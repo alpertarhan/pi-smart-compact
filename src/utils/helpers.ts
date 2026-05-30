@@ -474,14 +474,26 @@ export function buildExtractionContext(extraction: StructuredExtraction, forRang
  *  6. Fallback → implementation (most common agent activity)
  */
 /**
+ * Minimal structural shape of a branch entry we care about for tool-share
+ * accounting. Defined locally so we don't drag the full SessionEntry type
+ * (which carries fields irrelevant to char counting) into a hot-path helper.
+ */
+interface BranchEntryLike {
+  message?: {
+    role?: string;
+    content?: unknown;
+  };
+}
+
+/**
  * Compute tool-output character percentage from branch entries.
  * Mirrors pi-toolkit's context hook logic for consistent tier decisions.
  */
-export function computeToolCharPercentage(branchEntries: unknown[]): number {
+export function computeToolCharPercentage(branchEntries: readonly unknown[]): number {
   let totalChars = 0;
   let toolChars = 0;
-  for (const e of branchEntries as any[]) {
-    const m = e?.message;
+  for (const raw of branchEntries) {
+    const m = (raw as BranchEntryLike | null | undefined)?.message;
     if (!m) continue;
     let mc = 0;
     if (typeof m.content === "string") {
