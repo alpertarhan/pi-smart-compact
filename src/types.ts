@@ -137,12 +137,35 @@ export interface SmartCompactDetails {
   openLoops?: OpenLoop[];
 }
 
+/**
+ * Tiny mutable single-slot ref cell. We use it (instead of bare
+ * `{ value: T | null }` literals scattered across modules) for shared
+ * mutable boundaries between the extension entry point and the
+ * orchestrator — e.g. the run-active flag and the external cancellation
+ * handle. Named explicitly so its purpose is obvious at the call site.
+ *
+ * Note: the *pending-compaction* slot intentionally does NOT use `Cell` —
+ * it goes through the encapsulated `PendingSlot` API in
+ * `src/app/pending-slot.ts` which enforces TTL + session-id invariants.
+ */
+export interface Cell<T> {
+  value: T;
+}
+
 export interface PendingCompaction {
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
   details: SmartCompactDetails;
   compactionState?: CompactionState;
+  /**
+   * Originating pi session id. Used by `session_before_compact` to refuse a
+   * pending payload that was prepared by a different session (e.g. when two
+   * pi sessions share the same Node process via sub-agents). Without this
+   * guard, session A's prepared summary could be applied to session B and
+   * silently corrupt its conversation.
+   */
+  sessionId: string;
 }
 
 export interface ModelOption {
