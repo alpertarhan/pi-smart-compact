@@ -143,40 +143,56 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     reasonMap.set("pi-auto-context status", (reasonMap.get("pi-auto-context status") ?? 0) + 1);
   }
 
-  // ── 4. Truncate long tool result outputs ──
-  // (Applied as content modification, not message removal)
-  const kept = msgs.map((m, idx) => {
-    if (!keep.has(idx)) return null;
-    if (m.role !== "toolResult") return m;
+  // ── 4. Truncate long tool result outputs + build final list in one pass ──
+  //
+  // The previous implementation materialized a `kept` array, then walked
+  // the original `msgs` again to build the final list, then walked both
+  // arrays a third+fourth time inside two `estimateTokens(map+join)` calls
+  // just to compute the saving. On 5k-message sessions that's ~40-60ms of
+  // pure overhead. We fold all of it into a single forward pass.
+  //
+  // Important: this is not just a perf rewrite — it also FIXES a latent
+  // accuracy bug. `estimateTokens` applies a JSON-shape penalty only when
+  // the *first* character of the input looks like JSON (`{` / `[`). With
+  // `map(...).join("")` the global string almost never starts with JSON,
+  // so the penalty fired for at most one of N messages. Estimating per
+  // message means JSON-heavy tool outputs are now counted accurately, and
+  // `prunedTokenSaving` reflects the true token reduction the pruning
+  // achieved. The trade-off is N calls to `estimateTokens` instead of 2,
+  // which is still net cheaper because each call sees a much smaller
+  // string and we no longer build a multi-MB concatenation.
+  const keptIndices: number[] = [];
+  const finalMsgs: LlmMessage[] = [];
+  let originalTokens = 0;
+  let prunedTokens = 0;
+  const half = Math.floor(MAX_TOOL_OUTPUT_CHARS / 2);
+
+  for (let idx = 0; idx < msgs.length; idx++) {
+    const m = msgs[idx];
     const text = extractText(m.content);
-    if (text.length > MAX_TOOL_OUTPUT_CHARS) {
-      // Split the budget evenly between head and tail. Computed from
-      // MAX_TOOL_OUTPUT_CHARS so future bumps to the constant don't silently
-      // leave the slice sizes out of date — the previous hard-coded 400/400
-      // was correct only as long as MAX_TOOL_OUTPUT_CHARS stayed 800.
-      const half = Math.floor(MAX_TOOL_OUTPUT_CHARS / 2);
+    // Skip empty messages: `estimateTokens("")` still runs regex/Math.ceil,
+    // which is wasted work in long sessions where many entries are pure
+    // tool-call wrappers (no text payload).
+    if (text.length > 0) originalTokens += estimateTokens(text);
+    if (!keep.has(idx)) continue;
+
+    if (m.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS) {
+      // Split the budget evenly between head and tail. Derived from
+      // MAX_TOOL_OUTPUT_CHARS so future bumps to the constant don't
+      // silently leave the slice sizes out of date.
       const head = text.slice(0, half);
       const tail = text.slice(-half);
       const truncated = head + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n" + tail;
-      return { ...m, content: [{ type: "text" as const, text: truncated }] };
+      finalMsgs.push({ ...m, content: [{ type: "text" as const, text: truncated }] });
+      prunedTokens += estimateTokens(truncated);
+    } else {
+      finalMsgs.push(m);
+      if (text.length > 0) prunedTokens += estimateTokens(text);
     }
-    return m;
-  });
-
-  // Build final message list, preserving order, and remember original input indexes.
-  const keptIndices: number[] = [];
-  const finalMsgs: LlmMessage[] = [];
-  for (let idx = 0; idx < kept.length; idx++) {
-    const m = kept[idx];
-    if (m === null) continue;
     keptIndices.push(idx);
-    finalMsgs.push(m);
   }
-  const prunedCount = msgs.length - finalMsgs.length;
 
-  // Estimate token saving
-  const originalTokens = estimateTokens(msgs.map(m => extractText(m.content)).join(""));
-  const prunedTokens = estimateTokens(finalMsgs.map(m => extractText(m.content)).join(""));
+  const prunedCount = msgs.length - finalMsgs.length;
 
   const reasons = [...reasonMap.entries()].map(([reason, count]) => ({ count, reason }));
 
