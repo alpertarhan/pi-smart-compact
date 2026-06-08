@@ -1,6 +1,9 @@
 # Changelog
 
-## [7.14.0] - 2026-05-30
+## [7.15.0] - 2026-06-08
+
+### Changed
+- **Wildcard peer/dev dependencies for Pi packages** — `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, and `typebox` now use `*` version ranges in both `peerDependencies` and `devDependencies`, ensuring forward compatibility with all future Pi runtime versions without extension-level pinning. Resolved to 0.79.0 (pi-*) and 1.2.3 (typebox) at install time.
 
 ### Fixed
 - **Cross-session leak guard** — The pending compaction payload now carries the originating pi session id and is refused if the consuming session does not match. Two pi sessions sharing the same Node process (a common sub-agent setup) can no longer apply each other's prepared summaries. The fallback identifier for sessions that the host cannot resolve is per-call unique (`unresolved:<uuid>`) so two unresolved sessions never collide.
