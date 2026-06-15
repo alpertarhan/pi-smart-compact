@@ -239,7 +239,7 @@ function branchIndexToMsgIndex(branchEntries: unknown[], branchIdx: number, msgs
       msgCount++;
     }
   }
-  return Math.min(msgCount - 1, msgs.length - 1);
+  return Math.max(0, Math.min(msgCount - 1, msgs.length - 1));
 }
 
 export function smartKeepBoundary(

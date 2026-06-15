@@ -9,6 +9,10 @@ dist/
 node_modules
 node_modules/
 
+# Lockfile — this project uses bun (see bun.lock). Ignore npm's lockfile
+# so an accidental `npm install` / `npm outdated` doesn't create noise.
+package-lock.json
+
 # Environment
 .env
 .env.local

@@ -100,19 +100,33 @@ export function renderSummary(summary: CanonicalSummary, opts: { canonicalHeadin
 }
 
 /**
+ * Placement hint for `upsertSection` when inserting a *new* section.
+ *
+ * `before`/`after` name the *kind* of an existing section that the new entry
+ * should anchor against. `before` inserts immediately ahead of the anchor;
+ * `after` inserts immediately behind it. When both are given, `before` wins
+ * (kept for back-compat with positional callers). When neither anchor is found
+ * the section falls back to append-at-end.
+ *
+ * This is how the synthesis pipeline keeps `Open Loops` ahead of `Next Steps`
+ * deterministically, and the delta injector places `Changes Since Last
+ * Compaction` directly after `Open Loops` when present.
+ */
+export interface SectionPlacement {
+  before?: SectionKind;
+  after?: SectionKind;
+}
+
+/**
  * Insert or replace a section. If a section with the same `kind` exists, its
  * heading is replaced with the canonical one and the body is overwritten. If
- * not, the section is appended.
- *
- * `before` hints at which section *kind* the new entry should precede; when
- * absent the section is appended. This is how the synthesis pipeline keeps
- * `Open Loops` ahead of `Next Steps` deterministically.
+ * not, the section is inserted according to `placement` (or appended).
  */
 export function upsertSection(
   summary: CanonicalSummary,
   kind: SectionKind,
   body: string,
-  before?: SectionKind,
+  placement?: SectionKind | SectionPlacement,
 ): CanonicalSummary {
   const heading = canonicalHeading(kind);
   const existing = summary.sections.findIndex(s => s.kind === kind);
@@ -121,12 +135,30 @@ export function upsertSection(
     sections[existing] = { kind, heading, body: body.trim() };
     return { sections };
   }
+  // Back-compat: positional callers pass a bare SectionKind as `before`.
+  const hint: SectionPlacement = placement == null
+    ? {}
+    : typeof placement === "string"
+      ? { before: placement }
+      : placement;
   const section: Section = { kind, heading, body: body.trim() };
-  if (before) {
-    const idx = summary.sections.findIndex(s => s.kind === before);
+  if (hint.before) {
+    const idx = summary.sections.findIndex(s => s.kind === hint.before);
     if (idx >= 0) {
       const sections = summary.sections.slice();
       sections.splice(idx, 0, section);
+      return { sections };
+    }
+  }
+  if (hint.after) {
+    // findLastIndex so duplicate-kind sections insert after the final one.
+    let idx = -1;
+    for (let i = summary.sections.length - 1; i >= 0; i--) {
+      if (summary.sections[i].kind === hint.after) { idx = i; break; }
+    }
+    if (idx >= 0) {
+      const sections = summary.sections.slice();
+      sections.splice(idx + 1, 0, section);
       return { sections };
     }
   }

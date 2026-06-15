@@ -1,5 +1,30 @@
 # Changelog
 
+## [7.15.1] - 2026-06-15
+
+### Fixed
+- **Delta section placement** — `injectDeltaSection` contained a dead ternary (`hasOpenLoops ? "next-steps" : "next-steps"`) that made the `hasOpenLoops` computation unreachable, so the "Changes Since Last Compaction" section always anchored before `Next Steps` regardless of whether `Open Loops` was present. The domain layer (`summary-parse.ts`) now supports a structured `SectionPlacement` hint with both `before` and `after` semantics; the delta injector anchors *after* `Open Loops` when present, otherwise *before* `Next Steps`. The new object form is additive — the legacy positional `before` argument remains backward-compatible.
+- **Shadowed catch binding in exploration parser** — `parseExplorationReport` used `e` for both `lastIndexOf("}")` and the per-`catch` error, which compiled but was a confusing trap for future edits. Renamed the loop bounds to `startIdx`/`endIdx` and the catch bindings to `err`.
+- **Defensive guards in LLM-output parsing** — `buildExplorationReportFromParsed` now validates `typeof parsed === "object"` before touching it, so a model that returns a primitive JSON value (`42`, `"ok"`, `true`, `null`) falls back to heuristic boundaries instead of risking a `TypeError`.
+- **Non-negative index guard** — `branchIndexToMsgIndex` (used by anchor-aware keep-boundary resolution) now clamps to `Math.max(0, ...)`, so a future code path that reaches it without a prior message entry can never produce a negative index.
+
+### Changed
+- **Typed theme in TUI overlays** — `renderContextBar` and `renderTokenBar` no longer take `theme: any`; they now use the real `Theme` class exported from `@earendil-works/pi-coding-agent`, restoring compile-time type safety over `.fg()` / `.bold()` calls without inventing a parallel local interface.
+
+### Build
+- **Pi runtime peers 0.79.4** — `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` resolved from 0.79.0 → 0.79.4. Peer dependency ranges remain wide (`*`).
+- **`typebox` 1.2.11** — Patch upgrade from 1.2.3.
+- **`@types/node` 25.9.3** — Patch upgrade from 25.9.2.
+
+### Docs
+- **Architecture tables synchronized** — `ARCHITECTURE.md`'s layer tables now list every `src` module, including previously missing `pending-slot.ts`, `explore-wrap.ts`, `infra/session-identity.ts`, `utils/file-needles.ts`, `utils/file-ref-detect.ts`, and `utils/lru.ts`. README repository-layout tree and module counts updated to match (15 utility modules; 414 tests across 36 files).
+
+### Tests
+- **7 new test cases (407 → 414)** covering `upsertSection` before/after placement and legacy back-compat, plus `buildExplorationReportFromParsed` primitive/null guards.
+
+### Chore
+- **Ignore npm lockfile** — `.gitignore` now excludes `package-lock.json`; this project uses `bun` and the stray lockfile created by incidental `npm` commands should not be committed.
+
 ## [7.15.0] - 2026-06-08
 
 ### Changed

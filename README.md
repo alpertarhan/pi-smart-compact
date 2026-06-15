@@ -324,6 +324,7 @@ At runtime, the extension writes to paths under `~/.pi/agent/`, including:
 │   ├── app/                  # orchestration layer
 │   │   ├── run-smart-compact.ts   # pipeline orchestrator (was core.ts)
 │   │   ├── run-context.ts         # typed stage chain
+│   │   ├── pending-slot.ts        # encapsulated pending-compaction state cell
 │   │   ├── explore-wrap.ts        # explore re-export shim
 │   │   └── steps/                 # 10 stage modules
 │   │       ├── prepare.ts   →   resolves config + auth
@@ -350,12 +351,13 @@ At runtime, the extension writes to paths under `~/.pi/agent/`, including:
 │   │   ├── clock.ts             # injectable clock
 │   │   ├── llm-client.ts        # LLM client seam
 │   │   ├── llm-retry.ts         # 429/5xx backoff
-│   │   └── services.ts          # per-run services container
+│   │   ├── services.ts          # per-run services container
+│   │   └── session-identity.ts # robust session-id resolution
 │   ├── ui/                   # TUI overlays + dashboard
 │   │   ├── overlays.ts
 │   │   └── dashboard-format.ts
-│   └── utils/                # 13 focused utility modules
-├── test/                     # 280+ tests across 28 files
+│   └── utils/                # 15 focused utility modules
+├── test/                     # 414 tests across 36 files
 ├── docs/
 ├── dist/
 └── package.json

@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from "bun:test";
 import { parseSummary, findSection, hasSection, upsertSection, appendToSection, renderSummary } from "../src/domain/summary-parse.ts";
+import type { SectionPlacement } from "../src/domain/summary-parse.ts";
 
 describe("parseSummary", () => {
   it("classifies common section variants", () => {
@@ -78,6 +79,32 @@ describe("upsertSection", () => {
     const parsed = parseSummary("## Goal\ng\n");
     const next = upsertSection(parsed, "open-loops", "- loop", "next-steps");
     expect(next.sections.map(s => s.kind)).toEqual(["goal", "open-loops"]);
+  });
+
+  it("inserts after an anchor when placement.after is given", () => {
+    const parsed = parseSummary("## Goal\ng\n## Open Loops\n- loop\n## Next Steps\n1. n\n");
+    const next = upsertSection(parsed, "changes", "- delta", { after: "open-loops" });
+    // Order must be: Goal, Open Loops, Changes, Next Steps — changes sits
+    // directly behind Open Loops, not appended after Next Steps.
+    expect(next.sections.map(s => s.kind)).toEqual(["goal", "open-loops", "changes", "next-steps"]);
+  });
+
+  it("inserts before an anchor when placement.before is given", () => {
+    const parsed = parseSummary("## Goal\ng\n## Next Steps\n1. n\n");
+    const next = upsertSection(parsed, "changes", "- delta", { before: "next-steps" });
+    expect(next.sections.map(s => s.kind)).toEqual(["goal", "changes", "next-steps"]);
+  });
+
+  it("falls back to append when neither placement anchor exists", () => {
+    const parsed = parseSummary("## Goal\ng\n");
+    const next = upsertSection(parsed, "changes", "- delta", { after: "open-loops" });
+    expect(next.sections.map(s => s.kind)).toEqual(["goal", "changes"]);
+  });
+
+  it("treats a bare SectionKind as the legacy positional `before` arg", () => {
+    const parsed = parseSummary("## Goal\ng\n## Next Steps\n1. n\n");
+    const next = upsertSection(parsed, "open-loops", "- loop", "next-steps");
+    expect(next.sections.map(s => s.kind)).toEqual(["goal", "open-loops", "next-steps"]);
   });
 });
 
