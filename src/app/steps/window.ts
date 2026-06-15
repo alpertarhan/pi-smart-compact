@@ -45,13 +45,23 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
     if (accTokens >= rc.profileCfg.keepRecentTokens) { keepFrom = i; break; }
   }
   keepFrom = smartKeepBoundary(msgs, keepFrom, branch);
+  // `firstKeptEntryId` is required by Pi's compaction API. When the recent
+  // token walk never reaches `keepRecentTokens`, keepFrom is the empty suffix
+  // index (`msgs.length`), so resolve that fallback before applying pair
+  // safety. Otherwise a trailing toolResult can become the first kept entry
+  // while its matching assistant toolCall is compacted away.
+  if (keepFrom >= msgs.length) keepFrom = msgs.length - 1;
   keepFrom = guardToolCallBoundary(msgs, keepFrom);
+
+  if ((msgs[keepFrom]?.message as Record<string, unknown> | undefined)?.role === "toolResult") {
+    return null;
+  }
 
   const toCompact = msgs.slice(0, keepFrom);
   if (!toCompact.length) return null;
 
   const contextPercent = rc.ctx.model && totalTokens ? (totalTokens / rc.ctx.model.contextWindow) * 100 : 0;
-  const firstKeptId = (msgs[keepFrom]?.id ?? msgs[msgs.length - 1]?.id) as string;
+  const firstKeptId = msgs[keepFrom].id as string;
   // Use the shared helper instead of a local sentinel. A literal fallback
   // (e.g. "unknown") would compare equal across unrelated sessions and
   // defeat the cross-session leak guard in `consumePending`.
