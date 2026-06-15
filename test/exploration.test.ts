@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { parseExplorationReport, fallbackExplorationReport, shouldExplore } from "../src/phases/explore.ts";
+import { parseExplorationReport, fallbackExplorationReport, shouldExplore, buildExplorationReportFromParsed } from "../src/phases/explore.ts";
 import type { LlmMessage } from "../src/types.ts";
 
 describe("parseExplorationReport", () => {
@@ -29,6 +29,35 @@ describe("parseExplorationReport", () => {
     const report = parseExplorationReport(text, []);
     expect(report.boundaries.length).toBe(1);
     expect(report.boundaries[0].topic).toBe("X");
+  });
+});
+
+describe("buildExplorationReportFromParsed", () => {
+  it("returns a fallback for primitive JSON values (number/string/boolean)", () => {
+    // A model can return JSON that parses to a non-object (e.g. just `42`).
+    // The builder must not throw on such input — it falls back to an empty
+    // report so the pipeline can continue with heuristic boundaries.
+    expect(() => buildExplorationReportFromParsed(42, [])).not.toThrow();
+    expect(() => buildExplorationReportFromParsed("a string", [])).not.toThrow();
+    expect(() => buildExplorationReportFromParsed(true, [])).not.toThrow();
+    const report = buildExplorationReportFromParsed(42, []);
+    expect(report.boundaries.length).toBe(0);
+  });
+
+  it("returns a fallback for null", () => {
+    expect(() => buildExplorationReportFromParsed(null, [])).not.toThrow();
+    const report = buildExplorationReportFromParsed(null, []);
+    expect(report.boundaries.length).toBe(0);
+  });
+
+  it("parses a well-formed object", () => {
+    const report = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: 2, topic: "X", priority: "normal", confidence: 0.5 }], mainGoal: "g", sessionType: "review" },
+      [],
+    );
+    expect(report.boundaries.length).toBe(1);
+    expect(report.mainGoal).toBe("g");
+    expect(report.sessionType).toBe("review");
   });
 });
 

@@ -269,10 +269,16 @@ export function injectDeltaSection(summary: string, delta: CompactionDelta): str
 
   const parsed = parseSummary(summary);
   const hasOpenLoops = parsed.sections.some(s => s.kind === "open-loops");
-  // Place after Open Loops by anchoring before Next Steps when Open Loops
-  // exists; otherwise straight before Next Steps. The upsert helper falls
-  // back to append when neither anchor is found.
-  const updated = upsertSection(parsed, "changes", body, hasOpenLoops ? "next-steps" : "next-steps");
+  // Placement priority:
+  //   1. If an `Open Loops` section exists, anchor the delta directly *after*
+  //      it so the reader sees `… Open Loops → Changes → Next Steps …`.
+  //   2. Otherwise anchor directly *before* `Next Steps`.
+  // The `upsertSection` helper falls back to append-at-end when neither anchor
+  // is found, so the delta is never silently dropped.
+  const placement = hasOpenLoops
+    ? { after: "open-loops" as const }
+    : { before: "next-steps" as const };
+  const updated = upsertSection(parsed, "changes", body, placement);
   return renderSummary(updated);
 }
 

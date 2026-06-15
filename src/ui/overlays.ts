@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
@@ -25,7 +25,7 @@ import {
 } from "./dashboard-format.ts";
 import path from "node:path";
 
-export function renderContextBar(theme: any, pct: number, tokens: number, barLen = 24): string {
+export function renderContextBar(theme: Theme, pct: number, tokens: number, barLen = 24): string {
   const clamped = Math.min(Math.max(pct, 0), 100);
   const filled = Math.min(barLen, Math.round((clamped / 100) * barLen));
   const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
@@ -36,7 +36,7 @@ export function renderContextBar(theme: any, pct: number, tokens: number, barLen
   return theme.fg("text", "  Context: ") + theme.fg(color, bar) + theme.fg("text", " " + clamped + "%") + theme.fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
 }
 
-export function renderTokenBar(theme: any, before: number, after: number, label: string, barLen = 30): string {
+export function renderTokenBar(theme: Theme, before: number, after: number, label: string, barLen = 30): string {
   const ratio = before > 0 ? after / before : 0;
   const savedPct = Math.round((1 - ratio) * 100);
   const filled = Math.min(barLen, Math.round(ratio * barLen));

@@ -203,6 +203,8 @@ The code is organized into five layers, each with a single responsibility:
 | --- | --- |
 | `src/app/run-smart-compact.ts` | top-level pipeline orchestrator (was `src/core.ts`) |
 | `src/app/run-context.ts` | typed stage chain (`RcBase → Prepared → Windowed → … → Stated`) |
+| `src/app/pending-slot.ts` | encapsulated pending-compaction state cell (set/consume/clear/expire/mismatch) |
+| `src/app/explore-wrap.ts` | thin re-export shim that isolates the explore import for headless tests |
 | `src/app/steps/prepare.ts` | resolve config, auth, provider caps |
 | `src/app/steps/window.ts` | pick the prefix of messages to compact |
 | `src/app/steps/recover.ts` | recover full content for log-truncated messages |
@@ -221,7 +223,7 @@ Pure semantics; no I/O, no async, no globals.
 | File | Responsibility |
 | --- | --- |
 | `src/domain/summary-schema.ts` | canonical section list + heading regex |
-| `src/domain/summary-parse.ts` | parse/serialize summary into structured sections |
+| `src/domain/summary-parse.ts` | parse/serialize summary into structured sections; section placement (`before`/`after`) |
 
 ### Algorithm layer (`src/phases/`)
 
@@ -244,6 +246,7 @@ All external-world interaction (fs, time, network, services container).
 | `src/infra/llm-client.ts` | LLM client seam (production wraps with retry) |
 | `src/infra/llm-retry.ts` | 429/5xx exponential backoff + jitter + Retry-After |
 | `src/infra/services.ts` | per-run services container (metrics, clock, llm, tool-support cache) |
+| `src/infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
 
 ### Utility layer (`src/utils/`)
 
@@ -257,11 +260,13 @@ All external-world interaction (fs, time, network, services container).
 | `src/utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
 | `src/utils/damage.ts` | post-compaction regression signals |
 | `src/utils/id-fingerprint.ts` | compact SHA-256 fingerprint of entry-id arrays |
+| `src/utils/file-needles.ts` | path-suffix needles for error→file attribution |
+| `src/utils/file-ref-detect.ts` | fabricated file-reference detection (SemVer-rejecting) |
 | `src/utils/session-log.ts` | streaming JSONL parser for the Pi session log |
 | `src/utils/tokens.ts` | per-(provider,model) token estimation with EMA calibration |
 | `src/utils/type-guards.ts` | runtime validators for cross-version compatibility |
 | `src/utils/logger.ts` | stderr-prefixed log shim |
-| `src/utils/fingerprint.ts` | project fingerprint cache |
+| `src/utils/lru.ts` | small bounded LRU cache primitive |
 
 ### UI layer (`src/ui/`)
 

@@ -158,11 +158,15 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
   const md = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (md) json = md[1].trim();
 
-  let s = json.indexOf("{"), e = json.lastIndexOf("}");
-  if (s === -1 || e === -1) return fallbackExplorationReport(llmMessages);
-  let rawJson = json.slice(s, e + 1);
+  // Note: `startIdx`/`endIdx` (not `s`/`e`) so the `catch (err)` blocks below
+  // cannot accidentally shadow a single-letter outer binding. Earlier code
+  // used `e` for both lastIndexOf and the catch error, which compiled but
+  // was a confusing trap for future edits.
+  const startIdx = json.indexOf("{"), endIdx = json.lastIndexOf("}");
+  if (startIdx === -1 || endIdx === -1) return fallbackExplorationReport(llmMessages);
+  const rawJson = json.slice(startIdx, endIdx + 1);
 
-  try { return buildExplorationReportFromParsed(JSON.parse(rawJson), llmMessages); } catch (e) { log.debug("JSON parse attempt 1 failed", e); }
+  try { return buildExplorationReportFromParsed(JSON.parse(rawJson), llmMessages); } catch (err) { log.debug("JSON parse attempt 1 failed", err); }
 
   // Strip trailing commas + line/block comments. We deliberately do NOT do
   // a blanket `'` -> `"` replacement: a model that returns valid JSON
@@ -174,7 +178,7 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
     .replace(/,\s*([}\]])/g, "$1")
     .replace(/\/\/.*$/gm, "")
     .replace(/\/\*[\s\S]*?\*\//g, "");
-  try { return buildExplorationReportFromParsed(JSON.parse(cleaned), llmMessages); } catch (e) { log.debug("JSON parse attempt 2 (cleaned) failed", e); }
+  try { return buildExplorationReportFromParsed(JSON.parse(cleaned), llmMessages); } catch (err) { log.debug("JSON parse attempt 2 (cleaned) failed", err); }
 
   const boundaryMatch = rawJson.match(/"boundaries"\s*:\s*\[([\s\S]*?)\]/);
   if (boundaryMatch) {
@@ -186,12 +190,21 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
         priority: ["critical", "high", "normal", "low"].includes(b.priority) ? b.priority : "normal",
         confidence: Math.min(1, Math.max(0, b.confidence ?? 0.5)),
       })) };
-    } catch (e) { log.debug("Boundary JSON parse failed", e); }
+    } catch (err) { log.debug("Boundary JSON parse failed", err); }
   }
   return fallbackExplorationReport(llmMessages);
 }
 
 export function buildExplorationReportFromParsed(parsed: any, llmMessages: LlmMessage[]): ExplorationReport {
+  // Defend against primitives: a model can return JSON that parses to a
+  // number/string/boolean (e.g. just `42` or `"ok"`). The optional-chaining
+  // below tolerates that for most fields, but `parsed.statusAssessment?.done`
+  // on a primitive yields undefined safely — so the previous code happened to
+  // work. Make the object assumption explicit so a future field access can't
+  // introduce a TypeError on `(42).something`.
+  if (typeof parsed !== "object" || parsed === null) {
+    return fallbackExplorationReport(llmMessages);
+  }
   return {
     boundaries: (parsed.boundaries ?? []).filter((b: any) => typeof b?.afterIndex === "number").map((b: any) => ({
       afterIndex: Math.min(b.afterIndex, llmMessages.length - 2),
