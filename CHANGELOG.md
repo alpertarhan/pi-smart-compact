@@ -1,5 +1,38 @@
 # Changelog
 
+## [7.16.0] - 2026-06-18
+
+### Added
+- **Pinned never-compact context** (`smartCompact.pinPaths`) — file paths that must always survive compaction regardless of what the LLM summary includes. Surfaced in the summary's Files Read via a deterministic, LLM-free `ensurePinnedPaths` step in `buildState`.
+- **Damage auto-remediation** — `detectDamage` now collects the files the agent re-reads after a compaction (`reReadFiles`), persists them as remediation hints, and the *next* compaction re-preserves them (merged with `pinPaths`) so lost context stops being lost twice. Closes the detect → remediate loop.
+- **`/smart-compact restore`** — list, view, and restore backups. `listBackups`/`readBackupContent` make the previously write-only backups browsable; `showRestorePicker` + `showRestoreAction` + `showBackupViewer` provide a TUI; and a true restore forks from the current leaf and re-injects the pre-compaction content as context via `sendMessage` (graceful fallback to view on any failure).
+- `asBranchMessage` / `asSerializableMessages` boundary adapters in `src/infra/ai-messages.ts`, documenting why each cross-package upcast is sound.
+
+### Fixed
+- **session-log timestamp** — `normalizeLogMessage` stamped `Date.now()` (the recovery wall-clock) gated on a nonsensical content-shape condition, and dropped `toolName`. Now parses the log entry's real timestamp and preserves `toolName`.
+- **`synthesize` empty-batch guard** — `batches[0]` could be dereferenced when the chunk list was empty; now guarded with a deterministic fallback.
+- **`backupDir` config validation** — the one config key without type validation now rejects non-string values.
+- **result-screen timer** — the `setTimeout` used in the result-screen `Promise.race` is now cleared in a `finally` instead of lingering up to 5s.
+- **negative exploration boundary clamp** — `normalizeBoundaries` now lower-clamps `afterIndex` to 0 (LLMs occasionally emit negative values) and guards `confidence` against non-numeric values.
+- **`computeToolCharPercentage` dead branch** — removed the unreachable `block.content` path (text blocks carry `.text`).
+- **`ctx.ui.notify` invalid type** — restore used `"success"`, which `ctx.ui.notify` does not accept; corrected to `"info"`.
+- **state.ts basename recompute** — the per-error file-attribution basename is now precomputed once instead of recomputed for every (error × file) pair.
+
+### Changed
+- **Message cast normalization** — the explore feedback loop now builds native `Message[]` (assistant turns are the real `AssistantMessage` from `trackedComplete`, no longer downcast to `LlmMessage`); `recover`/`persist`/`extract` route through the documented `asBranchMessage`/`asSerializableMessages` adapters. Removes the lossy `as unknown as Message[]` casts and the silent dropping of `usage`/`api`/`provider`/`model`/`stopReason`.
+- **Tools cast normalization** — `EXPLORATION_TOOLS` is now declared as native `Tool[]` using typebox schemas, removing both `as unknown as Parameters<...>["tools"]` casts. Behavior-preserving: every pi-ai provider only serializes the schema, so real typebox schemas are wire-identical to the previous plain JSON-schema objects.
+- `failedChunkSummary` co-located with `assembleFallback` in `phases/synthesize.ts` and exported (was an untested module-private in the step module).
+- `buildExplorationReportFromParsed` parameter narrowed `any` → `unknown` with proper field validation.
+
+### Build
+- **pi runtime peers resolved 0.79.4 → 0.79.6** and **typebox 1.2.11 → 1.2.16** in the lockfile. `peerDependencies`/`devDependencies` keep their `*` wildcard ranges per the forward-compatibility policy from 7.15.0.
+
+### Tests
+- **+79 tests (414 → 493):** type-guards validators (`isValidSmartCompactDetails`/`sanitizeSmartCompactDetails`), synthesize fallback contracts (`assembleFallback`/`failedChunkSummary`), `ai-messages` adapters, pinned-paths injection, remediation-hints round-trip, backup restore (list/read/build-restore-message), and exploration boundary normalization (negative clamp, confidence guard, non-string mainGoal).
+
+### Docs
+- README, ARCHITECTURE, CONTRIBUTING, SECURITY, SUPPORT, RELEASE, and CODE_OF_CONDUCT redesigned; new `docs/assets/banner.svg` hero. CONTRIBUTING drift fixed (`core.ts`/`DEVPLAN.md`/`ROADMAP.md` references removed; repo map updated to the layered architecture).
+
 ## [7.15.1] - 2026-06-15
 
 ### Fixed
