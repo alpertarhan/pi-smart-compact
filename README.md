@@ -53,6 +53,7 @@ pi install git:github.com/alpertarhan/pi-smart-compact
 /smart-compact "focus on auth + unresolved follow-ups"
 /smart-compact metrics                      # profile / provider comparison
 /smart-compact dashboard                    # interactive TUI dashboard
+/smart-compact restore                      # list + view + restore backups
 ```
 
 Or let the agent call it as a tool on long sessions:
@@ -175,6 +176,7 @@ Add to `~/.pi/agent/settings.json`:
 | `backupEnabled` | `boolean` | `true` |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` |
 | `profiles` | per-profile overrides | built-ins |
+| `pinPaths` | `string[]` | `[]` (paths always preserved) |
 
 ### Profiles
 
@@ -194,10 +196,12 @@ The legacy config key `semanticCompact` is still accepted.
 - Verification scoring with deterministic patching **before** LLM patching
 - Hallucinated file-reference detection (SemVer-aware)
 - Open-loop injection + cross-compaction delta tracking
+- Pinned-path preservation (`pinPaths`) — a deterministic, LLM-free guarantee
+- Damage auto-remediation — re-read files feed forward and get re-preserved next compaction
 
 **Safety**
 
-- Conversation backups before compaction (retention-pruned)
+- Conversation backups before compaction (retention-pruned), browsable + restorable via `/smart-compact restore`
 - `toolCall` / `toolResult` pair integrity at the compaction boundary
 - Cross-session leak guard on the pending summary
 - Session-log recovery that bypasses truncation of older tool results
@@ -246,6 +250,7 @@ The extension writes under `~/.pi/agent/`:
 | `.cache/smart-compact/projects/<projectId>.json` | project fingerprint |
 | `.cache/smart-compact/states/<projectId>.json` | reusable compaction state |
 | `.cache/smart-compact/damage-reports.jsonl` | regression signals |
+| `.cache/smart-compact/remediation-<projectId>.json` | files to re-preserve after damage |
 
 ## Development
 

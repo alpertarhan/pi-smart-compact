@@ -168,7 +168,7 @@ reusable state.
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 
 **Important TTLs:** pending in-memory compaction 5 min · exploration
-tool-support cache 30 min · extraction cache 1 h · compaction state 7 d.
+tool-support cache 30 min · extraction cache 1 h · compaction state 7 d · remediation hints 7 d.
 
 ## Concurrency & safety model
 
@@ -306,6 +306,7 @@ All external-world interaction.
 | `infra/llm-retry.ts` | 429/5xx exponential backoff + jitter + Retry-After |
 | `infra/services.ts` | per-run services container |
 | `infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
+| `infra/ai-messages.ts` | boundary adapters between `LlmMessage` and pi-ai `Message` |
 
 ### Utility layer (`src/utils/`)
 
@@ -313,11 +314,11 @@ All external-world interaction.
 | --- | --- |
 | `utils/extraction.ts` | deterministic fact extraction (files, errors, decisions) |
 | `utils/pruning.ts` | redundancy removal on the message list |
-| `utils/state.ts` | structured state, open loops, delta |
-| `utils/helpers.ts` | config, backups, batching, shared helpers |
+| `utils/state.ts` | structured state, open loops, delta, pinned-path preservation |
+| `utils/helpers.ts` | config, backups, batching, shared helpers, backup list/restore |
 | `utils/cache.ts` | metrics log + extraction prefix cache + dashboards |
 | `utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
-| `utils/damage.ts` | post-compaction regression signals |
+| `utils/damage.ts` | post-compaction regression signals + remediation hints |
 | `utils/id-fingerprint.ts` | compact SHA-256 fingerprint of entry-id arrays |
 | `utils/file-needles.ts` | path-suffix needles for error→file attribution |
 | `utils/file-ref-detect.ts` | fabricated file-reference detection (SemVer-rejecting) |
