@@ -61,6 +61,55 @@ describe("buildExplorationReportFromParsed", () => {
   });
 });
 
+describe("buildExplorationReportFromParsed — boundary normalization", () => {
+  const fourMsgs: LlmMessage[] = [1, 2, 3, 4].map(() => ({ role: "user", content: "x" }));
+
+  it("clamps a negative afterIndex up to 0", () => {
+    const report = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: -5, topic: "X", priority: "normal", confidence: 0.5 }] }, [],
+    );
+    expect(report.boundaries[0].afterIndex).toBe(0);
+  });
+
+  it("clamps afterIndex down to llmLength - 2", () => {
+    const report = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: 100, topic: "X", priority: "normal", confidence: 0.5 }] }, fourMsgs,
+    );
+    // fourMsgs.length = 4 → maxIndex = max(0, 4 - 2) = 2
+    expect(report.boundaries[0].afterIndex).toBe(2);
+  });
+
+  it("falls back to 0.5 confidence when confidence is non-numeric", () => {
+    const report = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: 1, topic: "X", priority: "normal", confidence: "high" }] }, [],
+    );
+    expect(report.boundaries[0].confidence).toBe(0.5);
+  });
+
+  it("clamps a numeric confidence into [0, 1]", () => {
+    const over = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: 1, topic: "X", priority: "normal", confidence: 5 }] }, [],
+    );
+    expect(over.boundaries[0].confidence).toBe(1);
+    const under = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: 1, topic: "X", priority: "normal", confidence: -3 }] }, [],
+    );
+    expect(under.boundaries[0].confidence).toBe(0);
+  });
+
+  it("defaults an invalid priority to normal", () => {
+    const report = buildExplorationReportFromParsed(
+      { boundaries: [{ afterIndex: 1, topic: "X", priority: "urgent", confidence: 0.5 }] }, [],
+    );
+    expect(report.boundaries[0].priority).toBe("normal");
+  });
+
+  it("returns empty mainGoal for a non-string value", () => {
+    const report = buildExplorationReportFromParsed({ mainGoal: 42 }, []);
+    expect(report.mainGoal).toBe("");
+  });
+});
+
 describe("fallbackExplorationReport", () => {
   it("extracts main goal from messages", () => {
     const msgs: LlmMessage[] = [

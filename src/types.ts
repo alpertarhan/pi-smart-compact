@@ -28,6 +28,9 @@ export interface CompactConfig {
   backupEnabled: boolean;
   backupDir: string;
   minContextPercent: number; // Don't compact below this threshold
+  /** File paths that must always survive compaction, regardless of what the
+   *  LLM summary chooses to include. Surfaced in the summary's Files Read. */
+  pinPaths: string[];
 }
 
 export interface ProviderCapabilities {

@@ -7,8 +7,8 @@ import type { LlmMessage, SmartCompactDetails } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 import { extractText } from "./extraction.ts";
 import * as log from "./logger.ts";
-import { damageReportsFile } from "../infra/paths.ts";
-import { appendLineLocked } from "../infra/fs.ts";
+import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
+import { appendLineLocked, writeJsonSync, readJsonSync } from "../infra/fs.ts";
 
 export interface RegressionSignal {
   type: "re-read" | "re-question" | "contradiction" | "user-complaint";
@@ -20,6 +20,9 @@ export interface DamageReport {
   signals: RegressionSignal[];
   damageScore: number; // 0 = no damage, 100 = severe damage
   summary: string;
+  /** Distinct file paths the agent re-read after compaction — fed forward as
+   *  remediation hints so the next compaction preserves them. */
+  reReadFiles: string[];
 }
 
 // User complaint patterns indicating compaction may have lost important info
@@ -41,6 +44,7 @@ export function detectDamage(
   details: SmartCompactDetails,
 ): DamageReport {
   const signals: RegressionSignal[] = [];
+  const reReadFiles: string[] = [];
   const compactedFiles = new Set(details.modifiedFiles.map(f => f.toLowerCase()));
   const compactedReadFiles = new Set(details.readFiles.map(f => f.toLowerCase()));
 
@@ -62,6 +66,7 @@ export function detectDamage(
                 severity: "medium",
                 detail: "Agent re-read compacted file: " + fp,
               });
+              if (!reReadFiles.includes(fp)) reReadFiles.push(fp);
             }
           }
         }
@@ -119,6 +124,7 @@ export function detectDamage(
     summary: parts.length
       ? "Damage score: " + damageScore + "/100 — " + parts.join(", ")
       : "No regression signals detected (score: 0)",
+    reReadFiles,
   };
 }
 
@@ -144,4 +150,31 @@ export function logDamageReport(
     // Lock the JSONL append so concurrent pi sessions cannot interleave bytes.
     appendLineLocked(damageReportsFile(), JSON.stringify(entry));
   } catch (e) { log.warn("logDamageReport failed", e); }
+}
+
+const REMEDIATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Persist the files the agent re-read after a compaction so the NEXT
+ * compaction treats them as must-preserve (remediation). Overwrites with the
+ * latest set; a TTL bounds how long stale hints linger.
+ */
+export function writeRemediationHints(projectId: string, files: string[]): void {
+  if (!files.length) return;
+  const cleaned = [...new Set(files.map(f => (f ?? "").trim()).filter(f => f.length > 0))];
+  if (!cleaned.length) return;
+  try {
+    writeJsonSync(remediationHintsFile(projectId), { files: cleaned, updatedAt: Date.now() });
+  } catch (e) { log.warn("writeRemediationHints failed", e); }
+}
+
+/**
+ * Read remediation hints for a project. Returns [] when absent, malformed,
+ * or older than the TTL.
+ */
+export function readRemediationHints(projectId: string): string[] {
+  const data = readJsonSync<{ files?: unknown; updatedAt?: number }>(remediationHintsFile(projectId));
+  if (!data || !Array.isArray(data.files)) return [];
+  if (typeof data.updatedAt === "number" && Date.now() - data.updatedAt > REMEDIATION_TTL_MS) return [];
+  return data.files.filter((f): f is string => typeof f === "string");
 }

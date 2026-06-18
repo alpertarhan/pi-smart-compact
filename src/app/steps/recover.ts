@@ -12,12 +12,13 @@
 import type { WindowedRc, RecoveredRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { asBranchMessage } from "../../infra/ai-messages.ts";
 import type { LlmMessage } from "../../types.ts";
 import { hasTruncatedMessages, resolveCompactionMessages } from "../../utils/session-log.ts";
 
 export function recoverSessionLog(rc: WindowedRc): RecoveredRc {
   let llmMessages = convertToLlm(
-    rc.toCompact.map(e => e.message as import("@earendil-works/pi-ai").Message),
+    rc.toCompact.map(e => asBranchMessage(e.message)),
   ) as LlmMessage[];
 
   if (hasTruncatedMessages(llmMessages)) {

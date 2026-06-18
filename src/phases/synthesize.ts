@@ -216,3 +216,17 @@ export function assembleFallback(summaries: ChunkSummary[], extraction: Structur
     "## Topics Covered", ...summaries.map(s => "- **" + s.topic + "** [" + s.priority + "]: " + s.summary.slice(0, 200)),
   ].join("\n");
 }
+
+/**
+ * Build a placeholder {@link ChunkSummary} when a batch's LLM call failed, so the
+ * assembly step still has something deterministic to merge rather than
+ * dropping the segment silently. Co-located with `assembleFallback` so both
+ * fallback contracts live in the algorithm layer (no I/O, trivially testable).
+ */
+export function failedChunkSummary(ch: LlmChunk): ChunkSummary {
+  return {
+    topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
+    summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, 300),
+    keyDecisions: [], filesModified: [], filesRead: [], priority: ch.priority,
+  };
+}

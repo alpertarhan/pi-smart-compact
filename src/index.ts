@@ -8,11 +8,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile, PendingCompaction, Cell } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./constants.ts";
-import { loadConfig, extractUserNote } from "./utils/helpers.ts";
+import { loadConfig, extractUserNote, listBackups, readBackupContent, buildRestoreMessage } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
 import { buildMetricsReport, readMetricsLog, writeMetricsDashboard } from "./utils/cache.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
-import { showCompactUI, showMetricsDashboardUI } from "./ui/overlays.ts";
+import { showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction } from "./ui/overlays.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import * as log from "./utils/logger.ts";
@@ -128,6 +128,43 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
             }
           } else {
             ctx.ui.notify(buildMetricsReport(), "info");
+          }
+          return;
+        }
+        if (flags.includes("restore")) {
+          const backups = listBackups();
+          if (!backups.length) { ctx.ui.notify("No smart-compact backups found", "info"); return; }
+          const selected = await showRestorePicker(ctx, backups);
+          if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
+          const content = readBackupContent(selected);
+          if (!content) { ctx.ui.notify("Could not read backup: " + selected, "error"); return; }
+          const action = await showRestoreAction(ctx, selected);
+          if (action === "restore") {
+            // The command context exposes a read-only session manager, so we
+            // can't inject into the *current* session. True restore forks from
+            // the current leaf (preserving recent work) and injects the backup
+            // as context via the replacement session's sendMessage.
+            const branch = ctx.sessionManager.getBranch() as Array<{ id?: string }>;
+            const leafId = branch.length ? branch[branch.length - 1].id : undefined;
+            if (!leafId) {
+              ctx.ui.notify("Cannot restore: no session leaf to fork from — showing content instead", "warning");
+              await showBackupViewer(ctx, content, selected);
+              return;
+            }
+            try {
+              const result = await ctx.fork(leafId, {
+                withSession: async (rctx) => {
+                  await rctx.sendMessage(buildRestoreMessage(content, selected), { deliverAs: "nextTurn" });
+                },
+              });
+              ctx.ui.notify(result.cancelled ? "Restore cancelled" : "Restored backup into a new session", "info");
+            } catch (e) {
+              log.warn("Restore fork failed", e);
+              ctx.ui.notify("Restore failed (" + (e instanceof Error ? e.message : String(e)) + ") — showing content instead", "warning");
+              await showBackupViewer(ctx, content, selected);
+            }
+          } else if (action === "view") {
+            await showBackupViewer(ctx, content, selected);
           }
           return;
         }

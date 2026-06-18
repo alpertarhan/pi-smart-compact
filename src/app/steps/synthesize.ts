@@ -21,7 +21,7 @@
 import type { ChunkSummary, TopicBoundary } from "../../types.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import { exploreConversation, shouldExplore } from "../explore-wrap.ts";
-import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback } from "../../phases/synthesize.ts";
+import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback, failedChunkSummary } from "../../phases/synthesize.ts";
 import { MAX_EXPLORATION_ROUNDS } from "../../constants.ts";
 import { createBatches } from "../../utils/helpers.ts";
 import { extractText } from "../../utils/extraction.ts";
@@ -157,10 +157,17 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     const concurrency = rc.providerCaps.concurrencyLimit;
 
     if (totalBatches <= 1) {
-      try {
-        summaries.push(...await summarizeBatch(batches[0], extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services));
-      } catch (err) {
-        summaries.push(...batches[0].map(ch => failedChunkSummary(ch)));
+      const single = batches[0];
+      if (single) {
+        try {
+          summaries.push(...await summarizeBatch(single, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services));
+        } catch (err) {
+          summaries.push(...single.map(ch => failedChunkSummary(ch)));
+        }
+      } else {
+        // Defensive: empty chunk list (no messages to summarize). Skip batch
+        // summarization; the deterministic assembleFallback below covers it.
+        rc.vlog("Synthesize: 0 batches — skipping summarization, using fallback assembly");
       }
     } else {
       const results: ChunkSummary[][] = new Array(totalBatches);
@@ -236,10 +243,3 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   return advance<ExtractedRc, SynthesizedRc>(out, "_synthesized");
 }
 
-function failedChunkSummary(ch: import("../../types.ts").LlmChunk): ChunkSummary {
-  return {
-    topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
-    summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, 300),
-    keyDecisions: [], filesModified: [], filesRead: [], priority: ch.priority,
-  };
-}

@@ -1,395 +1,271 @@
-# pi-smart-compact
+<div align="center">
 
-[CI](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml) · [npm](https://www.npmjs.com/package/pi-smart-compact) · [MIT License](./LICENSE) · [Pi extension](https://github.com/earendil-works/pi)
+<img src="./docs/assets/banner.svg" alt="pi-smart-compact" width="860" />
 
-<p align="center">
-  <img src="./docs/assets/pi-smart-compact.png" alt="pi-smart-compact" width="420" />
-</p>
+[![CI](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml/badge.svg)](https://github.com/alpertarhan/pi-smart-compact/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/pi-smart-compact?color=60a5fa)](https://www.npmjs.com/package/pi-smart-compact)
+[![license](https://img.shields.io/npm/l/pi-smart-compact?color=22c55e)](./LICENSE)
+[![Pi extension](https://img.shields.io/badge/Pi-extension-fbbf24)](https://github.com/earendil-works/pi)
 
-> Verification-oriented smart compaction for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
+**Verification-oriented smart compaction for the [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).**
 
-`pi-smart-compact` replaces blind conversation trimming with a structured compaction pipeline that tries to preserve what an agent actually needs to continue working: the goal, modified files, unresolved errors, decisions, constraints, and open follow-up loops.
+</div>
 
-It uses an **EESV** pipeline:
+Default compaction trims your conversation blind. `pi-smart-compact` keeps what
+the agent actually needs to continue — the **goal, changed files, unresolved
+errors, decisions, constraints, and open loops** — through a verified
+**Extract → Explore → Synthesize → Verify** pipeline.
 
-**Extract → Explore → Synthesize → Verify**
-
-## Highlights
-
-- **Pi-native integration** — `/smart-compact`, `smart_compact`, and `session_before_compact` support.
-- **Verification-oriented output** — deterministic extraction and repair before trusting LLM synthesis.
-- **Adaptive cost profile** — skips unnecessary work on small sessions and uses chunking only when useful.
-- **Operational safety** — pending summaries expire, backups are available, and metrics make regressions visible.
-- **Companion-friendly** — designed to coexist with context hygiene tools such as `pi-toolkit`.
-
-Under the hood, the design is grounded in two core ideas:
-
-- **agentic compaction**: let the system inspect and reason about the session instead of collapsing everything into generic prose
-- **Kamradt-style chunking**: break large conversations into more coherent segments before synthesis
+> Facts first, synthesis second, verification last.
 
 ---
 
-## What this project is
+## Why
 
-This package is a **Pi extension** with three integration surfaces:
+Default compaction produces a vague recap and quietly drops the operational
+context that matters most during coding. The result is the classic
+*"didn't we already fix this?"* loop.
 
-| Surface | Purpose |
+| Default compaction | `pi-smart-compact` |
 | --- | --- |
-| `/smart-compact` | manual compaction from the chat UI |
-| `session_before_compact` | auto-run before Pi's default compaction |
-| `smart_compact` tool | agent-callable compaction for long sessions |
+| Trims by token count | Extracts facts deterministically (zero LLM) |
+| Generic prose recap | Structured working-state summary |
+| Loses files / errors / decisions | Preserves them, then **verifies** they survived |
+| No regression signal | Damage detection + metrics dashboard |
 
-The extension stages a short-lived pending summary in memory, then hands it back to Pi when compaction is applied.
-
----
-
-## Project status
-
-This is an actively maintained Pi extension. The public API is intentionally small, but the internals are still evolving as Pi's compaction lifecycle and extension APIs mature. Pin versions in production workflows if compaction behavior is mission-critical.
-
-## Compatibility note
-
-`pi-smart-compact` sits close to Pi's compaction path: it registers `session_before_compact`, reads the active branch and session log, stages a pending summary, and may call Pi's native compaction flow from `/smart-compact`.
-
-Because of that, use extra care with extensions that also manipulate:
-
-- **compaction hooks** — especially extensions that return a custom result from `session_before_compact`
-- **session / branch history** — rewriting, pruning, reordering, or replacing entries before compaction
-- **message identity** — removing entry IDs, tool-call IDs, or tool-result metadata used to align log entries
-- **tool output content** — truncating or rewriting `toolResult` messages before extraction
-- **compaction boundaries** — moving the keep/discard split or splitting `toolCall` / `toolResult` pairs
-- **session log storage** — replacing or deleting Pi's `.jsonl` logs under `~/.pi/agent/sessions`
-
-It is intentionally compatible with, and recommended alongside, [`pi-toolkit`](https://github.com/ersintarhan/pi-toolkit): pi-toolkit handles everyday context hygiene such as anchors, pivots, status lines, and old tool-output trimming; `pi-smart-compact` handles high-pressure verified compaction. The integration protects recent pi-toolkit anchors and can recover original tool outputs from the session log when older tool results were trimmed.
-
-If you use another automatic compaction or context-rewriting extension, prefer enabling only one `session_before_compact` owner unless the hook order and returned values are explicitly coordinated.
-
----
-
-## Why it exists
-
-Default compaction often loses the parts that matter most during coding work:
-
-- which files were actually changed
-- which errors are still unresolved
-- what the user explicitly asked for
-- what decisions already won
-- what should happen next
-
-`pi-smart-compact` is built to preserve that operational context instead of producing a vague recap.
-
----
-
-## How it works
-
-```mermaid
-flowchart LR
-    A[Extract<br/>deterministic facts] --> B[Explore<br/>optional targeted analysis]
-    B --> C[Synthesize<br/>single-pass or chunked summary]
-    C --> D[Verify<br/>score gaps and repair]
-    D --> E[Return smart compaction to Pi]
-```
-
-### Pipeline summary
-
-1. **Extract**
-   - deterministically pulls files, errors, decisions, constraints, topics, and open loops from the session
-2. **Explore**
-   - optionally inspects the conversation more deeply when the session is complex
-3. **Synthesize**
-   - creates either a single-pass summary or a chunked hierarchical summary
-4. **Verify**
-   - checks the result against extracted facts and patches missing critical details
-
-In short: **facts first, synthesis second, verification last**.
-
----
-
-## What it tries to preserve
-
-- user goal
-- constraints and preferences
-- modified / read / deleted files
-- unresolved and resolved errors
-- key decisions
-- open follow-up work
-- critical context needed for the next turn
-- delta from the previous compaction
-
----
-
-## Installation
-
-### npm / Pi package
+## Install
 
 ```bash
 pi install npm:pi-smart-compact
 ```
 
-### GitHub
+From GitHub:
 
 ```bash
 pi install git:github.com/alpertarhan/pi-smart-compact
 ```
 
-### Local development
-
-```bash
-cd ~/.pi/agent/extensions
-git clone https://github.com/alpertarhan/pi-smart-compact.git
-cd pi-smart-compact
-bun install
-bun run build
-```
-
----
-
 ## Quick start
 
-### Interactive
-
 ```bash
-/smart-compact
-```
-
-With no arguments, the extension opens a small picker for:
-
-1. model
-2. profile
-
-### Direct command examples
-
-```bash
+/smart-compact                              # interactive — pick model + profile
 /smart-compact anthropic/claude-sonnet-4 balanced
-/smart-compact dry-run
-/smart-compact debug
-/smart-compact metrics
-/smart-compact dashboard
-/smart-compact "focus on auth changes and unresolved follow-up work"
+/smart-compact "focus on auth + unresolved follow-ups"
+/smart-compact metrics                      # profile / provider comparison
+/smart-compact dashboard                    # interactive TUI dashboard
 ```
 
-### Tool usage
+Or let the agent call it as a tool on long sessions:
 
-```json
+```jsonc
 {
   "name": "smart_compact",
-  "parameters": {
-    "profile": "balanced",
-    "verbose": false,
-    "dry_run": false,
-    "report": false,
-    "dashboard": false
-  }
+  "parameters": { "profile": "balanced", "dashboard": false }
 }
 ```
 
-The tool prepares a pending smart summary and lets Pi consume it on the next natural compaction.
+Auto-compaction also runs before Pi's native compact once context pressure
+crosses your threshold (default 60% **actual** context usage).
 
----
+## How it works
 
-## Usage notes
+```mermaid
+flowchart LR
+    A["Extract<br/>deterministic facts<br/><i>0 LLM calls</i>"] --> B["Explore<br/>optional deep<br/>analysis"]
+    B --> C["Synthesize<br/>single-pass or<br/>chunked summary"]
+    C --> D["Verify<br/>score gaps,<br/>repair"]
+    D --> E["Return verified<br/>summary to Pi"]
+```
 
-- auto/tool compaction is skipped when the context is still small enough (default: below 60% actual context usage)
-- explicit manual `/smart-compact` commands bypass the 60% adaptive gate because the user intentionally requested compaction
-- pi-toolkit `tool=XX%` status means tool-output ratio, **not** context fullness; smart-compact uses actual `context=XX%`
-- the tool path does **not** compact the conversation mid-turn
-- pending summaries are kept in memory for **5 minutes**
-- exploration is adaptive and may be skipped for simple sessions
-- use `/smart-compact metrics` for profile/provider comparisons
-- use `/smart-compact dashboard` to open the interactive TUI dashboard (overview, latest run, current session, recent runs, or write HTML)
+| Stage | What it does |
+| --- | --- |
+| **Extract** | Deterministically pulls files, errors, decisions, constraints, topics, and open loops — no LLM, the ground truth. |
+| **Explore** | Optionally inspects the conversation more deeply when the session is complex. |
+| **Synthesize** | Single-pass for short sessions, Kamradt-style chunked + assembled for long ones. |
+| **Verify** | Scores the result against extracted facts and patches missing critical details. |
 
-This keeps the extension helpful without forcing extra work when it is not needed.
+**What it preserves:** user goal · constraints & preferences · modified / read /
+deleted files · unresolved & resolved errors · key decisions · open follow-up
+work · critical next-turn context · the delta since the previous compaction.
 
----
+## Integration surfaces
+
+| Surface | When | Detail |
+| --- | --- | --- |
+| `/smart-compact` | Manual | Interactive picker or direct args; bypasses the adaptive gate. |
+| `session_before_compact` | Auto | Runs before Pi's native compaction when context pressure is high. |
+| `smart_compact` tool | Agent | Prepares a pending summary; Pi applies it on the next natural compact. |
+
+A short-lived pending summary is staged in memory (5-minute TTL) and handed to
+Pi when compaction is applied.
+
+## Example output
+
+A generated summary follows a stable, structured contract:
+
+```markdown
+## Goal
+Add retry/backoff to the LLM client so transient 429/5xx don't abort compaction.
+
+## Constraints & Preferences
+- [requirement] never compact mid-turn from the tool path
+
+## Progress
+### Done
+- [x] Added `withRetry` wrapper in src/infra/llm-retry.ts
+### In Progress
+- [ ] Wire retry client into the services container
+### Blocked
+- None
+
+## Key Decisions
+- **Honor Retry-After verbatim**: providers that set it know their limits best.
+
+## Files Modified
+- src/infra/llm-retry.ts
+- src/infra/llm-client.ts
+
+## Files Read
+- src/app/run-smart-compact.ts
+
+## Open Loops
+- [high] Retried but unresolved: AbortSignal ignored by some providers
+
+## Changes Since Last Compaction
+- New files touched: src/infra/llm-retry.ts
+- New loops: AbortSignal ignored by some providers
+
+## Next Steps
+1. Add an outer hard-timeout as a second line of defense
+
+## Critical Context
+- 408/425/429/5xx are retriable; 4xx (other) fails fast
+
+## Topics Covered
+- LLM retry wrapper (high)
+```
+
+A machine-readable `CompactionState` is built alongside it for reuse across
+later compactions (delta tracking, damage detection).
 
 ## Configuration
 
-Add this to `~/.pi/agent/settings.json`:
+Add to `~/.pi/agent/settings.json`:
 
 ```json
 {
   "smartCompact": {
     "profile": "balanced",
     "summaryModel": "anthropic/claude-sonnet-4",
-    "segmentationModel": "anthropic/claude-haiku-3",
     "autoTrigger": true,
-    "autoTriggerTimeoutMs": 120000,
     "minContextPercent": 60,
-    "backupEnabled": true,
-    "profiles": {
-      "balanced": {
-        "summaryBudgetTokens": 6000,
-        "keepRecentTokens": 20000
-      }
-    }
+    "backupEnabled": true
   }
 }
 ```
 
-### Supported keys
-
 | Key | Type | Default |
 | --- | --- | --- |
 | `profile` | `light \| balanced \| aggressive` | `balanced` |
-| `summaryModel` | `string \| null` | `null` |
+| `summaryModel` | `string \| null` | `null` (uses session model) |
 | `segmentationModel` | `string \| null` | `null` |
 | `autoTrigger` | `boolean` | `true` |
 | `autoTriggerTimeoutMs` | `number` | `120000` |
 | `minContextPercent` | `number` | `60` |
 | `backupEnabled` | `boolean` | `true` |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` |
-| `profiles` | partial per-profile overrides | built-ins |
+| `profiles` | per-profile overrides | built-ins |
 
 ### Profiles
 
-| Profile | Summary budget | Keep recent | Typical use |
+| Profile | Summary budget | Keep recent | Use when |
 | --- | ---: | ---: | --- |
 | `light` | 10000 | 30000 | preserve more detail |
-| `balanced` | 6000 | 20000 | default general use |
+| `balanced` | 6000 | 20000 | default, general use |
 | `aggressive` | 3000 | 10000 | tighter summaries |
 
-### Backward compatibility
-
-The extension still accepts the old config key `semanticCompact`, but `smartCompact` is the current key.
-
----
-
-## Output contract
-
-Generated summaries are expected to use this structure:
-
-```markdown
-## Goal
-## Constraints & Preferences
-## Progress
-### Done
-### In Progress
-### Blocked
-## Key Decisions
-## Files Modified
-## Files Read
-## Open Loops
-## Changes Since Last Compaction
-## Next Steps
-## Critical Context
-## Topics Covered
-```
-
-The extension also builds a structured `CompactionState` for reuse across later compactions.
-
----
+The legacy config key `semanticCompact` is still accepted.
 
 ## Safeguards
 
-The current design includes:
+**Correctness**
 
-- deterministic extraction before summarization
-- adaptive exploration
-- chunked synthesis for larger sessions
-- deterministic verification scoring
-- deterministic patching before LLM patching
-- hallucinated file-reference detection
-- open-loop injection
-- project fingerprinting and delta tracking
-- provider-specific timeout and single-pass strategies
-- multimodal attachment metadata preservation
-- backup creation before compaction
-- metrics logging, profile/provider comparison, and damage detection
+- Deterministic extraction before any synthesis
+- Verification scoring with deterministic patching **before** LLM patching
+- Hallucinated file-reference detection (SemVer-aware)
+- Open-loop injection + cross-compaction delta tracking
 
----
+**Safety**
+
+- Conversation backups before compaction (retention-pruned)
+- `toolCall` / `toolResult` pair integrity at the compaction boundary
+- Cross-session leak guard on the pending summary
+- Session-log recovery that bypasses truncation of older tool results
+
+**Observability**
+
+- Metrics logging with profile / provider comparison
+- Post-compaction damage (regression) detection
+- Interactive TUI + HTML dashboards
+
+## Usage notes
+
+- Auto / tool compaction is skipped while context is small (below 60% actual usage).
+- Manual `/smart-compact` bypasses that gate — you asked for it.
+- `pi-toolkit`'s `tool=XX%` means tool-output ratio, **not** context fullness;
+  smart-compact uses actual `context=XX%`.
+- The tool path does **not** compact mid-turn (it stages a pending summary).
+- Exploration is adaptive and may be skipped for simple sessions.
+
+## Companions & compatibility
+
+`pi-smart-compact` is designed to coexist with — and recommended alongside —
+[`pi-toolkit`](https://github.com/ersintarhan/pi-toolkit). pi-toolkit handles
+everyday context hygiene (anchors, pivots, status lines, old tool-output
+trimming); smart-compact handles high-pressure verified compaction. The
+integration protects recent pi-toolkit anchors and recovers original tool
+outputs from the session log.
+
+Because smart-compact sits close to Pi's compaction path, take extra care with
+extensions that also rewrite compaction hooks, branch history, entry IDs, tool
+output, or the compaction boundary. If you run another automatic compaction /
+context-rewriting extension, prefer a single `session_before_compact` owner
+unless hook order is explicitly coordinated.
 
 ## Runtime artifacts
 
-At runtime, the extension writes to paths under `~/.pi/agent/`, including:
+The extension writes under `~/.pi/agent/`:
 
-- `settings.json`
-- `compact-backups/`
-- `.cache/compact-extraction-<session>.json`
-- `.cache/compact-metrics.jsonl`
-- `.cache/smart-compact-report.html`
-- `.cache/smart-compact/projects/<projectId>.json`
-- `.cache/smart-compact/states/<projectId>.json`
-- `.cache/smart-compact/damage-reports.jsonl`
-
----
-
-## Repository layout
-
-```text
-.
-├── src/
-│   ├── index.ts              # extension registration + command routing
-│   ├── constants.ts          # version, thresholds, prompts
-│   ├── types.ts              # shared types
-│   ├── app/                  # orchestration layer
-│   │   ├── run-smart-compact.ts   # pipeline orchestrator (was core.ts)
-│   │   ├── run-context.ts         # typed stage chain
-│   │   ├── pending-slot.ts        # encapsulated pending-compaction state cell
-│   │   ├── explore-wrap.ts        # explore re-export shim
-│   │   └── steps/                 # 10 stage modules
-│   │       ├── prepare.ts   →   resolves config + auth
-│   │       ├── window.ts    →   picks compaction window
-│   │       ├── recover.ts   →   recovers truncated messages
-│   │       ├── tier.ts      →   chooses compaction tier
-│   │       ├── extract.ts   →   pruning + extraction + cache
-│   │       ├── synthesize.ts→   single-pass / EESV summarization
-│   │       ├── verify.ts    →   structural verify + repair
-│   │       ├── state.ts     →   state machine + open loops
-│   │       ├── persist.ts   →   apply compaction
-│   │       └── metrics.ts   →   success / failure metrics
-│   ├── domain/               # pure semantics (no I/O)
-│   │   ├── summary-schema.ts
-│   │   └── summary-parse.ts
-│   ├── phases/               # algorithms
-│   │   ├── explore.ts
-│   │   ├── synthesize.ts
-│   │   └── verify.ts
-│   ├── infra/                # external-world interaction
-│   │   ├── fs.ts                # atomic writes, advisory locks
-│   │   ├── paths.ts             # canonical paths
-│   │   ├── git.ts               # git-root discovery (cached)
-│   │   ├── clock.ts             # injectable clock
-│   │   ├── llm-client.ts        # LLM client seam
-│   │   ├── llm-retry.ts         # 429/5xx backoff
-│   │   ├── services.ts          # per-run services container
-│   │   └── session-identity.ts # robust session-id resolution
-│   ├── ui/                   # TUI overlays + dashboard
-│   │   ├── overlays.ts
-│   │   └── dashboard-format.ts
-│   └── utils/                # 15 focused utility modules
-├── test/                     # 414 tests across 36 files
-├── docs/
-├── dist/
-└── package.json
-```
-
-See `ARCHITECTURE.md` for the full responsibility breakdown of each layer.
-
----
+| Path | Purpose |
+| --- | --- |
+| `settings.json` | configuration (read) |
+| `compact-backups/` | conversation backups (retention-pruned) |
+| `.cache/compact-extraction-<session>.json` | incremental extraction cache |
+| `.cache/compact-metrics.jsonl` | metrics log |
+| `.cache/smart-compact-report.html` | HTML dashboard |
+| `.cache/smart-compact/projects/<projectId>.json` | project fingerprint |
+| `.cache/smart-compact/states/<projectId>.json` | reusable compaction state |
+| `.cache/smart-compact/damage-reports.jsonl` | regression signals |
 
 ## Development
 
 ```bash
 bun install
-bun test
-bun run build
-bun run typecheck
+bun run typecheck   # tsc --noEmit
+bun test            # full test suite
+bun run build       # dist/ output for publishing
 ```
 
-Build output is published from `dist/`. Pull requests are expected to pass the same verification in GitHub Actions before merge.
+Pull requests run the same verification in GitHub Actions before merge.
 
----
+## Documentation
 
-## Project docs
-
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system design, execution model, layer responsibilities
 - [`CHANGELOG.md`](./CHANGELOG.md) — release history
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system design and execution model
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contributor workflow and expectations
 - [`SECURITY.md`](./SECURITY.md) — vulnerability reporting and data-handling notes
 - [`SUPPORT.md`](./SUPPORT.md) — where to ask for help
 - [`docs/RELEASE.md`](./docs/RELEASE.md) — release checklist
-
----
 
 ## License
 

@@ -87,6 +87,11 @@ export function compactionStateFile(projectId: string): string {
   return path.join(compactionStateDir(), projectId + ".json");
 }
 
+/** Remediation hints file — files to re-preserve after a damage event. */
+export function remediationHintsFile(projectId: string): string {
+  return path.join(smartCompactCacheDir(), "remediation-" + projectId + ".json");
+}
+
 /** HTML metrics dashboard file. */
 export function metricsDashboardFile(): string {
   return path.join(cacheDir(), "smart-compact-report.html");

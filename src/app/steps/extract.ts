@@ -32,6 +32,7 @@ import { getPreviousCompactionContext } from "../../utils/helpers.ts";
 import { isPrefixOf, legacyPrefixMatch } from "../../utils/id-fingerprint.ts";
 import { estimateTokens } from "../../utils/tokens.ts";
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
+import { asSerializableMessages } from "../../infra/ai-messages.ts";
 import { backupConversation } from "../../utils/helpers.ts";
 
 export function extractWithCache(rc: TieredRc): ExtractedRc {
@@ -60,7 +61,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   markMeasuredPhase(rc, "prune", extractStepStart, pruneEnd);
 
   const extractionStart = pruneEnd;
-  const convText = serializeConversation(rc.llmMessages as unknown as import("@earendil-works/pi-ai").Message[]);
+  const convText = serializeConversation(asSerializableMessages(rc.llmMessages));
   const convTokens = estimateTokens(convText);
 
   const backupPath = backupConversation(convText, rc.sessionId);

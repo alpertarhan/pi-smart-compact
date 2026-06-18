@@ -1,33 +1,34 @@
 # Architecture
 
-This document describes how `pi-smart-compact` works at a system level.
+System-level design of `pi-smart-compact`. This is the maintainer-facing
+companion to the user-facing [`README.md`](./README.md).
 
-## Overview
+> **Job:** not to produce a generic recap, but to preserve the agent's working
+> state so the next turn can continue with minimal loss.
 
-`pi-smart-compact` is a Pi extension for **verification-oriented smart compaction**.
-
-Its job is not to produce a generic recap. Its job is to preserve the agent's working state so the next turn can continue with minimal loss.
+## Design ideas
 
 The design combines three ideas:
 
-- **agentic compaction** — let the system inspect the session, not just summarize it
-- **Kamradt-style chunking** — segment large conversations into more coherent units before synthesis
-- **EESV** — **Extract → Explore → Synthesize → Verify**
+- **Agentic compaction** — let the system inspect the session, not just summarize it.
+- **Kamradt-style chunking** — segment large conversations into coherent units before synthesis.
+- **EESV** — **Extract → Explore → Synthesize → Verify**: facts first, synthesis second, verification last.
 
 ## Integration surfaces
 
-The extension registers three surfaces from `src/index.ts`:
+Registered in [`src/index.ts`](./src/index.ts). See the README for usage; this
+section is about lifecycle.
 
-1. `/smart-compact`
-   - interactive or direct manual compaction
-2. `session_before_compact`
-   - auto-triggered smart compaction before Pi's default compaction
-3. `smart_compact` tool
-   - agent-callable compaction for long sessions
+| Surface | Lifecycle |
+| --- | --- |
+| `/smart-compact` | Manual command. Interactive picker or direct args. Bypasses the adaptive gate. |
+| `session_before_compact` | Auto hook. Consumes any pending summary, else runs when context pressure is high. |
+| `smart_compact` tool | Agent-callable. Prepares a pending summary; never compacts mid-turn. |
 
-A short-lived pending compaction is kept in memory and consumed by Pi when compaction is applied.
+A short-lived pending compaction is staged in the [`PendingSlot`](#pending-compaction-slot)
+and handed to Pi when compaction is applied.
 
-## High-level flow
+## Pipeline at a glance
 
 ```mermaid
 flowchart LR
@@ -43,151 +44,209 @@ flowchart LR
     I --> J[Pending compaction returned to Pi]
 ```
 
+The orchestrator ([`src/app/run-smart-compact.ts`](./src/app/run-smart-compact.ts))
+threads a typed context through ten stages:
+
+| # | Stage | Module | Transition |
+| ---: | --- | --- | --- |
+| 1 | prepare | `app/steps/prepare.ts` | config + auth + provider caps |
+| 2 | window | `app/steps/window.ts` | pick the prefix to compact |
+| 3 | recover | `app/steps/recover.ts` | restore log-truncated messages |
+| 4 | tier | `app/steps/tier.ts` | choose none / light / full |
+| 5 | extract | `app/steps/extract.ts` | prune + deterministic extraction + cache |
+| 6 | synthesize | `app/steps/synthesize.ts` | single-pass or EESV |
+| 7 | verify | `app/steps/verify.ts` | structural verify + repair |
+| 8 | state | `app/steps/state.ts` | state machine + open loops + delta |
+| 9 | persist | `app/steps/persist.ts` | stage pending, apply compaction |
+| 10 | metrics | `app/steps/metrics.ts` | success / failure record |
+
+## The typed stage machine
+
+[`src/app/run-context.ts`](./src/app/run-context.ts) models the pipeline context
+as a **state machine of branded intersection types**. Each step accepts the
+previous stage type and returns the next, so reordering or skipping a step is a
+**compile-time error**, not a runtime crash:
+
+```
+RcBase
+  → PreparedRc      (after prepare)
+  → WindowedRc      (after window)
+  → RecoveredRc     (after recover)
+  → TieredRc        (after tier)
+  → ExtractedRc     (after extract)
+  → SynthesizedRc   (after synthesize)
+  → VerifiedRc      (after verify)
+  → StatedRc        (after state)
+```
+
+Each stage adds a `_prepared` / `_windowed` / … discriminator field that is
+**never read at runtime** — it exists only to carry the type-level proof.
+Mutation is preserved: a step mutates its input object and casts it to the
+next stage (no per-step copy of ~30 fields). The final alias
+`RunContext = StatedRc` keeps post-`buildState` consumers readable.
+
+This is what lets `applyCompaction` read `rc.details` with zero `!` non-null
+assertions: the type system proves `buildState` has run.
+
 ## Core execution model
 
-### 1. Entry and context gate
+### Entry and context gate
 
-`src/index.ts` resolves models, parses command arguments, and routes work into `runSmartCompact()` in `src/app/run-smart-compact.ts`. The orchestrator is a thin pipeline of typed stages (see `src/app/run-context.ts`); each stage is a separate module under `src/app/steps/`.
+`src/index.ts` resolves models, parses command arguments, and routes work into
+`runSmartCompact()`. Before any expensive work, the system checks context size
+against the threshold in `src/constants.ts`. Auto / tool runs are skipped while
+context is small; manual `/smart-compact` bypasses the gate.
 
-Before doing expensive work, the system checks context size. If usage is below the threshold in `src/constants.ts`, compaction is skipped.
+### Keep window and preprocessing
 
-## 2. Keep window and preprocessing
+`app/steps/window.ts` keeps a recent tail of messages untouched so very recent
+context stays live, anchored by:
 
-`src/app/steps/window.ts` keeps a recent tail of messages untouched so very recent context stays live.
+- **pi-toolkit anchor protection** — never compact past the latest on-branch anchor
+- **`toolCall` / `toolResult` boundary guard** — never orphan a result from its call
 
-Before summarization, the pipeline also:
+Before summarization the pipeline also prunes redundant messages, serializes the
+compacted portion, creates a backup, loads previous compaction context, checks
+the incremental extraction cache, and loads the project fingerprint.
 
-- prunes redundant messages
-- serializes the compacted portion of the conversation
-- creates a backup when enabled
-- loads previous compaction context
-- checks incremental extraction cache
-- loads project fingerprint data if available
+### Extract
 
-## 3. Extract
+Primary: [`src/utils/extraction.ts`](./src/utils/extraction.ts). **Zero LLM calls.**
 
-Primary implementation: `src/utils/extraction.ts`
+Deterministically pulls: modified / read / deleted files, tool and bash-like
+errors, retry / resolution signals, explicit & implicit decisions, constraints
+and preferences, heuristic topic segments, timeline events, the main goal, and
+open loops. **This is the ground truth** that synthesis and verification trust.
 
-This phase is deterministic and uses **zero LLM calls**.
+### Explore
 
-It extracts:
+Primary: [`src/phases/explore.ts`](./src/phases/explore.ts). Optional — runs only
+when the session looks complex (gated by `shouldExplore`). The model inspects
+the conversation through a small toolset: message ranges, conversation search,
+recent user messages, local context around an index, file-change lookups, and
+error chains. Tool support is runtime-probed once and cached per run; if a
+provider has no function calling, the system falls back to a direct structured
+analysis path.
 
-- modified files
-- read files
-- deleted files
-- tool and bash-like errors
-- retry / resolution signals
-- explicit and implicit decisions
-- constraints and preferences
-- heuristic topic segments
-- timeline events
-- main goal
-- open loops
+### Synthesize
 
-This phase provides the ground truth used later by synthesis and verification.
+Primary: [`src/phases/synthesize.ts`](./src/phases/synthesize.ts). Two modes:
 
-## 4. Explore
+- **Single-pass** — when the compacted conversation fits under the configured threshold.
+- **Hierarchical** — for larger sessions: merge heuristic + exploratory boundaries → chunk → batch by token budget → summarize batches → assemble.
 
-Primary implementation: `src/phases/explore.ts`
+Behaviors: session-aware prompting, decision propagation across later batches,
+provider-aware output limits and concurrency (wave scheduling), and a
+deterministic fallback assembly when LLM assembly fails.
 
-Exploration is optional. It runs only when the session appears complex enough.
+### Verify
 
-If it runs, the model can inspect the conversation through a small toolset such as:
+Primary: [`src/phases/verify.ts`](./src/phases/verify.ts). Scores the summary
+against the deterministic extraction. It checks for missing modified files,
+missing unresolved errors, missing high-confidence constraints, weak goal
+coverage, missing structure sections, suspicious fabricated file references,
+done/unresolved inconsistencies, missing explicit decisions, and missing
+open-loop coverage.
 
-- message ranges
-- conversation search
-- recent user messages
-- local context around a message
-- file-change lookups
-- error chains
+**Repair order is intentional:** (1) accept if good enough → (2) deterministic
+patch first (free, idempotent) → (3) LLM patch only if still insufficient.
 
-If tool support is unavailable, the system falls back to a direct structured analysis path.
+## State, caching & persistence
 
-## 5. Synthesize
+Post-verification, `app/steps/state.ts` + `src/utils/state.ts` enrich the
+summary, and `app/steps/persist.ts` applies the compaction and persists
+reusable state.
 
-Primary implementation: `src/phases/synthesize.ts`
+| Concern | Where | Notes |
+| --- | --- | --- |
+| Open-loop injection | `utils/state.ts` | inserted before Next Steps via the canonical parser |
+| `CompactionState` | `utils/state.ts` | machine-readable, reused across compactions |
+| Cross-compaction delta | `utils/state.ts` | "Changes Since Last Compaction" section |
+| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | SHA-256 prefix fingerprint + tail; safe only when the pruned prefix still matches |
+| Session-log recovery | `utils/session-log.ts` | streaming JSONL parse; bypasses pi-toolkit truncation by entry-id mapping |
+| Project fingerprint | `utils/fingerprint.ts` | language / framework / key dirs across sessions |
+| Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 
-Two synthesis modes exist:
+**Important TTLs:** pending in-memory compaction 5 min · exploration
+tool-support cache 30 min · extraction cache 1 h · compaction state 7 d.
 
-### Single-pass
-Used when the compacted conversation still fits under the configured single-pass threshold.
+## Concurrency & safety model
 
-### Hierarchical
-Used for larger sessions:
+The extension is built to run safely alongside other Pi sessions and other
+extensions.
 
-1. merge heuristic and exploratory boundaries
-2. create chunks
-3. batch chunks according to token budget
-4. summarize batches
-5. assemble a final summary
+### Pending-compaction slot
 
-Important behaviors:
+[`src/app/pending-slot.ts`](./src/app/pending-slot.ts) is an encapsulated,
+host-agnostic state cell (one producer, one consumer, single-threaded event
+loop). `consume()` returns a discriminated result:
 
-- session-aware prompting
-- decision propagation across later batches
-- provider-aware output limits and concurrency
-- deterministic fallback assembly when LLM assembly fails
+| `ConsumeResult.kind` | Meaning |
+| --- | --- |
+| `ok` | fresh payload for this session |
+| `empty` | nothing staged |
+| `expired` | older than the 5-minute TTL |
+| `mismatch` | staged by a **different** session (cross-session leak guard) |
 
-## 6. Verify
+Session identity comes from [`infra/session-identity.ts`](./src/infra/session-identity.ts):
+a real id when the host exposes one, otherwise a per-call unforgeable
+`unresolved:<uuid>` — two unresolved sessions can never collide.
 
-Primary implementation: `src/phases/verify.ts`
+### Cancellation & hard timeout
 
-Verification scores the summary against deterministic extraction data.
+Some providers ignore `AbortSignal`. The auto-trigger therefore uses a shared
+[`ExternalCancellation`](./src/app/run-smart-compact.ts) handle as a second line
+of defense: an outer `setTimeout` fires `abort()` and sets `timedOut`, and every
+side-effect gate in the orchestrator checks that flag before writing state or
+applying compaction. No `Promise.race` is needed — the shared flag drives the
+bailout, eliminating the race where the outer timer fired while the pipeline was
+mid-`applyCompaction`.
 
-It checks for things like:
+### Filesystem & concurrency
 
-- missing modified files
-- missing unresolved errors
-- missing high-confidence constraints
-- weak goal coverage
-- missing structure sections
-- suspicious fabricated file references
-- done/unresolved inconsistencies
-- missing explicit decisions
-- missing open-loop coverage
+All disk writes go through [`src/infra/fs.ts`](./src/infra/fs.ts): atomic
+temp-file + rename so a crash never leaves a half-truncated JSON, and a
+`mkdir`-based advisory lock around the append-only metrics log so concurrent
+sessions cannot interleave bytes. Per-run state lives on the
+[`services` container](#dependency-injection), not module singletons.
 
-Repair order is intentional:
+## Provider awareness
 
-1. accept if good enough
-2. deterministic patch first
-3. LLM patch only if still insufficient
+[`src/utils/tokens.ts`](./src/utils/tokens.ts) keeps a per-provider capability
+table (Anthropic, OpenAI, Google, DeepSeek, MiniMax, Xiaomi, Mistral, xAI, …)
+with unknowns falling back to a safe default + fuzzy alias matching. Each entry
+drives pipeline behavior:
 
-## 7. Post-processing and persistence
+| Capability | Drives |
+| --- | --- |
+| `maxOutputTokens` | caps synthesis / patch budgets |
+| `supportsTools` (`true \| false \| "probe"`) | exploration tool-call probing |
+| `concurrencyLimit` | batch synthesis wave scheduling |
+| `cacheStrategy` | prompt-cache retention per call |
+| `timeoutMultiplier` | auto-trigger hard-timeout headroom |
+| `singlePassTokenMultiplier` | single-pass vs chunked threshold |
+| `tokenRatioEstimate` | token estimation; refined by per-(provider,model) **EMA calibration** |
 
-After verification, `src/app/steps/state.ts` and `src/utils/state.ts` enrich the summary, and `src/app/steps/persist.ts` plus `runDamageDetection` apply the compaction and persist reusable state.
+## Dependency injection
 
-Post-processing includes:
+[`src/infra/services.ts`](./src/infra/services.ts) is a per-`runSmartCompact`
+service bag. The previous module-level singletons (metrics array, tool-support
+cache, token calibration, compact-session id) leaked state across sessions and
+across tests. Each run gets its own container:
 
-- open-loop extraction and injection
-- `CompactionState` construction
-- delta computation against previous compaction
-- changes-since-last-compaction injection
-- project fingerprint persistence
-- compaction state persistence
-- metrics logging
-- best-effort damage detection
+| Service | Role |
+| --- | --- |
+| `clock` | injectable wall clock (deterministic tests) |
+| `llm` | LLM client seam (production wraps with retry) |
+| `toolSupport` | provider tool-support cache (1 h TTL) |
+| `metrics` | bounded metrics sink |
+| `extractionCacheStats` | hit / miss counters |
+| `tokenCalibration` | per-(provider,model) EMA factors |
+| `compactSessionId` | per-run prompt-cache namespace |
 
-## Runtime state and artifacts
+## Layer responsibilities
 
-The extension writes data under `~/.pi/agent/`, including:
-
-- conversation backups
-- extraction cache
-- metrics logs
-- project fingerprints
-- compaction states
-- damage reports
-
-Important TTLs in the current design:
-
-- pending in-memory compaction: 5 minutes
-- exploration tool-support cache: 30 minutes
-- extraction cache: 1 hour
-- compaction state: 7 days
-
-## Key files
-
-The code is organized into five layers, each with a single responsibility:
+The code is organized into six layers, each with a single responsibility.
 
 ### Entry layer
 
@@ -201,103 +260,97 @@ The code is organized into five layers, each with a single responsibility:
 
 | File | Responsibility |
 | --- | --- |
-| `src/app/run-smart-compact.ts` | top-level pipeline orchestrator (was `src/core.ts`) |
-| `src/app/run-context.ts` | typed stage chain (`RcBase → Prepared → Windowed → … → Stated`) |
-| `src/app/pending-slot.ts` | encapsulated pending-compaction state cell (set/consume/clear/expire/mismatch) |
-| `src/app/explore-wrap.ts` | thin re-export shim that isolates the explore import for headless tests |
-| `src/app/steps/prepare.ts` | resolve config, auth, provider caps |
-| `src/app/steps/window.ts` | pick the prefix of messages to compact |
-| `src/app/steps/recover.ts` | recover full content for log-truncated messages |
-| `src/app/steps/tier.ts` | choose compaction tier (none/light/balanced/aggressive) |
-| `src/app/steps/extract.ts` | pruning + deterministic extraction with incremental cache |
-| `src/app/steps/synthesize.ts` | single-pass / EESV synthesis |
-| `src/app/steps/verify.ts` | structural verification + repair |
-| `src/app/steps/state.ts` | enrich summary with state machine + open loops |
-| `src/app/steps/persist.ts` | apply compaction, save fingerprint, persist state |
-| `src/app/steps/metrics.ts` | record success / failure metrics |
+| `app/run-smart-compact.ts` | top-level pipeline orchestrator |
+| `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
+| `app/pending-slot.ts` | encapsulated pending-compaction state cell |
+| `app/explore-wrap.ts` | thin re-export shim isolating the explore import for headless tests |
+| `app/steps/prepare.ts` | resolve config, auth, provider caps |
+| `app/steps/window.ts` | pick the prefix of messages to compact |
+| `app/steps/recover.ts` | recover full content for log-truncated messages |
+| `app/steps/tier.ts` | choose compaction tier (none / light / full) |
+| `app/steps/extract.ts` | pruning + deterministic extraction with incremental cache |
+| `app/steps/synthesize.ts` | single-pass / EESV synthesis |
+| `app/steps/verify.ts` | structural verification + repair |
+| `app/steps/state.ts` | enrich summary with state machine + open loops |
+| `app/steps/persist.ts` | apply compaction, save fingerprint, persist state |
+| `app/steps/metrics.ts` | record success / failure metrics |
 
 ### Domain layer (`src/domain/`)
 
-Pure semantics; no I/O, no async, no globals.
+Pure semantics — no I/O, no async, no globals.
 
 | File | Responsibility |
 | --- | --- |
-| `src/domain/summary-schema.ts` | canonical section list + heading regex |
-| `src/domain/summary-parse.ts` | parse/serialize summary into structured sections; section placement (`before`/`after`) |
+| `domain/summary-schema.ts` | canonical section kinds + heading classification |
+| `domain/summary-parse.ts` | parse/render summary into structured sections; placement (`before`/`after`) |
 
 ### Algorithm layer (`src/phases/`)
 
 | File | Responsibility |
 | --- | --- |
-| `src/phases/explore.ts` | targeted exploration with tool-call probing |
-| `src/phases/synthesize.ts` | chunking, single-pass compact, batch summarization, assembly |
-| `src/phases/verify.ts` | scoring, gap detection, summary patching |
+| `phases/explore.ts` | targeted exploration with tool-call probing |
+| `phases/synthesize.ts` | chunking, single-pass compact, batch summarization, assembly |
+| `phases/verify.ts` | scoring, gap detection, summary patching |
 
 ### Infrastructure layer (`src/infra/`)
 
-All external-world interaction (fs, time, network, services container).
+All external-world interaction.
 
 | File | Responsibility |
 | --- | --- |
-| `src/infra/fs.ts` | atomic writes, advisory locks |
-| `src/infra/paths.ts` | canonical cache/session/backup paths |
-| `src/infra/git.ts` | cached git-root discovery |
-| `src/infra/clock.ts` | injectable wall clock |
-| `src/infra/llm-client.ts` | LLM client seam (production wraps with retry) |
-| `src/infra/llm-retry.ts` | 429/5xx exponential backoff + jitter + Retry-After |
-| `src/infra/services.ts` | per-run services container (metrics, clock, llm, tool-support cache) |
-| `src/infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
+| `infra/fs.ts` | atomic writes, advisory locks |
+| `infra/paths.ts` | canonical cache/session/backup paths |
+| `infra/git.ts` | cached git-root discovery |
+| `infra/clock.ts` | injectable wall clock |
+| `infra/llm-client.ts` | LLM client seam (production wraps with retry) |
+| `infra/llm-retry.ts` | 429/5xx exponential backoff + jitter + Retry-After |
+| `infra/services.ts` | per-run services container |
+| `infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
 
 ### Utility layer (`src/utils/`)
 
 | File | Responsibility |
 | --- | --- |
-| `src/utils/extraction.ts` | deterministic fact extraction (files, errors, decisions) |
-| `src/utils/pruning.ts` | redundancy removal on the message list |
-| `src/utils/state.ts` | structured state, open loops, delta |
-| `src/utils/helpers.ts` | config, backups, batching, shared helpers |
-| `src/utils/cache.ts` | metrics log + extraction prefix cache |
-| `src/utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
-| `src/utils/damage.ts` | post-compaction regression signals |
-| `src/utils/id-fingerprint.ts` | compact SHA-256 fingerprint of entry-id arrays |
-| `src/utils/file-needles.ts` | path-suffix needles for error→file attribution |
-| `src/utils/file-ref-detect.ts` | fabricated file-reference detection (SemVer-rejecting) |
-| `src/utils/session-log.ts` | streaming JSONL parser for the Pi session log |
-| `src/utils/tokens.ts` | per-(provider,model) token estimation with EMA calibration |
-| `src/utils/type-guards.ts` | runtime validators for cross-version compatibility |
-| `src/utils/logger.ts` | stderr-prefixed log shim |
-| `src/utils/lru.ts` | small bounded LRU cache primitive |
+| `utils/extraction.ts` | deterministic fact extraction (files, errors, decisions) |
+| `utils/pruning.ts` | redundancy removal on the message list |
+| `utils/state.ts` | structured state, open loops, delta |
+| `utils/helpers.ts` | config, backups, batching, shared helpers |
+| `utils/cache.ts` | metrics log + extraction prefix cache + dashboards |
+| `utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
+| `utils/damage.ts` | post-compaction regression signals |
+| `utils/id-fingerprint.ts` | compact SHA-256 fingerprint of entry-id arrays |
+| `utils/file-needles.ts` | path-suffix needles for error→file attribution |
+| `utils/file-ref-detect.ts` | fabricated file-reference detection (SemVer-rejecting) |
+| `utils/session-log.ts` | streaming JSONL parser for the Pi session log |
+| `utils/tokens.ts` | per-(provider,model) token estimation with EMA calibration |
+| `utils/type-guards.ts` | runtime validators for cross-version compatibility |
+| `utils/logger.ts` | stderr-prefixed log shim |
+| `utils/lru.ts` | small bounded LRU cache primitive |
 
 ### UI layer (`src/ui/`)
 
 | File | Responsibility |
 | --- | --- |
-| `src/ui/overlays.ts` | model/profile pickers, progress, result, dashboard screens |
-| `src/ui/dashboard-format.ts` | pure formatters for the metrics dashboard |
+| `ui/overlays.ts` | model/profile pickers, progress, result, dashboard screens |
+| `ui/dashboard-format.ts` | pure formatters for the metrics dashboard |
 
-## Safety properties
+## Design principles
 
 The architecture intentionally biases toward safety:
 
-- deterministic extraction before summarization
+- deterministic extraction before any synthesis
 - adaptive exploration instead of always-on tool use
 - verified file lists and error context
 - deterministic repair before additional LLM calls
 - hallucinated file-reference detection
 - stateful tracking of open loops and cross-compaction deltas
-
-## Design constraints
-
-A few constraints shape the implementation:
-
-- tool-driven compaction must not compact the conversation mid-turn
-- summaries must preserve exact file paths and identifiers where possible
-- recent conversation tail should remain live outside the compacted region
-- docs should separate user-facing overview from maintainer-facing internals
+- tool-driven compaction never compacts mid-turn
+- summaries preserve exact file paths and identifiers where possible
+- the recent tail stays live outside the compacted region
 
 ## Extending the system
 
-When adding features, prefer this order of operations:
+When adding features, prefer this order:
 
 1. extract more deterministic signal if possible
 2. enrich exploration only when needed

@@ -2,8 +2,9 @@
  * Phase 2: Targeted LLM Exploration.
  */
 
-import type { Model, Api, ToolCall, TextContent, Message } from "@earendil-works/pi-ai";
-import type { LlmMessage, StructuredExtraction, ExplorationReport } from "../types.ts";
+import type { Model, Api, ToolCall, TextContent, Message, Tool } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary } from "../types.ts";
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
 import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
@@ -39,30 +40,37 @@ export function shouldExplore(extraction: StructuredExtraction): boolean {
   return true;
 }
 
-const EXPLORATION_TOOLS = [
+// Exploration tools declared in pi-ai's native `Tool[]` shape using typebox
+// schemas. pi-ai types `Tool.parameters` as a typebox `TSchema`; the providers
+// only ever *serialize* the schema (anthropic reads `properties`/`required`;
+// google/mistral strip symbol keys via Object.entries; openai forwards and
+// relies on JSON dropping symbols), so a real typebox schema is wire-identical
+// to the plain JSON-schema objects used here previously — but now type-checks
+// without a cast and survives any future typebox-aware validation.
+const EXPLORATION_TOOLS: Tool[] = [
   {
     name: "get_message_range", description: "Get compact summaries of messages from start to end index (0-based).",
-    parameters: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } }, required: ["start", "end"] },
+    parameters: Type.Object({ start: Type.Number(), end: Type.Number() }),
   },
   {
     name: "search_conversation", description: "Search for text in conversation messages.",
-    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    parameters: Type.Object({ query: Type.String() }),
   },
   {
     name: "get_recent_user_messages", description: "Get the last N user messages.",
-    parameters: { type: "object", properties: { count: { type: "number" } } },
+    parameters: Type.Object({ count: Type.Optional(Type.Number()) }),
   },
   {
     name: "get_context_around", description: "Get context around a specific message index.",
-    parameters: { type: "object", properties: { index: { type: "number" }, radius: { type: "number" } }, required: ["index"] },
+    parameters: Type.Object({ index: Type.Number(), radius: Type.Optional(Type.Number()) }),
   },
   {
     name: "get_file_changes", description: "Get tool calls that modified a specific file.",
-    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    parameters: Type.Object({ path: Type.String() }),
   },
   {
     name: "get_error_chain", description: "Get all messages related to a specific error.",
-    parameters: { type: "object", properties: { index: { type: "number" }, context_radius: { type: "number" } }, required: ["index"] },
+    parameters: Type.Object({ index: Type.Number(), context_radius: Type.Optional(Type.Number()) }),
   },
 ];
 
@@ -184,45 +192,78 @@ export function parseExplorationReport(text: string, llmMessages: LlmMessage[]):
   if (boundaryMatch) {
     try {
       const boundaries = JSON.parse("[" + boundaryMatch[1] + "]");
-      return { ...fallbackExplorationReport(llmMessages), boundaries: boundaries.filter((b: any) => typeof b?.afterIndex === "number").map((b: any) => ({
-        afterIndex: Math.min(b.afterIndex, llmMessages.length - 2),
-        topic: String(b.topic ?? "").slice(0, 100),
-        priority: ["critical", "high", "normal", "low"].includes(b.priority) ? b.priority : "normal",
-        confidence: Math.min(1, Math.max(0, b.confidence ?? 0.5)),
-      })) };
+      return { ...fallbackExplorationReport(llmMessages), boundaries: normalizeBoundaries(boundaries, llmMessages.length) };
     } catch (err) { log.debug("Boundary JSON parse failed", err); }
   }
   return fallbackExplorationReport(llmMessages);
 }
 
-export function buildExplorationReportFromParsed(parsed: any, llmMessages: LlmMessage[]): ExplorationReport {
+const BOUNDARY_PRIORITIES = ["critical", "high", "normal", "low"] as const;
+type BoundaryPriority = (typeof BOUNDARY_PRIORITIES)[number];
+const SESSION_TYPES = ["implementation", "review", "debugging", "discussion"] as const;
+type SessionTypeLiteral = (typeof SESSION_TYPES)[number];
+
+/** Coerce an unknown value into a clean `string[]` (non-strings pass through `String()`). */
+function stringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.map(String) : [];
+}
+
+/**
+ * Normalize a raw `boundaries` JSON value (from an LLM) into validated
+ * {@link TopicBoundary}s. Centralized so the boundary-recovery path and the
+ * full-report path share identical validation, including:
+ *  - a lower clamp of 0 (LLMs occasionally emit negative `afterIndex`), and
+ *  - a numeric guard on `confidence` (a string would otherwise become `NaN`
+ *    via Math.min before reaching the 0.5 fallback).
+ */
+function normalizeBoundaries(raw: unknown, llmLength: number): TopicBoundary[] {
+  if (!Array.isArray(raw)) return [];
+  const maxIndex = Math.max(0, llmLength - 2);
+  return raw
+    .filter((b): b is Record<string, unknown> =>
+      !!b && typeof b === "object" && typeof (b as Record<string, unknown>).afterIndex === "number")
+    .map((b) => {
+      const priority = b.priority;
+      const confidence = b.confidence;
+      return {
+        afterIndex: Math.max(0, Math.min(b.afterIndex as number, maxIndex)),
+        topic: String(b.topic ?? "").slice(0, 100),
+        priority: typeof priority === "string" && (BOUNDARY_PRIORITIES as readonly string[]).includes(priority)
+          ? (priority as BoundaryPriority)
+          : "normal",
+        confidence: typeof confidence === "number" && Number.isFinite(confidence)
+          ? Math.min(1, Math.max(0, confidence))
+          : 0.5,
+      };
+    });
+}
+
+export function buildExplorationReportFromParsed(parsed: unknown, llmMessages: LlmMessage[]): ExplorationReport {
   // Defend against primitives: a model can return JSON that parses to a
-  // number/string/boolean (e.g. just `42` or `"ok"`). The optional-chaining
-  // below tolerates that for most fields, but `parsed.statusAssessment?.done`
-  // on a primitive yields undefined safely — so the previous code happened to
-  // work. Make the object assumption explicit so a future field access can't
-  // introduce a TypeError on `(42).something`.
+  // number/string/boolean (e.g. just `42` or `"ok"`). Make the object
+  // assumption explicit so a future field access can't introduce a TypeError
+  // on `(42).something`.
   if (typeof parsed !== "object" || parsed === null) {
     return fallbackExplorationReport(llmMessages);
   }
+  const p = parsed as Record<string, unknown>;
+  const statusAssessment = (p.statusAssessment ?? null) as Record<string, unknown> | null;
+  const sessionTypeRaw = p.sessionType;
   return {
-    boundaries: (parsed.boundaries ?? []).filter((b: any) => typeof b?.afterIndex === "number").map((b: any) => ({
-      afterIndex: Math.min(b.afterIndex, llmMessages.length - 2),
-      topic: String(b.topic ?? "").slice(0, 100),
-      priority: ["critical", "high", "normal", "low"].includes(b.priority) ? b.priority : "normal",
-      confidence: Math.min(1, Math.max(0, b.confidence ?? 0.5)),
-    })),
-    mainGoal: parsed.mainGoal ?? "",
-    sessionType: ["implementation", "review", "debugging", "discussion"].includes(parsed.sessionType) ? parsed.sessionType : "implementation",
-    enrichedConstraints: Array.isArray(parsed.enrichedConstraints) ? parsed.enrichedConstraints.map(String) : [],
-    crossReferences: Array.isArray(parsed.crossReferences) ? parsed.crossReferences.map(String) : [],
+    boundaries: normalizeBoundaries(p.boundaries, llmMessages.length),
+    mainGoal: typeof p.mainGoal === "string" ? p.mainGoal : "",
+    sessionType: typeof sessionTypeRaw === "string" && (SESSION_TYPES as readonly string[]).includes(sessionTypeRaw)
+      ? (sessionTypeRaw as SessionTypeLiteral)
+      : "implementation",
+    enrichedConstraints: stringArray(p.enrichedConstraints),
+    crossReferences: stringArray(p.crossReferences),
     statusAssessment: {
-      done: Array.isArray(parsed.statusAssessment?.done) ? parsed.statusAssessment.done.map(String) : [],
-      inProgress: Array.isArray(parsed.statusAssessment?.inProgress) ? parsed.statusAssessment.inProgress.map(String) : [],
-      blocked: Array.isArray(parsed.statusAssessment?.blocked) ? parsed.statusAssessment.blocked.map(String) : [],
+      done: stringArray(statusAssessment?.done),
+      inProgress: stringArray(statusAssessment?.inProgress),
+      blocked: stringArray(statusAssessment?.blocked),
     },
-    criticalContext: Array.isArray(parsed.criticalContext) ? parsed.criticalContext.map(String) : [],
-    keyDecisions: Array.isArray(parsed.keyDecisions) ? parsed.keyDecisions.map(String) : [],
+    criticalContext: stringArray(p.criticalContext),
+    keyDecisions: stringArray(p.keyDecisions),
   };
 }
 
@@ -297,7 +338,7 @@ export async function exploreConversation(
     const probeResp = await trackedComplete("explore", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
-      tools: EXPLORATION_TOOLS as unknown as Parameters<typeof trackedComplete>[2]["tools"],
+      tools: EXPLORATION_TOOLS,
     }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
 
     const toolCalls = probeResp.content.filter((c): c is ToolCall => c.type === "toolCall");
@@ -305,13 +346,16 @@ export async function exploreConversation(
     if (toolCalls.length > 0) {
       supportsTools = true;
       toolSupport.set(cacheKey, true, svc.clock.now());
-      // Typed message buffer for the explore-tool feedback loop. Using
-      // `any[]` here previously masked a real shape divergence between
-      // pi-ai's `Message` and our internal `LlmMessage`; cast at the call
-      // site where the shapes are known to be compatible.
-      const messages: LlmMessage[] = [
+      // Conversation buffer for the explore-tool feedback loop, kept in
+      // pi-ai's native `Message[]` shape so it can be fed straight to
+      // `complete()` with no cast. The assistant turn is the *whole*
+      // `AssistantMessage` returned by `trackedComplete` — previously the
+      // code downcast it to `LlmMessage` and discarded
+      // `usage`/`api`/`provider`/`model`/`stopReason`, then cast back to
+      // `Message[]` at the call site. Keeping the real object avoids both.
+      const messages: Message[] = [
         { role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() },
-        { role: "assistant", content: probeResp.content as LlmMessage["content"], timestamp: Date.now() },
+        probeResp,
       ];
       for (const tc of toolCalls) {
         const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages);
@@ -325,8 +369,8 @@ export async function exploreConversation(
         try {
           response = await trackedComplete("explore-loop", model, {
             systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
-            messages: messages as unknown as Message[],
-            tools: EXPLORATION_TOOLS as unknown as Parameters<typeof trackedComplete>[2]["tools"],
+            messages,
+            tools: EXPLORATION_TOOLS,
           }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
         } catch (err) {
           log.warn("Explore loop error", err);
@@ -344,7 +388,7 @@ export async function exploreConversation(
           return { report, rounds, toolSupported: true };
         }
 
-        messages.push({ role: "assistant", content: response.content as LlmMessage["content"], timestamp: Date.now() });
+        messages.push(response);
         for (const tc of nextToolCalls) {
           const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages);
           messages.push({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: [{ type: "text", text: result }], isError: false, timestamp: Date.now() });
