@@ -89,9 +89,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   const isRunning: Cell<boolean> = { value: false };
 
   pi.registerCommand("smart-compact", {
-    description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [light|balanced|aggressive] [verbose|debug|dry-run] [note]",
+    description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [light|balanced|aggressive] [verbose|debug|dry-run|restore|metrics|dashboard] [note]",
     getArgumentCompletions: (prefix: string) => {
-      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "light", "balanced", "aggressive"].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
+      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "restore", "light", "balanced", "aggressive"].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
       return m.length ? m : null;
     },
     handler: async (args, ctx) => {

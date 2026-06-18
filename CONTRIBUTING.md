@@ -48,7 +48,7 @@ src/
     steps/                 10 stage modules (prepare … metrics)
   domain/             pure semantics, no I/O (summary schema + parse)
   phases/             algorithms (explore / synthesize / verify)
-  infra/              external-world interaction (fs, git, services, llm, …)
+  infra/              external-world interaction + boundary adapters (fs, git, services, llm, ai-messages, …)
   ui/                 TUI overlays + dashboard
   utils/              focused helpers (extraction, state, tokens, cache, …)
 
