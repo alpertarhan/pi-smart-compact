@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "7.15.1";
+export const VERSION = "7.16.0";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
@@ -57,6 +57,7 @@ export const DEFAULT_CONFIG = {
   backupEnabled: true,
   backupDir: "",
   minContextPercent: 60, // Don't compact below this context threshold (tool=97% ≠ context full)
+  pinPaths: [] as string[],
 };
 
 export const NO_OP_RE = /applied:\s*0|no changes applied|nothing to (?:do|change)|0 edits? applied/i;

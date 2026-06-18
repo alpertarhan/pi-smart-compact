@@ -10,6 +10,7 @@ import type {
   CompactMetricsEntry, CompressionProfile, ModelOption, ProgressState,
   SmartCompactDetails, StructuredExtraction,
 } from "../types.ts";
+import type { BackupEntry } from "../utils/helpers.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
@@ -443,4 +444,119 @@ export async function showCompactUI(
   const selectedProfile = await selectProfile(ctx, selectedModel, { contextTokens: opts.contextTokens, contextPercent: opts.contextPercent });
   if (!selectedProfile) return null;
   return { model: selectedModel, profile: selectedProfile };
+}
+
+/** Picker for `/smart-compact restore` — list backups, return the chosen path. */
+export async function showRestorePicker(
+  ctx: ExtensionCommandContext,
+  backups: BackupEntry[],
+): Promise<string | null> {
+  const items: SelectItem[] = backups.map(b => ({
+    value: b.path,
+    label: new Date(b.date).toLocaleString() + "  \u00b7  " + Math.max(1, Math.round(b.sizeBytes / 1024)) + "KB",
+    description: b.sessionId.slice(0, 20),
+  }));
+  return await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+    const c = new Container();
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    c.addChild(new Text(theme.fg("accent", theme.bold("  \u21a9 Smart Compact \u2014 Restore")), 1, 0));
+    c.addChild(new Text(theme.fg("dim", "  Pick a backup to view its pre-compaction content"), 0, 0));
+    c.addChild(new Text("", 0, 0));
+    const sel = new SelectList(items, Math.min(items.length, 12), {
+      selectedPrefix: t => theme.fg("accent", t),
+      selectedText: t => theme.fg("accent", t),
+      description: t => theme.fg("muted", t),
+      scrollInfo: t => theme.fg("dim", t),
+      noMatch: t => theme.fg("warning", t),
+    });
+    sel.onSelect = item => done(item.value);
+    sel.onCancel = () => done(null);
+    c.addChild(sel);
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  \u2191\u2193 navigate \u00b7 enter view \u00b7 esc cancel"), 0, 0));
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    return {
+      render: (w: number) => c.render(w),
+      invalidate: () => c.invalidate(),
+      handleInput: (d: string) => { sel.handleInput(d); tui.requestRender(); },
+    };
+  });
+}
+
+/** Scrollable viewer for a restored backup's content. */
+export async function showBackupViewer(
+  ctx: ExtensionCommandContext,
+  content: string,
+  fp: string,
+): Promise<void> {
+  await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+    const lines = content.split("\n");
+    const pageSize = 40;
+    let scroll = 0;
+    const maxScroll = Math.max(0, lines.length - pageSize);
+    return {
+      render: (w: number) => {
+        const out: string[] = [
+          truncateToWidth(theme.fg("accent", theme.bold("  \u21a9 Restored backup")) + theme.fg("dim", "  \u00b7  " + lines.length + " lines \u00b7 " + Math.max(1, Math.round(content.length / 1024)) + "KB"), w),
+          truncateToWidth(theme.fg("dim", "  " + fp), w),
+          truncateToWidth(theme.fg("borderMuted", "\u2500".repeat(Math.max(0, w))), w),
+        ];
+        for (const line of lines.slice(scroll, scroll + pageSize)) {
+          out.push(truncateToWidth(theme.fg("text", line), w));
+        }
+        if (lines.length > pageSize) {
+          out.push(truncateToWidth(theme.fg("dim", "  showing " + (scroll + 1) + "\u2013" + Math.min(lines.length, scroll + pageSize) + " of " + lines.length), w));
+        }
+        out.push("", truncateToWidth(theme.fg("dim", "  \u2191\u2193 scroll \u00b7 pgup/pgdn \u00b7 home/end \u00b7 esc/q close"), w));
+        return out;
+      },
+      invalidate: () => {},
+      handleInput: (data: string) => {
+        if (keybindings.matches(data, "tui.select.cancel") || data === "q") { done(undefined); return; }
+        if (matchesKey(data, Key.home)) scroll = 0;
+        else if (matchesKey(data, Key.end)) scroll = maxScroll;
+        else if (keybindings.matches(data, "tui.select.pageUp")) scroll = Math.max(0, scroll - pageSize);
+        else if (keybindings.matches(data, "tui.select.pageDown")) scroll = Math.min(maxScroll, scroll + pageSize);
+        else if (keybindings.matches(data, "tui.select.up")) scroll = Math.max(0, scroll - 1);
+        else if (keybindings.matches(data, "tui.select.down")) scroll = Math.min(maxScroll, scroll + 1);
+        tui.requestRender();
+      },
+    };
+  }, { overlay: true, overlayOptions: { width: "85%", anchor: "center", maxHeight: "85%" } });
+}
+
+/** Action menu after a backup is picked: view its content or restore it. */
+export async function showRestoreAction(
+  ctx: ExtensionCommandContext,
+  backupPath: string,
+): Promise<"view" | "restore" | null> {
+  const items: SelectItem[] = [
+    { value: "view", label: "View content", description: "Read the pre-compaction conversation" },
+    { value: "restore", label: "Restore into a new session", description: "Fork from here + inject this backup as context" },
+  ];
+  return await ctx.ui.custom<"view" | "restore" | null>((tui, theme, _kb, done) => {
+    const c = new Container();
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    c.addChild(new Text(theme.fg("accent", theme.bold("  \u21a9 Restore action")), 1, 0));
+    c.addChild(new Text(theme.fg("dim", "  " + backupPath), 0, 0));
+    c.addChild(new Text("", 0, 0));
+    const sel = new SelectList(items, 2, {
+      selectedPrefix: t => theme.fg("accent", t),
+      selectedText: t => theme.fg("accent", t),
+      description: t => theme.fg("muted", t),
+      scrollInfo: t => theme.fg("dim", t),
+      noMatch: t => theme.fg("warning", t),
+    });
+    sel.onSelect = item => done(item.value as "view" | "restore");
+    sel.onCancel = () => done(null);
+    c.addChild(sel);
+    c.addChild(new Text("", 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  \u2191\u2193 navigate \u00b7 enter select \u00b7 esc cancel"), 0, 0));
+    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    return {
+      render: (w: number) => c.render(w),
+      invalidate: () => c.invalidate(),
+      handleInput: (d: string) => { sel.handleInput(d); tui.requestRender(); },
+    };
+  });
 }

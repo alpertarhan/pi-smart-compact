@@ -11,7 +11,7 @@ import { inferSessionType } from "./helpers.ts";
 import * as log from "./logger.ts";
 import { compactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
-import { parseSummary, upsertSection, renderSummary } from "../domain/summary-parse.ts";
+import { parseSummary, upsertSection, renderSummary, appendToSection } from "../domain/summary-parse.ts";
 
 function getStatePath(projectId: string): string {
   return compactionStateFile(projectId);
@@ -59,6 +59,12 @@ export function buildCompactionState(
   let constraintId = 0;
   let errorId = 0;
 
+  // Precompute basenames once; previously recomputed for every (error × file) pair.
+  const modifiedBasenames = extraction.modifiedFiles.map(f => ({
+    path: f.path,
+    bn: f.path.split("/").pop()?.toLowerCase() ?? "",
+  }));
+
   return {
     goal: extraction.mainGoal,
     decisions: extraction.decisions.map(d => ({
@@ -77,7 +83,8 @@ export function buildCompactionState(
     readFiles: extraction.readFiles,
     deletedFiles: extraction.deletedFiles,
     unresolvedErrors: extraction.errors.filter(e => !e.resolved).map(e => {
-      const bn = extraction.modifiedFiles.find(f => e.message.toLowerCase().includes(f.path.split("/").pop()?.toLowerCase() ?? "__none__"));
+      const msgLower = e.message.toLowerCase();
+      const bn = modifiedBasenames.find(f => f.bn.length > 0 && msgLower.includes(f.bn));
       return {
         id: "error-" + (++errorId),
         message: e.message.slice(0, 300),
@@ -279,6 +286,27 @@ export function injectDeltaSection(summary: string, delta: CompactionDelta): str
     ? { after: "open-loops" as const }
     : { before: "next-steps" as const };
   const updated = upsertSection(parsed, "changes", body, placement);
+  return renderSummary(updated);
+}
+
+/**
+ * Ensure user-pinned paths ("never compact") appear in the summary. Any pinned
+ * path not already mentioned is appended to the Files Read section so it
+ * survives compaction regardless of what the LLM chose to include. This is a
+ * deterministic, LLM-free guarantee — the pin wins over synthesis output.
+ */
+export function ensurePinnedPaths(summary: string, pinned: readonly string[]): string {
+  if (!pinned.length) return summary;
+  const lower = summary.toLowerCase();
+  const missing = pinned.filter(p => p && p.trim().length > 0 && !lower.includes(p.toLowerCase()));
+  if (!missing.length) return summary;
+  const parsed = parseSummary(summary);
+  const updated = appendToSection(
+    parsed,
+    "files-read",
+    missing.map(p => "- " + p).join("\n"),
+    "- Pinned by config (always preserved):",
+  );
   return renderSummary(updated);
 }
 

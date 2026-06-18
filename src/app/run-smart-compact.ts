@@ -251,8 +251,15 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
 
     if (!stated.flags.autoTriggered) {
       try {
-        const timeoutPromise = new Promise<void>(resolve => setTimeout(resolve, 5000));
-        await Promise.race([showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services), timeoutPromise]);
+        let resultTimer: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<void>(resolve => { resultTimer = setTimeout(resolve, 5000); });
+        try {
+          await Promise.race([showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services), timeoutPromise]);
+        } finally {
+          // Clear the fallback timer whether the screen or the timeout won
+          // the race — otherwise it lingers up to 5s after we've moved on.
+          if (resultTimer) clearTimeout(resultTimer);
+        }
       } catch (err) {
         log.warn("Result screen error", err);
         stated.notify("Result screen skipped", "info");

@@ -78,6 +78,8 @@ describe("detectDamage", () => {
     const reReads = report.signals.filter(s => s.type === "re-read");
     expect(reReads).toHaveLength(1);
     expect(reReads[0].severity).toBe("medium");
+    // Remediation: the re-read path is collected for the next compaction.
+    expect(report.reReadFiles).toEqual(["src/auth.ts"]);
     // The score should reflect a medium-severity signal (10 points).
     expect(report.damageScore).toBe(10);
     expect(report.summary).toContain("1 re-read");
@@ -98,6 +100,7 @@ describe("detectDamage", () => {
     const report = detectDamage(messages, makeDetails());
     expect(report.signals.filter(s => s.type === "re-read")).toHaveLength(0);
     expect(report.damageScore).toBe(0);
+    expect(report.reReadFiles).toEqual([]);
   });
 
   it("detects a user complaint as a high-severity signal", () => {

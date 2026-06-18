@@ -14,8 +14,10 @@ import { advance } from "../run-context.ts";
 import {
   buildCompactionState, injectOpenLoopsSection, extractNextActions,
   extractCriticalContext, loadCompactionState, computeDelta, injectDeltaSection,
+  ensurePinnedPaths,
 } from "../../utils/state.ts";
 import { extractOpenLoops } from "../../utils/extraction.ts";
+import { readRemediationHints } from "../../utils/damage.ts";
 import { estimateTokens } from "../../utils/tokens.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
 
@@ -31,6 +33,22 @@ export function buildState(rc: VerifiedRc): StatedRc {
       "info",
     );
     summary = injectOpenLoopsSection(summary, openLoops);
+  }
+
+  // Pinned paths ("never compact") + remediation hints (files the agent
+  // re-read after a prior compaction) — a deterministic guarantee that survives
+  // whatever the LLM chose to include. Ensured before state/delta so the
+  // canonical headings exist for downstream injectors.
+  const pinPaths = rc.config.pinPaths ?? [];
+  const remediated = readRemediationHints(rc.projectId);
+  const preserve = remediated.length
+    ? Array.from(new Set([...pinPaths, ...remediated]))
+    : pinPaths;
+  if (remediated.length) {
+    rc.notify("Remediation: re-preserving " + remediated.length + " file(s) lost in a prior compaction", "info");
+  }
+  if (preserve.length > 0) {
+    summary = ensurePinnedPaths(summary, preserve);
   }
 
   const nextActions = extractNextActions(summary);

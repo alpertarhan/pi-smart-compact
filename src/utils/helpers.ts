@@ -88,6 +88,16 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
       delete sc.minContextPercent;
     }
   }
+  if ("backupDir" in sc && sc.backupDir !== undefined && typeof sc.backupDir !== "string") {
+    log.warn("smart-compact config: backupDir must be a string, got " + typeof sc.backupDir + ". Using default.");
+    delete sc.backupDir;
+  }
+  if ("pinPaths" in sc && sc.pinPaths !== undefined) {
+    if (!Array.isArray(sc.pinPaths) || !sc.pinPaths.every(x => typeof x === "string")) {
+      log.warn("smart-compact config: pinPaths must be a string[], ignoring.");
+      delete sc.pinPaths;
+    }
+  }
 }
 
 // Module-level config cache keyed by file mtime. Kept private so tests cannot
@@ -195,6 +205,81 @@ export function backupConversation(convText: string, sessionId: string): string 
     schedulePruneBackups(dir);
     return fp;
   } catch (e) { log.warn("backupConversation failed", e); return null; }
+}
+
+export interface BackupEntry {
+  path: string;
+  sessionId: string;
+  date: string;
+  sizeBytes: number;
+}
+
+/**
+ * List recent smart-compact backups (newest first), parsing session + date
+ * from each backup's header. Returns [] when the backup dir is absent or
+ * unreadable. Backups were previously write-only; this makes them browsable
+ * for `/smart-compact restore`.
+ */
+export function listBackups(limit = 20): BackupEntry[] {
+  try {
+    const dir = loadConfig().backupDir;
+    if (!fs.existsSync(dir)) return [];
+    const out: BackupEntry[] = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".md")) continue;
+      const full = path.join(dir, name);
+      try {
+        const stat = fs.statSync(full);
+        if (!stat.isFile()) continue;
+        const head = fs.readFileSync(full, "utf-8").split("\n").slice(0, 5).join("\n");
+        const date = head.match(/^# Date:\s*(.+)$/m)?.[1]?.trim();
+        const session = head.match(/^# Session:\s*(.+)$/m)?.[1]?.trim();
+        out.push({
+          path: full,
+          sessionId: session ?? name,
+          date: date ?? stat.mtime.toISOString(),
+          sizeBytes: stat.size,
+        });
+      } catch { /* skip unreadable backup */ }
+    }
+    out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    return out.slice(0, limit);
+  } catch (e) { log.warn("listBackups failed", e); return []; }
+}
+
+/**
+ * Read a backup's pre-compaction conversation text, stripping the
+ * `# Smart Compact Backup` header. Returns null if the file can't be read or
+ * the body is empty.
+ */
+export function readBackupContent(fp: string): string | null {
+  try {
+    const raw = fs.readFileSync(fp, "utf-8");
+    const lines = raw.split("\n");
+    let i = 0;
+    while (i < lines.length && lines[i].startsWith("#")) i++;
+    if (i < lines.length && lines[i].trim() === "") i++;
+    return lines.slice(i).join("\n").trim() || null;
+  } catch (e) { log.warn("readBackupContent failed", e); return null; }
+}
+
+/**
+ * Build the custom-message payload used to re-inject a backup's pre-compaction
+ * content when restoring into a new (forked) session. Pure + testable; the
+ * fork/sendMessage wiring lives in the `/smart-compact restore` command.
+ */
+export function buildRestoreMessage(content: string, source: string): {
+  customType: string;
+  content: string;
+  display: boolean;
+  details: { source: string; restoredAt: number };
+} {
+  return {
+    customType: "smart-compact-restore",
+    content: "# Restored pre-compaction context (smart-compact backup)\nSource: " + source + "\n\n" + content,
+    display: true,
+    details: { source, restoredAt: Date.now() },
+  };
 }
 
 export function getPreviousCompactionContext(branch: unknown[]): string {
@@ -503,7 +588,6 @@ export function computeToolCharPercentage(branchEntries: readonly unknown[]): nu
         if (!part || typeof part !== "object") continue;
         const block = part as Record<string, unknown>;
         if (block.type === "text" && typeof block.text === "string") mc += block.text.length;
-        else if (block.type === "text" && typeof block.content === "string") mc += block.content.length;
       }
     }
     totalChars += mc;

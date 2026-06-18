@@ -22,9 +22,10 @@ import type { RunContext } from "../run-context.ts";
 import type { PendingCompaction, LlmMessage } from "../../types.ts";
 import { saveProjectFingerprint } from "../../utils/fingerprint.ts";
 import { saveCompactionState } from "../../utils/state.ts";
-import { detectDamage, logDamageReport } from "../../utils/damage.ts";
+import { detectDamage, logDamageReport, writeRemediationHints } from "../../utils/damage.ts";
 import { sanitizeSmartCompactDetails } from "../../utils/type-guards.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { asBranchMessage } from "../../infra/ai-messages.ts";
 import { markPhase } from "../run-context.ts";
 import * as log from "../../utils/logger.ts";
 
@@ -46,7 +47,7 @@ export function persistDurableState(rc: RunContext): void {
 export function runDamageDetection(rc: RunContext): void {
   try {
     const postCompactMsgs = rc.msgs.slice(rc.keepFrom)
-      .map(e => convertToLlm([e.message as import("@earendil-works/pi-ai").Message]))
+      .map(e => convertToLlm([asBranchMessage(e.message)]))
       .flat() as LlmMessage[];
     if (postCompactMsgs.length <= 2) return;
 
@@ -71,6 +72,11 @@ export function runDamageDetection(rc: RunContext): void {
       rc.notify("Previous compaction damage: " + damage.summary, "warning");
     }
     logDamageReport(rc.sessionId, damage, safeDetails);
+    // Feed re-read files forward as remediation hints so the next compaction
+    // preserves them instead of losing them again.
+    if (damage.reReadFiles.length > 0) {
+      writeRemediationHints(rc.projectId, damage.reReadFiles);
+    }
   } catch (err) { log.warn("Damage detection error", err); }
 }
 

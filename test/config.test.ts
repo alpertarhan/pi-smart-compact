@@ -119,6 +119,42 @@ describe("validateSmartCompactConfig", () => {
   it("has default minContextPercent of 60", () => {
     expect(DEFAULT_CONFIG.minContextPercent).toBe(60);
   });
+
+  it("deletes invalid backupDir (number)", () => {
+    const sc = { backupDir: 123 };
+    validateSmartCompactConfig(sc);
+    expect("backupDir" in sc).toBe(false);
+  });
+
+  it("deletes invalid backupDir (boolean)", () => {
+    const sc = { backupDir: true };
+    validateSmartCompactConfig(sc);
+    expect("backupDir" in sc).toBe(false);
+  });
+
+  it("keeps valid backupDir", () => {
+    const sc = { backupDir: "/custom/backup/dir" };
+    validateSmartCompactConfig(sc);
+    expect(sc.backupDir).toBe("/custom/backup/dir");
+  });
+
+  it("deletes invalid pinPaths (non-array)", () => {
+    const sc = { pinPaths: "src/a.ts" };
+    validateSmartCompactConfig(sc);
+    expect("pinPaths" in sc).toBe(false);
+  });
+
+  it("deletes invalid pinPaths (mixed types)", () => {
+    const sc = { pinPaths: ["src/a.ts", 42] };
+    validateSmartCompactConfig(sc);
+    expect("pinPaths" in sc).toBe(false);
+  });
+
+  it("keeps valid pinPaths", () => {
+    const sc = { pinPaths: ["src/auth.ts", "README.md"] };
+    validateSmartCompactConfig(sc);
+    expect(sc.pinPaths).toEqual(["src/auth.ts", "README.md"]);
+  });
 });
 
 describe("computeToolCharPercentage", () => {
@@ -131,6 +167,17 @@ describe("computeToolCharPercentage", () => {
       { message: { role: "toolResult", content: [{ type: "text", text: "tool" }] } },
     ];
     expect(computeToolCharPercentage(branch)).toBe(Math.round(4 / (9 + 4) * 100));
+  });
+
+  it("counts text blocks via .text and ignores a stray .content field", () => {
+    // A text block carries its payload in `.text`; a sibling `.content` must
+    // not be counted (guards against the removed dead branch).
+    const branch = [
+      { message: { role: "toolResult", content: [{ type: "text", text: "abc", content: "XXXXXXXXXXXXXXXXXX" }] } },
+    ];
+    // total = 3 (only .text "abc"), tool = 3 → 100%. If .content were
+    // counted, total would include the Xs and the share would drop.
+    expect(computeToolCharPercentage(branch)).toBe(100);
   });
 });
 

@@ -204,20 +204,27 @@ function findSessionLogFile(sessionId: string): string | null {
 
 /**
  * Normalize a log message entry to the LlmMessage shape used by extraction.
+ *
+ * `entryTimestamp` is the ISO timestamp recorded on the surrounding log
+ * entry; we parse it to epoch ms when valid. The previous implementation
+ * stamped `Date.now()` (the recovery wall-clock) gated on whether `content`
+ * was an object — a nonsensical condition that also produced chronologically
+ * wrong values. The field is currently write-only internally, but using the
+ * real timestamp keeps recovered messages consistent with their neighbors.
  */
-function normalizeLogMessage(msg: LogMessage | undefined): LlmMessage | null {
+function normalizeLogMessage(msg: LogMessage | undefined, entryTimestamp?: string): LlmMessage | null {
   if (!msg || !msg.role) return null;
 
   const role = msg.role;
   if (role === "user" || role === "assistant" || role === "toolResult") {
+    const ts = entryTimestamp ? Date.parse(entryTimestamp) : NaN;
     return {
       role: role as LlmMessage["role"],
       content: msg.content,
       isError: msg.isError,
       toolCallId: msg.toolCallId,
-      timestamp: msg.content && typeof msg.content === "object"
-        ? Date.now() // best-effort
-        : undefined,
+      toolName: msg.toolName,
+      timestamp: Number.isFinite(ts) ? ts : undefined,
     };
   }
   // Skip custom/pi-status and other non-LLM roles
@@ -264,7 +271,7 @@ function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | nu
         continue;
       }
       if (entry.type === "message" && entry.id && entry.message) {
-        const normalized = normalizeLogMessage(entry.message);
+        const normalized = normalizeLogMessage(entry.message, entry.timestamp);
         if (normalized) map.set(entry.id, normalized);
       }
     }
