@@ -7,7 +7,7 @@ Use this checklist before publishing `pi-smart-compact`.
 1. Decide the version bump using semver.
 2. Update version metadata:
    - `package.json`
-   - `src/constants.ts`
+   - `src/constants.ts` via `bun run sync-version`
    - `CHANGELOG.md`
 3. Make sure user-facing behavior is reflected in `README.md` or project docs.
 

@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-label="pi-smart-compact — verification-oriented smart compaction for the Pi Coding Agent. Extract, Explore, Synthesize, Verify.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.12" cy="0.05" r="0.6">
+      <stop offset="0" stop-color="#60a5fa" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#60a5fa" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="0.5" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1280" height="320" rx="28" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1280" height="320" rx="28" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1280" height="5" fill="url(#accent)"/>
+
+  <!-- eyebrow -->
+  <text x="80" y="78" font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="17" font-weight="700" letter-spacing="3" fill="#60a5fa">PI EXTENSION</text>
+
+  <!-- title -->
+  <text x="80" y="138" font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="56" font-weight="800" fill="#e5edf8">pi-smart-compact</text>
+
+  <!-- tagline -->
+  <text x="80" y="180" font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="400" fill="#8fa3bf">Verification-oriented smart compaction for the Pi Coding Agent</text>
+
+  <!-- EESV pipeline pills -->
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="700">
+    <!-- Extract -->
+    <rect x="80" y="226" width="138" height="46" rx="23" fill="#1e3a5f" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="149" y="255" text-anchor="middle" fill="#bfdbfe">① Extract</text>
+
+    <!-- arrow -->
+    <path d="M226 249 L246 249" stroke="#3b4a63" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M242 243 L250 249 L242 255" fill="none" stroke="#3b4a63" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Explore -->
+    <rect x="256" y="226" width="146" height="46" rx="23" fill="#3b2f5a" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="329" y="255" text-anchor="middle" fill="#ddd6fe">② Explore</text>
+
+    <!-- arrow -->
+    <path d="M410 249 L430 249" stroke="#3b4a63" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M426 243 L434 249 L426 255" fill="none" stroke="#3b4a63" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Synthesize -->
+    <rect x="440" y="226" width="180" height="46" rx="23" fill="#1f3d2e" stroke="#22c55e" stroke-width="1.5"/>
+    <text x="530" y="255" text-anchor="middle" fill="#bbf7d0">③ Synthesize</text>
+
+    <!-- arrow -->
+    <path d="M628 249 L648 249" stroke="#3b4a63" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M644 243 L652 249 L644 255" fill="none" stroke="#3b4a63" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Verify -->
+    <rect x="658" y="226" width="132" height="46" rx="23" fill="#4a3a17" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="724" y="255" text-anchor="middle" fill="#fde68a">④ Verify</text>
+  </g>
+
+  <!-- right-side signature mark -->
+  <g transform="translate(1052, 80)">
+    <circle cx="84" cy="84" r="78" fill="none" stroke="#24324a" stroke-width="2"/>
+    <circle cx="84" cy="84" r="62" fill="none" stroke="#2a3b57" stroke-width="2"/>
+    <!-- compact "check" mark in a shield-ish node -->
+    <path d="M84 44 L116 58 V92 C116 112 100 124 84 128 C68 124 52 112 52 92 V58 Z" fill="#0f1c33" stroke="#22c55e" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M70 86 L80 96 L100 74" fill="none" stroke="#22c55e" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
