@@ -1,5 +1,23 @@
 # Changelog
 
+## [7.17.0] - 2026-06-26
+
+### Added
+- **Name-agnostic tool classification** (`src/domain/tool-semantics.ts`) — a pure `classifyTool(args)` that classifies a tool call by its argument shape (`mutates` / `accesses` / `executes` / `other`) plus `extractToolPath(args)`. A tool is a write because its arguments carry a content payload, not because its name contains "write" — so this auto-adapts to tools the code has never seen (`hypa_*`, MCP servers, custom extensions) with no name list to maintain.
+
+### Changed
+- **Extraction is now name-agnostic.** `trackFileOps`, `catalogErrors`, `segmentTopicsHeuristic` (`utils/extraction.ts`), `get_file_changes` (`phases/explore.ts`), and re-read detection (`utils/damage.ts`) all classify via `classifyTool` instead of substring name matching. Removes the `WRITE/DELETE/READ_TOOL_HINTS` lists, `hasToolHint`, and the hardcoded `=== "bash"` gate. Shell-like tools (`hypa_shell`, …) and path-bearing readers (`hypa_grep`/`find`/`ls`) are now detected correctly by argument shape.
+- **Model resolution deduplicated** (`index.ts`) — the `provider/id` split + `modelRegistry.find` pattern (duplicated three times) is now a single `findModelById` helper; `resolveModelArg` removed.
+- **`SHIFT_RE` Turkish coverage** — the topic-shift cue regex was ASCII-only and silently missed natural Turkish spellings (`şimdi`, `geçelim`, `bakalım`, `yapalım`, `başka`); both spellings now match, consistent with `FOLLOWUP_RE`'s dual-spelling convention.
+- **`CONSTRAINT_PATTERNS` readability** — the Turkish regexes use raw UTF-8 characters instead of `\u00f6`/`\u015f` escapes (the source is UTF-8; the escapes added no value and hurt readability).
+
+### Fixed
+- **`trackFileOps` duplicated branch** — the `isTruncated` and `!NO_OP_RE` arms had identical bodies; collapsed into one condition (`isTruncated(resultText) || !NO_OP_RE.test(resultText)`).
+- **Dead locals in `segmentTopicsHeuristic`** — `type` and `primaryFile` were assigned every iteration but never read (the topic push uses `currentType`/`currentPrimaryFile`); removed. Path lookup now uses `extractToolPath`, matching the other consumers.
+
+### Tests
+- New `test/tool-semantics.test.ts` covering all four tool classes, the path-only delete/read ambiguity, and `extractToolPath` across key variants. Extraction fixtures updated to realistic content payloads; a regression case proves an unknown tool name (`totally_unknown_mcp_tool`) is still classified correctly. Suite: 501 tests across 43 files.
+
 ## [7.16.0] - 2026-06-18
 
 ### Added

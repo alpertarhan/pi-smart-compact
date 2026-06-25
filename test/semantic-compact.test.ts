@@ -35,7 +35,7 @@ describe("extractStructured", () => {
   test("captures file modifications", () => {
     const messages: LlmMessage[] = [
       { role: "user", content: [{ type: "text", text: "Update the extension" }] },
-      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "edit", arguments: { path: "src/index.ts" } }] },
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "edit", arguments: { path: "src/index.ts", oldText: "a", newText: "b" } }] },
       { role: "toolResult", toolCallId: "1", isError: false, content: [{ type: "text", text: "Applied 1 edit" }] },
     ];
 

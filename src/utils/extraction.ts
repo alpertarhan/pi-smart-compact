@@ -8,6 +8,7 @@ import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
+import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
 
 /** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
 export const TRUNCATE_RE = /…✂\d+$/;
@@ -16,13 +17,14 @@ export function isTruncated(content: unknown): boolean {
   return TRUNCATE_RE.test(extractText(content));
 }
 
-const WRITE_TOOL_HINTS = ["write", "edit", "patch", "create", "append", "update", "apply"];
-const DELETE_TOOL_HINTS = ["delete", "remove", "unlink"];
-const READ_TOOL_HINTS = ["read", "view", "open"];
-
-function hasToolHint(tool: string, hints: readonly string[]): boolean {
-  return hints.some(hint => tool.includes(hint));
-}
+/**
+ * Result-text heuristic for deletion. A path-only tool whose result mentions a
+ * deletion verb is treated as a delete — arguments alone cannot tell a delete
+ * from a read (both carry only a path), so the result is the only name-agnostic
+ * signal. Best-effort: a file that literally contains the word "deleted" would
+ * misattribute, but that is a rare false-positive on the least-critical list.
+ */
+const DELETE_RESULT_RE = /\b(?:deleted|removed|unlinked)\b/i;
 
 /** Reusable tool call index type */
 export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
@@ -144,26 +146,27 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
     if (m.role !== "toolResult" || m.isError) continue;
     const tc = tcIdx.get(m.toolCallId ?? "");
     if (!tc) continue;
-    const args = tc.arguments;
-    const filePath = (args?.path ?? args?.file_path ?? args?.filePath) as string | undefined;
+    const filePath = extractToolPath(tc.arguments);
     if (!filePath) continue;
-    const tool = tc.name.toLowerCase();
 
-    if (hasToolHint(tool, WRITE_TOOL_HINTS)) {
+    // Classification by argument shape, not tool name — see domain/tool-semantics.ts.
+    // Auto-adapts to tools this code has never seen (hypa_*, MCP, custom extensions):
+    // any path+payload tool is a write, any command tool is an exec, any path-only
+    // tool is a read, regardless of name. No name list to maintain.
+    const cls = classifyTool(tc.arguments);
+    if (cls === "mutates") {
+      // pi-toolkit truncation hides whether a write was a no-op, so a truncated
+      // result is treated as modified (safe default); otherwise skip true no-ops.
       const resultText = extractText(m.content);
-      if (isTruncated(resultText)) {
-        // pi-toolkit truncated the result — we cannot verify no-op vs actual write.
-        // Safe default: treat as modified (the toolCall itself implies intent).
-        const existing = modMap.get(filePath);
-        modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
-      } else if (!NO_OP_RE.test(resultText)) {
+      if (isTruncated(resultText) || !NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
         modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
       }
-    } else if (hasToolHint(tool, DELETE_TOOL_HINTS)) {
-      delSet.add(filePath);
-    } else if (hasToolHint(tool, READ_TOOL_HINTS)) {
-      readSet.add(filePath);
+    } else if (cls === "accesses") {
+      // path-only: could be a read or a delete. Args can't tell them apart, so
+      // fall back to the result text (see DELETE_RESULT_RE). Defaults to read.
+      if (DELETE_RESULT_RE.test(extractText(m.content))) delSet.add(filePath);
+      else readSet.add(filePath);
     }
   }
 
@@ -187,11 +190,14 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
       continue;
     }
 
-    if (tc?.name === "bash") {
+    // Error-pattern scan for command-executing tools (bash/hypa_shell/...).
+    // Gated by argument shape, not by tool name, so it auto-covers shell-like
+    // tools this code has never seen. Explicit m.isError is handled above.
+    if (tc && classifyTool(tc.arguments) === "executes") {
       const txt = extractText(m.content);
       const isLikelyError = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i.test(txt);
       if (isLikelyError && txt.length < 2000) {
-        errors.push({ index: i, tool: "bash", message: txt.slice(0, 300), retryAttempted: false, resolved: false });
+        errors.push({ index: i, tool: tc.name, message: txt.slice(0, 300), retryAttempted: false, resolved: false });
       }
     }
   }
@@ -253,10 +259,15 @@ const CONSTRAINT_PATTERNS: Array<{ re: RegExp; cat: StructuredExtraction["constr
   { re: /\b(?:must|need|require|has to|important)\b.*\b(?:be|use|have|include|support)\b/i, cat: "requirement", conf: 0.85 },
   { re: /\b(?:don't|never|avoid|shouldn't|must not|do not|no\s+(?:need|want))\b/i, cat: "prohibition", conf: 0.8 },
   { re: /\b(?:prefer|like|want|would rather|should)\b.*\b(?:use|be|have|with)\b/i, cat: "preference", conf: 0.6 },
-  // Turkish patterns — both with and without diacriticals
-  { re: /\b(?:kritik|kritikal|\u00f6nemli|onemli|\u015fart|sart|zorunlu|\u015fart ko\u015ful|\u00f6nemli \u015fart|kesinlikle|kesinlikle \u015fart|asla|sak\u0131n|sak\u0131nha|bunu yapma|b\u00f6yle olsun|b\u00f6yle yap\u0131n|\u015f\u00f6yle olsun|\u015f\u00f6yle yap\u0131n)\b/iu, cat: "requirement", conf: 0.8 },
-  { re: /\b(?:yapma|kullanma|sak\u0131n|asla\s+(?:kullanma|yapma|getirme))\b/iu, cat: "prohibition", conf: 0.8 },
-  { re: /\b(?:tercih|isterim|olsun|kullanal\u0131m|yapal\u0131m|istiyorum)\b/iu, cat: "preference", conf: 0.6 },
+  // Turkish patterns — raw UTF-8 chars (the file is UTF-8; the escape forms
+  // added no value and hurt readability).
+  // ponytail: `\b` is ASCII-only in JS, so a leading Turkish char like `ö` is
+  // not a word boundary and the Turkish-leading forms barely match; the ASCII
+  // fallbacks (onemli/sart/...) carry the load. Fixing that needs lookarounds,
+  // not just spelling — out of scope for the consistency cleanup.
+  { re: /\b(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|asla|sakın|sakınha|bunu yapma|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)\b/iu, cat: "requirement", conf: 0.8 },
+  { re: /\b(?:yapma|kullanma|sakın|asla\s+(?:kullanma|yapma|getirme))\b/iu, cat: "prohibition", conf: 0.8 },
+  { re: /\b(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)\b/iu, cat: "preference", conf: 0.6 },
 ];
 
 export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["constraints"] {
@@ -287,28 +298,27 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
     const txt = extractText(m.content);
     tokenAcc += estimateTokens(txt);
     let brk = false;
-    let type: StructuredExtraction["topics"][0]["type"] = "exploration";
-    let primaryFile: string | null = null;
 
     if (m.role === "assistant") {
       const blocks = Array.isArray(m.content) ? m.content : [];
       for (const b of blocks) {
         for (const tool of flattenToolCallBlock(b)) {
-          const fp = (tool.arguments?.path ?? tool.arguments?.file_path) as string | undefined;
+          const fp = extractToolPath(tool.arguments);
           if (!fp) continue;
           const fn = path.basename(fp);
           if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
           lastFile = fn;
-          primaryFile = fp; currentPrimaryFile = fp;
-          if (tool.name?.includes("write") || tool.name?.includes("edit")) { type = "implementation"; if (currentType !== "implementation") currentType = "implementation"; }
-          else if (tool.name?.includes("read")) { type = "review"; if (currentType === "exploration") currentType = "review"; }
+          currentPrimaryFile = fp;
+          const toolCls = classifyTool(tool.arguments);
+          if (toolCls === "mutates") { if (currentType !== "implementation") currentType = "implementation"; }
+          else if (toolCls === "accesses") { if (currentType === "exploration") currentType = "review"; }
         }
       }
     }
-    if (m.role === "toolResult" && m.isError) { errAcc++; type = "debugging"; if (currentType !== "implementation") currentType = "debugging"; }
+    if (m.role === "toolResult" && m.isError) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
     if (m.role === "toolResult" && !m.isError) {
       const tc = tcIdx.get(m.toolCallId ?? "");
-      if (tc?.name === "bash" && /error|fail/i.test(txt)) { errAcc++; type = "debugging"; if (currentType !== "implementation") currentType = "debugging"; }
+      if (tc && classifyTool(tc.arguments) === "executes" && /error|fail/i.test(txt)) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
     }
     if (m.role === "user" && SHIFT_RE.test(txt) && tokenAcc > pc.minChunkTokens) brk = true;
     if (tokenAcc >= pc.maxChunkTokens) brk = true;

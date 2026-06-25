@@ -51,7 +51,7 @@ describe("extractMediaAttachments", () => {
 describe("trackFileOps", () => {
   it("detects file modifications", () => {
     const msgs: LlmMessage[] = [
-      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "write", arguments: { path: "/tmp/foo.ts" } }] },
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "write", arguments: { path: "/tmp/foo.ts", content: "export const foo = 1;" } }] },
       { role: "toolResult", toolCallId: "1", content: "written" },
     ];
     const ops = trackFileOps(msgs);
@@ -70,26 +70,33 @@ describe("trackFileOps", () => {
     expect(ops.read[0]).toBe("/tmp/bar.ts");
   });
 
-  it("detects common patch/create/append/update file tools as modifications", () => {
+  it("classifies payload-carrying path tools as modifications (name-agnostic)", () => {
+    // Names are deliberately varied/unknown to prove classification is by
+    // argument shape, not name: any tool carrying a path + content payload is
+    // a write, including ones this code has never seen.
     const msgs: LlmMessage[] = [
       { role: "assistant", content: [
-        { type: "toolCall", id: "1", name: "patch_file", arguments: { path: "/tmp/a.ts" } },
-        { type: "toolCall", id: "2", name: "create_file", arguments: { path: "/tmp/b.ts" } },
-        { type: "toolCall", id: "3", name: "append_file", arguments: { path: "/tmp/c.ts" } },
-        { type: "toolCall", id: "4", name: "update_file", arguments: { path: "/tmp/d.ts" } },
+        { type: "toolCall", id: "1", name: "patch_file", arguments: { path: "/tmp/a.ts", patch: "@@ diff @@" } },
+        { type: "toolCall", id: "2", name: "create_file", arguments: { path: "/tmp/b.ts", content: "b" } },
+        { type: "toolCall", id: "3", name: "append_file", arguments: { path: "/tmp/c.ts", content: "c" } },
+        { type: "toolCall", id: "4", name: "update_file", arguments: { path: "/tmp/d.ts", content: "d" } },
+        { type: "toolCall", id: "5", name: "hypa_write", arguments: { path: "/tmp/e.ts", content: "e" } },
+        { type: "toolCall", id: "6", name: "totally_unknown_mcp_tool", arguments: { path: "/tmp/f.ts", content: "f" } },
       ] },
       { role: "toolResult", toolCallId: "1", content: "patched" },
       { role: "toolResult", toolCallId: "2", content: "created" },
       { role: "toolResult", toolCallId: "3", content: "appended" },
       { role: "toolResult", toolCallId: "4", content: "updated" },
+      { role: "toolResult", toolCallId: "5", content: "written" },
+      { role: "toolResult", toolCallId: "6", content: "written" },
     ];
     const ops = trackFileOps(msgs);
-    expect(ops.modified.map(f => f.path).sort()).toEqual(["/tmp/a.ts", "/tmp/b.ts", "/tmp/c.ts", "/tmp/d.ts"]);
+    expect(ops.modified.map(f => f.path).sort()).toEqual(["/tmp/a.ts", "/tmp/b.ts", "/tmp/c.ts", "/tmp/d.ts", "/tmp/e.ts", "/tmp/f.ts"]);
   });
 
   it("ignores no-op edits", () => {
     const msgs: LlmMessage[] = [
-      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "edit", arguments: { path: "/tmp/x.ts" } }] },
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "edit", arguments: { path: "/tmp/x.ts", oldText: "a", newText: "b" } }] },
       { role: "toolResult", toolCallId: "1", content: "applied: 0" },
     ];
     const ops = trackFileOps(msgs);
@@ -182,7 +189,7 @@ describe("extractStructured", () => {
   it("extracts all facets from a realistic conversation", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "Create a login page" },
-      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "write", arguments: { path: "/src/Login.tsx" } }] },
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "write", arguments: { path: "/src/Login.tsx", content: "export default function Login() {}" } }] },
       { role: "toolResult", toolCallId: "1", content: "file written" },
       { role: "assistant", content: [{ type: "toolCall", id: "2", name: "bash", arguments: { cmd: "npm test" } }] },
       { role: "toolResult", toolCallId: "2", content: "test failed" },

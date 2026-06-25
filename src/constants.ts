@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "7.16.0";
+export const VERSION = "7.17.0";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
@@ -61,7 +61,10 @@ export const DEFAULT_CONFIG = {
 };
 
 export const NO_OP_RE = /applied:\s*0|no changes applied|nothing to (?:do|change)|0 edits? applied/i;
-export const SHIFT_RE = /simdi|peki|bide|bi de|gecelim|bakalim|yapalim|baska|sonra|tamam simdi|now let|also|next|let's|moving on|switch to/i;
+// Turkish cues in both proper (şimdi/geçelim/bakalım/yapalım/başka) and ASCII
+// (simdi/gecelim/...) spellings — users mix the two. The `u` flag matches
+// FOLLOWUP_RE's convention for Turkish-bearing patterns.
+export const SHIFT_RE = /şimdi|simdi|peki|bi de|bide|geçelim|gecelim|bakalım|bakalim|yapalım|yapalim|başka|baska|sonra|tamam şimdi|tamam simdi|now let|also|next|let's|moving on|switch to/iu;
 export const CHOICE_RE = /use\s+\S+\s+(?:instead|not|rather)|don't\s+use|avoid\s+|switch\s+to\s+|go\s+with\s+|prefer\s+/i;
 
 // ── Prompt Templates ──
