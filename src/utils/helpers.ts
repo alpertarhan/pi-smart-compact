@@ -6,10 +6,12 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { CompactConfig, CompressionProfile, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionType, SessionMessageEntry } from "../types.ts";
-import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT } from "../constants.ts";
+import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT, TRUNC } from "../constants.ts";
 import * as log from "./logger.ts";
 import { settingsFile, defaultBackupDir } from "../infra/paths.ts";
 import { atomicWriteFileSync, ensureDir } from "../infra/fs.ts";
+import { flattenToolCallBlock } from "./extraction.ts";
+import { extractToolPath } from "../domain/tool-semantics.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
@@ -196,7 +198,7 @@ export function backupConversation(convText: string, sessionId: string): string 
     const dir = cfg.backupDir;
     ensureDir(dir);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const hash = crypto.createHash("sha256").update(convText).digest("hex").slice(0, 8);
+    const hash = crypto.createHash("sha256").update(convText).digest("hex").slice(0, TRUNC.CONV_HASH);
     const fp = path.join(dir, sessionId + "-" + ts + "-" + hash + ".md");
     // Atomic write so a crash mid-write never leaves a half-readable backup.
     atomicWriteFileSync(fp, "# Smart Compact Backup\n# Date: " + new Date().toISOString() + "\n# Session: " + sessionId + "\n\n" + convText);
@@ -231,7 +233,7 @@ export function listBackups(limit = 20): BackupEntry[] {
       try {
         const stat = fs.statSync(full);
         if (!stat.isFile()) continue;
-        const head = fs.readFileSync(full, "utf-8").split("\n").slice(0, 5).join("\n");
+        const head = fs.readFileSync(full, "utf-8").split("\n").slice(0, TRUNC.BACKUP_PREVIEW_LINES).join("\n");
         const date = head.match(/^# Date:\s*(.+)$/m)?.[1]?.trim();
         const session = head.match(/^# Session:\s*(.+)$/m)?.[1]?.trim();
         out.push({
@@ -347,28 +349,26 @@ export function smartKeepBoundary(
 
   if (adjusted <= 0 || adjusted >= msgs.length) return adjusted;
 
-  const last = msgs[adjusted - 1];
-  const first = msgs[adjusted];
-  if (last && first) {
-    // Use extractText-style approach instead of JSON.stringify
-    const getText = (msg: unknown): string => {
-      const m = msg as Record<string, unknown>;
-      const c = m?.content;
-      if (typeof c === "string") return c;
-      if (Array.isArray(c)) return c.map((b: unknown) => {
-        if (typeof b === "string") return b;
-        if (typeof b === "object" && b !== null && (b as { type?: string }).type === "text") return (b as { text?: string }).text ?? "";
-        return "";
-      }).join("");
-      return "";
-    };
-    const lastText = getText(last.message).toLowerCase();
-    const keptText = getText(first.message).toLowerCase();
-    const fileRe = /(?:path|file)=["']([^"']+)["']/g;
-    const lastFiles = new Set([...lastText.matchAll(fileRe)].map(m => m[1].split("/").pop()));
-    fileRe.lastIndex = 0;
-    const keptFiles = new Set([...keptText.matchAll(fileRe)].map(m => m[1].split("/").pop()));
-    if ([...lastFiles].filter(f => keptFiles.has(f)).length > 0) return adjusted - 1;
+  // Topical grouping: if the last compacted message and the first kept message
+  // touch the same file, pull the boundary back one so a file's work isn't split
+  // across the compaction seam. Files come from tool-call arguments — the earlier
+  // prose regex `path="..."` never matched real agent output, so this was a no-op.
+  const touchedFiles = (msg: unknown): Set<string> => {
+    const m = msg as Record<string, unknown>;
+    const blocks = Array.isArray(m?.content) ? m.content : [];
+    const files = new Set<string>();
+    for (const b of blocks) {
+      for (const tc of flattenToolCallBlock(b)) {
+        const fp = extractToolPath(tc.arguments);
+        if (fp) files.add(fp.split("/").pop() ?? fp);
+      }
+    }
+    return files;
+  };
+  const lastFiles = touchedFiles(msgs[adjusted - 1].message);
+  if (lastFiles.size > 0) {
+    const keptFiles = touchedFiles(msgs[adjusted].message);
+    if ([...lastFiles].some(f => keptFiles.has(f))) return adjusted - 1;
   }
   return adjusted;
 }
@@ -537,9 +537,9 @@ export function buildExtractionContext(extraction: StructuredExtraction, forRang
   return [
     "## Deterministic Extraction (verified facts)",
     "Files modified: " + (files.map(f => f.path).join(", ") || "none"),
-    "Errors: " + (errors.map(e => "[" + e.tool + "] " + e.message.slice(0, 80) + (e.resolved ? " ✓" : "")).join("; ") || "none"),
-    "Decisions: " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, 60)).join("; ") || "none"),
-    "Constraints: " + (extraction.constraints.map(c => "[" + c.category + "] " + c.text.slice(0, 60)).join("; ") || "none"),
+    "Errors: " + (errors.map(e => "[" + e.tool + "] " + e.message.slice(0, TRUNC.SNIPPET) + (e.resolved ? " ✓" : "")).join("; ") || "none"),
+    "Decisions: " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, TRUNC.DECISION_DETAIL)).join("; ") || "none"),
+    "Constraints: " + (extraction.constraints.map(c => "[" + c.category + "] " + c.text.slice(0, TRUNC.DECISION_DETAIL)).join("; ") || "none"),
     "Media attachments: " + (media.map(a => a.kind + (a.name ? ":" + a.name : "") + (a.mimeType ? " (" + a.mimeType + ")" : "") + " @msg" + a.index).join("; ") || "none"),
   ].join("\n");
 }
@@ -600,6 +600,8 @@ export type CompactionTier = "none" | "light" | "full";
 
 export function selectCompactionTier(
   contextPercent: number,
+  // toolPercent is recorded by the caller for metrics but deliberately NOT used in
+  // the tier decision: a high tool-output ratio (tool=97%) ≠ context window full.
   toolPercent: number,
   totalTokens: number,
   minThreshold: number,

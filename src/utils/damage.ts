@@ -10,6 +10,8 @@ import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
 import * as log from "./logger.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
 import { appendLineLocked, writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
+import { extractCheckKeywords } from "../domain/keywords.ts";
 
 export interface RegressionSignal {
   type: "re-read" | "re-question" | "contradiction" | "user-complaint";
@@ -85,7 +87,7 @@ export function detectDamage(
           signals.push({
             type: "user-complaint",
             severity: "high",
-            detail: "User complaint after compaction: \"" + text.slice(0, 100) + "\"",
+            detail: "User complaint after compaction: \"" + text.slice(0, TRUNC.TOPIC_LABEL) + "\"",
           });
           break;
         }
@@ -93,12 +95,15 @@ export function detectDamage(
 
       // Check if user re-asks about compacted topics
       for (const t of details.topics) {
-        const topicWords = t.toLowerCase().split(/\s+/).filter(w => w.length > 4).slice(0, 3);
-        if (topicWords.length >= 2 && topicWords.some(w => text.includes(w))) {
+        // Salient tokens (proper nouns / identifiers) are high-precision, so a
+        // single match is enough signal — the old "≥2 long words" guard was for
+        // the noisier positional keyword extraction.
+        const topicWords = extractCheckKeywords(t, 3);
+        if (topicWords.length > 0 && topicWords.some(w => text.includes(w.toLowerCase()))) {
           signals.push({
             type: "re-question",
             severity: "low",
-            detail: "User mentions compacted topic: " + t.slice(0, 80),
+            detail: "User mentions compacted topic: " + t.slice(0, TRUNC.SNIPPET),
           });
         }
       }
@@ -157,7 +162,7 @@ export function logDamageReport(
   } catch (e) { log.warn("logDamageReport failed", e); }
 }
 
-const REMEDIATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;
 
 /**
  * Persist the files the agent re-read after a compaction so the NEXT

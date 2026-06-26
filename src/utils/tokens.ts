@@ -2,7 +2,7 @@
  * Token estimation with provider-specific ratios and EMA calibration.
  */
 
-import { CHARS_PER_TOKEN } from "../constants.ts";
+import { CHARS_PER_TOKEN, TUNING } from "../constants.ts";
 import type { ProviderCapabilities } from "../types.ts";
 
 const PROVIDER_MAP: Record<string, ProviderCapabilities> = {
@@ -152,8 +152,8 @@ export class TokenCalibrationStore {
     // EMA smoothing: 70% previous, 30% new sample. Clamp the ratio to a
     // sane range so a one-off outlier response (e.g. a truncated reply)
     // can't permanently skew estimates.
-    const clamped = Math.max(0.3, Math.min(3.0, sample));
-    this.factors.set(key, prev * 0.7 + clamped * 0.3);
+    const clamped = Math.max(TUNING.CALIBRATION_CLAMP_MIN, Math.min(TUNING.CALIBRATION_CLAMP_MAX, sample));
+    this.factors.set(key, prev * TUNING.EMA_PREV + clamped * TUNING.EMA_SAMPLE);
   }
 }
 
@@ -168,10 +168,31 @@ export function __resetTokenCalibrationForTests(): void {
   _fallbackCalibration.clear();
 }
 
+/** JSON-density tuning knobs (named, not inline magic numbers). */
+const JSON_PENALTY = 0.85;
+const JSON_DENSITY_THRESHOLD = 0.05;
+/** Cap the density scan so a multi-MB conversation serialization can't pause the pipeline. */
+const JSON_DENSITY_SCAN_CAP = 8192;
+
 export function estimateTokens(text: string, provider?: string, model?: string, calibration = _fallbackCalibration): number {
   const baseRatio = provider ? getProviderCaps(provider).tokenRatioEstimate : CHARS_PER_TOKEN;
-  // JSON content has denser tokenization (brackets, quotes, escapes)
-  const jsonPenalty = text.startsWith("[") || text.startsWith("{") ? 0.85 : 1.0;
+  // JSON content has denser tokenization. The leading-brace check covers
+  // per-message JSON tool results; the density fallback catches concatenations
+  // that don't start with JSON. Capped so a multi-MB serialization can't pause.
+  const startsJson = text.startsWith("[") || text.startsWith("{");
+  let jsonPenalty = 1.0;
+  if (startsJson) {
+    jsonPenalty = JSON_PENALTY;
+  } else if (text.length > 0) {
+    const sample = text.length > JSON_DENSITY_SCAN_CAP ? text.slice(0, JSON_DENSITY_SCAN_CAP) : text;
+    let structural = 0;
+    for (let i = 0; i < sample.length; i++) {
+      const c = sample.charCodeAt(i);
+      // 34 "  91 [  93 ]  123 {  125 }
+      if (c === 34 || c === 91 || c === 93 || c === 123 || c === 125) structural++;
+    }
+    if (structural / sample.length > JSON_DENSITY_THRESHOLD) jsonPenalty = JSON_PENALTY;
+  }
   // Turkish/CE characters tokenize differently (multi-byte in some tokenizers)
   const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(text) ? 0.9 : 1.0;
   const factor = calibration.get(provider, model);

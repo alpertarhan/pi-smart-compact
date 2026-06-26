@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "7.17.0";
+export const VERSION = "7.18.0";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
@@ -168,18 +168,84 @@ export const MAX_EXPLORATION_ROUNDS = 8;
 export const BACKUP_MAX_FILES = 20;
 export const BACKUP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
-// ── Truncation lengths used by extraction and damage paths ──
-//
-// These were scattered as inline magic numbers (`slice(0, 100)`,
-// `slice(0, 60)`). Centralizing them documents intent and lets tests assert
-// against the same constant the production code uses.
-export const SUMMARY_SNIPPET_LEN = 100;
-export const SHORT_SUMMARY_LEN = 60;
-export const ERROR_FUZZY_MATCH_LEN = 30;
+// ── Shared durations (eliminate duplicated 7d×3 / 1h×2 inline literals) ──
+export const FIVE_MINUTES_MS = 5 * 60 * 1000;
+export const ONE_HOUR_MS = 60 * 60 * 1000;
+export const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+export const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+// ── Extraction-cache filename prefix (paths.ts builds it, cache.ts prunes by it) ──
+export const EXTRACTION_CACHE_PREFIX = "compact-extraction-";
+
+// ── ID prefixes (were inline string literals scattered across modules) ──
+export const ID_PREFIX = {
+  PROJECT: "proj-",
+  COMPACT_SESSION: "sc-",
+  MULTI_TOOL_USE_SYNTHETIC: "mtu_",
+  OPEN_LOOP: "loop-",
+  DECISION: "decision-",
+  ERROR: "error-",
+} as const;
+
+// ── Tuning factors (calibration EMA/clamp + constraint confidence) ──
+export const TUNING = {
+  EMA_PREV: 0.7,
+  EMA_SAMPLE: 0.3,
+  CALIBRATION_CLAMP_MIN: 0.3,
+  CALIBRATION_CLAMP_MAX: 3.0,
+  CONFIDENCE_HIGH: 0.85,
+  CONFIDENCE_MEDIUM: 0.8,
+  CONFIDENCE_LOW: 0.6,
+} as const;
+
+// ── Truncation budgets (named, not inline literals) ──
+export const TRUNC = {
+  // storage caps (extraction produces, state re-caps defensively)
+  MESSAGE: 300,
+  ERROR_DETAIL: 500,
+  DECISION_SUMMARY: 200,
+  USER_RESPONSE: 300,
+  CONSTRAINT_TEXT: 300,
+  OPEN_LOOP_SUMMARY: 120,
+  TIMELINE_EVENT: 150,
+  TIMELINE_ERROR: 100,
+  // prompt / context snippets
+  SNIPPET: 80,
+  PREVIEW: 150,
+  PREVIEW_MID: 200,
+  DETAIL: 300,
+  PREVIEW_LONG: 400,
+  PREVIEW_XL: 500,
+  CHUNK_FALLBACK: 180,
+  DECISION_DETAIL: 60,
+  TOPIC_LABEL: 100,
+  // hash / id / display
+  PROJ_ID_HASH: 12,
+  CONV_HASH: 8,
+  RESULT_GAPS: 5,
+  SESSION_ID_DISPLAY: 20,
+  ERROR_SNIPPET: 30,
+  TIMELINE_DISPLAY: 10,
+  EXPLORE_RESULTS: 15,
+  BACKUP_PREVIEW_LINES: 5,
+  FINGERPRINT_SEG: 2,
+} as const;
+
+// ── Truncation lengths used by damage paths ──
 export const DAMAGE_RECENT_MSG_WINDOW = 15;
 
 // ── Pruning ──
 export const MAX_TOOL_OUTPUT_CHARS = 800;
+
+// ── Error detection (shared by pruning + extraction) ──
+/** Shell-output patterns signalling a likely error even in a non-`isError` result. */
+export const LIKELY_ERROR_RE = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i;
+/** catalogErrors only scans outputs shorter than this — pruning must not truncate below it. */
+export const ERROR_SCAN_MAX_LEN = 2000;
+/** How far forward to look for a retry of the same tool after an error. */
+export const ERROR_RETRY_WINDOW = 6;
+/** How far forward to look for that retry's resolving (non-error) result. */
+export const ERROR_RESOLVE_WINDOW = 10;
 
 // ── Per-run metrics buffer ──
 //

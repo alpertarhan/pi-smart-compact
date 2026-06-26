@@ -1,5 +1,29 @@
 # Changelog
 
+## [7.18.0] - 2026-06-26
+
+### Fixed
+- **`mergeExtractions` mainGoal corruption** — incremental extraction replaced the original goal with a delta-suffix message; now prefers `base.mainGoal`.
+- **`mergeExtractions` boundary gap** — `lastUserMessages`/`lastErrors` now span the cache boundary instead of dropping base's tail.
+- **`catalogErrors` id-less retry** — retry resolution falls back to tool-name match when the retry call lacks an id.
+- **Pruning hides errors** — short error-containing tool outputs preserved from 800-char truncation (shared `LIKELY_ERROR_RE`).
+- **`computeDelta` collision** — prefix-slice keys collided different items sharing an opening; now full-normalized text.
+- **`smartKeepBoundary` dead regex** — `path="..."` never matched agent output; replaced with toolCall-arg file extraction.
+- **`buildCompactionState` basename** — raw basename → `buildPathNeedles` (generic-basename gate, consistent with `extractOpenLoops`).
+- **`extractNextActions`/`Critical`** — case-sensitive regex → canonical `findSection`.
+- **`CONSTRAINT_PATTERNS`** — `\b` → lookarounds so Turkish-leading chars (`önemli`, `şart`) match.
+- **`verifySummary` fuzzy** — salient-token keyword extraction; error snippet whitespace-normalized.
+- **`estimateTokens` JSON** — density fallback for non-brace-first JSON (capped at 8KB).
+
+### Added
+- **`domain/keywords.ts`** — `extractCheckKeywords` (shared by verify + damage).
+- **Centralized constants** — `TRUNC` (truncation budgets), `ID_PREFIX`, `TUNING` (EMA/clamp/confidence), shared durations, `EXTRACTION_CACHE_PREFIX`, `LIKELY_ERROR_RE`.
+
+### Changed
+- **Zero inline magic values** — ~70 truncation literals, ID prefixes, confidence scores, TTL duplications (7d×3, 1h×2), and tuning factors centralized into named constants.
+- **`makeCompactSessionId`** — single source (services.ts); cache.ts fallback deduped.
+- **`damage.ts` re-question** — shared `extractCheckKeywords` (threshold relaxed for high-precision salient tokens).
+
 ## [7.17.0] - 2026-06-26
 
 ### Added

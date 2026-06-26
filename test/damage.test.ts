@@ -118,8 +118,8 @@ describe("detectDamage", () => {
   });
 
   it("detects a re-question when the user mentions a compacted topic", () => {
-    // Topic word check requires ≥2 long (>4 char) words appearing in the
-    // user message. We hit that bar with both "refactor" and "authentication".
+    // Salient-keyword match: "Refactor" (capitalized → salient token) from the
+    // compacted topic appears in the user's re-question.
     const messages: LlmMessage[] = [
       userMsg("Can you remind me what we decided about the refactor authentication?"),
     ];

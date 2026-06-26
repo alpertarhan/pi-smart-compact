@@ -21,26 +21,15 @@ import {
   cacheDir as cacheDirPath, metricsDashboardFile,
 } from "../infra/paths.ts";
 import { appendLineLocked, ensureDir, readJsonSync, writeJsonSync, atomicWriteFileSync } from "../infra/fs.ts";
+import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX } from "../constants.ts";
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
-import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
+import { getDefaultServices, makeCompactSessionId, type SmartCompactServices } from "../infra/services.ts";
 
 // ── Cache Options ──
 
-/**
- * Generate a one-shot session id used for prompt-cache namespacing when a
- * caller didn't go through the services container.
- *
- * NOTE: historically this module memoized a single id at module scope, but
- * that id leaked across all runs in the same Node process and collided with
- * `services.compactSessionId` (which is freshly minted per `createServices()`).
- * The right namespace identity belongs to the services container; this helper
- * exists only as a defensive fallback for the rare path where `services` is
- * undefined (e.g. ad-hoc test wiring) and intentionally returns a fresh id
- * every call so two unrelated calls never share a cache namespace by accident.
- */
-function fallbackSessionId(): string {
-  return "sc-" + Date.now().toString(36) + "-" + crypto.randomBytes(4).toString("hex");
-}
+// Prompt-cache namespace id comes from `makeCompactSessionId` (services.ts),
+// shared with the per-run services container so the fallback path can't drift
+// in format from the live one.
 /** Internal compaction phases that should never use prompt caching — one-shot, not worth write cost. */
 const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
   "explore", "explore-loop", "explore-retry", "explore-direct",
@@ -63,7 +52,7 @@ export function cacheOpts(
   if (retention === "none") {
     return { ...opts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: services?.compactSessionId ?? fallbackSessionId(), cacheRetention: retention };
+  return { ...opts, sessionId: services?.compactSessionId ?? makeCompactSessionId(), cacheRetention: retention };
 }
 
 // ── Metrics ──
@@ -218,8 +207,8 @@ export function loadCachedExtraction(sessionId: string): CachedExtraction | null
   return cached;
 }
 
-const EXTRACTION_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-const EXTRACTION_CACHE_PRUNE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const EXTRACTION_CACHE_TTL_MS = ONE_HOUR_MS;
+const EXTRACTION_CACHE_PRUNE_MAX_AGE_MS = SEVEN_DAYS_MS;
 
 /**
  * Stale extraction caches (sessions we'll never see again because the user
@@ -242,7 +231,7 @@ function scheduleExtractionCacheCleanup(): void {
       if (!fs.existsSync(dir)) return;
       const now = Date.now();
       for (const name of fs.readdirSync(dir)) {
-        if (!name.startsWith("compact-extraction-") || !name.endsWith(".json")) continue;
+        if (!name.startsWith(EXTRACTION_CACHE_PREFIX) || !name.endsWith(".json")) continue;
         const fp = path.join(dir, name);
         try {
           const stat = fs.statSync(fp);
@@ -294,9 +283,13 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
     constraints: [...base.constraints, ...offsetConstraints],
     topics: [...base.topics, ...offsetTopics],
     timeline: [...base.timeline, ...offsetTimeline],
-    mainGoal: delta.mainGoal ?? base.mainGoal,
-    lastUserMessages: delta.lastUserMessages.length > 0 ? delta.lastUserMessages : base.lastUserMessages,
-    lastErrors: delta.lastErrors.length > 0 ? delta.lastErrors : base.lastErrors,
+    // mainGoal is the FIRST user message (the original objective) — base holds
+    // it; the delta suffix's first user message is mid-conversation, not the goal.
+    mainGoal: base.mainGoal ?? delta.mainGoal,
+    // "last N" must span the cache boundary: the suffix alone is incomplete
+    // when it carries fewer than N user messages / errors.
+    lastUserMessages: [...base.lastUserMessages, ...delta.lastUserMessages].slice(-5),
+    lastErrors: [...base.lastErrors, ...delta.lastErrors].slice(-3),
     messageCount: baseMsgCount + delta.messageCount,
   };
 }
