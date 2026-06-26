@@ -4,6 +4,7 @@
 
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
+import { TRUNC } from "../constants.ts";
 import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
@@ -291,7 +292,7 @@ export async function showResultScreen(
       c.addChild(new Text(theme.fg("success", "    \u2705 All facts verified \u2014 no gaps detected"), 0, 0));
     } else if (details.gaps.length > 0) {
       c.addChild(new Text(theme.fg("warning", "    \u26A0\uFE0F  " + details.gaps.length + " gap(s) patched:"), 0, 0));
-      for (const g of details.gaps.slice(0, 5)) {
+      for (const g of details.gaps.slice(0, TRUNC.RESULT_GAPS)) {
         c.addChild(new Text(theme.fg("dim", "      \u2022 " + g), 0, 0));
       }
     }
@@ -454,7 +455,7 @@ export async function showRestorePicker(
   const items: SelectItem[] = backups.map(b => ({
     value: b.path,
     label: new Date(b.date).toLocaleString() + "  \u00b7  " + Math.max(1, Math.round(b.sizeBytes / 1024)) + "KB",
-    description: b.sessionId.slice(0, 20),
+    description: b.sessionId.slice(0, TRUNC.SESSION_ID_DISPLAY),
   }));
   return await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
     const c = new Container();

@@ -17,12 +17,13 @@
 
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { StructuredExtraction, VerificationResult } from "../types.ts";
-import { COMPACT_SYSTEM_PREFIX } from "../constants.ts";
+import { COMPACT_SYSTEM_PREFIX, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import { extractFileRefs } from "../utils/file-ref-detect.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
+import { extractCheckKeywords } from "../domain/keywords.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 
@@ -61,24 +62,26 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
   }
 
   for (const e of extraction.errors.filter(e => !e.resolved)) {
-    const snippet = e.message.slice(0, 30).toLowerCase();
+    // Normalize whitespace before slicing: a leading "\n  " on the raw error
+    // text broke the exact-substring match even when the error was quoted verbatim.
+    const snippet = e.message.trim().replace(/\s+/g, " ").slice(0, TRUNC.ERROR_SNIPPET).toLowerCase();
     if (snippet.length > 5 && !lower.includes(snippet)) {
-      gaps.push("Missing error: " + e.message.slice(0, 80));
+      gaps.push("Missing error: " + e.message.slice(0, TRUNC.SNIPPET));
       score -= 5;
     }
   }
 
   for (const c of extraction.constraints.filter(c => c.confidence >= 0.8)) {
-    const keywords = c.text.split(/\s+/).filter(w => w.length > 4).slice(0, 3);
+    const keywords = extractCheckKeywords(c.text, 3);
     const found = keywords.some(k => lower.includes(k.toLowerCase()));
     if (!found && keywords.length > 0) {
-      gaps.push("Missing constraint: " + c.text.slice(0, 100));
+      gaps.push("Missing constraint: " + c.text.slice(0, TRUNC.TOPIC_LABEL));
       score -= 3;
     }
   }
 
   if (extraction.mainGoal) {
-    const goalWords = extraction.mainGoal.split(/\s+/).filter(w => w.length > 3).slice(0, 4);
+    const goalWords = extractCheckKeywords(extraction.mainGoal, 4);
     const goalFound = goalWords.some(w => lower.includes(w.toLowerCase()));
     if (!goalFound) { gaps.push("Main goal may be missing from summary"); score -= 10; }
   }
@@ -127,9 +130,9 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     const decisionSection = findSection(parsed, "decisions");
     const decisionBody = decisionSection?.body.toLowerCase() ?? "";
     for (const d of highConfDecisions) {
-      const keywords = d.summary.split(/\s+/).filter(w => w.length > 4).slice(0, 3);
+      const keywords = extractCheckKeywords(d.summary, 3);
       if (keywords.length > 0 && !keywords.some(k => decisionBody.includes(k.toLowerCase()))) {
-        gaps.push("Missing decision: " + d.summary.slice(0, 100));
+        gaps.push("Missing decision: " + d.summary.slice(0, TRUNC.TOPIC_LABEL));
         score -= 3;
       }
     }

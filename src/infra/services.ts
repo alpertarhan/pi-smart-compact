@@ -31,7 +31,7 @@ import type { LlmClient } from "./llm-client.ts";
 import { getLlmClient } from "./llm-client.ts";
 import crypto from "node:crypto";
 import type { LLMCallMetric } from "../types.ts";
-import { METRICS_BUFFER_MAX } from "../constants.ts";
+import { METRICS_BUFFER_MAX, ONE_HOUR_MS } from "../constants.ts";
 import { TokenCalibrationStore } from "../utils/tokens.ts";
 
 /**
@@ -50,7 +50,7 @@ export class ToolSupportCache {
   private readonly entries = new Map<string, { result: boolean; timestamp: number }>();
   private readonly ttlMs: number;
 
-  constructor(ttlMs = 60 * 60 * 1000) { this.ttlMs = ttlMs; }
+  constructor(ttlMs = ONE_HOUR_MS) { this.ttlMs = ttlMs; }
 
   /** Returns the cached value if fresh, or undefined to force a probe. */
   get(key: string, now: number): boolean | undefined {
@@ -147,7 +147,7 @@ export interface SmartCompactServices {
   compactSessionId: string;
 }
 
-function makeCompactSessionId(): string {
+export function makeCompactSessionId(): string {
   return "sc-" + Date.now().toString(36) + "-" + crypto.randomBytes(4).toString("hex");
 }
 

@@ -6,7 +6,7 @@ import type { Model, Api, ToolCall, TextContent, Message, Tool } from "@earendil
 import { Type } from "typebox";
 import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary } from "../types.ts";
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
-import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS } from "../constants.ts";
+import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS, TRUNC } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { classifyTool } from "../domain/tool-semantics.ts";
 import { trackedComplete } from "../utils/cache.ts";
@@ -82,7 +82,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       const s = (args.start as number) ?? 0, e = Math.min((args.end as number) ?? llmMessages.length, llmMessages.length);
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
-        preview: extractText(m?.content).slice(0, 150),
+        preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
         toolCalls: getToolCallNames(m?.content),
         isError: m?.isError,
       })));
@@ -101,7 +101,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
         }
       }
       return JSON.stringify(matches.map(({ idx, m }) => ({
-        idx, role: m?.role, preview: extractText(m?.content).slice(0, 150),
+        idx, role: m?.role, preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
       })));
     }
     case "get_recent_user_messages": {
@@ -113,7 +113,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       const s = Math.max(0, idx - radius), e = Math.min(llmMessages.length, idx + radius + 1);
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
-        text: extractText(m?.content).slice(0, 300),
+        text: extractText(m?.content).slice(0, TRUNC.DETAIL),
         toolCalls: getToolCallNames(m?.content),
         isError: m?.isError,
       })));
@@ -139,14 +139,14 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
             // args; full-file writes carry large content, so omit args to keep
             // the exploration result compact.
             const surgical = a.oldText != null || a.newText != null || a.edits != null || a.patch != null;
-            const preview = extractText(llmMessages[i]?.content).slice(0, 400);
+            const preview = extractText(llmMessages[i]?.content).slice(0, TRUNC.PREVIEW_LONG);
             results.push(surgical
               ? { idx: i, role: "assistant", toolCall: block.name ?? "mutates", args: block.arguments, preview }
               : { idx: i, role: "assistant", toolCall: block.name ?? "mutates", preview });
           }
         }
       }
-      return JSON.stringify(results.slice(0, 15) || [{ info: "No edits found for: " + args.path }]);
+      return JSON.stringify(results.slice(0, TRUNC.EXPLORE_RESULTS) || [{ info: "No edits found for: " + args.path }]);
     }
     case "get_error_chain": {
       const errIdx = (args.index as number) ?? 0;
@@ -154,7 +154,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       const s = Math.max(0, errIdx - ctxRadius), e = Math.min(llmMessages.length, errIdx + ctxRadius + 1);
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
-        text: extractText(m?.content).slice(0, 500),
+        text: extractText(m?.content).slice(0, TRUNC.PREVIEW_XL),
         isError: m?.isError,
         toolCalls: getToolCallNames(m?.content),
       })));
@@ -229,7 +229,7 @@ function normalizeBoundaries(raw: unknown, llmLength: number): TopicBoundary[] {
       const confidence = b.confidence;
       return {
         afterIndex: Math.max(0, Math.min(b.afterIndex as number, maxIndex)),
-        topic: String(b.topic ?? "").slice(0, 100),
+        topic: String(b.topic ?? "").slice(0, TRUNC.TOPIC_LABEL),
         priority: typeof priority === "string" && (BOUNDARY_PRIORITIES as readonly string[]).includes(priority)
           ? (priority as BoundaryPriority)
           : "normal",
@@ -305,12 +305,12 @@ export async function exploreConversation(
     "Main goal: " + (extraction.mainGoal ?? "unknown"),
     "Files modified (" + extraction.modifiedFiles.length + "): " + (extraction.modifiedFiles.map(f => f.path).join(", ") || "none"),
     "Files read (" + extraction.readFiles.length + "): " + (extraction.readFiles.join(", ") || "none"),
-    "Errors (" + extraction.errors.length + "): " + (extraction.errors.map(e => "[" + e.tool + "] " + e.message.slice(0, 80) + (e.resolved ? " (resolved)" : e.retryAttempted ? " (retry attempted)" : "")).join("; ") || "none"),
-    "Decisions (" + extraction.decisions.length + "): " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, 80)).join("; ") || "none"),
-    "Constraints (" + extraction.constraints.length + "): " + (extraction.constraints.map(cc => "[" + cc.category + "] " + cc.text.slice(0, 80)).join("; ") || "none"),
+    "Errors (" + extraction.errors.length + "): " + (extraction.errors.map(e => "[" + e.tool + "] " + e.message.slice(0, TRUNC.SNIPPET) + (e.resolved ? " (resolved)" : e.retryAttempted ? " (retry attempted)" : "")).join("; ") || "none"),
+    "Decisions (" + extraction.decisions.length + "): " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, TRUNC.SNIPPET)).join("; ") || "none"),
+    "Constraints (" + extraction.constraints.length + "): " + (extraction.constraints.map(cc => "[" + cc.category + "] " + cc.text.slice(0, TRUNC.SNIPPET)).join("; ") || "none"),
     "Heuristic topics (" + extraction.topics.length + "): " + (extraction.topics.map(t => "[" + t.startIndex + "-" + t.endIndex + "] " + t.type).join("; ") || "none"),
-    extraction.lastUserMessages.length ? "Last user messages: " + extraction.lastUserMessages.map(m => m.slice(0, 100)).join(" | ") : "",
-    extraction.lastErrors.length ? "Last errors: " + extraction.lastErrors.map(e => e.slice(0, 100)).join(" | ") : "",
+    extraction.lastUserMessages.length ? "Last user messages: " + extraction.lastUserMessages.map(m => m.slice(0, TRUNC.TOPIC_LABEL)).join(" | ") : "",
+    extraction.lastErrors.length ? "Last errors: " + extraction.lastErrors.map(e => e.slice(0, TRUNC.TOPIC_LABEL)).join(" | ") : "",
   ].filter(Boolean).join("\n");
 
   const userContent = "Explore this conversation and produce the structured report.\n\n" +
@@ -448,7 +448,7 @@ export async function explorationRetry(
   signal?: AbortSignal,
   services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
-  const last5 = llmMessages.slice(-5).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, 150)).join("\n");
+  const last5 = llmMessages.slice(-5).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, TRUNC.PREVIEW)).join("\n");
   const retryPrompt = "IMPORTANT: Output ONLY valid raw JSON. No markdown. No explanation. No code fences. Just the JSON object.\n\n" +
     "Produce this exact structure:\n{\"mainGoal\":\"...\",\"sessionType\":\"implementation|review|debugging|discussion\",\"boundaries\":[{\"afterIndex\":N,\"topic\":\"...\",\"priority\":\"normal\",\"confidence\":0.5}],\"enrichedConstraints\":[],\"crossReferences\":[],\"statusAssessment\":{\"done\":[],\"inProgress\":[],\"blocked\":[]},\"criticalContext\":[],\"keyDecisions\":[]}\n\n" +
     "Context:\nFiles: " + extraction.modifiedFiles.map(f => f.path).join(", ") + "\n" +
@@ -473,14 +473,14 @@ export async function directExploration(
   signal?: AbortSignal,
   services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
-  const first3 = llmMessages.filter((m) => m?.role === "user").slice(0, 3).map((m) => extractText(m?.content).slice(0, 200)).join("\n---\n");
-  const last30 = llmMessages.slice(-30).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, 300)).join("\n");
+  const first3 = llmMessages.filter((m) => m?.role === "user").slice(0, 3).map((m) => extractText(m?.content).slice(0, TRUNC.PREVIEW_MID)).join("\n---\n");
+  const last30 = llmMessages.slice(-30).map((m) => "[" + m?.role + "] " + extractText(m?.content).slice(0, TRUNC.DETAIL)).join("\n");
   const prompt = "Analyze this conversation and produce a JSON report.\n\nFirst user messages:\n" + first3 +
     "\n\nDeterministic data:\n" +
     "- Files modified: " + (extraction.modifiedFiles.map(f => f.path).join(", ") || "none") +
-    "\n- Errors: " + (extraction.errors.map(e => e.message.slice(0, 80)).join("; ") || "none") +
-    "\n- Decisions: " + (extraction.decisions.map(d => d.summary.slice(0, 80)).join("; ") || "none") +
-    "\n- Constraints: " + (extraction.constraints.map(c => c.text.slice(0, 80)).join("; ") || "none") +
+    "\n- Errors: " + (extraction.errors.map(e => e.message.slice(0, TRUNC.SNIPPET)).join("; ") || "none") +
+    "\n- Decisions: " + (extraction.decisions.map(d => d.summary.slice(0, TRUNC.SNIPPET)).join("; ") || "none") +
+    "\n- Constraints: " + (extraction.constraints.map(c => c.text.slice(0, TRUNC.SNIPPET)).join("; ") || "none") +
     "\n\nLast 30 messages:\n" + last30 +
     (prevSummary ? "\n\nPrevious summary:\n" + prevSummary : "") +
     (userNote ? "\n\nUser note: \"" + userNote + "\"" : "") +

@@ -222,10 +222,12 @@ describe("mergeExtractions — messageCount", () => {
 // ── mainGoal / lastUserMessages / lastErrors ──
 
 describe("mergeExtractions — field precedence", () => {
-  it("prefers delta.mainGoal over base", () => {
+  it("preserves the original (base) mainGoal over the delta suffix", () => {
+    // mainGoal is the FIRST user message (the original objective). The delta
+    // suffix's first user message is mid-conversation, not the goal — so base wins.
     const base = makeExtraction({ mainGoal: "old goal" });
     const delta = makeExtraction({ mainGoal: "new goal" });
-    expect(mergeExtractions(base, delta, 5).mainGoal).toBe("new goal");
+    expect(mergeExtractions(base, delta, 5).mainGoal).toBe("old goal");
   });
 
   it("falls back to base.mainGoal when delta is null", () => {
@@ -234,10 +236,12 @@ describe("mergeExtractions — field precedence", () => {
     expect(mergeExtractions(base, delta, 5).mainGoal).toBe("old goal");
   });
 
-  it("prefers delta.lastUserMessages when non-empty", () => {
+  it("spans the cache boundary for lastUserMessages", () => {
+    // "last N" must cross the base/delta boundary; the suffix alone is
+    // incomplete when it carries fewer than N user messages.
     const base = makeExtraction({ lastUserMessages: ["old msg"] });
     const delta = makeExtraction({ lastUserMessages: ["new msg 1", "new msg 2"] });
-    expect(mergeExtractions(base, delta, 5).lastUserMessages).toEqual(["new msg 1", "new msg 2"]);
+    expect(mergeExtractions(base, delta, 5).lastUserMessages).toEqual(["old msg", "new msg 1", "new msg 2"]);
   });
 
   it("falls back to base.lastUserMessages when delta is empty", () => {

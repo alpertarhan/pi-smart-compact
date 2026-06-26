@@ -7,7 +7,7 @@ import type {
   LlmMessage, LlmChunk, ChunkSummary, StructuredExtraction,
   ExplorationReport, ProfileConfig,
 } from "../types.ts";
-import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PROMPT_PREFIX, BATCH_PROMPT_SUFFIX, ASSEMBLY_PROMPT_PREFIX, ASSEMBLY_PROMPT_SUFFIX, SESSION_TYPE_INSTRUCTIONS } from "../constants.ts";
+import { COMPACT_SYSTEM_PREFIX, SINGLE_PASS_PREFIX, SINGLE_PASS_SUFFIX, BATCH_PROMPT_PREFIX, BATCH_PROMPT_SUFFIX, ASSEMBLY_PROMPT_PREFIX, ASSEMBLY_PROMPT_SUFFIX, SESSION_TYPE_INSTRUCTIONS, TRUNC } from "../constants.ts";
 import { estimateTokens, getProviderCaps } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { extractText } from "../utils/extraction.ts";
@@ -114,7 +114,7 @@ export async function summarizeBatch(
   // Decision propagation: inject decisions from before this batch's range
   const activeDecisions = extraction.decisions
     .filter(d => d.index < range.start)
-    .map(d => "- " + d.summary.slice(0, 120) + (d.userResponse ? " → " + d.userResponse.slice(0, 60) : ""));
+    .map(d => "- " + d.summary.slice(0, TRUNC.OPEN_LOOP_SUMMARY) + (d.userResponse ? " → " + d.userResponse.slice(0, TRUNC.DECISION_DETAIL) : ""));
   const decisionCtx = activeDecisions.length
     ? "\n## Active Decisions from previous segments (honour these):\n" + activeDecisions.join("\n")
     : "";
@@ -124,9 +124,9 @@ export async function summarizeBatch(
     const id = i + 1;
     return "--- CHUNK " + id + ": " + ch.topic + " (" + ch.priority + ") ---\n" + ch.messages.map((m) => {
       const role = m?.role ?? "unknown";
-      const content = extractText(m?.content).slice(0, 500);
+      const content = extractText(m?.content).slice(0, TRUNC.PREVIEW_XL);
       const toolCalls = filterToolCalls(m?.content)
-        .map(tc => tc.name + " " + JSON.stringify(tc.arguments).slice(0, 300))
+        .map(tc => tc.name + " " + JSON.stringify(tc.arguments).slice(0, TRUNC.DETAIL))
         .join("; ");
       const toolSuffix = toolCalls ? "\n[tool_calls] " + toolCalls : "";
       return "[" + role + "] " + content + toolSuffix;
@@ -162,8 +162,8 @@ export async function summarizeBatch(
     const f = (n: string) => { const m = sec.match(new RegExp("\\*\\*" + n + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i")); return m ? m[1].trim() : ""; };
     const l = (n: string) => { const v = f(n); return !v || v === "None" ? [] : v.split(",").map(s => s.trim()).filter(Boolean); };
     const prio = f("Priority").toLowerCase();
-    const sectionFallback = sec.split("\n").slice(1).join("\n").trim().slice(0, 500);
-    const chunkFallback = ch.messages.map(m => "[" + (m?.role ?? "unknown") + "] " + extractText(m?.content).slice(0, 180)).join("\n").slice(0, 500);
+    const sectionFallback = sec.split("\n").slice(1).join("\n").trim().slice(0, TRUNC.PREVIEW_XL);
+    const chunkFallback = ch.messages.map(m => "[" + (m?.role ?? "unknown") + "] " + extractText(m?.content).slice(0, TRUNC.CHUNK_FALLBACK)).join("\n").slice(0, TRUNC.PREVIEW_XL);
     return {
       topic: ch.topic,
       startIndex: ch.startIndex, endIndex: ch.endIndex,
@@ -206,14 +206,14 @@ export function assembleFallback(summaries: ChunkSummary[], extraction: Structur
   const detRead = extraction.readFiles;
   return [
     "## Goal", extraction.mainGoal ?? "See topics below.", "",
-    "## Constraints & Preferences", ...extraction.constraints.map(c => "- [" + c.category + "] " + c.text.slice(0, 200)), "",
-    "## Progress", "### Done", "- See topics below", "### In Progress", ...summaries.filter(s => s.priority === "high").map(s => "- [ ] " + s.summary.slice(0, 150)), "### Blocked", "- None", "",
-    "## Key Decisions", ...extraction.decisions.map(d => "- **" + d.summary.slice(0, 100) + "**" + (d.userResponse ? " → " + d.userResponse : "")), "",
+    "## Constraints & Preferences", ...extraction.constraints.map(c => "- [" + c.category + "] " + c.text.slice(0, TRUNC.PREVIEW_MID)), "",
+    "## Progress", "### Done", "- See topics below", "### In Progress", ...summaries.filter(s => s.priority === "high").map(s => "- [ ] " + s.summary.slice(0, TRUNC.PREVIEW)), "### Blocked", "- None", "",
+    "## Key Decisions", ...extraction.decisions.map(d => "- **" + d.summary.slice(0, TRUNC.TOPIC_LABEL) + "**" + (d.userResponse ? " → " + d.userResponse : "")), "",
     "## Files Modified", ...detModified.map(f => "- " + f), "",
     "## Files Read", ...detRead.map(f => "- " + f), "",
     "## Next Steps", "1. See topics below", "",
-    "## Critical Context", ...extraction.errors.filter(e => !e.resolved).map(e => "- Unresolved error: " + e.message.slice(0, 100)), "",
-    "## Topics Covered", ...summaries.map(s => "- **" + s.topic + "** [" + s.priority + "]: " + s.summary.slice(0, 200)),
+    "## Critical Context", ...extraction.errors.filter(e => !e.resolved).map(e => "- Unresolved error: " + e.message.slice(0, TRUNC.TOPIC_LABEL)), "",
+    "## Topics Covered", ...summaries.map(s => "- **" + s.topic + "** [" + s.priority + "]: " + s.summary.slice(0, TRUNC.PREVIEW_MID)),
   ].join("\n");
 }
 
@@ -226,7 +226,7 @@ export function assembleFallback(summaries: ChunkSummary[], extraction: Structur
 export function failedChunkSummary(ch: LlmChunk): ChunkSummary {
   return {
     topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
-    summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, 300),
+    summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, TRUNC.DETAIL),
     keyDecisions: [], filesModified: [], filesRead: [], priority: ch.priority,
   };
 }

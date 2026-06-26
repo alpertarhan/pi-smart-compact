@@ -17,6 +17,7 @@
  */
 
 import path from "node:path";
+import { EXTRACTION_CACHE_PREFIX } from "../constants.ts";
 
 function home(): string {
   return process.env.HOME ?? "/tmp";
@@ -74,7 +75,7 @@ export function damageReportsFile(): string {
 
 /** Extraction cache file for a given session. */
 export function extractionCacheFile(sessionId: string): string {
-  return path.join(cacheDir(), "compact-extraction-" + sessionId.replace(/[^a-zA-Z0-9-]/g, "_") + ".json");
+  return path.join(cacheDir(), EXTRACTION_CACHE_PREFIX + sessionId.replace(/[^a-zA-Z0-9-]/g, "_") + ".json");
 }
 
 /** Project fingerprint file for a given project id. */

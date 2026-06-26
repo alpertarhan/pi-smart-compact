@@ -7,7 +7,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile, PendingCompaction, Cell } from "./types.ts";
-import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT } from "./constants.ts";
+import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS } from "./constants.ts";
 import { loadConfig, extractUserNote, listBackups, readBackupContent, buildRestoreMessage } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
 import { buildMetricsReport, readMetricsLog, writeMetricsDashboard } from "./utils/cache.ts";
@@ -79,7 +79,7 @@ function resolveModels(
 }
 
 export default function smartCompactExtension(pi: ExtensionAPI) {
-  const PENDING_TTL_MS = 5 * 60 * 1000;
+  const PENDING_TTL_MS = FIVE_MINUTES_MS;
   // Encapsulated slot: producers call `.set(...)`, the event handler calls
   // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
   // entirely inside the slot factory — see src/app/pending-slot.ts.

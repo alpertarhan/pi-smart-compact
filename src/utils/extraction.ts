@@ -4,7 +4,7 @@
 
 import path from "node:path";
 import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop, MediaAttachment } from "../types.ts";
-import { NO_OP_RE, SHIFT_RE, CHOICE_RE } from "../constants.ts";
+import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_SCAN_MAX_LEN, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW, TRUNC, ID_PREFIX, TUNING } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
@@ -17,13 +17,8 @@ export function isTruncated(content: unknown): boolean {
   return TRUNCATE_RE.test(extractText(content));
 }
 
-/**
- * Result-text heuristic for deletion. A path-only tool whose result mentions a
- * deletion verb is treated as a delete — arguments alone cannot tell a delete
- * from a read (both carry only a path), so the result is the only name-agnostic
- * signal. Best-effort: a file that literally contains the word "deleted" would
- * misattribute, but that is a rare false-positive on the least-critical list.
- */
+/** Best-effort delete detection: arguments can't tell a delete from a read
+ *  (both carry only a path), so the result text is the only signal. */
 const DELETE_RESULT_RE = /\b(?:deleted|removed|unlinked)\b/i;
 
 /** Reusable tool call index type */
@@ -149,10 +144,8 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
     const filePath = extractToolPath(tc.arguments);
     if (!filePath) continue;
 
-    // Classification by argument shape, not tool name — see domain/tool-semantics.ts.
-    // Auto-adapts to tools this code has never seen (hypa_*, MCP, custom extensions):
-    // any path+payload tool is a write, any command tool is an exec, any path-only
-    // tool is a read, regardless of name. No name list to maintain.
+    // Classify by argument shape, not tool name (domain/tool-semantics.ts) —
+    // auto-adapts to any tool without a name list.
     const cls = classifyTool(tc.arguments);
     if (cls === "mutates") {
       // pi-toolkit truncation hides whether a write was a no-op, so a truncated
@@ -186,7 +179,7 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     const tc = tcIdx.get(m.toolCallId ?? "");
 
     if (m.isError) {
-      errors.push({ index: i, tool: tc?.name ?? "unknown", message: extractText(m.content).slice(0, 500), retryAttempted: false, resolved: false });
+      errors.push({ index: i, tool: tc?.name ?? "unknown", message: extractText(m.content).slice(0, TRUNC.ERROR_DETAIL), retryAttempted: false, resolved: false });
       continue;
     }
 
@@ -195,34 +188,33 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     // tools this code has never seen. Explicit m.isError is handled above.
     if (tc && classifyTool(tc.arguments) === "executes") {
       const txt = extractText(m.content);
-      const isLikelyError = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i.test(txt);
-      if (isLikelyError && txt.length < 2000) {
-        errors.push({ index: i, tool: tc.name, message: txt.slice(0, 300), retryAttempted: false, resolved: false });
+      if (LIKELY_ERROR_RE.test(txt) && txt.length < ERROR_SCAN_MAX_LEN) {
+        errors.push({ index: i, tool: tc.name, message: txt.slice(0, TRUNC.MESSAGE), retryAttempted: false, resolved: false });
       }
     }
   }
 
   for (const err of errors) {
-    for (let j = err.index + 1; j < Math.min(msgs.length, err.index + 6); j++) {
-      if (msgs[j]?.role === "assistant") {
-        const rawBlocks = msgs[j]?.content;
-        const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
-        for (const b of blocks) {
-          for (const tool of flattenToolCallBlock(b)) {
-            if (tool.name === err.tool) {
-              err.retryAttempted = true;
-              for (let k = j + 1; k < Math.min(msgs.length, j + 10); k++) {
-                if (msgs[k]?.role === "toolResult" && msgs[k]?.toolCallId === tool.id && !msgs[k]?.isError) {
-                  err.resolved = true; break;
-                }
-              }
-              break;
-            }
-          }
-          if (err.retryAttempted) break;
-        }
-        if (err.retryAttempted) break;
+    // Scan forward for a retry: an assistant tool call of the same name.
+    for (let j = err.index + 1; j < Math.min(msgs.length, err.index + ERROR_RETRY_WINDOW); j++) {
+      if (msgs[j]?.role !== "assistant") continue;
+      const rawBlocks = msgs[j]?.content;
+      const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
+      const retryTool = blocks.flatMap(b => flattenToolCallBlock(b)).find(t => t.name === err.tool);
+      if (!retryTool) continue;
+      err.retryAttempted = true;
+      // Did that retry succeed? Link by id when present; for id-less calls
+      // (some multi_tool_use inner tools / id-less providers) fall back to a
+      // non-error result of the same tool within the resolve window.
+      for (let k = j + 1; k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW); k++) {
+        const mk = msgs[k];
+        if (mk?.role !== "toolResult" || mk.isError) continue;
+        const resolved = retryTool.id != null
+          ? mk.toolCallId === retryTool.id
+          : tcIdx.get(mk.toolCallId ?? "")?.name === err.tool;
+        if (resolved) { err.resolved = true; break; }
       }
+      break; // the first retry is enough
     }
   }
   return errors;
@@ -239,7 +231,7 @@ export function extractDecisions(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): St
     if (!question) continue;
     for (let i = tc.msgIndex + 1; i < Math.min(msgs.length, tc.msgIndex + 4); i++) {
       if (msgs[i]?.role === "toolResult" && msgs[i]?.toolCallId === id) {
-        decisions.push({ index: tc.msgIndex, type: "explicit", summary: question.slice(0, 200), userResponse: extractText(msgs[i].content).slice(0, 300) });
+        decisions.push({ index: tc.msgIndex, type: "explicit", summary: question.slice(0, TRUNC.DECISION_SUMMARY), userResponse: extractText(msgs[i].content).slice(0, TRUNC.USER_RESPONSE) });
         break;
       }
     }
@@ -249,25 +241,23 @@ export function extractDecisions(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): St
     if (msgs[i]?.role !== "user") continue;
     const txt = extractText(msgs[i].content);
     if (CHOICE_RE.test(txt)) {
-      decisions.push({ index: i, type: "implicit", summary: txt.slice(0, 200) });
+      decisions.push({ index: i, type: "implicit", summary: txt.slice(0, TRUNC.DECISION_SUMMARY) });
     }
   }
   return decisions;
 }
 
 const CONSTRAINT_PATTERNS: Array<{ re: RegExp; cat: StructuredExtraction["constraints"][0]["category"]; conf: number }> = [
-  { re: /\b(?:must|need|require|has to|important)\b.*\b(?:be|use|have|include|support)\b/i, cat: "requirement", conf: 0.85 },
-  { re: /\b(?:don't|never|avoid|shouldn't|must not|do not|no\s+(?:need|want))\b/i, cat: "prohibition", conf: 0.8 },
-  { re: /\b(?:prefer|like|want|would rather|should)\b.*\b(?:use|be|have|with)\b/i, cat: "preference", conf: 0.6 },
-  // Turkish patterns — raw UTF-8 chars (the file is UTF-8; the escape forms
-  // added no value and hurt readability).
-  // ponytail: `\b` is ASCII-only in JS, so a leading Turkish char like `ö` is
-  // not a word boundary and the Turkish-leading forms barely match; the ASCII
-  // fallbacks (onemli/sart/...) carry the load. Fixing that needs lookarounds,
-  // not just spelling — out of scope for the consistency cleanup.
-  { re: /\b(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|asla|sakın|sakınha|bunu yapma|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)\b/iu, cat: "requirement", conf: 0.8 },
-  { re: /\b(?:yapma|kullanma|sakın|asla\s+(?:kullanma|yapma|getirme))\b/iu, cat: "prohibition", conf: 0.8 },
-  { re: /\b(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)\b/iu, cat: "preference", conf: 0.6 },
+  { re: /\b(?:must|need|require|has to|important)\b.*\b(?:be|use|have|include|support)\b/i, cat: "requirement", conf: TUNING.CONFIDENCE_HIGH },
+  { re: /\b(?:don't|never|avoid|shouldn't|must not|do not|no\s+(?:need|want))\b/i, cat: "prohibition", conf: TUNING.CONFIDENCE_MEDIUM },
+  { re: /\b(?:prefer|like|want|would rather|should)\b.*\b(?:use|be|have|with)\b/i, cat: "preference", conf: TUNING.CONFIDENCE_LOW },
+  // Turkish patterns — raw UTF-8 chars; lookarounds instead of `\b` because
+  // JS `\b` is ASCII-only (a leading ö/ş is not a word boundary, so the
+  // Turkish-leading forms never matched). (?<![A-Za-z0-9_])…(?![A-Za-z0-9_])
+  // treats any non-ASCII letter as a valid edge, so both spellings now work.
+  { re: /(?<![A-Za-z0-9_])(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|asla|sakın|sakınha|bunu yapma|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)(?![A-Za-z0-9_])/iu, cat: "requirement", conf: TUNING.CONFIDENCE_MEDIUM },
+  { re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|asla\s+(?:kullanma|yapma|getirme))(?![A-Za-z0-9_])/iu, cat: "prohibition", conf: TUNING.CONFIDENCE_MEDIUM },
+  { re: /(?<![A-Za-z0-9_])(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)(?![A-Za-z0-9_])/iu, cat: "preference", conf: TUNING.CONFIDENCE_LOW },
 ];
 
 export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["constraints"] {
@@ -278,7 +268,7 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
     if (txt.length < 10 || txt.startsWith("/")) continue;
     for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
       if (re.test(txt)) {
-        constraints.push({ index: i, text: txt.slice(0, 300), category: cat, confidence: conf });
+        constraints.push({ index: i, text: txt.slice(0, TRUNC.CONSTRAINT_TEXT), category: cat, confidence: conf });
         break;
       }
     }
@@ -342,12 +332,12 @@ export function buildTimeline(msgs: LlmMessage[], errors: StructuredExtraction["
     const m = msgs[i];
     if (m.role === "user") {
       const txt = extractText(m.content);
-      if (!txt.startsWith("/")) timeline.push({ index: i, event: "user_request", summary: txt.slice(0, 150) });
+      if (!txt.startsWith("/")) timeline.push({ index: i, event: "user_request", summary: txt.slice(0, TRUNC.TIMELINE_EVENT) });
     }
-    if (errorIndices.has(i)) timeline.push({ index: i, event: "error", summary: errors.find(e => e.index === i)?.message.slice(0, 100) ?? "error" });
+    if (errorIndices.has(i)) timeline.push({ index: i, event: "error", summary: errors.find(e => e.index === i)?.message.slice(0, TRUNC.TIMELINE_ERROR) ?? "error" });
   }
   return timeline.length > 30
-    ? [...timeline.filter(t => t.event === "user_request").slice(0, 10), ...timeline.filter(t => t.event === "error")]
+    ? [...timeline.filter(t => t.event === "user_request").slice(0, TRUNC.TIMELINE_DISPLAY), ...timeline.filter(t => t.event === "error")]
     : timeline;
 }
 
@@ -355,7 +345,7 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
   for (const m of msgs) {
     if (m?.role !== "user") continue;
     const txt = extractText(m.content).trim();
-    if (txt && !txt.startsWith("/")) return txt.slice(0, 300);
+    if (txt && !txt.startsWith("/")) return txt.slice(0, TRUNC.MESSAGE);
   }
   return null;
 }
@@ -386,11 +376,11 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
       .filter(({ needles }) => needles.some(n => errLower.includes(n)))
       .map(({ path }) => path);
     loops.push({
-      id: "loop-" + (++loopId),
+      id: ID_PREFIX.OPEN_LOOP + (++loopId),
       type: "bugfix",
       priority: err.retryAttempted ? "high" : "normal",
       status: "open",
-      summary: err.message.slice(0, 120),
+      summary: err.message.slice(0, TRUNC.OPEN_LOOP_SUMMARY),
       files: errFiles,
       sourceIndex: err.index,
     });
@@ -410,11 +400,11 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
       const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
       if (!isDup) {
         loops.push({
-          id: "loop-" + (++loopId),
+          id: ID_PREFIX.OPEN_LOOP + (++loopId),
           type: "follow-up",
           priority: "normal",
           status: "open",
-          summary: txt.slice(0, 120),
+          summary: txt.slice(0, TRUNC.OPEN_LOOP_SUMMARY),
           files: [],
           sourceIndex: idx,
         });
@@ -432,11 +422,11 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
       const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
       if (!isDup) {
         loops.push({
-          id: "loop-" + (++loopId),
+          id: ID_PREFIX.OPEN_LOOP + (++loopId),
           type: "blocked",
           priority: "high",
           status: "open",
-          summary: txt.slice(0, 120),
+          summary: txt.slice(0, TRUNC.OPEN_LOOP_SUMMARY),
           files: [],
           sourceIndex: idx,
         });
@@ -450,11 +440,11 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
     const exists = loops.some(l => l.type === "bugfix" && l.sourceIndex === err.index);
     if (!exists) {
       loops.push({
-        id: "loop-" + (++loopId),
+        id: ID_PREFIX.OPEN_LOOP + (++loopId),
         type: "retry",
         priority: "high",
         status: "open",
-        summary: "Retried but unresolved: " + err.message.slice(0, 80),
+        summary: "Retried but unresolved: " + err.message.slice(0, TRUNC.SNIPPET),
         files: [],
         sourceIndex: err.index,
       });

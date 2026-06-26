@@ -33,7 +33,8 @@ const ACK_RE = /^(?:I'?ll |let me |sure|ok[,.]?|got it|i understand|i see|now i|
 const PI_STATUS_RE = /^\[pi-auto-context\]/;
 
 // Maximum chars to keep from a tool result output
-import { MAX_TOOL_OUTPUT_CHARS } from "../constants.ts";
+import { MAX_TOOL_OUTPUT_CHARS, LIKELY_ERROR_RE, ERROR_SCAN_MAX_LEN } from "../constants.ts";
+import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
 
 /**
  * Detect and collapse redundant message sequences.
@@ -69,8 +70,10 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i].role !== "toolResult") continue;
     const tc = tcIdx.get(msgs[i].toolCallId ?? "");
-    if (!tc || tc.name !== "read") continue;
-    const fp = (tc?.arguments?.path ?? tc?.arguments?.file_path) as string | undefined;
+    // Dedup lookups by argument shape (read/grep/find/ls…), not tool name —
+    // same name-agnostic rule as the other consumers. See domain/tool-semantics.ts.
+    if (!tc || classifyTool(tc.arguments) !== "accesses") continue;
+    const fp = extractToolPath(tc.arguments);
     if (!fp) continue;
     const arr = readIndices.get(fp) ?? [];
     arr.push(i);
@@ -176,7 +179,14 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     if (text.length > 0) originalTokens += estimateTokens(text);
     if (!keep.has(idx)) continue;
 
-    if (m.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS) {
+    // Don't truncate tool outputs catalogErrors would actually scan for errors
+    // (short enough to be scanned + containing an error keyword) — truncation
+    // can drop a mid-output error keyword and hide a real error from extraction.
+    const protectFromTruncation = m.role === "toolResult"
+      && text.length > MAX_TOOL_OUTPUT_CHARS
+      && text.length < ERROR_SCAN_MAX_LEN
+      && LIKELY_ERROR_RE.test(text);
+    if (m.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS && !protectFromTruncation) {
       // Split the budget evenly between head and tail. Derived from
       // MAX_TOOL_OUTPUT_CHARS so future bumps to the constant don't
       // silently leave the slice sizes out of date.

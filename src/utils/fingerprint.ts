@@ -10,6 +10,7 @@ import * as log from "./logger.ts";
 import { projectFingerprintFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { findGitRoot as findGitRootCached } from "../infra/git.ts";
+import { THIRTY_DAYS_MS, ID_PREFIX, TRUNC } from "../constants.ts";
 
 export interface ProjectFingerprint {
   id: string;
@@ -69,7 +70,7 @@ function isProjectPath(filePath: string): boolean {
 
 /** Hash a string seed into a short project ID. */
 function hashProjectId(seed: string): string {
-  return "proj-" + crypto.createHash("sha256").update(seed).digest("hex").slice(0, 12);
+  return ID_PREFIX.PROJECT + crypto.createHash("sha256").update(seed).digest("hex").slice(0, TRUNC.PROJ_ID_HASH);
 }
 
 /**
@@ -133,14 +134,14 @@ function deriveFromRelativePaths(paths: string[]): string {
   for (const p of paths) {
     const segs = p.split("/").filter(Boolean);
     if (segs.length >= 2) {
-      const d2 = segs.slice(0, 2).join("/");
+      const d2 = segs.slice(0, TRUNC.FINGERPRINT_SEG).join("/");
       dir2Counts.set(d2, (dir2Counts.get(d2) ?? 0) + 1);
     }
   }
 
   const stableDirs = [...dir2Counts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
+    .slice(0, TRUNC.CONV_HASH)
     .map(([d]) => d)
     .sort();
 
@@ -247,7 +248,7 @@ function extractKeyDirs(extraction: StructuredExtraction, maxDirs = 8): string[]
 export function loadProjectFingerprint(projectId: string): ProjectFingerprint | null {
   const data = readJsonSync<ProjectFingerprint>(getFingerprintPath(projectId));
   if (!data) return null;
-  if (Date.now() - data.updatedAt > 30 * 24 * 60 * 60 * 1000) return null;
+  if (Date.now() - data.updatedAt > THIRTY_DAYS_MS) return null;
   return data;
 }
 
