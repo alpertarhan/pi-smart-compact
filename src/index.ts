@@ -49,8 +49,9 @@ function unwrapConsumed(result: ConsumeResult, ctx: ExtensionContext): PendingCo
 
 // These helpers only depend on `modelRegistry` + `model`, which are part of
 // the shared `ExtensionContext` surface; no command-only methods are needed.
-function resolveModelArg(ctx: ExtensionContext, modelArg: string): Model<Api> | undefined {
-  const [p, ...r] = modelArg.split("/");
+/** Resolve a "provider/id" string through the model registry. */
+function findModelById(ctx: ExtensionContext, modelId: string): Model<Api> | undefined {
+  const [p, ...r] = modelId.split("/");
   return ctx.modelRegistry.find(p, r.join("/"));
 }
 
@@ -63,18 +64,15 @@ function resolveModels(
   const available = ctx.modelRegistry.getAvailable();
   let sumModel = fallback;
 
-  const configuredSumModels = [config.summaryModel].filter(Boolean) as string[];
-  for (const modelId of configuredSumModels) {
-    const [p, ...r] = modelId.split("/");
-    const found = ctx.modelRegistry.find(p, r.join("/"));
-    if (found) { sumModel = found; break; }
+  if (config.summaryModel) {
+    const found = findModelById(ctx, config.summaryModel);
+    if (found) sumModel = found;
   }
   if (sumModel === fallback && !fallback) sumModel = available[0];
 
   let segModel = sumModel;
   if (config.segmentationModel) {
-    const [p, ...r] = config.segmentationModel.split("/");
-    segModel = ctx.modelRegistry.find(p, r.join("/")) ?? sumModel;
+    segModel = findModelById(ctx, config.segmentationModel) ?? sumModel;
   }
 
   return { segModel, sumModel };
@@ -189,7 +187,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           return;
         }
 
-        const { segModel, sumModel } = resolveModels(ctx, modelArg ? resolveModelArg(ctx, modelArg) : ctx.model, loadConfig());
+        const { segModel, sumModel } = resolveModels(ctx, modelArg ? findModelById(ctx, modelArg) : ctx.model, loadConfig());
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
         const note = extractUserNote(args);
         await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note, force: true });

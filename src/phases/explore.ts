@@ -8,6 +8,7 @@ import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
 import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
+import { classifyTool } from "../domain/tool-semantics.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import * as log from "../utils/logger.ts";
@@ -128,19 +129,20 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
           // values that happen to contain the target substring (e.g. inside
           // a `content` field of a `write` call) would otherwise produce
           // false positives.
-          const a = block.arguments ?? {};
-          const fileFields = [
-            (a as Record<string, unknown>).path,
-            (a as Record<string, unknown>).file,
-            (a as Record<string, unknown>).filePath,
-            (a as Record<string, unknown>).file_path,
-          ].filter((v): v is string => typeof v === "string").map(v => v.toLowerCase());
+          const a = (block.arguments ?? {}) as Record<string, unknown>;
+          const fileFields = [a.path, a.file, a.filePath, a.file_path]
+            .filter((v): v is string => typeof v === "string").map(v => v.toLowerCase());
           const matchesPath = fileFields.some(f => f.includes(target));
-          if (block.name === "edit" && matchesPath) {
-            results.push({ idx: i, role: "assistant", toolCall: "edit", args: block.arguments, preview: extractText(llmMessages[i]?.content).slice(0, 400) });
-          }
-          if (block.name === "write" && matchesPath) {
-            results.push({ idx: i, role: "assistant", toolCall: "write", preview: extractText(llmMessages[i]?.content).slice(0, 400) });
+          // Classify by argument shape, not name — see domain/tool-semantics.ts.
+          if (classifyTool(block.arguments) === "mutates" && matchesPath) {
+            // Surgical edits (oldText/newText/edits/patch) carry small, useful
+            // args; full-file writes carry large content, so omit args to keep
+            // the exploration result compact.
+            const surgical = a.oldText != null || a.newText != null || a.edits != null || a.patch != null;
+            const preview = extractText(llmMessages[i]?.content).slice(0, 400);
+            results.push(surgical
+              ? { idx: i, role: "assistant", toolCall: block.name ?? "mutates", args: block.arguments, preview }
+              : { idx: i, role: "assistant", toolCall: block.name ?? "mutates", preview });
           }
         }
       }

@@ -6,6 +6,7 @@
 import type { LlmMessage, SmartCompactDetails } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 import { extractText } from "./extraction.ts";
+import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
 import * as log from "./logger.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
 import { appendLineLocked, writeJsonSync, readJsonSync } from "../infra/fs.ts";
@@ -56,8 +57,12 @@ export function detectDamage(
     if (msg.role === "assistant") {
       const blocks = Array.isArray(msg.content) ? msg.content : [];
       for (const b of blocks) {
-        if (isToolCallBlock(b) && (b.name === "read" || b.name === "bash")) {
-          const fp = (b.arguments?.path ?? b.arguments?.file_path) as string | undefined;
+        // Classify by argument shape, not name — see domain/tool-semantics.ts.
+        // bash was never reachable here anyway (it carries `command`, not a
+        // path, so fp was always undefined); accesses now also covers
+        // grep/find/ls re-reads of compacted files.
+        if (isToolCallBlock(b) && classifyTool(b.arguments) === "accesses") {
+          const fp = extractToolPath(b.arguments);
           if (fp) {
             const fpLower = fp.toLowerCase();
             if (compactedFiles.has(fpLower) || compactedReadFiles.has(fpLower)) {
