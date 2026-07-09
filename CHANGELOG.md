@@ -1,5 +1,10 @@
 # Changelog
 
+## [7.18.2] - 2026-07-09
+
+### Fixed
+- **Extension load failure after 7.18.1** — 7.18.1 imported `complete` from the `@earendil-works/pi-ai/compat` subpath statically, which is not aliased by some host builds and crashed the extension at load time (`Cannot find module .../dist/index.js/compat`). `complete` is now resolved with a dynamic `import("@earendil-works/pi-ai/compat")` on first use, which is aliased by the host loader and resolves directly in raw node — works in both host and test contexts, and can never break extension loading.
+
 ## [7.18.1] - 2026-07-09
 
 ### Fixed
