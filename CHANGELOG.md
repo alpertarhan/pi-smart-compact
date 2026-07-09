@@ -1,5 +1,14 @@
 # Changelog
 
+## [7.18.1] - 2026-07-09
+
+### Fixed
+- **TUI model selection override** — when `summaryModel` was set in config, picking a different model in the compact picker still ran the configured default; explicit selections (TUI picker / CLI model arg) now win over `config.summaryModel`. Auto-trigger and tool paths still fall back to the configured default.
+
+### Changed
+- **Dependencies** — bumped `@earendil-works/*` 0.79.6 → 0.80.3, `typebox` 1.2.16 → 1.3.6, `@types/node` 26.0.1 → 26.1.1, `typescript` 6.0.3 → 7.0.2.
+- **`complete` import** — pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package root; now imported from `@earendil-works/pi-ai/compat` (the host's `ModelRegistry` is itself compat-backed, so this is the extension-correct path until the host's ModelManager migration lands).
+
 ## [7.18.0] - 2026-06-26
 
 ### Fixed
