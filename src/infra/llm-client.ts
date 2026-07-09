@@ -8,24 +8,6 @@
  *    metrics test path to the peer dependency, which made `bun test` fail
  *    when the peer was not installed.
  *
- *  pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package
- *  root and moved them to the `/compat` subpath. We import from `/compat`
- *  deliberately, NOT from `createModels()` + provider factories:
- *
- *    - This is a Pi *extension*. The host (pi-coding-agent) owns model/auth
- *      management via `ctx.modelRegistry` (a `ModelRegistry`), which resolves
- *      auth but exposes no `.complete()`. The host itself imports its types
- *      from `@earendil-works/pi-ai/compat`.
- *    - `createModels()` would build a *second* registry that bypasses the
- *      host's `ctx.modelRegistry` and its auth — wrong for an extension.
- *    - pi-ai's "avoid /compat" advice targets standalone bundled apps, not
- *      host-managed extensions.
- *
- *  The whole pi-coding-agent ecosystem (host + extensions) sits on `/compat`
- *  until the host finishes its ModelManager migration. The compat surface is
- *  pinned to this one file: when the host eventually offers completion on the
- *  context, change only the import + the call on line ~42 below.
- *
  *  - Test fakes need to assert which `phase` was used, control failures, and
  *    return synthetic usage tokens for calibration tests.
  *
@@ -37,12 +19,36 @@
  *
  * The default implementation (`defaultLlmClient`) calls `complete()` from
  * pi-ai. `setLlmClient` is exposed for tests and for callers that wish to
- * inject a wrapping/fallback client at extension boot.
+ * inject a wrapping/fallback client at extension boot. See `resolveComplete`
+ * below for how `complete` is obtained under the host's compat aliasing.
  */
 
 import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions } from "@earendil-works/pi-ai";
-import { complete } from "@earendil-works/pi-ai/compat";
 import { withRetry } from "./llm-retry.ts";
+
+// pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package
+// root types and moved them to the `/compat` subpath. The pi host
+// (pi-coding-agent's extension loader) aliases the `@earendil-works/pi-ai` ROOT
+// import to the compat entrypoint at runtime, so importing the root is the
+// supported, normal way for an extension to get the old global API. A bare
+// `import { complete } from "@earendil-works/pi-ai"` fails typecheck (the root
+// types no longer declare it) and importing the `/compat` subpath directly is
+// not aliased by older host builds and breaks at load. We resolve `complete`
+// lazily instead: try the root first (host-aliased to compat), fall back to the
+// `/compat` subpath. Resolution runs on first use, never at module load, so a
+// missing export can't break the whole extension or the test fakes (which never
+// call through to the real client).
+let _complete: ((model: Model<Api>, body: Context, opts: ProviderStreamOptions) => Promise<AssistantMessage>) | null = null;
+function resolveComplete() {
+  if (_complete) return _complete;
+  // Both specifiers resolve to the compat entrypoint under the host loader; in
+  // raw test/node resolution only `/compat` exports `complete` in 0.80+.
+  const root = require("@earendil-works/pi-ai") as typeof import("@earendil-works/pi-ai/compat");
+  const fn = root.complete ?? require("@earendil-works/pi-ai/compat").complete;
+  if (!fn) throw new Error("smart-compact: could not resolve pi-ai complete()");
+  _complete = fn;
+  return fn;
+}
 
 export interface LlmClient {
   complete(model: Model<Api>, body: Context, opts: ProviderStreamOptions): Promise<AssistantMessage>;
@@ -50,7 +56,7 @@ export interface LlmClient {
 
 /** Raw client — direct pass-through to pi-ai. Tests can install this to skip retries. */
 export const rawLlmClient: LlmClient = {
-  complete: (model, body, opts) => complete(model, body, opts),
+  complete: (model, body, opts) => resolveComplete()(model, body, opts),
 };
 
 /**
