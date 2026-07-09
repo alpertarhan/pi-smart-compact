@@ -50,21 +50,25 @@ function unwrapConsumed(result: ConsumeResult, ctx: ExtensionContext): PendingCo
 // These helpers only depend on `modelRegistry` + `model`, which are part of
 // the shared `ExtensionContext` surface; no command-only methods are needed.
 /** Resolve a "provider/id" string through the model registry. */
-function findModelById(ctx: ExtensionContext, modelId: string): Model<Api> | undefined {
+export function findModelById(ctx: ExtensionContext, modelId: string): Model<Api> | undefined {
   const [p, ...r] = modelId.split("/");
   return ctx.modelRegistry.find(p, r.join("/"));
 }
 
-function resolveModels(
+export function resolveModels(
   ctx: ExtensionContext,
   primary: Model<Api> | undefined,
   config: ReturnType<typeof loadConfig>,
+  explicit = false,
 ): { segModel: Model<Api> | undefined; sumModel: Model<Api> | undefined } {
   const fallback = primary ?? ctx.model;
   const available = ctx.modelRegistry.getAvailable();
   let sumModel = fallback;
 
-  if (config.summaryModel) {
+  // An explicit user selection (TUI picker or CLI model arg) wins over the
+  // configured default; only fall back to config.summaryModel when no model
+  // was explicitly chosen (auto-trigger / tool path).
+  if (!explicit && config.summaryModel) {
     const found = findModelById(ctx, config.summaryModel);
     if (found) sumModel = found;
   }
@@ -181,13 +185,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           const defIdx = cur ? opts.findIndex(o => o.value === cur.provider + "/" + cur.id) : 0;
           const selected = await showCompactUI(ctx, { contextTokens: totalTokens, contextPercent: pct, currentModel: cur ? cur.provider + "/" + cur.id : "?", defaultModelIndex: defIdx >= 0 ? defIdx : 0 });
           if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
-          const { segModel, sumModel } = resolveModels(ctx, selected.model.model, loadConfig());
+          const { segModel, sumModel } = resolveModels(ctx, selected.model.model, loadConfig(), true);
           if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
           await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: selected.profile, pendingRef, isRunning, force: true });
           return;
         }
 
-        const { segModel, sumModel } = resolveModels(ctx, modelArg ? findModelById(ctx, modelArg) : ctx.model, loadConfig());
+        const { segModel, sumModel } = resolveModels(ctx, modelArg ? findModelById(ctx, modelArg) : ctx.model, loadConfig(), Boolean(modelArg));
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
         const note = extractUserNote(args);
         await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note, force: true });
