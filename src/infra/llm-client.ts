@@ -8,6 +8,24 @@
  *    metrics test path to the peer dependency, which made `bun test` fail
  *    when the peer was not installed.
  *
+ *  pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package
+ *  root and moved them to the `/compat` subpath. We import from `/compat`
+ *  deliberately, NOT from `createModels()` + provider factories:
+ *
+ *    - This is a Pi *extension*. The host (pi-coding-agent) owns model/auth
+ *      management via `ctx.modelRegistry` (a `ModelRegistry`), which resolves
+ *      auth but exposes no `.complete()`. The host itself imports its types
+ *      from `@earendil-works/pi-ai/compat`.
+ *    - `createModels()` would build a *second* registry that bypasses the
+ *      host's `ctx.modelRegistry` and its auth — wrong for an extension.
+ *    - pi-ai's "avoid /compat" advice targets standalone bundled apps, not
+ *      host-managed extensions.
+ *
+ *  The whole pi-coding-agent ecosystem (host + extensions) sits on `/compat`
+ *  until the host finishes its ModelManager migration. The compat surface is
+ *  pinned to this one file: when the host eventually offers completion on the
+ *  context, change only the import + the call on line ~42 below.
+ *
  *  - Test fakes need to assert which `phase` was used, control failures, and
  *    return synthetic usage tokens for calibration tests.
  *
@@ -23,7 +41,7 @@
  */
 
 import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions } from "@earendil-works/pi-ai";
-import { complete } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai/compat";
 import { withRetry } from "./llm-retry.ts";
 
 export interface LlmClient {
