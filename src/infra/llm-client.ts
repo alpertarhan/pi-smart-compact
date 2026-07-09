@@ -27,25 +27,25 @@ import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions } fro
 import { withRetry } from "./llm-retry.ts";
 
 // pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package
-// root types and moved them to the `/compat` subpath. The pi host
-// (pi-coding-agent's extension loader) aliases the `@earendil-works/pi-ai` ROOT
-// import to the compat entrypoint at runtime, so importing the root is the
-// supported, normal way for an extension to get the old global API. A bare
-// `import { complete } from "@earendil-works/pi-ai"` fails typecheck (the root
-// types no longer declare it) and importing the `/compat` subpath directly is
-// not aliased by older host builds and breaks at load. We resolve `complete`
-// lazily instead: try the root first (host-aliased to compat), fall back to the
-// `/compat` subpath. Resolution runs on first use, never at module load, so a
-// missing export can't break the whole extension or the test fakes (which never
-// call through to the real client).
+// root and moved them to the `/compat` subpath. The bare `complete` is resolved
+// with a dynamic import rather than a static one:
+//
+//  - A STATIC `import { complete }` breaks either context: the root specifier
+//    has no `complete` export in raw node/test resolution, and importing the
+//    `/compat` subpath statically is not aliased by some host builds and fails
+//    at module load.
+//  - A dynamic `import("@earendil-works/pi-ai/compat")` works in BOTH: the pi
+//    host's extension loader (getAliases + VIRTUAL_MODULES) aliases the
+//    `/compat` subpath to the compat entrypoint, and raw resolution finds
+//    `/compat` directly. It runs on first use (never at module load), so a
+//    resolution hiccup can never break extension loading, and test fakes that
+//    inject their own client via setLlmClient never trigger it.
 let _complete: ((model: Model<Api>, body: Context, opts: ProviderStreamOptions) => Promise<AssistantMessage>) | null = null;
-function resolveComplete() {
+async function resolveComplete() {
   if (_complete) return _complete;
-  // Both specifiers resolve to the compat entrypoint under the host loader; in
-  // raw test/node resolution only `/compat` exports `complete` in 0.80+.
-  const root = require("@earendil-works/pi-ai") as typeof import("@earendil-works/pi-ai/compat");
-  const fn = root.complete ?? require("@earendil-works/pi-ai/compat").complete;
-  if (!fn) throw new Error("smart-compact: could not resolve pi-ai complete()");
+  const mod = await import("@earendil-works/pi-ai/compat");
+  const fn = mod.complete;
+  if (typeof fn !== "function") throw new Error("smart-compact: pi-ai /compat did not export complete()");
   _complete = fn;
   return fn;
 }
@@ -56,7 +56,7 @@ export interface LlmClient {
 
 /** Raw client — direct pass-through to pi-ai. Tests can install this to skip retries. */
 export const rawLlmClient: LlmClient = {
-  complete: (model, body, opts) => resolveComplete()(model, body, opts),
+  complete: async (model, body, opts) => (await resolveComplete())(model, body, opts),
 };
 
 /**
