@@ -172,7 +172,7 @@ export async function showResultScreen(
   ctx: ExtensionContext,
   details: SmartCompactDetails,
   extraction: StructuredExtraction,
-  services?: SmartCompactServices,
+  services: SmartCompactServices,
 ): Promise<void> {
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
     const c = new Container();

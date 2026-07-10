@@ -176,12 +176,6 @@ export interface ExtractedExt extends TieredExt {
   pruning: PruningResult;
   currentEntryIds: string[];
   currentKeptEntryIds: string[];
-  /**
-   * ToolCallIndex over the **pruned** message list. Built once in
-   * `extractWithCache` and reused by extraction. Keyed against pruned offsets,
-   * not the unpruned message list — do not confuse with `pruning.toolCallIndex`.
-   */
-  prunedToolCallIndex: import("../utils/extraction.ts").ToolCallIndex;
   extraction: StructuredExtraction;
   extractionCacheMissReason?: string;
   prevContext: string;

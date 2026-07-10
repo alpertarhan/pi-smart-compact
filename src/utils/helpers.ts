@@ -181,15 +181,21 @@ function prunePass(dir: string): void {
 
 /**
  * Queue an asynchronous prune. Returns immediately; the actual scan runs on
- * the next microtask. Multiple queued calls for the same directory collapse
- * to a single pass.
+ * a later event-loop turn. Multiple queued calls for the same directory
+ * collapse to a single pass.
+ *
+ * `setTimeout(0)`, not `queueMicrotask`: microtasks run before control
+ * returns to the event loop, so the readdir+stat scan would still block the
+ * same turn that triggered the backup — the exact hot-path stall this
+ * deferral exists to avoid. A macrotask lets the compaction pipeline finish
+ * first.
  */
 function schedulePruneBackups(dir: string): void {
   if (_pruneInFlight.has(dir)) return;
   _pruneInFlight.add(dir);
-  queueMicrotask(() => {
+  setTimeout(() => {
     try { prunePass(dir); } finally { _pruneInFlight.delete(dir); }
-  });
+  }, 0);
 }
 
 export function backupConversation(convText: string, sessionId: string): string | null {

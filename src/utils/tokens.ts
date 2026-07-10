@@ -193,8 +193,11 @@ export function estimateTokens(text: string, provider?: string, model?: string, 
     }
     if (structural / sample.length > JSON_DENSITY_THRESHOLD) jsonPenalty = JSON_PENALTY;
   }
-  // Turkish/CE characters tokenize differently (multi-byte in some tokenizers)
-  const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(text) ? 0.9 : 1.0;
+  // Turkish/CE characters tokenize differently (multi-byte in some tokenizers).
+  // Scan the same capped sample as the JSON-density check — an uncapped regex
+  // over a multi-MB conversation serialization walks the whole string.
+  const langSample = text.length > JSON_DENSITY_SCAN_CAP ? text.slice(0, JSON_DENSITY_SCAN_CAP) : text;
+  const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(langSample) ? 0.9 : 1.0;
   const factor = calibration.get(provider, model);
   return Math.ceil((text.length / baseRatio) * jsonPenalty * langPenalty * factor);
 }

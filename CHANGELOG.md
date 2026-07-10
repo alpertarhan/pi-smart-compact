@@ -1,5 +1,23 @@
 # Changelog
 
+## [7.19.0] - 2026-07-10
+
+### Fixed
+- **Durable state never persisted on auto/tool paths (C1)** — `persistDurableState` only ran from `applyCompaction`'s `onComplete`, which auto-trigger and tool runs never reach (early return on `skipCompact || autoTriggered`). Project fingerprint, compaction state, and the whole cross-compaction delta/damage-baseline chain silently never ran on the most common path. `PendingCompaction` now carries `projectId` + `extraction`, and the new `persistConsumedState` persists exactly once at the `session_before_compact` consume point — the single apply moment shared by all three run types.
+- **UTF-8 corruption in session-log streaming (C2)** — `streamJsonlLines` decoded each 64KB chunk with a bare `toString("utf-8")`; a multi-byte character split across the chunk boundary became U+FFFD and silently failed that line's `JSON.parse`, dropping the message to its truncated branch copy. Now uses `StringDecoder`.
+- **Lock stale-reclaim race (M3)** — two waiters both observing a stale `.lock` could end up co-holding it (`rmdir` of a freshly reclaimed lock). Reclaim now goes through an atomic rename-steal; exactly one thief wins, and a stolen-but-live lock is restored.
+- **Typo'd model arg silently ignored (M5)** — `/smart-compact provider/bad-model` fell back to the current model without warning. Unresolvable model args with a known provider prefix now fail loudly; note tokens like `src/auth.ts` are unaffected.
+- **`BLOCKED_RE` over-matching** — bare `depend` flagged routine "dependency" mentions as high-priority blocked loops; narrowed to `\bdepends? on\b`, added the same min-length/command guard as the follow-up scan, and fixed the `bağlı` diacritic form.
+- **Timeline dropped the newest user requests** — the >30-event trim kept the *first* N requests and clumped errors at the end; now keeps the most recent N and re-sorts chronologically.
+- **Success metric recorded before apply (m8)** — manual runs logged `success` before `ctx.compact()` could still fail, inflating dashboard reliability. Manual outcomes now come from the native compact's own callbacks (`onComplete` → success, `onError` → error); auto/tool runs still record at staging.
+- **Tool `dry_run` reported failure** — the empty pending slot after a dry-run produced "no summary was generated"; now reports the dry run as the success it is.
+- **`createServices` captured the LLM client eagerly** — a `setLlmClient` installed after the bag was created was ignored, breaking the seam's call-time-resolution contract; the bag now holds a lazy delegate.
+
+### Changed
+- **Metrics surface migrated to explicit DI** — removed the module-level compatibility shims (`resetMetrics`, `getMetrics`, `resetExtractionCacheStats`) and the hidden `getDefaultServices()` fallbacks on `recordMetric`/`getMetricsSummary`/`appendMetricsLog`/`getExtractionCacheStats`/`cacheOpts`. All consumers pass the run-scoped services bag; the single sanctioned fallback lives at the top of `trackedComplete`.
+- **Backup prune deferral is a real macrotask** — `queueMicrotask` ran before control returned to the event loop, so the readdir+stat scan still blocked the triggering turn; now `setTimeout(0)`.
+- **Perf** — dropped the write-only `prunedToolCallIndex` from `RunContext`; capped `estimateTokens`' Turkish-character scan to the same 8KB sample as the JSON-density check; removed a per-ref Set re-materialization in `verifySummary`.
+
 ## [7.18.2] - 2026-07-09
 
 ### Fixed

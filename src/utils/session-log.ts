@@ -18,6 +18,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { extractText, TRUNCATE_RE } from "./extraction.ts";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
 import * as log from "./logger.ts";
@@ -58,6 +59,12 @@ function* streamJsonlLines(fp: string, chunkSize = 64 * 1024): Generator<string>
   try {
     fd = fs.openSync(fp, "r");
     const buf = Buffer.allocUnsafe(chunkSize);
+    // StringDecoder buffers a multi-byte UTF-8 sequence split across chunk
+    // boundaries instead of emitting U+FFFD. A bare `toString("utf-8")` on a
+    // chunk that ends mid-character corrupts that character, which silently
+    // breaks JSON.parse for the line it lands in — non-ASCII content
+    // (Turkish text is common here) made that a real failure mode.
+    const decoder = new StringDecoder("utf8");
     let leftover = "";
     let totalRead = 0;
     for (;;) {
@@ -71,7 +78,7 @@ function* streamJsonlLines(fp: string, chunkSize = 64 * 1024): Generator<string>
       // Concatenating the leftover prefix to the new chunk is cheap because
       // the leftover is at most one line long; we never accumulate the full
       // file in memory.
-      const data = leftover + buf.subarray(0, bytes).toString("utf-8");
+      const data = leftover + decoder.write(buf.subarray(0, bytes));
       const lines = data.split("\n");
       // The last entry may be a partial line; keep it for the next iteration.
       leftover = lines.pop() ?? "";
@@ -79,6 +86,7 @@ function* streamJsonlLines(fp: string, chunkSize = 64 * 1024): Generator<string>
         if (line.length > 0) yield line;
       }
     }
+    leftover += decoder.end();
     if (leftover.length > 0) yield leftover;
   } finally {
     if (fd != null) {

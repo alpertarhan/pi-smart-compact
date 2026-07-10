@@ -165,7 +165,6 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     pruning: PruningResult;
     currentEntryIds: string[];
     currentKeptEntryIds: string[];
-    prunedToolCallIndex: ToolCallIndex;
     extraction: StructuredExtraction;
     extractionCacheMissReason?: string;
     prevContext: string;
@@ -178,7 +177,6 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   out.pruning = pruning;
   out.currentEntryIds = currentEntryIds;
   out.currentKeptEntryIds = currentKeptEntryIds;
-  out.prunedToolCallIndex = prunedTcIdx;
   out.extraction = extraction;
   out.extractionCacheMissReason = missReason;
   out.prevContext = prevContext;

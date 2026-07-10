@@ -4,8 +4,8 @@
  * Filesystem writes go through `src/infra/fs.ts` (atomic temp+rename for
  * snapshots, advisory lock for the metrics append log) so that two pi
  * sessions racing to compact the same project cannot corrupt each other's
- * state. All LLM I/O routes through `getLlmClient()` so tests can swap a fake
- * provider in without resolving the real peer dependency.
+ * state. All LLM I/O routes through the services bag's `llm` client so tests
+ * can swap a fake provider in without resolving the real peer dependency.
  */
 
 import fs from "node:fs";
@@ -15,7 +15,6 @@ import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareO
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import * as log from "./logger.ts";
 import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
-import { getLlmClient } from "../infra/llm-client.ts";
 import {
   extractionCacheFile, metricsLogFile, damageReportsFile,
   cacheDir as cacheDirPath, metricsDashboardFile,
@@ -23,13 +22,12 @@ import {
 import { appendLineLocked, ensureDir, readJsonSync, writeJsonSync, atomicWriteFileSync } from "../infra/fs.ts";
 import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX } from "../constants.ts";
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
-import { getDefaultServices, makeCompactSessionId, type SmartCompactServices } from "../infra/services.ts";
+import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 
 // ── Cache Options ──
 
-// Prompt-cache namespace id comes from `makeCompactSessionId` (services.ts),
-// shared with the per-run services container so the fallback path can't drift
-// in format from the live one.
+// Prompt-cache namespace id comes from the services bag's `compactSessionId`
+// (set once per run by `createServices`).
 /** Internal compaction phases that should never use prompt caching — one-shot, not worth write cost. */
 const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
   "explore", "explore-loop", "explore-retry", "explore-direct",
@@ -38,9 +36,9 @@ const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
 
 export function cacheOpts(
   opts: CacheAwareOptions,
-  provider?: string,
-  phase?: LLMCallMetric["phase"],
-  services?: SmartCompactServices,
+  provider: string | undefined,
+  phase: LLMCallMetric["phase"] | undefined,
+  services: SmartCompactServices,
 ): CacheAwareOptions & { sessionId?: string } {
   // Internal compaction LLM calls are one-shot: cache write cost (1.25x–2x) is never amortized.
   if (phase && INTERNAL_PHASES.has(phase)) {
@@ -52,24 +50,19 @@ export function cacheOpts(
   if (retention === "none") {
     return { ...opts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: services?.compactSessionId ?? makeCompactSessionId(), cacheRetention: retention };
+  return { ...opts, sessionId: services.compactSessionId, cacheRetention: retention };
 }
 
 // ── Metrics ──
 //
-// Metrics now live on the per-run services container. These functions remain
-// for backwards compatibility (overlays.ts, app/steps/metrics.ts call them by
-// name); they delegate to the active services bag, which is rotated on each
-// `resetMetrics` invocation by the orchestrator. The default container is also
-// what tests grab via `setDefaultServices` to inject a deterministic clock.
+// Metrics live on the per-run services container, injected explicitly by
+// every caller (orchestrator threads `rc.services`; overlays receive it as a
+// parameter). No hidden `getDefaultServices()` fallback on this surface: a
+// missing bag is a compile error, not a silent cross-session leak. The one
+// sanctioned fallback lives at the top of `trackedComplete` — the deep
+// phases seam — and is resolved exactly once there.
 
-export function resetMetrics(services = getDefaultServices()): void {
-  services.metrics.clear();
-  services.extractionCacheStats.clear();
-  services.tokenCalibration.clear();
-}
-export function recordMetric(m: LLMCallMetric, services = getDefaultServices()): void { services.metrics.record(m); }
-export function getMetrics(services = getDefaultServices()): LLMCallMetric[] { return services.metrics.snapshot(); }
+export function recordMetric(m: LLMCallMetric, services: SmartCompactServices): void { services.metrics.record(m); }
 
 export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: number): number {
   // Provider usage semantics differ: some providers report `input` as total
@@ -80,7 +73,7 @@ export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: 
   return cacheHitTokens > inputTokens ? inputTokens + cacheHitTokens : inputTokens;
 }
 
-export function getMetricsSummary(services = getDefaultServices()): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
+export function getMetricsSummary(services: SmartCompactServices): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
   const sum = services.metrics.summary();
   // The services container computes a structurally identical summary but
   // uses a slightly different cache-hit denominator. Keep the previously
@@ -102,10 +95,14 @@ export async function trackedComplete(
   opts: CacheAwareOptions,
   services?: SmartCompactServices,
 ): Promise<AssistantMessage> {
+  // Single sanctioned fallback point: direct callers (legacy tests, REPL)
+  // may omit services; everything downstream of here receives the resolved
+  // bag explicitly.
+  const svc = services ?? getDefaultServices();
   const start = Date.now();
   try {
-    const resolvedOpts = cacheOpts(opts, model.provider, phase, services);
-    const resp = await (services?.llm ?? getLlmClient()).complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const resolvedOpts = cacheOpts(opts, model.provider, phase, svc);
+    const resp = await svc.llm.complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -114,11 +111,11 @@ export async function trackedComplete(
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: inputT, outputTokens: outputT,
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
-    }, services);
+    }, svc);
     try {
       if (inputT > 0 && "messages" in reqBody) {
         const rawText = JSON.stringify((reqBody as unknown as Record<string, unknown>).messages);
-        const calibration = services?.tokenCalibration;
+        const calibration = svc.tokenCalibration;
         calibrateFromResponse(
           estimateTokens(rawText, model.provider, model.id, calibration),
           inputT,
@@ -133,7 +130,7 @@ export async function trackedComplete(
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: 0, outputTokens: 0,
       cacheHitTokens: 0, latencyMs: Date.now() - start, success: false,
-    }, services);
+    }, svc);
     throw err;
   }
 }
@@ -144,19 +141,14 @@ function getCachePath(sessionId: string): string {
   return extractionCacheFile(sessionId);
 }
 
-// Extraction cache stats delegate to the active services container. Resetting
-// the container (via resetMetrics) zeros these counters too, which matches
-// the previous module-level behaviour without leaking state across sessions.
-export function resetExtractionCacheStats(services = getDefaultServices()): void {
-  services.extractionCacheStats.clear();
-}
-
-export function getExtractionCacheStats(services = getDefaultServices()): { hits: number; misses: number; hitRate: number } {
+// Extraction cache stats delegate to the caller's services container —
+// explicit injection, same contract as the metrics surface above.
+export function getExtractionCacheStats(services: SmartCompactServices): { hits: number; misses: number; hitRate: number } {
   return services.extractionCacheStats.snapshot();
 }
 
-export function recordExtractionCacheHit(services = getDefaultServices()): void { services.extractionCacheStats.recordHit(); }
-export function recordExtractionCacheMiss(services = getDefaultServices()): void { services.extractionCacheStats.recordMiss(); }
+export function recordExtractionCacheHit(services: SmartCompactServices): void { services.extractionCacheStats.recordHit(); }
+export function recordExtractionCacheMiss(services: SmartCompactServices): void { services.extractionCacheStats.recordMiss(); }
 
 /**
  * Save extraction cache with entry-id fingerprints for branch-aware
@@ -298,8 +290,8 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
 /** Extended metrics entry including pipeline context for regression detection. */
 export function appendMetricsLog(
   sessionId: string,
-  extra?: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "avgLatency" | "cacheHitRate">>,
-  services?: SmartCompactServices,
+  extra: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "avgLatency" | "cacheHitRate">> | undefined,
+  services: SmartCompactServices,
 ): void {
   try {
     const summary = getMetricsSummary(services);
