@@ -15,6 +15,7 @@ import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction } from "./ui/overlays.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
+import { persistConsumedState } from "./app/steps/persist.ts";
 import * as log from "./utils/logger.ts";
 
 /**
@@ -31,6 +32,11 @@ import * as log from "./utils/logger.ts";
 function unwrapConsumed(result: ConsumeResult, ctx: ExtensionContext): PendingCompaction | null {
   switch (result.kind) {
     case "ok":
+      // Durable state (project fingerprint + compaction state) is persisted
+      // here — consume is the single moment, on every path (manual, auto,
+      // tool), where we know Pi is about to apply the payload. Persisting
+      // anywhere earlier would record success for a compact that never ran.
+      persistConsumedState(result.pending);
       return result.pending;
     case "empty":
       return null;
@@ -50,21 +56,25 @@ function unwrapConsumed(result: ConsumeResult, ctx: ExtensionContext): PendingCo
 // These helpers only depend on `modelRegistry` + `model`, which are part of
 // the shared `ExtensionContext` surface; no command-only methods are needed.
 /** Resolve a "provider/id" string through the model registry. */
-function findModelById(ctx: ExtensionContext, modelId: string): Model<Api> | undefined {
+export function findModelById(ctx: ExtensionContext, modelId: string): Model<Api> | undefined {
   const [p, ...r] = modelId.split("/");
   return ctx.modelRegistry.find(p, r.join("/"));
 }
 
-function resolveModels(
+export function resolveModels(
   ctx: ExtensionContext,
   primary: Model<Api> | undefined,
   config: ReturnType<typeof loadConfig>,
+  explicit = false,
 ): { segModel: Model<Api> | undefined; sumModel: Model<Api> | undefined } {
   const fallback = primary ?? ctx.model;
   const available = ctx.modelRegistry.getAvailable();
   let sumModel = fallback;
 
-  if (config.summaryModel) {
+  // An explicit user selection (TUI picker or CLI model arg) wins over the
+  // configured default; only fall back to config.summaryModel when no model
+  // was explicitly chosen (auto-trigger / tool path).
+  if (!explicit && config.summaryModel) {
     const found = findModelById(ctx, config.summaryModel);
     if (found) sumModel = found;
   }
@@ -166,7 +176,15 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           }
           return;
         }
-        const modelArg = tokens.find(t => t.includes("/"));
+        // A token is a model arg when it resolves in the registry, or when
+        // its provider prefix is a known provider (i.e. a typo'd model id we
+        // must reject loudly rather than let fall through as note text).
+        // Note tokens like "src/auth.ts" have no registered provider prefix
+        // and pass through to extractUserNote untouched.
+        const knownProviders = new Set(ctx.modelRegistry.getAvailable().map(m => m.provider));
+        const modelArg = tokens.find(t =>
+          /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(t) &&
+          (findModelById(ctx, t) || knownProviders.has(t.split("/")[0])));
         const profileArg = tokens.find(t => ["light", "balanced", "aggressive"].includes(t)) as CompressionProfile | undefined;
         const profile = profileArg ?? loadConfig().profile;
 
@@ -181,13 +199,21 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           const defIdx = cur ? opts.findIndex(o => o.value === cur.provider + "/" + cur.id) : 0;
           const selected = await showCompactUI(ctx, { contextTokens: totalTokens, contextPercent: pct, currentModel: cur ? cur.provider + "/" + cur.id : "?", defaultModelIndex: defIdx >= 0 ? defIdx : 0 });
           if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
-          const { segModel, sumModel } = resolveModels(ctx, selected.model.model, loadConfig());
+          const { segModel, sumModel } = resolveModels(ctx, selected.model.model, loadConfig(), true);
           if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
           await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: selected.profile, pendingRef, isRunning, force: true });
           return;
         }
 
-        const { segModel, sumModel } = resolveModels(ctx, modelArg ? findModelById(ctx, modelArg) : ctx.model, loadConfig());
+        // An explicit model arg that doesn't resolve must fail loudly —
+        // silently falling back to ctx.model would compact with a model the
+        // user did not choose (the old behaviour).
+        const explicitModel = modelArg ? findModelById(ctx, modelArg) : undefined;
+        if (modelArg && !explicitModel) {
+          ctx.ui.notify("Unknown model: " + modelArg + " — check available models", "error");
+          return;
+        }
+        const { segModel, sumModel } = resolveModels(ctx, explicitModel ?? ctx.model, loadConfig(), Boolean(modelArg));
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
         const note = extractUserNote(args);
         await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note, force: true });
@@ -232,10 +258,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // still mid-applyCompaction.
         const cancellationOut: { value: import("./app/run-smart-compact.ts").ExternalCancellation | null } = { value: null };
         const timeoutId = setTimeout(() => {
-          // Fire well before the inner deadline so the inner pipeline never
-          // hits applyCompaction past the deadline. +100 was the old margin;
-          // we keep that semantics but assert through the shared flag instead
-          // of through Promise.race.
+          // Fires 100ms AFTER the inner deadline — this is the outer backstop
+          // for providers that ignore AbortSignal, not the primary timeout.
+          // The inner setTimeout in prepareRun (at effectiveTimeoutMs) is what
+          // normally aborts the run; this one only acts when that abort was
+          // swallowed.
           if (cancellationOut.value && !cancellationOut.value.timedOut) {
             log.warn("Smart compact auto-trigger hard timeout after " + effectiveTimeoutMs + "ms");
             cancellationOut.value.abort();
@@ -332,6 +359,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         const staged = pendingRef.peek();
         if (staged) {
           return { content: [{ type: "text", text: "Smart summary prepared (" + resolvedProfile + "). Tokens: " + (staged.tokensBefore ?? 0).toLocaleString() + " — summary cached for " + Math.round(PENDING_TTL_MS / 60000) + " min. The next /compact will use this summary automatically." }], details: undefined };
+        }
+        // Dry-run returns before staging, so an empty slot is the *expected*
+        // outcome — not a failure. Report it as such.
+        if (dryRun) {
+          return { content: [{ type: "text", text: "Dry run finished (" + resolvedProfile + ", " + toolSecs + "s). Pipeline ran successfully; no summary was staged (dry-run skips staging by design)." }], details: undefined };
         }
         return { content: [{ type: "text", text: "Compaction finished (" + resolvedProfile + ") but no summary was generated." }], details: undefined };
       } catch (error) {

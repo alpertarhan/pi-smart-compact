@@ -19,12 +19,36 @@
  *
  * The default implementation (`defaultLlmClient`) calls `complete()` from
  * pi-ai. `setLlmClient` is exposed for tests and for callers that wish to
- * inject a wrapping/fallback client at extension boot.
+ * inject a wrapping/fallback client at extension boot. See `resolveComplete`
+ * below for how `complete` is obtained under the host's compat aliasing.
  */
 
 import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions } from "@earendil-works/pi-ai";
-import { complete } from "@earendil-works/pi-ai";
 import { withRetry } from "./llm-retry.ts";
+
+// pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package
+// root and moved them to the `/compat` subpath. The bare `complete` is resolved
+// with a dynamic import rather than a static one:
+//
+//  - A STATIC `import { complete }` breaks either context: the root specifier
+//    has no `complete` export in raw node/test resolution, and importing the
+//    `/compat` subpath statically is not aliased by some host builds and fails
+//    at module load.
+//  - A dynamic `import("@earendil-works/pi-ai/compat")` works in BOTH: the pi
+//    host's extension loader (getAliases + VIRTUAL_MODULES) aliases the
+//    `/compat` subpath to the compat entrypoint, and raw resolution finds
+//    `/compat` directly. It runs on first use (never at module load), so a
+//    resolution hiccup can never break extension loading, and test fakes that
+//    inject their own client via setLlmClient never trigger it.
+let _complete: ((model: Model<Api>, body: Context, opts: ProviderStreamOptions) => Promise<AssistantMessage>) | null = null;
+async function resolveComplete() {
+  if (_complete) return _complete;
+  const mod = await import("@earendil-works/pi-ai/compat");
+  const fn = mod.complete;
+  if (typeof fn !== "function") throw new Error("smart-compact: pi-ai /compat did not export complete()");
+  _complete = fn;
+  return fn;
+}
 
 export interface LlmClient {
   complete(model: Model<Api>, body: Context, opts: ProviderStreamOptions): Promise<AssistantMessage>;
@@ -32,7 +56,7 @@ export interface LlmClient {
 
 /** Raw client — direct pass-through to pi-ai. Tests can install this to skip retries. */
 export const rawLlmClient: LlmClient = {
-  complete: (model, body, opts) => complete(model, body, opts),
+  complete: async (model, body, opts) => (await resolveComplete())(model, body, opts),
 };
 
 /**

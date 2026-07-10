@@ -1,5 +1,37 @@
 # Changelog
 
+## [7.19.0] - 2026-07-10
+
+### Fixed
+- **Durable state never persisted on auto/tool paths (C1)** — `persistDurableState` only ran from `applyCompaction`'s `onComplete`, which auto-trigger and tool runs never reach (early return on `skipCompact || autoTriggered`). Project fingerprint, compaction state, and the whole cross-compaction delta/damage-baseline chain silently never ran on the most common path. `PendingCompaction` now carries `projectId` + `extraction`, and the new `persistConsumedState` persists exactly once at the `session_before_compact` consume point — the single apply moment shared by all three run types.
+- **UTF-8 corruption in session-log streaming (C2)** — `streamJsonlLines` decoded each 64KB chunk with a bare `toString("utf-8")`; a multi-byte character split across the chunk boundary became U+FFFD and silently failed that line's `JSON.parse`, dropping the message to its truncated branch copy. Now uses `StringDecoder`.
+- **Lock stale-reclaim race (M3)** — two waiters both observing a stale `.lock` could end up co-holding it (`rmdir` of a freshly reclaimed lock). Reclaim now goes through an atomic rename-steal; exactly one thief wins, and a stolen-but-live lock is restored.
+- **Typo'd model arg silently ignored (M5)** — `/smart-compact provider/bad-model` fell back to the current model without warning. Unresolvable model args with a known provider prefix now fail loudly; note tokens like `src/auth.ts` are unaffected.
+- **`BLOCKED_RE` over-matching** — bare `depend` flagged routine "dependency" mentions as high-priority blocked loops; narrowed to `\bdepends? on\b`, added the same min-length/command guard as the follow-up scan, and fixed the `bağlı` diacritic form.
+- **Timeline dropped the newest user requests** — the >30-event trim kept the *first* N requests and clumped errors at the end; now keeps the most recent N and re-sorts chronologically.
+- **Success metric recorded before apply (m8)** — manual runs logged `success` before `ctx.compact()` could still fail, inflating dashboard reliability. Manual outcomes now come from the native compact's own callbacks (`onComplete` → success, `onError` → error); auto/tool runs still record at staging.
+- **Tool `dry_run` reported failure** — the empty pending slot after a dry-run produced "no summary was generated"; now reports the dry run as the success it is.
+- **`createServices` captured the LLM client eagerly** — a `setLlmClient` installed after the bag was created was ignored, breaking the seam's call-time-resolution contract; the bag now holds a lazy delegate.
+
+### Changed
+- **Metrics surface migrated to explicit DI** — removed the module-level compatibility shims (`resetMetrics`, `getMetrics`, `resetExtractionCacheStats`) and the hidden `getDefaultServices()` fallbacks on `recordMetric`/`getMetricsSummary`/`appendMetricsLog`/`getExtractionCacheStats`/`cacheOpts`. All consumers pass the run-scoped services bag; the single sanctioned fallback lives at the top of `trackedComplete`.
+- **Backup prune deferral is a real macrotask** — `queueMicrotask` ran before control returned to the event loop, so the readdir+stat scan still blocked the triggering turn; now `setTimeout(0)`.
+- **Perf** — dropped the write-only `prunedToolCallIndex` from `RunContext`; capped `estimateTokens`' Turkish-character scan to the same 8KB sample as the JSON-density check; removed a per-ref Set re-materialization in `verifySummary`.
+
+## [7.18.2] - 2026-07-09
+
+### Fixed
+- **Extension load failure after 7.18.1** — 7.18.1 imported `complete` from the `@earendil-works/pi-ai/compat` subpath statically, which is not aliased by some host builds and crashed the extension at load time (`Cannot find module .../dist/index.js/compat`). `complete` is now resolved with a dynamic `import("@earendil-works/pi-ai/compat")` on first use, which is aliased by the host loader and resolves directly in raw node — works in both host and test contexts, and can never break extension loading.
+
+## [7.18.1] - 2026-07-09
+
+### Fixed
+- **TUI model selection override** — when `summaryModel` was set in config, picking a different model in the compact picker still ran the configured default; explicit selections (TUI picker / CLI model arg) now win over `config.summaryModel`. Auto-trigger and tool paths still fall back to the configured default.
+
+### Changed
+- **Dependencies** — bumped `@earendil-works/*` 0.79.6 → 0.80.3, `typebox` 1.2.16 → 1.3.6, `@types/node` 26.0.1 → 26.1.1, `typescript` 6.0.3 → 7.0.2.
+- **`complete` import** — pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package root; now imported from `@earendil-works/pi-ai/compat` (the host's `ModelRegistry` is itself compat-backed, so this is the extension-correct path until the host's ModelManager migration lands).
+
 ## [7.18.0] - 2026-06-26
 
 ### Fixed

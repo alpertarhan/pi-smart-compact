@@ -24,23 +24,30 @@ import { saveProjectFingerprint } from "../../utils/fingerprint.ts";
 import { saveCompactionState } from "../../utils/state.ts";
 import { detectDamage, logDamageReport, writeRemediationHints } from "../../utils/damage.ts";
 import { sanitizeSmartCompactDetails } from "../../utils/type-guards.ts";
+import { recordSuccessMetrics, recordFailureMetrics } from "./metrics.ts";
+import type { StatedRc } from "../run-context.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../../infra/ai-messages.ts";
 import { markPhase } from "../run-context.ts";
 import * as log from "../../utils/logger.ts";
 
 /**
- * Persist project fingerprint + compaction state. Pulled into its own function
- * so the post-compact onComplete callback in the orchestrator can invoke it
- * exactly once after the native compact succeeds.
+ * Persist durable state for a *consumed* pending payload.
  *
- * `RunContext` is the final `StatedRc` stage, so both `extraction` and
- * `compactionState` are statically known to be present here — no defensive
- * `!` or runtime guards needed.
+ * Single persist point for every run type. All three paths (manual, auto,
+ * tool) apply the summary through `session_before_compact` consuming the
+ * slot — the manual path's `ctx.compact()` fires that same event. Persisting
+ * at consume therefore covers every path exactly once; persisting anywhere
+ * else either misses the auto/tool paths (the old onComplete-only wiring) or
+ * double-writes on manual (incrementing the fingerprint sessionCount twice).
+ * Best-effort: never throws.
  */
-export function persistDurableState(rc: RunContext): void {
-  saveProjectFingerprint(rc.projectId, rc.extraction);
-  saveCompactionState(rc.projectId, rc.compactionState);
+export function persistConsumedState(pending: PendingCompaction): void {
+  if (!pending.projectId) return;
+  try {
+    if (pending.extraction) saveProjectFingerprint(pending.projectId, pending.extraction);
+    if (pending.compactionState) saveCompactionState(pending.projectId, pending.compactionState);
+  } catch (e) { log.warn("persistConsumedState failed", e); }
 }
 
 /** Run post-compaction damage detection. Best-effort — never throws. */
@@ -96,6 +103,8 @@ export function stagePendingCompaction(rc: RunContext): PendingCompaction {
     tokensBefore: rc.totalTokens,
     details: rc.details,
     compactionState: rc.compactionState,
+    projectId: rc.projectId,
+    extraction: rc.extraction,
     sessionId: rc.sessionId,
   };
   rc.pendingRef.set(pending);
@@ -103,26 +112,35 @@ export function stagePendingCompaction(rc: RunContext): PendingCompaction {
 }
 
 /**
- * Trigger Pi's native compact in non-auto/non-tool runs. The state-persist
- * callback fires on success; failure clears the pendingRef so the next
- * compact event cannot grab a stale summary (audit P1 #4).
+ * Trigger Pi's native compact in non-auto/non-tool runs. Failure clears the
+ * pendingRef so the next compact event cannot grab a stale summary (audit
+ * P1 #4).
+ *
+ * The run's outcome metric is recorded HERE, not before the apply: a
+ * "success" row written pre-apply would inflate dashboard reliability when
+ * the native compact then rejects. onComplete → success; onError → error.
  */
-export function applyCompaction(rc: RunContext): void {
+export function applyCompaction(rc: StatedRc): void {
   if (rc.flags.skipCompact || rc.flags.autoTriggered) return;
   rc.ctx.compact({
     customInstructions: "Use pre-computed smart summary from /smart-compact",
     onComplete: () => {
-      // Defer durable state until Pi confirms the compaction was applied
-      // (audit P1 #5: previously this state was written before apply, so a
-      // failed compact would leave the cache claiming success).
-      try { persistDurableState(rc); } catch (e) { log.warn("persistDurableState failed", e); }
+      // Durable state is persisted when `session_before_compact` consumes
+      // the pending slot (see persistConsumedState) — doing it here as well
+      // would double-increment the project fingerprint's sessionCount.
       markPhase(rc, "persist");
+      recordSuccessMetrics(rc, "success");
       rc.ctx.ui.notify("Applied \u2713", "info");
     },
     onError: e => {
       // Clear the pending summary so a later `session_before_compact` event
       // can't apply a half-rotten payload that Pi already refused.
       rc.pendingRef.clear();
+      recordFailureMetrics(rc, e, {
+        sessionId: rc.sessionId, tier: rc.tier, contextPercent: rc.contextPercent,
+        toolPercent: rc.toolPercent, totalTokens: rc.totalTokens,
+        methodForMetrics: rc.method, profile: rc.profile,
+      });
       rc.ctx.ui.notify("Failed: " + e.message, "error");
     },
   });

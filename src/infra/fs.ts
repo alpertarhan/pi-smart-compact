@@ -116,25 +116,44 @@ export function acquireLockSync(target: string): () => void {
       try {
         const stat = fs.statSync(lockDir);
         if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          try { fs.rmdirSync(lockDir); } catch { /* ignore */ }
+          // Reclaim via rename-steal, not rmdir. A bare `rmdirSync(lockDir)`
+          // has a classic race: two waiters both observe staleness, waiter A
+          // reclaims (rmdir + mkdir), then waiter B's delayed rmdir deletes
+          // A's FRESH lock and both end up holding it. `renameSync` is
+          // atomic, so exactly one thief wins the steal; the loser gets
+          // ENOENT and loops back to mkdir. The thief then re-checks the
+          // stolen dir's mtime — if it turned out to be fresh (the owner
+          // reclaimed between our stat and our rename), we put it back.
+          const stolen = lockDir + ".stale." + process.pid + "." + crypto.randomBytes(4).toString("hex");
+          try {
+            fs.renameSync(lockDir, stolen);
+            const stolenStat = fs.statSync(stolen);
+            if (Date.now() - stolenStat.mtimeMs > LOCK_STALE_MS) {
+              fs.rmdirSync(stolen);
+            } else {
+              // Stole a live lock — restore it and keep waiting. If the
+              // restore fails (owner released meanwhile) the dir is gone
+              // and the next mkdir attempt simply succeeds.
+              try { fs.renameSync(stolen, lockDir); } catch { /* released */ }
+            }
+          } catch { /* another waiter won the steal — loop and retry mkdir */ }
           continue;
         }
       } catch { /* lock vanished between EEXIST and stat */ }
       // Yield the CPU between retries instead of spinning. `Atomics.wait`
-      // on a tiny SharedArrayBuffer parks the thread without burning a core
-      // — the previous spin loop could pin a CPU at 100% for up to 2 s
-      // (80 retries x 25 ms) during contention from multiple pi sessions
-      // appending metrics simultaneously.
+      // on a tiny SharedArrayBuffer parks the thread without burning a core.
+      // Node and Bun both allow this on the main thread (only browsers
+      // forbid it), so the catch branch fires only in exotic sandboxes
+      // where SharedArrayBuffer itself is unavailable.
+      // ponytail: the spin fallback burns a core for up to 2s under
+      // contention; acceptable because it's unreachable on our supported
+      // runtimes — revisit if a SAB-less host becomes a target.
       try {
         const sab = new SharedArrayBuffer(4);
         const view = new Int32Array(sab);
-        // Wait until either the timeout elapses or the value at index 0
-        // changes (we never notify, so this always times out). The return
-        // value is "timed-out" in the normal contention path.
+        // We never notify, so this always times out after LOCK_RETRY_MS.
         Atomics.wait(view, 0, 0, LOCK_RETRY_MS);
       } catch {
-        // SharedArrayBuffer is unavailable in some sandboxed environments;
-        // fall back to the original spin so the lock still works.
         const until = Date.now() + LOCK_RETRY_MS;
         while (Date.now() < until) { /* spin */ }
       }

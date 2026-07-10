@@ -247,7 +247,13 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     runDamageDetection(stated);
     markPhase(stated, "damage");
 
-    recordSuccessMetrics(stated, "success");
+    // Metric ordering: for auto/tool runs the pipeline's job ends at staging
+    // (Pi applies via session_before_compact), so "success" is recorded now.
+    // Manual runs go through applyCompaction below, which records success or
+    // error from the native compact's own callbacks — recording here would
+    // claim success for an apply that can still fail.
+    const willApply = !stated.flags.skipCompact && !stated.flags.autoTriggered;
+    if (!willApply) recordSuccessMetrics(stated, "success");
 
     if (!stated.flags.autoTriggered) {
       try {

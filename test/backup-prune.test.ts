@@ -7,8 +7,8 @@
  *      block on directory scan / unlink. The previous implementation could
  *      stall for 20-50ms when the backup directory held >100 files.
  *
- *   2. Eventual: after enough microtask ticks the prune happens and files
- *      over the count cap (or age cap) are removed.
+ *   2. Eventual: after the deferred macrotask runs the prune happens and
+ *      files over the count cap (or age cap) are removed.
  *
  * The tests use a per-test HOME swap so they don't touch the user's real
  * backups directory.
@@ -39,9 +39,11 @@ afterEach(() => {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
-function flushMicrotasks(): Promise<void> {
-  // Two microtask hops cover the queued prune + its inner readdir loop.
-  return new Promise(resolve => queueMicrotask(() => queueMicrotask(() => resolve())));
+function flushDeferred(): Promise<void> {
+  // The prune is scheduled with setTimeout(0) (a macrotask — microtasks
+  // would still block the triggering turn); one longer timeout hop
+  // deterministically runs after it.
+  return new Promise(resolve => setTimeout(resolve, 10));
 }
 
 describe("backupConversation hot path", () => {
@@ -63,7 +65,7 @@ describe("backupConversation hot path", () => {
 });
 
 describe("deferred prune", () => {
-  it("trims files past the count cap after microtasks flush", async () => {
+  it("trims files past the count cap after the deferred prune runs", async () => {
     fs.mkdirSync(backupDir, { recursive: true });
     // Pre-populate with BACKUP_MAX_FILES + 5 backups so the trim has work to do.
     const total = BACKUP_MAX_FILES + 5;
@@ -75,10 +77,10 @@ describe("deferred prune", () => {
       const t = (now - (total - i) * 1000) / 1000;
       fs.utimesSync(fp, t, t);
     }
-    // Trigger a real backup → schedules a prune microtask.
+    // Trigger a real backup → schedules the deferred prune.
     backupConversation("trigger prune", "trigger");
-    await flushMicrotasks();
-    // After the microtask runs we should be at the cap (or close to it).
+    await flushDeferred();
+    // After the deferred prune runs we should be at the cap (or close to it).
     const remaining = fs.readdirSync(backupDir).filter(n => n.endsWith(".md")).length;
     expect(remaining).toBeLessThanOrEqual(BACKUP_MAX_FILES + 1); // +1 for the trigger backup
   });

@@ -12,8 +12,17 @@
  * These tests exercise the orchestration without needing a real Pi context —
  * we drive `applyCompaction` with a minimal fake RunContext.
  */
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeAll } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { applyCompaction } from "../src/app/steps/persist.ts";
+
+// applyCompaction records outcome metrics (JSONL append under HOME); isolate
+// the writes so the suite never touches the developer's real metrics log.
+beforeAll(() => {
+  process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "psc-persist-"));
+});
 import type { RunContext } from "../src/app/run-context.ts";
 import { createPendingSlot } from "../src/app/pending-slot.ts";
 import type { PendingCompaction } from "../src/types.ts";
@@ -55,10 +64,32 @@ function makeRC(behaviour: "complete" | "error"): RunContext {
     notify: () => { /* no-op */ },
     phaseTimings: [],
     phaseStart: 0,
-    pipelineStart: 0,
+    pipelineStart: Date.now(),
     extraction: undefined,
     compactionState: undefined,
+    // applyCompaction now records the run outcome from the native compact's
+    // callbacks (success on onComplete, error on onError), so the fake RC
+    // needs the metric fields those paths read.
+    sessionId: "test-session",
+    profile: "balanced",
+    tier: "full",
+    contextPercent: 80,
+    toolPercent: 0,
+    totalTokens: 1000,
+    tokensSaved: 500,
+    chunkCount: 1,
+    verificationScore: 100,
+    verificationGaps: [],
+    method: "eesv",
+    modelLabel: "test/model",
+    summaryModel: { provider: "test", id: "model" } as any,
+    cancellation: { timedOut: false } as any,
+    services: undefined as any,
   };
+  // recordSuccessMetrics/recordFailureMetrics read rc.services; give the
+  // fake RC a real bag (lazily imported to keep the test header clean).
+  const { createServices } = require("../src/infra/services.ts");
+  (rc as any).services = createServices();
   (rc as unknown as { _calls: string[] })._calls = calls;
   return rc as RunContext;
 }

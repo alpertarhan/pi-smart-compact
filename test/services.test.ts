@@ -117,7 +117,8 @@ describe("run-scoped services", () => {
 
     expect(getMetricsSummary(a).totalInput).toBe(10);
     expect(getMetricsSummary(b).totalInput).toBe(20);
-    expect(getMetricsSummary().totalCalls).toBe(0);
+    // The default container must stay untouched — explicit bags only.
+    expect(getMetricsSummary(getDefaultServices()).totalCalls).toBe(0);
   });
 });
 

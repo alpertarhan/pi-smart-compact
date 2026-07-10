@@ -154,7 +154,10 @@ export function makeCompactSessionId(): string {
 export function createServices(overrides: Partial<SmartCompactServices> = {}): SmartCompactServices {
   return {
     clock: overrides.clock ?? systemClock,
-    llm: overrides.llm ?? getLlmClient(),
+    // Lazy delegate, not `getLlmClient()` captured eagerly: the llm-client
+    // seam promises call-time resolution, so a `setLlmClient` installed
+    // after this bag was created must still be honoured.
+    llm: overrides.llm ?? { complete: (...args) => getLlmClient().complete(...args) },
     toolSupport: overrides.toolSupport ?? new ToolSupportCache(),
     metrics: overrides.metrics ?? new MetricsSink(),
     extractionCacheStats: overrides.extractionCacheStats ?? new ExtractionCacheStats(),

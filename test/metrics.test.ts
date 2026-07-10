@@ -4,12 +4,14 @@ import path from "node:path";
 import os from "node:os";
 
 let cache: typeof import("../src/utils/cache.ts");
+let services: typeof import("../src/infra/services.ts");
 let home: string;
 
 async function loadWithHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-metrics-"));
   process.env.HOME = home;
   cache = await import("../src/utils/cache.ts?home=" + encodeURIComponent(home) + "-" + Date.now());
+  services = await import("../src/infra/services.ts");
   return home;
 }
 
@@ -19,8 +21,9 @@ describe("metrics reporting", () => {
   });
 
   it("writes and summarizes profile/provider comparisons", () => {
-    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", model: "openai/gpt", method: "single-pass", status: "success", durationMs: 1000, tokensSaved: 5000, verificationScore: 95 });
-    cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", model: "anthropic/claude", method: "eesv", status: "timeout", durationMs: 2000, tokensSaved: 9000, verificationScore: 90 });
+    const svc = services.createServices();
+    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", model: "openai/gpt", method: "single-pass", status: "success", durationMs: 1000, tokensSaved: 5000, verificationScore: 95 }, svc);
+    cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", model: "anthropic/claude", method: "eesv", status: "timeout", durationMs: 2000, tokensSaved: 9000, verificationScore: 90 }, svc);
     const report = cache.buildMetricsReport(cache.readMetricsLog());
     expect(report).toContain("Profile comparison");
     expect(report).toContain("balanced: n=1");
@@ -28,7 +31,7 @@ describe("metrics reporting", () => {
   });
 
   it("writes a local html dashboard", () => {
-    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success", durationMs: 1000 });
+    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success", durationMs: 1000 }, services.createServices());
     const fp = cache.writeMetricsDashboard(cache.readMetricsLog());
     expect(fp).toBeTruthy();
     expect(fs.existsSync(fp!)).toBe(true);
@@ -36,7 +39,7 @@ describe("metrics reporting", () => {
   });
 
   it("caps provider cache hit rate when cacheRead exceeds uncached input", () => {
-    cache.resetMetrics();
+    const svc = services.createServices();
     cache.recordMetric({
       phase: "batch",
       model: "claude",
@@ -46,24 +49,25 @@ describe("metrics reporting", () => {
       cacheHitTokens: 120248,
       latencyMs: 10,
       success: true,
-    });
-    const summary = cache.getMetricsSummary();
+    }, svc);
+    const summary = cache.getMetricsSummary(svc);
     expect(summary.cacheHitRate).toBeGreaterThan(0.99);
     expect(summary.cacheHitRate).toBeLessThanOrEqual(1);
     expect(cache.effectivePromptInputTokens(summary.totalInput, summary.totalCacheHit)).toBe(120269);
   });
 
   it("skips corrupt jsonl rows instead of dropping all metrics", () => {
-    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success" });
+    const svc = services.createServices();
+    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success" }, svc);
     const logPath = path.join(home, ".pi", "agent", ".cache", "compact-metrics.jsonl");
     fs.appendFileSync(logPath, "{not-json}\n");
-    cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", status: "error" });
+    cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", status: "error" }, svc);
     const entries = cache.readMetricsLog();
     expect(entries.map(e => e.sessionId)).toEqual(["s1", "s2"]);
   });
 
   it("escapes dashboard table values", () => {
-    cache.appendMetricsLog("s1", { profile: "<script>alert(1)</script>", provider: "openai", status: "success" });
+    cache.appendMetricsLog("s1", { profile: "<script>alert(1)</script>", provider: "openai", status: "success" }, services.createServices());
     const fp = cache.writeMetricsDashboard(cache.readMetricsLog());
     const html = fs.readFileSync(fp!, "utf8");
     expect(html).not.toContain("<script>alert(1)</script>");

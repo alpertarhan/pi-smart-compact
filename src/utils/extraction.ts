@@ -336,8 +336,14 @@ export function buildTimeline(msgs: LlmMessage[], errors: StructuredExtraction["
     }
     if (errorIndices.has(i)) timeline.push({ index: i, event: "error", summary: errors.find(e => e.index === i)?.message.slice(0, TRUNC.TIMELINE_ERROR) ?? "error" });
   }
+  // Keep the *most recent* N user requests (slice(-N), not slice(0, N)) —
+  // for compaction the latest requests are the valuable ones. Re-sort by
+  // index so errors interleave chronologically instead of clumping at the end.
   return timeline.length > 30
-    ? [...timeline.filter(t => t.event === "user_request").slice(0, TRUNC.TIMELINE_DISPLAY), ...timeline.filter(t => t.event === "error")]
+    ? [
+      ...timeline.filter(t => t.event === "user_request").slice(-TRUNC.TIMELINE_DISPLAY),
+      ...timeline.filter(t => t.event === "error"),
+    ].sort((a, b) => a.index - b.index)
     : timeline;
 }
 
@@ -413,11 +419,16 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   }
 
   // ── 3. Blocked items → blocked loops ──
-  const BLOCKED_RE = /blocked|waiting for|depend|ba[ğg]li|bekliyor|engell/i;
+  // `\bdepends?\s+on\b` instead of bare `depend`: "dependency/dependencies"
+  // appears in routine package talk and was flagging ordinary messages as
+  // high-priority blocked loops. Same min-length/command guard as the
+  // follow-up scan above — slash commands and tiny fragments are never loops.
+  const BLOCKED_RE = /\bblocked\b|waiting for|\bdepends?\s+on\b|ba[ğg]l[iı]|bekliyor|engell/i;
   for (let idx = 0; idx < msgs.length; idx++) {
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
+    if (txt.length < 10 || txt.startsWith("/")) continue;
     if (BLOCKED_RE.test(txt)) {
       const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
       if (!isDup) {

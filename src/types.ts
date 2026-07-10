@@ -162,6 +162,17 @@ export interface PendingCompaction {
   details: SmartCompactDetails;
   compactionState?: CompactionState;
   /**
+   * Project id + extraction snapshot for durable-state persistence at
+   * consume time. The auto-trigger and tool paths never reach
+   * `applyCompaction` (they return early), so the only moment we *know*
+   * the payload is being applied is when `session_before_compact`
+   * consumes it. Carrying these fields lets `persistConsumedState` write
+   * the project fingerprint + compaction state exactly once, on every
+   * path, at that moment.
+   */
+  projectId?: string;
+  extraction?: StructuredExtraction;
+  /**
    * Originating pi session id. Used by `session_before_compact` to refuse a
    * pending payload that was prepared by a different session (e.g. when two
    * pi sessions share the same Node process via sub-agents). Without this

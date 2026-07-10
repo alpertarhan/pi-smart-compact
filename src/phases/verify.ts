@@ -91,13 +91,16 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
   // contract is the same: only return tokens that look like real file
   // references (no SemVer literals, no bare names without an extension).
   const summaryFileRefs = extractFileRefs(summary);
-  const knownFiles = new Set([
+  // Plain array (not Set): membership is suffix-based, so every lookup scans
+  // all entries anyway — the previous `[...set].some(...)` re-materialized
+  // the array on every ref, O(refs × files) allocations for zero benefit.
+  const knownFiles = [
     ...extraction.modifiedFiles.map(f => f.path.toLowerCase()),
     ...extraction.readFiles.map(f => f.toLowerCase()),
-  ]);
+  ];
   for (const ref of summaryFileRefs) {
     const refLower = ref.toLowerCase();
-    const isKnown = [...knownFiles].some(kf => (kf.endsWith("/" + refLower) || kf === refLower || (kf.endsWith(refLower) && refLower.length > 3)));
+    const isKnown = knownFiles.some(kf => (kf.endsWith("/" + refLower) || kf === refLower || (kf.endsWith(refLower) && refLower.length > 3)));
     if (!isKnown) {
       gaps.push("Potentially fabricated file: " + ref);
       score -= 4;
