@@ -28,6 +28,13 @@ section is about lifecycle.
 A short-lived pending compaction is staged in the [`PendingSlot`](#pending-compaction-slot)
 and handed to Pi when compaction is applied.
 
+### Host dependency boundary
+
+Pi core modules and `typebox` are wildcard peers supplied by the running host;
+they are neither bundled nor duplicated as versioned development dependencies.
+The lockfile pins a reproducible local baseline, and `bun run compat:pi [version]`
+validates another Pi release in an isolated temporary workspace.
+
 ## Pipeline at a glance
 
 ```mermaid

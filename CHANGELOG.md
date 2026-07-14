@@ -1,5 +1,25 @@
 # Changelog
 
+## [7.20.0] - 2026-07-14
+
+### Fixed
+- **Mixed parallel tool calls could lose unrelated edits** — redundant-read and failed-chain pruning deleted an entire assistant message when only one nested tool call was redundant. Pruning now removes individual direct or `multi_tool_use.parallel` blocks while preserving sibling calls, text, and tool-result pairing.
+- **`smart_compact` ignored host cancellation** — the tool now links Pi's `AbortSignal` to the pipeline controller, handles already-aborted calls before authentication, removes listeners in `finally`, and prevents stale pending summaries.
+- **Cross-compaction delta omissions** — removed decisions and resolved errors now count as meaningful changes and render correctly through one shared delta predicate.
+
+### Added
+- **Pi version compatibility runner** — `bun run compat:pi [version]` validates an exact or latest Pi release in an isolated temporary workspace without changing the checkout. Daily CI exercises the latest host packages; a package-boundary regression test prevents accidental bundling or version pinning.
+- **Repeatable hot-path benchmark** — `bun run bench` reports median/p95 performance for incremental extraction and pruning.
+
+### Changed
+- **Pi core dependency boundary** — `@earendil-works/pi-*` and `typebox` are host-provided wildcard peers only; duplicated versioned development dependencies were removed. The lockfile remains the reproducible local baseline.
+- **Bounded runtime logs** — metrics and damage JSONL logs retain complete trailing records under a 5 MiB cap using the same lock as concurrent appenders.
+- **Metrics UI separation** — text/HTML reporting moved from `utils/cache.ts` to `ui/metrics-report.ts`, reusing shared dashboard formatters; legacy service lifecycle comments now match production's run-scoped DI.
+- **Deferred filesystem maintenance** — extraction-cache cleanup now runs on a later event-loop turn rather than in the microtask queue.
+
+### Performance
+- **Incremental extraction** — cache hits no longer build an unused full-history tool-call index. The 5,000-message benchmark reduced the measured median from about 0.133 ms to 0.035 ms on the development machine (~74%).
+
 ## [7.19.0] - 2026-07-10
 
 ### Fixed

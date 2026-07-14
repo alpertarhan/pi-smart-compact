@@ -17,6 +17,7 @@ Use this checklist before publishing `pi-smart-compact`.
 bun run typecheck
 bun test
 bun run build
+bun run compat:pi
 ```
 
 The CI `verify` job runs the same validation on pull requests.

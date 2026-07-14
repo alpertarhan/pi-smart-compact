@@ -223,6 +223,11 @@ The legacy config key `semanticCompact` is still accepted.
 
 ## Companions & compatibility
 
+Pi core libraries are host-provided wildcard peers and are excluded from the
+published bundle. This keeps the extension independent from Pi's release cadence:
+the lockfile provides a reproducible development baseline, while daily CI runs
+the full suite against the latest Pi packages without changing the manifest.
+
 `pi-smart-compact` is designed to coexist with — and recommended alongside —
 [`pi-toolkit`](https://github.com/ersintarhan/pi-toolkit). pi-toolkit handles
 everyday context hygiene (anchors, pivots, status lines, old tool-output
@@ -259,6 +264,8 @@ bun install
 bun run typecheck   # tsc --noEmit
 bun test            # full test suite
 bun run bench       # repeatable hot-path benchmark
+bun run compat:pi   # latest Pi, without changing package.json or bun.lock
+bun run compat:pi 0.80.6  # optional exact Pi version
 bun run build       # dist/ output for publishing
 ```
 
