@@ -16,3 +16,9 @@ updates:
       - dependencies
       - npm
     open-pull-requests-limit: 5
+    # Pi core is host-provided. Daily compatibility CI tests its latest release
+    # without turning every synchronized Pi publish into a manifest bump PR.
+    ignore:
+      - dependency-name: "@earendil-works/pi-ai"
+      - dependency-name: "@earendil-works/pi-coding-agent"
+      - dependency-name: "@earendil-works/pi-tui"

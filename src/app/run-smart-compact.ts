@@ -82,6 +82,8 @@ export interface SmartCompactOptions {
   force?: boolean;
   /** Optional hard budget for native auto-trigger only. Manual/tool runs do not time out by default. */
   timeoutMs?: number;
+  /** Host cancellation for tool/manual callers. Linked to the pipeline controller. */
+  abortSignal?: AbortSignal;
   /**
    * If provided, populated with the run's cancellation handle before any
    * async work begins. The session_before_compact hook uses this to enforce
@@ -138,6 +140,14 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   opts.isRunning.value = true;
 
   const base = makeBase(opts);
+  const abortFromHost = () => {
+    base.cancellation.timedOut = true;
+    base.cancellation.controller.abort();
+  };
+  if (opts.abortSignal) {
+    if (opts.abortSignal.aborted) abortFromHost();
+    else opts.abortSignal.addEventListener("abort", abortFromHost, { once: true });
+  }
   // Late-bound StatedRc reference so the finally block can record failure
   // metrics. We populate it as soon as buildState returns; until then it's
   // null and the failure path uses `base` only.
@@ -163,6 +173,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   }
 
   try {
+    if (base.cancellation.signal.aborted) return;
     const prepared = await prepareRun(base);
     if (!prepared) return;
 
@@ -289,6 +300,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     recordFailureMetrics(finalRc ?? base, err, failureSummaryFields);
     throw err;
   } finally {
+    opts.abortSignal?.removeEventListener("abort", abortFromHost);
     if (base.cancellation.timeoutId) clearTimeout(base.cancellation.timeoutId);
     opts.isRunning.value = false;
     // If the timeout fired we always clear the pending summary so a stale

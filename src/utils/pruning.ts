@@ -63,6 +63,7 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   // compaction.
   const tcIdx = ensuredIndex;
   const keep = new Set<number>(msgs.map((_, i) => i));
+  const removedToolCallIds = new Set<string>();
   const reasonMap = new Map<string, number>();
 
   // ── 1. Duplicate file reads: keep only last read per file ──
@@ -82,10 +83,9 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   for (const [fp, indices] of readIndices) {
     // Keep last read, prune the rest
     for (let j = 0; j < indices.length - 1; j++) {
+      const toolCallId = msgs[indices[j]].toolCallId ?? "";
       keep.delete(indices[j]);
-      // Also prune the corresponding assistant tool call message
-      const tc = tcIdx.get(msgs[indices[j]].toolCallId ?? "");
-      if (tc) keep.delete(tc.msgIndex);
+      if (tcIdx.has(toolCallId)) removedToolCallIds.add(toolCallId);
     }
     if (indices.length > 1) {
       reasonMap.set("Duplicate file reads", (reasonMap.get("Duplicate file reads") ?? 0) + indices.length - 1);
@@ -93,11 +93,12 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   }
 
   // ── 2. Failed → retry → success chains: keep first failure + success only ──
-  const failedToolResults: Array<{ index: number; tool: string; tcIndex: number }> = [];
+  const failedToolResults: Array<{ index: number; tool: string; toolCallId: string }> = [];
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i].role !== "toolResult" || !msgs[i].isError) continue;
-    const tc = tcIdx.get(msgs[i].toolCallId ?? "");
-    failedToolResults.push({ index: i, tool: tc?.name ?? "unknown", tcIndex: tc?.msgIndex ?? -1 });
+    const toolCallId = msgs[i].toolCallId ?? "";
+    const tc = tcIdx.get(toolCallId);
+    failedToolResults.push({ index: i, tool: tc?.name ?? "unknown", toolCallId });
   }
   // Group consecutive failures of the same tool
   let i = 0;
@@ -111,7 +112,7 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     if (j - i >= 3) {
       for (let k = i + 1; k < j - 1; k++) {
         keep.delete(failedToolResults[k].index);
-        if (failedToolResults[k].tcIndex >= 0) keep.delete(failedToolResults[k].tcIndex);
+        if (tcIdx.has(failedToolResults[k].toolCallId)) removedToolCallIds.add(failedToolResults[k].toolCallId);
       }
       reasonMap.set("Collapsed error chains", (reasonMap.get("Collapsed error chains") ?? 0) + (j - i - 2));
     }
@@ -172,31 +173,73 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
 
   for (let idx = 0; idx < msgs.length; idx++) {
     const m = msgs[idx];
-    const text = extractText(m.content);
+    const originalText = extractText(m.content);
     // Skip empty messages: `estimateTokens("")` still runs regex/Math.ceil,
     // which is wasted work in long sessions where many entries are pure
     // tool-call wrappers (no text payload).
-    if (text.length > 0) originalTokens += estimateTokens(text);
+    if (originalText.length > 0) originalTokens += estimateTokens(originalText);
     if (!keep.has(idx)) continue;
 
+    // A single assistant message may carry multiple independent tool calls.
+    // Remove only the redundant call, never the whole message: deleting the
+    // wrapper would also erase unrelated writes/edits and make verification
+    // blind to facts that disappeared before extraction.
+    let keptMessage = m;
+    if (m.role === "assistant" && removedToolCallIds.size > 0 && Array.isArray(m.content)) {
+      let changed = false;
+      const content: unknown[] = [];
+      for (const block of m.content) {
+        if (!isToolCallBlock(block)) {
+          content.push(block);
+          continue;
+        }
+        if (block.name === "multi_tool_use.parallel" && Array.isArray(block.arguments?.tool_uses)) {
+          const tools = block.arguments.tool_uses as Record<string, unknown>[];
+          const retained = tools.filter((tool, toolIndex) => {
+            const id = typeof tool.id === "string"
+              ? tool.id
+              : block.id ? block.id + "_" + toolIndex : "mtu_" + idx + "_" + toolIndex;
+            return !removedToolCallIds.has(id);
+          });
+          if (retained.length !== tools.length) changed = true;
+          if (retained.length > 0) {
+            content.push(retained.length === tools.length
+              ? block
+              : { ...block, arguments: { ...block.arguments, tool_uses: retained } });
+          }
+          continue;
+        }
+        if (block.id && removedToolCallIds.has(block.id)) {
+          changed = true;
+          continue;
+        }
+        content.push(block);
+      }
+      if (changed) {
+        if (content.length === 0) continue;
+        keptMessage = { ...m, content };
+      }
+    }
+
+    const text = extractText(keptMessage.content);
     // Don't truncate tool outputs catalogErrors would actually scan for errors
     // (short enough to be scanned + containing an error keyword) — truncation
     // can drop a mid-output error keyword and hide a real error from extraction.
-    const protectFromTruncation = m.role === "toolResult"
+    const protectFromTruncation = keptMessage.role === "toolResult"
       && text.length > MAX_TOOL_OUTPUT_CHARS
       && text.length < ERROR_SCAN_MAX_LEN
       && LIKELY_ERROR_RE.test(text);
-    if (m.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS && !protectFromTruncation) {
+    if (keptMessage.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS && !protectFromTruncation) {
       // Split the budget evenly between head and tail. Derived from
       // MAX_TOOL_OUTPUT_CHARS so future bumps to the constant don't
       // silently leave the slice sizes out of date.
       const head = text.slice(0, half);
       const tail = text.slice(-half);
       const truncated = head + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n" + tail;
-      finalMsgs.push({ ...m, content: [{ type: "text" as const, text: truncated }] });
+      finalMsgs.push({ ...keptMessage, content: [{ type: "text" as const, text: truncated }] });
       prunedTokens += estimateTokens(truncated);
     } else {
-      finalMsgs.push(m);
+      finalMsgs.push(keptMessage);
       if (text.length > 0) prunedTokens += estimateTokens(text);
     }
     keptIndices.push(idx);

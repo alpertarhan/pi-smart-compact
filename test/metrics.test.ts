@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 
 let cache: typeof import("../src/utils/cache.ts");
+let metricsReport: typeof import("../src/ui/metrics-report.ts");
 let services: typeof import("../src/infra/services.ts");
 let home: string;
 
@@ -11,6 +12,7 @@ async function loadWithHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-metrics-"));
   process.env.HOME = home;
   cache = await import("../src/utils/cache.ts?home=" + encodeURIComponent(home) + "-" + Date.now());
+  metricsReport = await import("../src/ui/metrics-report.ts?home=" + encodeURIComponent(home) + "-" + Date.now());
   services = await import("../src/infra/services.ts");
   return home;
 }
@@ -24,7 +26,7 @@ describe("metrics reporting", () => {
     const svc = services.createServices();
     cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", model: "openai/gpt", method: "single-pass", status: "success", durationMs: 1000, tokensSaved: 5000, verificationScore: 95 }, svc);
     cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", model: "anthropic/claude", method: "eesv", status: "timeout", durationMs: 2000, tokensSaved: 9000, verificationScore: 90 }, svc);
-    const report = cache.buildMetricsReport(cache.readMetricsLog());
+    const report = metricsReport.buildMetricsReport(cache.readMetricsLog());
     expect(report).toContain("Profile comparison");
     expect(report).toContain("balanced: n=1");
     expect(report).toContain("anthropic: n=1");
@@ -32,7 +34,7 @@ describe("metrics reporting", () => {
 
   it("writes a local html dashboard", () => {
     cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success", durationMs: 1000 }, services.createServices());
-    const fp = cache.writeMetricsDashboard(cache.readMetricsLog());
+    const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
     expect(fp).toBeTruthy();
     expect(fs.existsSync(fp!)).toBe(true);
     expect(fs.readFileSync(fp!, "utf8")).toContain("Smart Compact Metrics");
@@ -68,7 +70,7 @@ describe("metrics reporting", () => {
 
   it("escapes dashboard table values", () => {
     cache.appendMetricsLog("s1", { profile: "<script>alert(1)</script>", provider: "openai", status: "success" }, services.createServices());
-    const fp = cache.writeMetricsDashboard(cache.readMetricsLog());
+    const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
     const html = fs.readFileSync(fp!, "utf8");
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");

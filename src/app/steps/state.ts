@@ -14,7 +14,7 @@ import { advance } from "../run-context.ts";
 import {
   buildCompactionState, injectOpenLoopsSection, extractNextActions,
   extractCriticalContext, loadCompactionState, computeDelta, injectDeltaSection,
-  ensurePinnedPaths,
+  hasDeltaChanges, ensurePinnedPaths,
 } from "../../utils/state.ts";
 import { extractOpenLoops } from "../../utils/extraction.ts";
 import { readRemediationHints } from "../../utils/damage.ts";
@@ -63,8 +63,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
   const prevState = loadCompactionState(rc.projectId);
   if (prevState) {
     const delta = computeDelta(prevState, compactionState);
-    if (delta.newLoops.length || delta.resolvedLoops.length || delta.newDecisions.length ||
-      delta.newErrors.length || delta.newModifiedFiles.length) {
+    if (hasDeltaChanges(delta)) {
       summary = injectDeltaSection(summary, delta);
       rc.notify(
         "Delta: " + delta.newLoops.length + " new loops, " + delta.resolvedLoops.length +

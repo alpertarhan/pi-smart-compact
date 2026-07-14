@@ -122,7 +122,7 @@ describe("applyCompaction onError", () => {
 // race a hard timeout against the in-pipeline AbortSignal. We exercise the
 // surface here without spinning up a full Pi context.
 describe("external cancellation surface", () => {
-  it("marks the run as timed out and aborts the underlying controller", async () => {
+  it("links a host AbortSignal to the underlying controller", async () => {
     const { runSmartCompact } = await import("../src/app/run-smart-compact.ts");
     const cancellationOut: { value: import("../src/app/run-smart-compact.ts").ExternalCancellation | null } = { value: null };
     // Fake ctx that does just enough for prepareRun to fail authentication so
@@ -138,6 +138,7 @@ describe("external cancellation surface", () => {
     } as any;
     const pendingRef = createPendingSlot({ ttlMs: 5 * 60 * 1000 });
     const isRunning = { value: false };
+    const hostCancellation = new AbortController();
     const summaryModel = { id: "x", provider: "openai", contextWindow: 100000 } as any;
     const run = runSmartCompact({
       ctx: fakeCtx,
@@ -147,13 +148,16 @@ describe("external cancellation surface", () => {
       pendingRef, isRunning,
       autoTriggered: true,
       cancellationOut,
+      abortSignal: hostCancellation.signal,
     });
     // The cancellation handle must be available synchronously — in production
     // the outer setTimeout starts ticking before the inner pipeline reaches any
     // await point we'd care about.
     expect(cancellationOut.value).not.toBeNull();
-    cancellationOut.value!.abort();
+    hostCancellation.abort();
     expect(cancellationOut.value!.timedOut).toBe(true);
     await run;
+    expect(isRunning.value).toBe(false);
+    expect(pendingRef.isPresent()).toBe(false);
   });
 });

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { pruneRedundant } from "../src/utils/pruning.ts";
+import { extractStructured } from "../src/utils/extraction.ts";
+import { PROFILES } from "../src/constants.ts";
 import type { LlmMessage } from "../src/types.ts";
 
 function makeMsg(role: LlmMessage["role"], content: string, extra?: Partial<LlmMessage>): LlmMessage {
@@ -44,6 +46,54 @@ describe("pruneRedundant", () => {
     const result = pruneRedundant(msgs);
     expect(result.prunedCount).toBeGreaterThan(0);
     expect(result.reasons.some(r => r.reason.includes("Duplicate file reads"))).toBe(true);
+  });
+
+  it("preserves an unrelated edit beside a duplicate read", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "read a.ts and edit c.ts"),
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "r1", name: "read", arguments: { path: "a.ts" } },
+          { type: "toolCall", id: "e1", name: "edit", arguments: { path: "c.ts", oldText: "x", newText: "y" } },
+        ],
+      },
+      makeToolResult("r1", "a"),
+      makeToolResult("e1", "done"),
+      makeAssistantWithToolCall("r2", "read", { path: "a.ts" }),
+      makeToolResult("r2", "a again"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    const extraction = extractStructured(result.messages, PROFILES.balanced);
+    expect(extraction.modifiedFiles.map(file => file.path)).toContain("c.ts");
+    expect(result.messages.some(message => message.toolCallId === "e1")).toBe(true);
+  });
+
+  it("preserves unrelated calls inside multi_tool_use.parallel", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "parallel work"),
+      {
+        role: "assistant",
+        content: [{
+          type: "toolCall", id: "parallel-1", name: "multi_tool_use.parallel",
+          arguments: { tool_uses: [
+            { id: "r1", recipient_name: "functions.read", parameters: { path: "a.ts" } },
+            { id: "e1", recipient_name: "functions.edit", parameters: { path: "c.ts", oldText: "x", newText: "y" } },
+          ] },
+        }],
+      },
+      makeToolResult("r1", "a"),
+      makeToolResult("e1", "done"),
+      makeAssistantWithToolCall("r2", "read", { path: "a.ts" }),
+      makeToolResult("r2", "a again"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    const extraction = extractStructured(result.messages, PROFILES.balanced);
+    expect(extraction.modifiedFiles.map(file => file.path)).toContain("c.ts");
+    const wrapper = result.messages.find(message => message.role === "assistant" && Array.isArray(message.content))?.content as Array<{ name?: string; arguments?: { tool_uses?: Array<{ id?: string }> } }>;
+    expect(wrapper.flatMap(block => block.arguments?.tool_uses ?? []).map(tool => tool.id)).toEqual(["e1"]);
   });
 
   it("prunes agent acknowledgment messages", () => {

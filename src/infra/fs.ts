@@ -177,6 +177,38 @@ export function appendLineLocked(target: string, line: string): void {
   }
 }
 
+/** Keep only complete trailing lines that fit within `maxBytes`. */
+export function trimFileTailLocked(target: string, maxBytes: number): void {
+  const release = acquireLockSync(target);
+  try {
+    const stat = fs.statSync(target);
+    if (stat.size <= maxBytes) return;
+    const length = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.allocUnsafe(length);
+    const fd = fs.openSync(target, "r");
+    try { fs.readSync(fd, buffer, 0, length, stat.size - length); }
+    finally { fs.closeSync(fd); }
+    const tail = buffer.toString("utf8");
+    const firstNewline = tail.indexOf("\n");
+    atomicWriteFileSync(target, firstNewline >= 0 ? tail.slice(firstNewline + 1) : "");
+  } finally {
+    release();
+  }
+}
+
+const scheduledTailTrims = new Set<string>();
+
+/** Defer disk retention work to a later event-loop turn and coalesce writers. */
+export function scheduleFileTailTrim(target: string, maxBytes: number): void {
+  if (scheduledTailTrims.has(target)) return;
+  scheduledTailTrims.add(target);
+  setTimeout(() => {
+    try { trimFileTailLocked(target, maxBytes); }
+    catch (e) { log.debug("tail trim failed for " + target, e); }
+    finally { scheduledTailTrims.delete(target); }
+  }, 0);
+}
+
 export function readJsonSync<T>(target: string): T | null {
   try {
     if (!fs.existsSync(target)) return null;

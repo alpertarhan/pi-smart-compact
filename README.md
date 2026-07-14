@@ -223,6 +223,11 @@ The legacy config key `semanticCompact` is still accepted.
 
 ## Companions & compatibility
 
+Pi core libraries are host-provided wildcard peers and are excluded from the
+published bundle. This keeps the extension independent from Pi's release cadence:
+the lockfile provides a reproducible development baseline, while daily CI runs
+the full suite against the latest Pi packages without changing the manifest.
+
 `pi-smart-compact` is designed to coexist with — and recommended alongside —
 [`pi-toolkit`](https://github.com/ersintarhan/pi-toolkit). pi-toolkit handles
 everyday context hygiene (anchors, pivots, status lines, old tool-output
@@ -245,11 +250,11 @@ The extension writes under `~/.pi/agent/`:
 | `settings.json` | configuration (read) |
 | `compact-backups/` | conversation backups (retention-pruned) |
 | `.cache/compact-extraction-<session>.json` | incremental extraction cache |
-| `.cache/compact-metrics.jsonl` | metrics log |
+| `.cache/compact-metrics.jsonl` | metrics log (tail-retained, 5 MiB cap) |
 | `.cache/smart-compact-report.html` | HTML dashboard |
 | `.cache/smart-compact/projects/<projectId>.json` | project fingerprint |
 | `.cache/smart-compact/states/<projectId>.json` | reusable compaction state |
-| `.cache/smart-compact/damage-reports.jsonl` | regression signals |
+| `.cache/smart-compact/damage-reports.jsonl` | regression signals (tail-retained, 5 MiB cap) |
 | `.cache/smart-compact/remediation-<projectId>.json` | files to re-preserve after damage |
 
 ## Development
@@ -258,6 +263,9 @@ The extension writes under `~/.pi/agent/`:
 bun install
 bun run typecheck   # tsc --noEmit
 bun test            # full test suite
+bun run bench       # repeatable hot-path benchmark
+bun run compat:pi   # latest Pi, without changing package.json or bun.lock
+bun run compat:pi 0.80.6  # optional exact Pi version
 bun run build       # dist/ output for publishing
 ```
 

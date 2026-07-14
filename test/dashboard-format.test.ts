@@ -6,6 +6,7 @@ import {
   formatRecentRuns,
   formatRunDetails,
   isDashboardTitleLine,
+  metricMs,
   metricPct,
 } from "../src/ui/dashboard-format.ts";
 
@@ -58,6 +59,11 @@ describe("dashboard format helpers", () => {
     expect(formatCurrentSession([], "s1").join("\n")).toContain("No smart-compact metrics recorded");
     expect(formatCurrentSession([entry(), entry({ sessionId: "s2" })], "s1").join("\n")).toContain("Runs: 1");
     expect(formatRecentRuns([]).join("\n")).toContain("No smart-compact metrics recorded");
+  });
+
+  it("formats long durations consistently across TUI and HTML", () => {
+    expect(metricMs(1_500)).toBe("1.5s");
+    expect(metricMs(90_000)).toBe("1.5m");
   });
 
   it("clamps displayed ratio percentages", () => {

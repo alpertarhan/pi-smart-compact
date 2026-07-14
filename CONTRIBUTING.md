@@ -27,9 +27,13 @@ bun install
 bun test
 bun run typecheck
 bun run build
+bun run compat:pi   # verify against latest host-provided Pi packages
 ```
 
-The CI `verify` job runs `typecheck → test → build` on every pull request.
+The CI `verify` job runs `typecheck → test → build` on every pull request. A
+daily `pi-latest` job installs the latest Pi packages in an isolated temporary
+workspace and runs the same checks without changing the checkout. To probe an
+exact release locally, run `bun run compat:pi 0.80.6`.
 
 ## Repository map
 

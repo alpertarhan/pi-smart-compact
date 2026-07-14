@@ -28,6 +28,13 @@ section is about lifecycle.
 A short-lived pending compaction is staged in the [`PendingSlot`](#pending-compaction-slot)
 and handed to Pi when compaction is applied.
 
+### Host dependency boundary
+
+Pi core modules and `typebox` are wildcard peers supplied by the running host;
+they are neither bundled nor duplicated as versioned development dependencies.
+The lockfile pins a reproducible local baseline, and `bun run compat:pi [version]`
+validates another Pi release in an isolated temporary workspace.
+
 ## Pipeline at a glance
 
 ```mermaid
@@ -167,8 +174,8 @@ reusable state.
 | Project fingerprint | `utils/fingerprint.ts` | language / framework / key dirs across sessions |
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 
-**Important TTLs:** pending in-memory compaction 5 min · exploration
-tool-support cache 30 min · extraction cache 1 h · compaction state 7 d · remediation hints 7 d.
+**Important retention limits:** pending in-memory compaction 5 min · exploration
+tool-support cache 30 min · extraction cache 1 h · compaction state 7 d · remediation hints 7 d · metrics and damage JSONL logs 5 MiB each.
 
 ## Concurrency & safety model
 
@@ -316,7 +323,7 @@ All external-world interaction.
 | `utils/pruning.ts` | redundancy removal on the message list |
 | `utils/state.ts` | structured state, open loops, delta, pinned-path preservation |
 | `utils/helpers.ts` | config, backups, batching, shared helpers, backup list/restore |
-| `utils/cache.ts` | metrics log + extraction prefix cache + dashboards |
+| `utils/cache.ts` | metrics log + extraction prefix cache |
 | `utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
 | `utils/damage.ts` | post-compaction regression signals + remediation hints |
 | `utils/id-fingerprint.ts` | compact SHA-256 fingerprint of entry-id arrays |
@@ -333,7 +340,8 @@ All external-world interaction.
 | File | Responsibility |
 | --- | --- |
 | `ui/overlays.ts` | model/profile pickers, progress, result, dashboard screens |
-| `ui/dashboard-format.ts` | pure formatters for the metrics dashboard |
+| `ui/dashboard-format.ts` | shared pure formatters for metrics surfaces |
+| `ui/metrics-report.ts` | text report + local HTML metrics dashboard |
 
 ## Design principles
 

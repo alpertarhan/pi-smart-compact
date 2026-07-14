@@ -281,13 +281,10 @@ export function fallbackExplorationReport(llmMessages: LlmMessage[]): Exploratio
 /**
  * Top-level exploration entry point.
  *
- * `services` is threaded in explicitly rather than reached via
- * `getDefaultServices()` because `runSmartCompact` resets the default
- * services container at the start of every run. Two concurrent pi sessions
- * sharing the Node process would otherwise stomp on each other's
- * `toolSupport` cache. The optional fallback to `getDefaultServices()` is
- * preserved for direct callers that haven't been migrated yet (legacy
- * tests, REPL use).
+ * `services` is threaded in explicitly so concurrent production runs never
+ * share mutable tool-support state. The optional `getDefaultServices()`
+ * fallback exists only for legacy direct callers and test/REPL use; the
+ * production orchestrator always supplies a run-scoped container.
  */
 export async function exploreConversation(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,

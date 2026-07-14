@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { extractOpenLoops } from "../src/utils/extraction.ts";
-import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext, computeDelta, formatDeltaSection, injectDeltaSection, saveCompactionState, loadCompactionState } from "../src/utils/state.ts";
-import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport } from "../src/types.ts";
+import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext, computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection, saveCompactionState, loadCompactionState } from "../src/utils/state.ts";
+import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport, CompactionState } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
   return {
@@ -301,6 +301,17 @@ describe("formatDeltaSection", () => {
     expect(md).toContain("~~fix auth bug~~");
   });
 
+  it("renders removed decisions", () => {
+    const delta: ReturnType<typeof computeDelta> = {
+      newDecisions: [], removedDecisions: ["Use sessions"],
+      resolvedLoops: [], persistentLoops: [], newLoops: [],
+      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
+      goalChanged: false, previousGoal: null,
+    };
+    expect(formatDeltaSection(delta)).toContain("~~Use sessions~~");
+    expect(hasDeltaChanges(delta)).toBe(true);
+  });
+
   it("includes goal shift when changed", () => {
     const delta: ReturnType<typeof computeDelta> = {
       newDecisions: [], removedDecisions: [],
@@ -329,6 +340,17 @@ describe("injectDeltaSection", () => {
     expect(deltaIdx).toBeGreaterThan(-1);
     expect(nextIdx).toBeGreaterThan(-1);
     expect(deltaIdx).toBeLessThan(nextIdx);
+  });
+
+  it("injects when the only change is a resolved error", () => {
+    const summary = "## Goal\nBuild app\n## Next Steps\n1. Write tests\n";
+    const delta: ReturnType<typeof computeDelta> = {
+      newDecisions: [], removedDecisions: [],
+      resolvedLoops: [], persistentLoops: [], newLoops: [],
+      newModifiedFiles: [], resolvedErrors: ["old failure"], newErrors: [],
+      goalChanged: false, previousGoal: null,
+    };
+    expect(injectDeltaSection(summary, delta)).toContain("Resolved errors");
   });
 
   it("returns unchanged summary when no changes", () => {

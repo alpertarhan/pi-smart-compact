@@ -8,6 +8,7 @@ export function metricDuration(entry: CompactMetricsEntry): number {
 
 export function metricMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0ms";
+  if (ms >= 60_000) return (ms / 60_000).toFixed(ms >= 600_000 ? 0 : 1) + "m";
   return ms >= 1000 ? (ms / 1000).toFixed(ms >= 10000 ? 0 : 1) + "s" : Math.round(ms) + "ms";
 }
 
