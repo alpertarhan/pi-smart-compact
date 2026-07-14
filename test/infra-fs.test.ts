@@ -11,7 +11,7 @@ import path from "node:path";
 import os from "node:os";
 import {
   atomicWriteFileSync, appendLineLocked, readJsonSync, writeJsonSync,
-  ensureDir, acquireLockSync,
+  ensureDir, acquireLockSync, trimFileTailLocked,
 } from "../src/infra/fs.ts";
 
 let tmp: string;
@@ -60,6 +60,21 @@ describe("appendLineLocked", () => {
     }
     appendLineLocked(target, "{\"ok\":1}");
     expect(fs.readFileSync(target, "utf8")).toContain("\"ok\":1");
+  });
+});
+
+describe("trimFileTailLocked", () => {
+  it("keeps the newest complete JSONL records under the byte cap", () => {
+    const target = path.join(tmp, "bounded.jsonl");
+    for (let i = 0; i < 20; i++) appendLineLocked(target, JSON.stringify({ i, value: "x".repeat(12) }));
+
+    trimFileTailLocked(target, 120);
+
+    const raw = fs.readFileSync(target, "utf8");
+    const records = raw.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(120);
+    expect(records.at(-1)?.i).toBe(19);
+    expect(records[0]?.i).toBeGreaterThan(0);
   });
 });
 

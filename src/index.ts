@@ -10,7 +10,8 @@ import type { CompressionProfile, PendingCompaction, Cell } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS } from "./constants.ts";
 import { loadConfig, extractUserNote, listBackups, readBackupContent, buildRestoreMessage } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
-import { buildMetricsReport, readMetricsLog, writeMetricsDashboard } from "./utils/cache.ts";
+import { readMetricsLog } from "./utils/cache.ts";
+import { buildMetricsReport, writeMetricsDashboard } from "./ui/metrics-report.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction } from "./ui/overlays.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
@@ -316,7 +317,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         dashboard: { type: "boolean", description: "Write a local HTML metrics dashboard and return its path." },
       },
     },
-    async execute(_id, params, _sig, _onUp, ctx) {
+    async execute(_id, params, signal, _onUp, ctx) {
       const profile = (params.profile === "light" || params.profile === "balanced" || params.profile === "aggressive") ? params.profile : undefined;
       const verbose = !!params.verbose;
       const dryRun = !!params.dry_run;
@@ -354,7 +355,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // (b) tool_result referencing a tool_call in a message that no longer exists.
         // Instead, store the summary in pendingRef and let the session_before_compact
         // hook apply it on the next natural compact (or auto-trigger).
-        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true });
+        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true, abortSignal: signal });
         const toolSecs = ((Date.now() - toolStart) / 1000).toFixed(1);
         const staged = pendingRef.peek();
         if (staged) {

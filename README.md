@@ -245,11 +245,11 @@ The extension writes under `~/.pi/agent/`:
 | `settings.json` | configuration (read) |
 | `compact-backups/` | conversation backups (retention-pruned) |
 | `.cache/compact-extraction-<session>.json` | incremental extraction cache |
-| `.cache/compact-metrics.jsonl` | metrics log |
+| `.cache/compact-metrics.jsonl` | metrics log (tail-retained, 5 MiB cap) |
 | `.cache/smart-compact-report.html` | HTML dashboard |
 | `.cache/smart-compact/projects/<projectId>.json` | project fingerprint |
 | `.cache/smart-compact/states/<projectId>.json` | reusable compaction state |
-| `.cache/smart-compact/damage-reports.jsonl` | regression signals |
+| `.cache/smart-compact/damage-reports.jsonl` | regression signals (tail-retained, 5 MiB cap) |
 | `.cache/smart-compact/remediation-<projectId>.json` | files to re-preserve after damage |
 
 ## Development
@@ -258,6 +258,7 @@ The extension writes under `~/.pi/agent/`:
 bun install
 bun run typecheck   # tsc --noEmit
 bun test            # full test suite
+bun run bench       # repeatable hot-path benchmark
 bun run build       # dist/ output for publishing
 ```
 

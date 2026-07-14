@@ -145,8 +145,8 @@ export function loadConfig(): CompactConfig {
  * after every backup write. That works fine when the directory has <20 files,
  * but a long-lived install with 1000+ orphan backups would readdir + statSync
  * every single entry on every compaction — a 20-50ms event-loop block on the
- * hot path. We now defer to `queueMicrotask` so the synchronous compaction
- * finishes first, and the prune happens on the next tick.
+ * hot path. We defer with `setTimeout(0)` so the scan runs on a later
+ * event-loop turn after the compaction path yields.
  *
  * Concurrency: we guard with a per-directory in-flight flag so two pi
  * sessions writing to the same backup directory don't double-prune. We don't

@@ -168,15 +168,10 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
 
 // ── Process-default registry ─────────────────────────────────────────────────
 //
-// Most callers don't care about per-run services; they reach for the singleton
-// for compatibility with the previous module-level functions in `cache.ts`.
-// We keep a default singleton here so code that has not yet been refactored
-// keeps working. Hot paths (orchestrator + step modules) use the run-scoped
-// services injected via RunContext.
-//
-// The default container is replaced wholesale by `resetDefaultServices`
-// between runs of `runSmartCompact`, which keeps the metrics summary fresh
-// without leaking across sessions.
+// Production runs use the run-scoped services injected through RunContext.
+// This process-default registry exists only for legacy direct callers and test
+// seams whose public signatures still allow an omitted services bag. Production
+// orchestration never resets or mutates it.
 
 let _default: SmartCompactServices = createServices();
 
@@ -185,5 +180,5 @@ export function getDefaultServices(): SmartCompactServices { return _default; }
 /** Swap the default container; tests use this to inject a clock/llm. */
 export function setDefaultServices(services: SmartCompactServices): void { _default = services; }
 
-/** Reset between runs — equivalent to the old per-session `resetMetrics`. */
+/** Reset the legacy/test default container. Production runs do not call this. */
 export function resetDefaultServices(): void { _default = createServices(); }

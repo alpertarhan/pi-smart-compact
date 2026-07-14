@@ -9,8 +9,8 @@ import { extractText } from "./extraction.ts";
 import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
 import * as log from "./logger.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
-import { appendLineLocked, writeJsonSync, readJsonSync } from "../infra/fs.ts";
-import { SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
+import { appendLineLocked, scheduleFileTailTrim, writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { RUNTIME_LOG_MAX_BYTES, SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
 
 export interface RegressionSignal {
@@ -158,7 +158,9 @@ export function logDamageReport(
       summary: report.summary,
     };
     // Lock the JSONL append so concurrent pi sessions cannot interleave bytes.
-    appendLineLocked(damageReportsFile(), JSON.stringify(entry));
+    const logPath = damageReportsFile();
+    appendLineLocked(logPath, JSON.stringify(entry));
+    scheduleFileTailTrim(logPath, RUNTIME_LOG_MAX_BYTES);
   } catch (e) { log.warn("logDamageReport failed", e); }
 }
 

@@ -109,11 +109,6 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     }
   }
 
-  // Build the pruned-domain tool-call index once and pass it into every
-  // extraction call below. extractStructured otherwise walks all assistant
-  // messages itself; doing it up-front turns N calls into 1.
-  const prunedTcIdx: ToolCallIndex = buildToolCallIndex(rc.llmMessages);
-
   if (cacheUsable && cachedExt) {
     const newMsgs = rc.llmMessages.slice(cachedExt.messageCount);
     // Index over the suffix only — we can't reuse prunedTcIdx because its
@@ -133,6 +128,10 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     missReason = undefined;
     recordExtractionCacheHit(rc.services);
   } else {
+    // Full extraction reuses one pruned-domain index across every extractor.
+    // The incremental path deliberately skips this O(n) full-history walk and
+    // indexes only its new suffix above.
+    const prunedTcIdx: ToolCallIndex = buildToolCallIndex(rc.llmMessages);
     extraction = extractStructured(rc.llmMessages, rc.profileCfg, prunedTcIdx);
     rc.notify(
       "Phase 1 Full: " + extraction.modifiedFiles.length + " files, " + extraction.errors.length + " errors",

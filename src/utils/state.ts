@@ -215,6 +215,17 @@ export function computeDelta(prev: CompactionState, current: CompactionState): C
   };
 }
 
+export function hasDeltaChanges(delta: CompactionDelta): boolean {
+  return delta.goalChanged
+    || delta.removedDecisions.length > 0
+    || delta.resolvedLoops.length > 0
+    || delta.newLoops.length > 0
+    || delta.newDecisions.length > 0
+    || delta.resolvedErrors.length > 0
+    || delta.newErrors.length > 0
+    || delta.newModifiedFiles.length > 0;
+}
+
 /**
  * Format delta as Markdown section for injection into summary.
  */
@@ -236,6 +247,9 @@ export function formatDeltaSection(delta: CompactionDelta): string {
   }
   if (delta.newDecisions.length) {
     lines.push("- **New decisions**: " + delta.newDecisions.map(s => s.slice(0, TRUNC.SNIPPET)).join("; "));
+  }
+  if (delta.removedDecisions.length) {
+    lines.push("- **Removed decisions**: " + delta.removedDecisions.map(s => "~~" + s.slice(0, TRUNC.SNIPPET) + "~~").join("; "));
   }
   if (delta.resolvedErrors.length) {
     lines.push("- **Resolved errors**: " + delta.resolvedErrors.map(s => s.slice(0, TRUNC.DECISION_DETAIL)).join("; "));
@@ -263,13 +277,7 @@ export function formatDeltaSection(delta: CompactionDelta): string {
  * the delta section.
  */
 export function injectDeltaSection(summary: string, delta: CompactionDelta): string {
-  const hasChanges = delta.goalChanged
-    || delta.resolvedLoops.length > 0
-    || delta.newLoops.length > 0
-    || delta.newDecisions.length > 0
-    || delta.newErrors.length > 0
-    || delta.newModifiedFiles.length > 0;
-  if (!hasChanges) return summary;
+  if (!hasDeltaChanges(delta)) return summary;
 
   const body = formatDeltaSection(delta)
     // Drop the heading line; upsertSection adds the canonical one back.

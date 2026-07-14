@@ -47,6 +47,7 @@
     "prebuild": "bun run sync-version",
     "build": "rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",
     "test": "bun test",
+    "bench": "bun bench/hot-paths.bench.ts",
     "typecheck": "bun x tsc --noEmit",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },

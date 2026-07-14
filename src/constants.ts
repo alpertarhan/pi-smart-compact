@@ -253,6 +253,9 @@ export const ERROR_RESOLVE_WINDOW = 10;
 // to half. The cap protects against runaway batches without losing the
 // recent history the result screen needs.
 export const METRICS_BUFFER_MAX = 200;
+// Append-only runtime JSONL logs are tail-read and capped on disk. Five MiB
+// keeps thousands of recent runs without allowing years of silent growth.
+export const RUNTIME_LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 // ── Damage detection window ──
 export const DAMAGE_LOOKBACK_MSGS = 15;
