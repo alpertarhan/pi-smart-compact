@@ -202,6 +202,8 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
     "profile": "balanced",
     "summaryModel": null,
     "segmentationModel": null,
+    "summaryThinkingLevel": null,
+    "segmentationThinkingLevel": null,
     "autoTrigger": true,
     "minContextPercent": 60,
     "backupEnabled": true,
@@ -226,6 +228,8 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
 | `profile` | `light \| balanced \| aggressive` | `balanced` | Default policy profile |
 | `summaryModel` | `string \| null` | `null` | Uses the active session model when null |
 | `segmentationModel` | `string \| null` | `null` | Optional cheaper model for Explore |
+| `summaryThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `null` | Reasoning level for synthesis and repair; provider default when null |
+| `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `null` | Reasoning level for exploration; provider default when null |
 | `autoTrigger` | `boolean` | `true` | Participate in Pi's native compact hook |
 | `autoTriggerTimeoutMs` | `number` | `120000` | Hard timeout for automatic runs |
 | `minContextPercent` | `number` | `60` | Actual context usage gate |

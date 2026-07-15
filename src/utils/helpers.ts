@@ -14,6 +14,7 @@ import { flattenToolCallBlock } from "./extraction.ts";
 import { extractToolPath } from "../domain/tool-semantics.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
+const VALID_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
 
 /**
@@ -49,6 +50,13 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
   if ("segmentationModel" in sc && sc.segmentationModel !== null && typeof sc.segmentationModel !== "string") {
     log.warn("smart-compact config: segmentationModel must be string|null, got " + typeof sc.segmentationModel);
     delete sc.segmentationModel;
+  }
+  for (const key of ["summaryThinkingLevel", "segmentationThinkingLevel"] as const) {
+    const value = sc[key];
+    if (key in sc && value !== null && !(typeof value === "string" && (VALID_THINKING_LEVELS as readonly string[]).includes(value))) {
+      log.warn("smart-compact config: " + key + " must be minimal|low|medium|high|xhigh|max|null.");
+      delete sc[key];
+    }
   }
   if ("profiles" in sc) {
     if (typeof sc.profiles !== "object" || sc.profiles === null || Array.isArray(sc.profiles)) {

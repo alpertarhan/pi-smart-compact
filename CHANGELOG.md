@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Independent `summaryThinkingLevel` and `segmentationThinkingLevel` settings control per-phase reasoning while preserving provider defaults when unset.
+
 ## [7.21.0] - 2026-07-15
 
 ### Fixed

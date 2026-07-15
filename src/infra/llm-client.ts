@@ -3,10 +3,10 @@
  *
  * Why we have a seam at all:
  *
- *  - `complete` from `@earendil-works/pi-ai` is the *only* runtime entry point
- *    into a model. Importing it directly from utility modules tied even the
- *    metrics test path to the peer dependency, which made `bun test` fail
- *    when the peer was not installed.
+ *  - pi-ai's completers are the only runtime entry points into a model.
+ *    Importing them directly from utility modules tied even the metrics test
+ *    path to the peer dependency, which made `bun test` fail when the peer
+ *    was not installed.
  *
  *  - Test fakes need to assert which `phase` was used, control failures, and
  *    return synthetic usage tokens for calibration tests.
@@ -17,18 +17,17 @@
  * The interface is intentionally narrow: a single `complete()` method matching
  * the pi-ai shape, plus the same options object existing callers already pass.
  *
- * The default implementation (`defaultLlmClient`) calls `complete()` from
- * pi-ai. `setLlmClient` is exposed for tests and for callers that wish to
- * inject a wrapping/fallback client at extension boot. See `resolveComplete`
- * below for how `complete` is obtained under the host's compat aliasing.
+ * The default implementation keeps `complete()` for existing calls and uses
+ * `completeSimple()` when generic reasoning is explicitly configured.
+ * `setLlmClient` is exposed for tests and wrapping/fallback clients. Both
+ * completers are resolved below through the host's compat alias.
  */
 
-import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions } from "@earendil-works/pi-ai";
+import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { withRetry } from "./llm-retry.ts";
 
-// pi-ai 0.80 removed the standalone `complete()`/`stream()` from the package
-// root and moved them to the `/compat` subpath. The bare `complete` is resolved
-// with a dynamic import rather than a static one:
+// pi-ai 0.80 moved the completers to the `/compat` subpath. They are resolved
+// with dynamic imports rather than static ones:
 //
 //  - A STATIC `import { complete }` breaks either context: the root specifier
 //    has no `complete` export in raw node/test resolution, and importing the
@@ -40,8 +39,13 @@ import { withRetry } from "./llm-retry.ts";
 //    `/compat` directly. It runs on first use (never at module load), so a
 //    resolution hiccup can never break extension loading, and test fakes that
 //    inject their own client via setLlmClient never trigger it.
-let _complete: ((model: Model<Api>, body: Context, opts: ProviderStreamOptions) => Promise<AssistantMessage>) | null = null;
-async function resolveComplete() {
+type CompleteFn<TOptions> = (model: Model<Api>, body: Context, opts: TOptions) => Promise<AssistantMessage>;
+export type LlmCompleteOptions = SimpleStreamOptions;
+
+let _complete: CompleteFn<ProviderStreamOptions> | null = null;
+let _completeSimple: CompleteFn<SimpleStreamOptions> | null = null;
+
+async function resolveComplete(): Promise<CompleteFn<ProviderStreamOptions>> {
   if (_complete) return _complete;
   const mod = await import("@earendil-works/pi-ai/compat");
   const fn = mod.complete;
@@ -50,13 +54,24 @@ async function resolveComplete() {
   return fn;
 }
 
-export interface LlmClient {
-  complete(model: Model<Api>, body: Context, opts: ProviderStreamOptions): Promise<AssistantMessage>;
+async function resolveCompleteSimple(): Promise<CompleteFn<SimpleStreamOptions>> {
+  if (_completeSimple) return _completeSimple;
+  const mod = await import("@earendil-works/pi-ai/compat");
+  const fn = mod.completeSimple;
+  if (typeof fn !== "function") throw new Error("smart-compact: pi-ai /compat did not export completeSimple()");
+  _completeSimple = fn;
+  return fn;
 }
 
-/** Raw client — direct pass-through to pi-ai. Tests can install this to skip retries. */
+export interface LlmClient {
+  complete(model: Model<Api>, body: Context, opts: LlmCompleteOptions): Promise<AssistantMessage>;
+}
+
+/** Raw client — map generic reasoning only when explicitly configured. */
 export const rawLlmClient: LlmClient = {
-  complete: async (model, body, opts) => (await resolveComplete())(model, body, opts),
+  complete: async (model, body, opts) => opts.reasoning === undefined
+    ? (await resolveComplete())(model, body, opts as ProviderStreamOptions)
+    : (await resolveCompleteSimple())(model, body, opts),
 };
 
 /**

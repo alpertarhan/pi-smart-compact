@@ -2,7 +2,7 @@
  * Core type definitions for the Smart Compact extension.
  */
 
-import type { Model, Api } from "@earendil-works/pi-ai";
+import type { Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { SectionKind } from "./domain/summary-schema.ts";
 
 /** Session type classification */
@@ -24,6 +24,8 @@ export interface CompactConfig {
   profiles: Record<CompressionProfile, ProfileConfig>;
   summaryModel: string | null;
   segmentationModel: string | null;
+  summaryThinkingLevel: ThinkingLevel | null;
+  segmentationThinkingLevel: ThinkingLevel | null;
   autoTrigger: boolean;
   autoTriggerTimeoutMs: number;
   backupEnabled: boolean;
@@ -307,6 +309,7 @@ export interface CacheAwareOptions {
   headers?: Record<string, string>;
   maxTokens?: number;
   signal?: AbortSignal;
+  reasoning?: ThinkingLevel;
   cacheRetention?: "none" | "short" | "long";
   sessionId?: string;
 }
