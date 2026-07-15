@@ -19,31 +19,34 @@ describe("parseSummary", () => {
     ]);
   });
 
-  it("tolerates heading drift like # Goal or Goals:", () => {
-    // Both H1 and H2 are treated as top-level section starts so a model that
-    // emits `# Goal` or `## Goals` ends up in the same `goal` bucket. H3 is
-    // deliberately not promoted (see below).
-    const md = "# Goal\nA\n## Goals\nB\n";
-    const parsed = parseSummary(md);
-    expect(parsed.sections.filter(s => s.kind === "goal").length).toBe(2);
+  it("starts sections for H1/H2 and merges recognized aliases", () => {
+    const parsed = parseSummary("# Goal\nA\n## Goals\nB\n## Done\nC\n");
+    expect(parsed.sections.map(s => s.kind)).toEqual(["goal", "unknown"]);
+    expect(parsed.sections[0].body).toBe("A\nB");
   });
 
-  it("keeps H3 sub-headings inside the parent section body", () => {
-    // Earlier versions promoted H3 to top level which flattened the
-    // Progress -> {Done, In Progress, Blocked} structure into 4 unrelated
-    // sections and left Progress empty. We now keep H3 inside the body so
-    // verification + delta paths can rely on Progress holding the whole block.
-    const md = "## Progress\n### Done\n- a\n### In Progress\n- b\n## Files Modified\n- f.ts\n";
+  it("starts recognized H3 sections, including an H3-only summary", () => {
+    const parsed = parseSummary("### Goal\nBuild it\n### Critical Context\n- Keep this\n### Next Steps\n1. Test it\n");
+    expect(parsed.sections.map(s => s.kind)).toEqual(["goal", "critical-context", "next-steps"]);
+    expect(findSection(parsed, "goal")?.body).toBe("Build it");
+  });
+
+  it("keeps unknown H3 progress subsections inside the parent body", () => {
+    const md = "## Progress\n### Done\n- a\n### In Progress\n- b\n### Blocked\n- c\n## Files Modified\n- f.ts\n";
     const parsed = parseSummary(md);
     expect(parsed.sections.map(s => s.kind)).toEqual(["progress", "files-modified"]);
-    const progressBody = parsed.sections[0].body;
-    expect(progressBody).toContain("### Done");
-    expect(progressBody).toContain("### In Progress");
-    expect(progressBody).toContain("- a");
-    expect(progressBody).toContain("- b");
+    expect(parsed.sections[0].body).toBe("### Done\n- a\n### In Progress\n- b\n### Blocked\n- c");
   });
 
-  it("treats unrelated headings as unknown", () => {
+  it("merges duplicate canonical kinds, dedupes exact lines, and keeps unknown sections separate", () => {
+    const parsed = parseSummary("## Goal\nShared\n- first\n## Custom\none\n### Goal\nShared\n- second\n## Custom\ntwo\n");
+    expect(parsed.sections.map(s => s.kind)).toEqual(["goal", "unknown", "unknown"]);
+    expect(parsed.sections[0].body).toBe("Shared\n- first\n- second");
+    expect(parsed.sections[1].body).toBe("one");
+    expect(parsed.sections[2].body).toBe("two");
+  });
+
+  it("treats unrelated H1/H2 headings as unknown sections", () => {
     const parsed = parseSummary("## Some Other Heading\nbody");
     expect(parsed.sections[0].kind).toBe("unknown");
   });
@@ -138,5 +141,10 @@ describe("renderSummary", () => {
     const rendered = renderSummary(parsed, { canonicalHeadings: true });
     expect(rendered).toContain("## Goal");
     expect(rendered).toContain("## Next Steps");
+  });
+
+  it("round-trips H3-only summaries deterministically", () => {
+    const once = renderSummary(parseSummary("### Goal\nA\n### Next Steps\n- B\n"));
+    expect(renderSummary(parseSummary(once))).toBe(once);
   });
 });

@@ -1,32 +1,11 @@
 /**
- * Name-agnostic tool classification by argument shape.
+ * Tool classification by argument shape, with normalized names used only to
+ * safely break ties that arguments cannot resolve (read/search/list/delete and
+ * ambiguous `text` payloads). The broad `classifyTool(args)` API remains
+ * name-agnostic for compatibility.
  *
- * Extraction used to classify tools by NAME — `hasToolHint(name, ["write",
- * "edit", ...])` and `tc.name === "bash"`. That is a proxy: a tool is a write
- * tool because its ARGUMENTS carry a content payload, not because its name
- * happens to contain "write". Name matching is also churn-fragile —
- * `read` → `hypa_read` → whatever-next silently drops off the list, and every
- * new tool demands a code change.
- *
- * We classify by what the tool CARRIES, which is invariant under renaming:
- *
- *   mutates   — a path-like arg AND a content payload (write/edit/append/...)
- *   executes  — a command/shell arg (bash/hypa_shell/...)
- *   accesses  — a path-like arg with no payload (read/grep/find/ls)
- *   other     — none of the above (ask_user, process, ...)
- *
- * The argument-name conventions (path/content/command) are far more stable
- * across tools and providers than tool names, so this auto-adapts to tools
- * this code has never seen (hypa_*, MCP tools, custom extensions) without a
- * single name in a list.
- *
- * Ceiling (documented, not hidden): a DELETE cannot be told from a READ by
- * arguments alone — both carry only a path. Callers that need deletion must
- * resolve it from the result text. Bash-style tools that take a free-text
- * `command` are opaque to file-path tracking by construction.
- *
- * Pure: no I/O, no async, no globals — lives in the domain layer alongside
- * `summary-schema.ts`.
+ * Bash-style tools that take a free-text `command` remain opaque to file-path
+ * tracking by construction. Pure: no I/O, no async, no globals.
  */
 
 type Args = Record<string, unknown>;
@@ -35,7 +14,10 @@ type Args = Record<string, unknown>;
  * Argument keys that carry a file path. `path` is near-universal; the others
  * cover common casing/word variants seen across Pi tools and MCP servers.
  */
-const PATH_KEYS = ["path", "file_path", "filePath", "filename", "file"] as const;
+const PATH_KEYS = [
+  "path", "file_path", "filePath", "filename", "file",
+  "target_file", "file_uri", "absolute_path",
+] as const;
 
 /**
  * Argument keys that carry the bytes being written. Deliberately the strict,
@@ -44,7 +26,10 @@ const PATH_KEYS = ["path", "file_path", "filePath", "filename", "file"] as const
  * false-positive (pollute the modified list with a read). Vague keys like
  * `data`/`text` that can also mean options/labels are intentionally excluded.
  */
-const PAYLOAD_KEYS = ["content", "newText", "oldText", "edits", "patch", "replacement"] as const;
+const PAYLOAD_KEYS = [
+  "content", "newText", "oldText", "new_str", "old_str",
+  "new_string", "old_string", "edits", "patch", "replacement",
+] as const;
 
 /** Argument keys that carry a shell command to execute. */
 const COMMAND_KEYS = ["command", "cmd", "script"] as const;
@@ -70,22 +55,52 @@ export function extractToolPath(args: unknown): string | undefined {
 }
 
 export type ToolClass = "mutates" | "accesses" | "executes" | "other";
+export type ToolOperation = "read" | "search" | "list" | "mutate" | "delete" | "execute" | "unknown";
+
+/** Normalize provider wrappers and spelling differences without merging namespaces. */
+export function normalizeToolName(name: unknown): string {
+  if (typeof name !== "string") return "";
+  return name
+    .replace(/^functions[.:/_-]+/i, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function nameHas(name: string, hints: readonly string[]): boolean {
+  const words = name.split("_");
+  return hints.some(hint => words.includes(hint));
+}
 
 /**
- * Classify a tool by its argument shape, independent of its name.
- *
- * Order matters: a path + payload wins as `mutates` even if a command key is
- * also present (a write tool that logs a command is still a write). A bare
- * command with no path is `executes`. A bare path is `accesses`.
+ * Fine-grained EESV operation taxonomy. Argument shape is authoritative;
+ * normalized names only disambiguate otherwise-safe path/text and access calls.
+ */
+export function classifyToolOperation(args: unknown, toolName?: string): ToolOperation {
+  const a = args && typeof args === "object" ? args as Args : {};
+  const name = normalizeToolName(toolName);
+  const hasPath = extractToolPath(a) !== undefined;
+
+  if (hasPath && hasPresent(a, PAYLOAD_KEYS)) return "mutate";
+  if (hasPresent(a, COMMAND_KEYS)) return "execute";
+  if (hasPath && hasPresent(a, ["text"]) && nameHas(name, ["write", "edit", "patch", "replace", "append", "create", "update", "insert"])) return "mutate";
+  if (hasPath && nameHas(name, ["delete", "remove", "unlink"])) return "delete";
+  if (hasPresent(a, ["pattern", "query", "glob"]) || nameHas(name, ["grep", "search", "find", "glob", "rg"])) return "search";
+  if (nameHas(name, ["list", "ls", "tree"])) return "list";
+  if (hasPath || nameHas(name, ["read"])) return "read";
+  return "unknown";
+}
+
+/**
+ * Broad compatibility classifier retained for existing name-agnostic callers.
  */
 export function classifyTool(args: unknown): ToolClass {
   if (!args || typeof args !== "object") return "other";
   const a = args as Args;
   const hasPath = extractToolPath(a) !== undefined;
-  const hasPayload = hasPresent(a, PAYLOAD_KEYS);
-  const hasCommand = hasPresent(a, COMMAND_KEYS);
-  if (hasPath && hasPayload) return "mutates";
-  if (hasCommand) return "executes";
+  if (hasPath && hasPresent(a, PAYLOAD_KEYS)) return "mutates";
+  if (hasPresent(a, COMMAND_KEYS)) return "executes";
   if (hasPath) return "accesses";
   return "other";
 }

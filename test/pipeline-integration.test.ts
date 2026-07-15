@@ -37,6 +37,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { TieredRc } from "../src/app/run-context.ts";
 import type { LlmMessage } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
+import { makeTokenEstimator } from "../src/utils/tokens.ts";
 
 /**
  * Build a TieredRc with the minimum fields synthesizeConversation +
@@ -93,6 +94,7 @@ function makeTieredRc(messages: LlmMessage[]): TieredRc {
       singlePassMaxTokens: 50000, batchMaxTokens: 8000,
       summaryBudgetTokens: 2000, chunkTokenBudget: 4000, keepRecentTokens: 10000,
     },
+    estimator: makeTokenEstimator("openai", "gpt-5", services.tokenCalibration),
     providerCaps: {
       maxOutputTokens: 8192, supportsTools: true as boolean | "probe",
       jsonReliability: "high", instructionFollowing: "high",
@@ -165,7 +167,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     const synthesized = await summarizeConversation(extracted);
     expect(synthesized.finalSummary).toContain("##");
     expect(synthesized.method).toBe("single-pass");
-    expect(synthesized.llmCalls).toBeGreaterThan(0);
+    expect(synthesized.llmCalls).toBe(callCount);
     expect(callCount).toBeGreaterThan(0);
   });
 
@@ -193,6 +195,6 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     // failure cleanly.
     expect(synthesized.method).toBe("heuristic");
     expect(synthesized.finalSummary.length).toBeGreaterThan(0);
-    expect(synthesized.llmCalls).toBe(0);
+    expect(synthesized.llmCalls).toBe(1);
   });
 });

@@ -36,6 +36,12 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
     log.warn("smart-compact config: backupEnabled must be boolean, got " + typeof sc.backupEnabled);
     delete sc.backupEnabled;
   }
+  for (const key of ["requireApproval", "scrubSecrets", "scrubPii", "focusWeighting", "adaptiveDamageFeedback", "onlineDamageMonitor"] as const) {
+    if (key in sc && typeof sc[key] !== "boolean") {
+      log.warn("smart-compact config: " + key + " must be boolean, got " + typeof sc[key]);
+      delete sc[key];
+    }
+  }
   if ("summaryModel" in sc && sc.summaryModel !== null && typeof sc.summaryModel !== "string") {
     log.warn("smart-compact config: summaryModel must be string|null, got " + typeof sc.summaryModel);
     delete sc.summaryModel;
@@ -81,6 +87,20 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
     if (typeof v !== "number" || !Number.isFinite(v) || v < 1000 || v > 300000) {
       log.warn("smart-compact config: autoTriggerTimeoutMs must be 1000–300000, got " + v + ". Using default " + DEFAULT_CONFIG.autoTriggerTimeoutMs + "ms.");
       delete sc.autoTriggerTimeoutMs;
+    }
+  }
+  if ("maxLlmCalls" in sc) {
+    const value = sc.maxLlmCalls;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100) {
+      log.warn("smart-compact config: maxLlmCalls must be 0–100; 0 means unlimited.");
+      delete sc.maxLlmCalls;
+    }
+  }
+  if ("maxLatencyMs" in sc) {
+    const value = sc.maxLatencyMs;
+    if (typeof value !== "number" || !Number.isFinite(value) || (value !== 0 && (value < 5000 || value > 600000))) {
+      log.warn("smart-compact config: maxLatencyMs must be 0 or 5000–600000; 0 means unlimited.");
+      delete sc.maxLatencyMs;
     }
   }
   if ("minContextPercent" in sc) {
@@ -491,7 +511,7 @@ export function createBatches(chunks: LlmChunk[], maxTokens: number): LlmChunk[]
  * Allocate token budget per topic based on priority, error density, and recency.
  * Topics with higher weights get more detail preserved.
  */
-function allocateTopicBudgets(summaries: ChunkSummary[], totalBudget: number): Map<string, number> {
+function allocateTopicBudgets(summaries: ChunkSummary[], totalBudget: number, focus?: string): Map<string, number> {
   const n = summaries.length;
   if (n === 0) return new Map();
 
@@ -509,6 +529,11 @@ function allocateTopicBudgets(summaries: ChunkSummary[], totalBudget: number): M
     w *= (0.6 + recency * 0.4);
     // Topics with decisions are important
     if (s.keyDecisions.length > 0) w *= 1.3;
+    if (focus) {
+      const needle = normalizeFactKey(focus);
+      const haystack = normalizeFactKey([s.topic, s.summary, ...s.filesModified, ...s.filesRead].join(" "));
+      if (needle && haystack.includes(needle)) w *= 1.75;
+    }
     return w;
   });
 
@@ -522,8 +547,8 @@ function allocateTopicBudgets(summaries: ChunkSummary[], totalBudget: number): M
   return budgetMap;
 }
 
-export function preProcessSummaries(summaries: ChunkSummary[], budgetTokens?: number) {
-  const topicBudgets = budgetTokens ? allocateTopicBudgets(summaries, budgetTokens) : null;
+export function preProcessSummaries(summaries: ChunkSummary[], budgetTokens?: number, focus?: string) {
+  const topicBudgets = budgetTokens ? allocateTopicBudgets(summaries, budgetTokens, focus) : null;
   return {
     decisions: [...new Set(summaries.flatMap(s => s.keyDecisions))],
     modified: [...new Set(summaries.flatMap(s => s.filesModified))].sort(),
@@ -536,6 +561,21 @@ export function preProcessSummaries(summaries: ChunkSummary[], budgetTokens?: nu
   };
 }
 
+export function normalizeFactKey(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function renderDeduped<T>(items: readonly T[], keyOf: (item: T) => string, render: (item: T) => string): string {
+  const grouped = new Map<string, { item: T; count: number }>();
+  for (const item of items) {
+    const key = normalizeFactKey(keyOf(item));
+    const existing = grouped.get(key);
+    if (existing) existing.count++;
+    else grouped.set(key, { item, count: 1 });
+  }
+  return [...grouped.values()].map(({ item, count }) => render(item) + (count > 1 ? " ×" + count : "")).join("; ");
+}
+
 export function buildExtractionContext(extraction: StructuredExtraction, forRange?: { start: number; end: number }): string {
   const files = forRange ? extraction.modifiedFiles.filter(f => f.lastModifiedIndex >= forRange.start && f.lastModifiedIndex <= forRange.end) : extraction.modifiedFiles;
   const errors = forRange ? extraction.errors.filter(e => e.index >= forRange.start && e.index <= forRange.end) : extraction.errors;
@@ -543,9 +583,9 @@ export function buildExtractionContext(extraction: StructuredExtraction, forRang
   return [
     "## Deterministic Extraction (verified facts)",
     "Files modified: " + (files.map(f => f.path).join(", ") || "none"),
-    "Errors: " + (errors.map(e => "[" + e.tool + "] " + e.message.slice(0, TRUNC.SNIPPET) + (e.resolved ? " ✓" : "")).join("; ") || "none"),
-    "Decisions: " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, TRUNC.DECISION_DETAIL)).join("; ") || "none"),
-    "Constraints: " + (extraction.constraints.map(c => "[" + c.category + "] " + c.text.slice(0, TRUNC.DECISION_DETAIL)).join("; ") || "none"),
+    "Errors: " + (renderDeduped(errors, e => e.tool + ":" + e.message + ":" + e.resolved, e => "[" + e.tool + "] " + e.message.slice(0, TRUNC.SNIPPET) + (e.resolved ? " ✓" : "")) || "none"),
+    "Decisions: " + (renderDeduped(extraction.decisions, d => d.type + ":" + d.summary, d => d.type + ": " + d.summary.slice(0, TRUNC.DECISION_DETAIL)) || "none"),
+    "Constraints: " + (renderDeduped(extraction.constraints, c => c.category + ":" + c.text, c => "[" + c.category + "] " + c.text.slice(0, TRUNC.DECISION_DETAIL)) || "none"),
     "Media attachments: " + (media.map(a => a.kind + (a.name ? ":" + a.name : "") + (a.mimeType ? " (" + a.mimeType + ")" : "") + " @msg" + a.index).join("; ") || "none"),
   ].join("\n");
 }

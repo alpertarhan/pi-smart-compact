@@ -5,9 +5,9 @@
  */
 
 import fs from "node:fs";
-import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType } from "../types.ts";
+import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType, LoopOverride } from "../types.ts";
 import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX } from "../constants.ts";
-import { inferSessionType } from "./helpers.ts";
+import { inferSessionType, normalizeFactKey } from "./helpers.ts";
 import * as log from "./logger.ts";
 import { compactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
@@ -49,12 +49,41 @@ export function loadCompactionState(projectId: string): CompactionState | null {
   return data;
 }
 
+export function applyLoopOverrides(loops: OpenLoop[], overrides: LoopOverride[]): OpenLoop[] {
+  // Loop ids are positional (`loop-1`, `loop-2`) and regenerated every run;
+  // normalized summary identity is the only stable cross-compaction key.
+  const bySummary = new Map(overrides.map(override => [override.summaryKey, override]));
+  return loops.map(loop => {
+    const override = bySummary.get(normalizeFactKey(loop.summary));
+    return override ? {
+      ...loop,
+      ...(override.status ? { status: override.status } : {}),
+      ...(override.priority ? { priority: override.priority } : {}),
+    } : loop;
+  }).sort((a, b) => {
+    const aOverride = bySummary.get(normalizeFactKey(a.summary));
+    const bOverride = bySummary.get(normalizeFactKey(b.summary));
+    return Number(Boolean(bOverride?.pinned)) - Number(Boolean(aOverride?.pinned));
+  });
+}
+
+export function upsertLoopOverride(overrides: LoopOverride[], loop: OpenLoop, patch: Partial<Omit<LoopOverride, "id" | "summaryKey">>): LoopOverride[] {
+  const summaryKey = normalizeFactKey(loop.summary);
+  const index = overrides.findIndex(override => override.summaryKey === summaryKey);
+  const next: LoopOverride = { ...(index >= 0 ? overrides[index] : { id: loop.id, summaryKey }), ...patch, id: loop.id, summaryKey };
+  if (index < 0) return [...overrides, next];
+  const copy = overrides.slice();
+  copy[index] = next;
+  return copy;
+}
+
 export function buildCompactionState(
   extraction: StructuredExtraction,
   openLoops: OpenLoop[],
   report: ExplorationReport | null,
   nextActions: string[],
   criticalContext: string[],
+  loopOverrides: LoopOverride[] = [],
 ): CompactionState {
   let decisionId = 0;
   let constraintId = 0;
@@ -98,6 +127,7 @@ export function buildCompactionState(
       tool: e.tool,
     })),
     openLoops,
+    ...(loopOverrides.length ? { loopOverrides } : {}),
     topics: extraction.topics.map((t, i) => ({
       title: t.primaryFile ? t.primaryFile.split("/").pop() + " (" + t.type + ")" : "Topic " + (i + 1),
       type: t.type,
@@ -177,8 +207,8 @@ export function computeDelta(prev: CompactionState, current: CompactionState): C
     .map(d => d.summary);
 
   // Open loops (summaries are already bounded to ~120 chars at extraction time)
-  const prevLoopSummaries = new Map(prev.openLoops.map(l => [key(l.summary), l]));
-  const currLoopKeys = new Set(current.openLoops.map(l => key(l.summary)));
+  const prevLoopSummaries = new Map(prev.openLoops.filter(loop => loop.status !== "resolved").map(l => [key(l.summary), l]));
+  const currLoopKeys = new Set(current.openLoops.filter(loop => loop.status !== "resolved").map(l => key(l.summary)));
   const resolvedLoops: string[] = [];
   const persistentLoops: string[] = [];
   for (const [k, loop] of prevLoopSummaries) {
@@ -186,6 +216,7 @@ export function computeDelta(prev: CompactionState, current: CompactionState): C
     else resolvedLoops.push(loop.summary);
   }
   const newLoops = current.openLoops
+    .filter(loop => loop.status !== "resolved")
     .filter(l => !prevLoopSummaries.has(key(l.summary)))
     .map(l => l.summary);
 

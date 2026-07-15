@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { extractOpenLoops } from "../src/utils/extraction.ts";
-import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext, computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection, saveCompactionState, loadCompactionState } from "../src/utils/state.ts";
+import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext, computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection, saveCompactionState, loadCompactionState, applyLoopOverrides, upsertLoopOverride } from "../src/utils/state.ts";
 import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport, CompactionState } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
@@ -103,6 +103,34 @@ describe("extractOpenLoops", () => {
   });
 });
 
+describe("loop overrides", () => {
+  const loops: OpenLoop[] = [
+    { id: "loop-1", type: "follow-up", priority: "normal", status: "open", summary: "Finish auth", files: ["src/auth.ts"] },
+    { id: "loop-2", type: "blocked", priority: "high", status: "open", summary: "Unblock billing", files: [] },
+  ];
+
+  it("applies status and priority overrides", () => {
+    let overrides = upsertLoopOverride([], loops[0], { status: "resolved", priority: "critical" });
+    const result = applyLoopOverrides(loops, overrides);
+    expect(result[0].status).toBe("resolved");
+    expect(result[0].priority).toBe("critical");
+  });
+
+  it("never applies an override to a different loop that reused the same positional id", () => {
+    const overrides = upsertLoopOverride([], loops[0], { status: "resolved" });
+    const unrelated: OpenLoop = { ...loops[1], id: loops[0].id };
+    expect(applyLoopOverrides([unrelated], overrides)[0].status).toBe("open");
+  });
+
+  it("matches regenerated ids through the normalized summary key and sorts pins first", () => {
+    const overrides = upsertLoopOverride([], loops[0], { pinned: true });
+    const regenerated = [loops[1], { ...loops[0], id: "loop-new" }];
+    const result = applyLoopOverrides(regenerated, overrides);
+    expect(result[0].id).toBe("loop-new");
+    expect(result[0].summary).toBe("Finish auth");
+  });
+});
+
 describe("buildCompactionState", () => {
   it("builds full state from extraction", () => {
     const extraction = makeExtraction({
@@ -156,6 +184,17 @@ describe("injectOpenLoopsSection", () => {
     ];
     const result = injectOpenLoopsSection(summary, loops);
     expect(result).toContain("## Open Loops");
+  });
+
+  it("preserves an H3-only summary while injecting", () => {
+    const summary = "### Goal\nBuild app\n### Next Steps\n1. Write tests\n";
+    const loops: OpenLoop[] = [
+      { id: "loop-1", type: "follow-up", priority: "normal", status: "open", summary: "add tests", files: [] },
+    ];
+    const result = injectOpenLoopsSection(summary, loops);
+    expect(result).toContain("Build app");
+    expect(result).toContain("1. Write tests");
+    expect(result.indexOf("## Open Loops")).toBeLessThan(result.indexOf("## Next Steps"));
   });
 
   it("returns unchanged if no loops", () => {

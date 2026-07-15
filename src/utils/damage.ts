@@ -6,10 +6,10 @@
 import type { LlmMessage, SmartCompactDetails } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 import { extractText } from "./extraction.ts";
-import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
+import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
 import * as log from "./logger.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
-import { appendLineLocked, scheduleFileTailTrim, writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { appendLineLocked, readJsonlTail, scheduleFileTailTrim, writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { RUNTIME_LOG_MAX_BYTES, SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
 
@@ -59,12 +59,11 @@ export function detectDamage(
     if (msg.role === "assistant") {
       const blocks = Array.isArray(msg.content) ? msg.content : [];
       for (const b of blocks) {
-        // Classify by argument shape, not name — see domain/tool-semantics.ts.
-        // bash was never reachable here anyway (it carries `command`, not a
-        // path, so fp was always undefined); accesses now also covers
-        // grep/find/ls re-reads of compacted files.
-        if (isToolCallBlock(b) && classifyTool(b.arguments) === "accesses") {
-          const fp = extractToolPath(b.arguments);
+        if (isToolCallBlock(b)) {
+          const operation = classifyToolOperation(b.arguments, b.name);
+          const fp = operation === "read" || operation === "search" || operation === "list"
+            ? extractToolPath(b.arguments)
+            : undefined;
           if (fp) {
             const fpLower = fp.toLowerCase();
             if (compactedFiles.has(fpLower) || compactedReadFiles.has(fpLower)) {
@@ -145,11 +144,13 @@ export function logDamageReport(
   sessionId: string,
   report: DamageReport,
   details: SmartCompactDetails,
+  projectId?: string,
 ): void {
   try {
     const entry = {
       ts: new Date().toISOString(),
       sessionId,
+      projectId,
       method: details.method,
       profile: details.profile,
       qualityScore: details.qualityScore,
@@ -162,6 +163,46 @@ export function logDamageReport(
     appendLineLocked(logPath, JSON.stringify(entry));
     scheduleFileTailTrim(logPath, RUNTIME_LOG_MAX_BYTES);
   } catch (e) { log.warn("logDamageReport failed", e); }
+}
+
+export interface OnlineDamageObservation {
+  projectId: string;
+  details: SmartCompactDetails;
+  report: DamageReport;
+  complete: boolean;
+}
+
+/** Session-keyed monitor activated only after Pi confirms `session_compact`. */
+export class OnlineDamageMonitor {
+  private readonly active = new Map<string, { projectId: string; details: SmartCompactDetails; messages: LlmMessage[] }>();
+
+  constructor(private readonly maxMessages = 15) {}
+
+  activate(sessionId: string, projectId: string, details: SmartCompactDetails): void {
+    this.active.set(sessionId, { projectId, details, messages: [] });
+  }
+
+  observe(sessionId: string, message: LlmMessage): OnlineDamageObservation | null {
+    const monitor = this.active.get(sessionId);
+    if (!monitor) return null;
+    monitor.messages.push(message);
+    const report = detectDamage(monitor.messages, monitor.details);
+    const complete = report.damageScore > 0 || monitor.messages.length >= this.maxMessages;
+    if (!complete) return null;
+    this.active.delete(sessionId);
+    return { projectId: monitor.projectId, details: monitor.details, report, complete };
+  }
+
+  clear(sessionId: string): void { this.active.delete(sessionId); }
+  size(): number { return this.active.size; }
+}
+
+export function readRecentDamageScores(projectId: string, limit = 5): number[] {
+  const entries = readJsonlTail<{ projectId?: string; damageScore?: number }>(damageReportsFile(), Math.max(limit * 8, 40));
+  return entries
+    .filter(entry => entry.projectId === projectId && typeof entry.damageScore === "number")
+    .slice(-limit)
+    .map(entry => entry.damageScore!);
 }
 
 const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;

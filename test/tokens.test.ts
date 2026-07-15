@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { estimateTokens, calibrateFromResponse, getProviderCaps } from "../src/utils/tokens.ts";
+import { estimateTokens, calibrateFromResponse, getProviderCaps, makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
 
 describe("estimateTokens", () => {
   it("estimates based on char length", () => {
@@ -18,6 +18,26 @@ describe("estimateTokens", () => {
 
   it("returns 0 for empty", () => {
     expect(estimateTokens("")).toBe(0);
+  });
+});
+
+describe("makeTokenEstimator", () => {
+  it("counts structured tool-call arguments", () => {
+    const estimator = makeTokenEstimator("openai", "test", new TokenCalibrationStore());
+    const textOnly = estimator.message({ role: "assistant", content: [{ type: "text", text: "ok" }] });
+    const withToolArgs = estimator.message({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "w1", name: "write", arguments: { path: "src/a.ts", content: "x".repeat(4000) } }],
+    });
+    expect(withToolArgs).toBeGreaterThan(textOnly + 500);
+  });
+
+  it("applies the run-scoped provider/model calibration", () => {
+    const store = new TokenCalibrationStore();
+    const before = makeTokenEstimator("openai", "model-a", store).text("x".repeat(1000));
+    store.calibrate(before, Math.floor(before / 2), "openai", "model-a");
+    const after = makeTokenEstimator("openai", "model-a", store).text("x".repeat(1000));
+    expect(after).toBeLessThan(before);
   });
 });
 

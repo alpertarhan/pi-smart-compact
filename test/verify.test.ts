@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { verifySummary, patchDeterministic } from "../src/phases/verify.ts";
+import { verifySummary, patchDeterministic, formatVerificationGap } from "../src/phases/verify.ts";
+import { verifyAndPatch } from "../src/app/steps/verify.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
@@ -54,7 +55,7 @@ Something
 `;
     const result = verifySummary(summary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(g => g.includes("Auth.ts"))).toBe(true);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("Auth.ts"))).toBe(true);
     expect(result.score).toBeLessThan(100);
   });
 
@@ -73,7 +74,7 @@ Something
 `;
     const result = verifySummary(summary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(g => g.includes("Syntax error"))).toBe(true);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("Syntax error"))).toBe(true);
   });
 
   it("detects missing high-confidence constraints", () => {
@@ -91,7 +92,7 @@ Something
 `;
     const result = verifySummary(summary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(g => g.includes("constraint"))).toBe(true);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("constraint"))).toBe(true);
   });
 
   it("detects missing structure sections", () => {
@@ -99,8 +100,20 @@ Something
     const summary = "Just some random text without headers";
     const result = verifySummary(summary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(g => g.includes("## Goal"))).toBe(true);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("## Goal"))).toBe(true);
     expect(result.score).toBeLessThan(100);
+  });
+
+  it("does not let one basename satisfy two monorepo paths", () => {
+    const extraction = makeExtraction({
+      modifiedFiles: [
+        { path: "packages/api/src/auth.ts", toolCalls: 1, lastModifiedIndex: 1 },
+        { path: "packages/web/src/auth.ts", toolCalls: 1, lastModifiedIndex: 2 },
+      ],
+    });
+    const summary = "## Goal\nRefactor auth\n## Progress\n- packages/api/src/auth.ts updated\n## Critical Context\n- none";
+    const result = verifySummary(summary, extraction);
+    expect(result.gaps.some(gap => gap.kind === "missing-file" && gap.path === "packages/web/src/auth.ts")).toBe(true);
   });
 
   it("penalizes potentially fabricated files", () => {
@@ -117,7 +130,24 @@ Build
 - none
 `;
     const result = verifySummary(summary, extraction);
-    expect(result.gaps.some(g => g.includes("fabricated"))).toBe(true);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(true);
+  });
+});
+
+describe("verifyAndPatch", () => {
+  it("repairs a patchable high-score gap instead of skipping it", async () => {
+    const extraction = makeExtraction({ modifiedFiles: [{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 1 }] });
+    const result = await verifyAndPatch({
+      finalSummary: "## Goal\nBuild auth\n## Progress\n- setup\n## Critical Context\n- stable",
+      extraction,
+      flags: { autoTriggered: true },
+      notify: () => {},
+      vlog: () => {},
+    } as any);
+    expect(result.finalSummary).toContain("src/auth.ts");
+    expect(result.verificationProvenance.initialScore).toBe(95);
+    expect(result.verificationProvenance.deterministicPatched).toHaveLength(1);
+    expect(result.verificationScore).toBe(100);
   });
 });
 
@@ -127,8 +157,7 @@ describe("patchDeterministic", () => {
       modifiedFiles: [{ path: "/src/Auth.ts", toolCalls: 1, lastModifiedIndex: 2 }],
     });
     const summary = "## Goal\nBuild app\n## Files Modified\n- none\n## Critical Context\n- none";
-    const gaps = ["Missing modified file: /src/Auth.ts"];
-    const patched = patchDeterministic(summary, gaps, extraction);
+    const patched = patchDeterministic(summary, [{ kind: "missing-file", path: "/src/Auth.ts" }], extraction);
     expect(patched).toContain("/src/Auth.ts");
     expect(patched).toContain("## Files Modified");
   });
@@ -148,32 +177,29 @@ describe("patchDeterministic", () => {
     expect(patched).toContain("## Files Modified");
     expect(patched).toContain("/web/src/pages/sessions.tsx");
     expect(patched).toContain("## Progress");
-    expect(after.gaps.some(g => g.startsWith("Missing section:"))).toBe(false);
+    expect(after.gaps.some(g => g.kind === "missing-section")).toBe(false);
     expect(after.score).toBeGreaterThan(before.score);
   });
 
   it("injects missing errors into Critical Context section", () => {
     const extraction = makeExtraction({});
     const summary = "## Goal\nFix bug\n## Critical Context\n- none";
-    const gaps = ["Missing error: test failed at line 42"];
-    const patched = patchDeterministic(summary, gaps, extraction);
+    const patched = patchDeterministic(summary, [{ kind: "missing-error", message: "test failed at line 42" }], extraction);
     expect(patched).toContain("test failed");
   });
 
   it("injects missing decisions into Key Decisions section", () => {
     const extraction = makeExtraction({});
     const summary = "## Goal\nBuild\n## Key Decisions\n- none\n## Critical Context\n- none";
-    const gaps = ["Missing decision: Use React instead of Vue"];
-    const patched = patchDeterministic(summary, gaps, extraction);
+    const patched = patchDeterministic(summary, [{ kind: "missing-decision", summary: "Use React instead of Vue" }], extraction);
     expect(patched).toContain("Use React instead of Vue");
   });
 
-  it("appends other gaps as Verification Note", () => {
+  it("keeps non-deterministic findings as a Verification Note", () => {
     const extraction = makeExtraction({});
     const summary = "## Goal\nBuild\n## Critical Context\n- none";
-    const gaps = ["Main goal may be missing from summary"];
-    const patched = patchDeterministic(summary, gaps, extraction);
+    const patched = patchDeterministic(summary, [{ kind: "fabricated-file", ref: "src/fake.ts" }], extraction);
     expect(patched).toContain("Verification Note");
-    expect(patched).toContain("Main goal may be missing");
+    expect(patched).toContain("Potentially fabricated file: src/fake.ts");
   });
 });

@@ -94,6 +94,21 @@ describe("trackFileOps", () => {
     expect(ops.modified.map(f => f.path).sort()).toEqual(["/tmp/a.ts", "/tmp/b.ts", "/tmp/c.ts", "/tmp/d.ts", "/tmp/e.ts", "/tmp/f.ts"]);
   });
 
+  it("detects MCP edit aliases without treating generic path + text as a write", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [
+        { type: "toolCall", id: "1", name: "mcp__filesystem__edit_file", arguments: { target_file: "/tmp/a.ts", old_str: "a", new_str: "b" } },
+        { type: "toolCall", id: "2", name: "read_text_file", arguments: { absolute_path: "/tmp/b.ts", text: "display mode" } },
+      ] },
+      { role: "toolResult", toolCallId: "1", content: "edited" },
+      { role: "toolResult", toolCallId: "2", content: "content" },
+    ];
+
+    const ops = trackFileOps(msgs);
+    expect(ops.modified.map(file => file.path)).toEqual(["/tmp/a.ts"]);
+    expect(ops.read).toEqual(["/tmp/b.ts"]);
+  });
+
   it("ignores no-op edits", () => {
     const msgs: LlmMessage[] = [
       { role: "assistant", content: [{ type: "toolCall", id: "1", name: "edit", arguments: { path: "/tmp/x.ts", oldText: "a", newText: "b" } }] },

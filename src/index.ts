@@ -4,7 +4,7 @@
  * Architecture: Extract -> Explore -> Synthesize -> Verify
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompressionProfile, PendingCompaction, Cell } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS } from "./constants.ts";
@@ -13,11 +13,14 @@ import { getProviderCaps } from "./utils/tokens.ts";
 import { readMetricsLog } from "./utils/cache.ts";
 import { buildMetricsReport, writeMetricsDashboard } from "./ui/metrics-report.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
-import { showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction } from "./ui/overlays.ts";
+import { showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction, showOpenLoopsUI } from "./ui/overlays.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import { persistConsumedState } from "./app/steps/persist.ts";
+import { OnlineDamageMonitor, logDamageReport, writeRemediationHints } from "./utils/damage.ts";
 import * as log from "./utils/logger.ts";
+import { deriveProjectIdFromCwd } from "./utils/fingerprint.ts";
+import { applyLoopOverrides, loadCompactionState, saveCompactionState } from "./utils/state.ts";
 
 /**
  * Translate a `ConsumeResult` into the side-effects the host expects:
@@ -96,11 +99,17 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   // entirely inside the slot factory — see src/app/pending-slot.ts.
   const pendingRef: PendingSlot = createPendingSlot({ ttlMs: PENDING_TTL_MS });
   const isRunning: Cell<boolean> = { value: false };
+  const damageMonitor = new OnlineDamageMonitor();
+  const monitorCandidates = new Map<string, { projectId: string; details: import("./types.ts").SmartCompactDetails }>();
+  const rememberForOnlineDamage = (pending: PendingCompaction): void => {
+    if (!loadConfig().onlineDamageMonitor || !pending.projectId) return;
+    monitorCandidates.set(pending.sessionId, { projectId: pending.projectId, details: pending.details });
+  };
 
   pi.registerCommand("smart-compact", {
-    description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [light|balanced|aggressive] [verbose|debug|dry-run|restore|metrics|dashboard] [note]",
+    description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [profile] [flags] [--focus=topic] [--max-calls=N] [--max-latency=ms] [note]",
     getArgumentCompletions: (prefix: string) => {
-      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "restore", "light", "balanced", "aggressive"].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
+      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "restore", "loops", "light", "balanced", "aggressive", "--focus=", "--max-calls=", "--max-latency="].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
       return m.length ? m : null;
     },
     handler: async (args, ctx) => {
@@ -110,6 +119,20 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         const flags = tokens.map(t => t.toLowerCase());
         const verbose = flags.includes("verbose") || flags.includes("debug");
         const dryRun = flags.includes("dry-run");
+        const optionValue = (name: string): string | undefined => tokens.find(token => token.startsWith("--" + name + "="))?.slice(name.length + 3);
+        const focus = optionValue("focus")?.trim() || undefined;
+        const maxCallsRaw = optionValue("max-calls");
+        const maxLatencyRaw = optionValue("max-latency");
+        const maxLlmCalls = maxCallsRaw == null ? undefined : Number(maxCallsRaw);
+        const maxLatencyMs = maxLatencyRaw == null ? undefined : Number(maxLatencyRaw);
+        if (maxLlmCalls !== undefined && (!Number.isInteger(maxLlmCalls) || maxLlmCalls < 1 || maxLlmCalls > 100)) {
+          ctx.ui.notify("--max-calls must be an integer from 1 to 100", "error");
+          return;
+        }
+        if (maxLatencyMs !== undefined && (!Number.isFinite(maxLatencyMs) || maxLatencyMs < 5000 || maxLatencyMs > 600000)) {
+          ctx.ui.notify("--max-latency must be 5000–600000 ms", "error");
+          return;
+        }
         if (flags.includes("metrics") || flags.includes("dashboard")) {
           if (flags.includes("dashboard")) {
             const entries = readMetricsLog(200);
@@ -177,6 +200,23 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           }
           return;
         }
+        if (flags.includes("loops")) {
+          const projectId = deriveProjectIdFromCwd(ctx.cwd);
+          const state = loadCompactionState(projectId);
+          if (!state || state.openLoops.length === 0) {
+            ctx.ui.notify("No persisted open loops for this project", "info");
+            return;
+          }
+          const overrides = await showOpenLoopsUI(ctx, state.openLoops, state.loopOverrides ?? []);
+          if (!overrides) { ctx.ui.notify("Open-loop manager closed without changes", "info"); return; }
+          state.loopOverrides = overrides;
+          state.openLoops = applyLoopOverrides(state.openLoops, overrides);
+          state.updatedAt = Date.now();
+          saveCompactionState(projectId, state);
+          ctx.ui.notify("Open-loop overrides saved", "info");
+          return;
+        }
+
         // A token is a model arg when it resolves in the registry, or when
         // its provider prefix is a known provider (i.e. a typo'd model id we
         // must reject loudly rather than let fall through as note text).
@@ -217,7 +257,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         const { segModel, sumModel } = resolveModels(ctx, explicitModel ?? ctx.model, loadConfig(), Boolean(modelArg));
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
         const note = extractUserNote(args);
-        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun, pendingRef, isRunning, userNote: note, force: true });
+        await runSmartCompact({
+          ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile, verbose, dryRun,
+          pendingRef, isRunning, userNote: note, focus, maxLlmCalls,
+          timeoutMs: maxLatencyMs, force: true,
+        });
       } catch (error) {
         const msg = error instanceof Error ? error.message + "\n" + error.stack : String(error);
         ctx.ui.notify("smart-compact error: " + msg, "error");
@@ -228,6 +272,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   pi.on("session_before_compact", async (_event, ctx) => {
     const consumed = unwrapConsumed(pendingRef.consume(ctx), ctx);
     if (consumed) {
+      rememberForOnlineDamage(consumed);
       return { compaction: { summary: consumed.summary, firstKeptEntryId: consumed.firstKeptEntryId, tokensBefore: consumed.tokensBefore, details: consumed.details } };
     }
     const config = loadConfig();
@@ -292,10 +337,44 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // behavior — we don't need to re-check the timeout flag here.
         const fresh = unwrapConsumed(pendingRef.consume(ctx), ctx);
         if (fresh) {
+          rememberForOnlineDamage(fresh);
           return { compaction: { summary: fresh.summary, firstKeptEntryId: fresh.firstKeptEntryId, tokensBefore: fresh.tokensBefore, details: fresh.details } };
         }
       }
     } catch (e) { log.warn("session_before_compact error", e); }
+  });
+
+  pi.on("session_compact", async (_event, ctx) => {
+    const sessionId = resolveSessionId(ctx);
+    const candidate = monitorCandidates.get(sessionId);
+    if (!candidate) return;
+    monitorCandidates.delete(sessionId);
+    damageMonitor.activate(sessionId, candidate.projectId, candidate.details);
+  });
+
+  pi.on("message_end", async (event, ctx) => {
+    try {
+      const sessionId = resolveSessionId(ctx);
+      const converted = convertToLlm([event.message as never])[0] as import("./types.ts").LlmMessage | undefined;
+      if (!converted) return;
+      const observation = damageMonitor.observe(sessionId, converted);
+      if (!observation) return;
+      logDamageReport(sessionId, observation.report, observation.details, observation.projectId);
+      if (observation.report.reReadFiles.length > 0) {
+        writeRemediationHints(observation.projectId, observation.report.reReadFiles);
+      }
+      if (observation.report.damageScore > 0) {
+        ctx.ui.notify("Post-compaction damage detected: " + observation.report.summary, "warning");
+      }
+    } catch (error) {
+      log.warn("online damage monitor message_end failed", error);
+    }
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    const sessionId = resolveSessionId(ctx);
+    damageMonitor.clear(sessionId);
+    monitorCandidates.delete(sessionId);
   });
 
   pi.registerTool({
@@ -315,12 +394,18 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         dry_run: { type: "boolean", description: "Run the pipeline but skip applying the compaction." },
         report: { type: "boolean", description: "Return recent performance metrics instead of compacting." },
         dashboard: { type: "boolean", description: "Write a local HTML metrics dashboard and return its path." },
+        focus: { type: "string", description: "Topic or path that should receive extra preservation budget." },
+        max_calls: { type: "number", description: "Maximum LLM calls for this run (1-100)." },
+        max_latency_ms: { type: "number", description: "Hard pipeline latency budget in milliseconds (5000-600000)." },
       },
     },
     async execute(_id, params, signal, _onUp, ctx) {
       const profile = (params.profile === "light" || params.profile === "balanced" || params.profile === "aggressive") ? params.profile : undefined;
       const verbose = !!params.verbose;
       const dryRun = !!params.dry_run;
+      const focus = typeof params.focus === "string" ? params.focus.trim() || undefined : undefined;
+      const maxLlmCalls = typeof params.max_calls === "number" && Number.isInteger(params.max_calls) && params.max_calls >= 1 && params.max_calls <= 100 ? params.max_calls : undefined;
+      const maxLatencyMs = typeof params.max_latency_ms === "number" && params.max_latency_ms >= 5000 && params.max_latency_ms <= 600000 ? params.max_latency_ms : undefined;
       if (params.report || params.dashboard) {
         const report = buildMetricsReport();
         const fp = params.dashboard ? writeMetricsDashboard() : null;
@@ -355,7 +440,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // (b) tool_result referencing a tool_call in a message that no longer exists.
         // Instead, store the summary in pendingRef and let the session_before_compact
         // hook apply it on the next natural compact (or auto-trigger).
-        await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile, verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true, abortSignal: signal });
+        await runSmartCompact({
+          ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, profile: resolvedProfile,
+          verbose, dryRun, pendingRef, isRunning, autoTriggered: true, skipCompact: true,
+          abortSignal: signal, focus, maxLlmCalls, timeoutMs: maxLatencyMs,
+        });
         const toolSecs = ((Date.now() - toolStart) / 1000).toFixed(1);
         const staged = pendingRef.peek();
         if (staged) {

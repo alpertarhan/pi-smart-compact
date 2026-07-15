@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { mergeExtractions, saveCachedExtraction, loadCachedExtraction } from "../src/utils/cache.ts";
 import { pruneRedundant } from "../src/utils/pruning.ts";
-import { extractStructured } from "../src/utils/extraction.ts";
+import { extractStructured, buildToolCallIndex } from "../src/utils/extraction.ts";
 import { PROFILES } from "../src/constants.ts";
 import { buildEntryIdFingerprint, isPrefixOf } from "../src/utils/id-fingerprint.ts";
 import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
@@ -167,7 +167,7 @@ describe("mergeExtractions — index offset", () => {
 // ── Deduplication and field merge ──
 
 describe("mergeExtractions — deduplication", () => {
-  it("deduplicates modifiedFiles by path (delta overwrites base)", () => {
+  it("deduplicates modifiedFiles by path and accumulates tool-call counts", () => {
     const base = makeExtraction({
       modifiedFiles: [
         { path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 3 },
@@ -183,8 +183,7 @@ describe("mergeExtractions — deduplication", () => {
     const merged = mergeExtractions(base, delta, 5);
 
     expect(merged.modifiedFiles.length).toBe(1);
-    // Last write wins (Map insertion order)
-    expect(merged.modifiedFiles[0].toolCalls).toBe(2);
+    expect(merged.modifiedFiles[0].toolCalls).toBe(3);
     expect(merged.modifiedFiles[0].lastModifiedIndex).toBe(7); // 2 + 5
   });
 
@@ -194,6 +193,33 @@ describe("mergeExtractions — deduplication", () => {
     const merged = mergeExtractions(base, delta, 5);
 
     expect([...merged.readFiles].sort()).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+});
+
+// ── messageCount ──
+
+describe("mergeExtractions — cached error reconciliation", () => {
+  it("matches full extraction when a cached error is resolved in the delta", () => {
+    const failed: LlmMessage[] = [
+      { role: "user", content: [{ type: "text", text: "run tests" }] },
+      { role: "assistant", content: [{ type: "toolCall", id: "f", name: "bash", arguments: { command: "bun test" } }] },
+      { role: "toolResult", toolCallId: "f", isError: true, content: [{ type: "text", text: "test failed" }] },
+    ];
+    const retry: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "s", name: "bash", arguments: { command: "bun test" } }] },
+      { role: "toolResult", toolCallId: "s", isError: false, content: [{ type: "text", text: "all tests passed" }] },
+    ];
+    const base = extractStructured(failed, PROFILES.balanced);
+    const deltaIndex = buildToolCallIndex(retry);
+    const delta = extractStructured(retry, PROFILES.balanced, deltaIndex);
+
+    const merged = mergeExtractions(base, delta, failed.length, retry, deltaIndex);
+    const full = extractStructured([...failed, ...retry], PROFILES.balanced);
+
+    expect(merged.errors[0].resolved).toBe(true);
+    expect(merged.errors[0].retryAttempted).toBe(true);
+    expect(merged.errors[0].resolved).toBe(full.errors[0].resolved);
+    expect(merged.lastErrors).toEqual([]);
   });
 });
 

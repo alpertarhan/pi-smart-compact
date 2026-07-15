@@ -11,13 +11,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, CompactMetricsEntry } from "../types.ts";
+import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, CompactMetricsEntry, LlmMessage } from "../types.ts";
+import { flattenToolCallBlock, type ToolCallIndex } from "./extraction.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import * as log from "./logger.ts";
 import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { extractionCacheFile, metricsLogFile } from "../infra/paths.ts";
 import { appendLineLocked, readJsonSync, writeJsonSync, scheduleFileTailTrim } from "../infra/fs.ts";
-import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX, RUNTIME_LOG_MAX_BYTES } from "../constants.ts";
+import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX, RUNTIME_LOG_MAX_BYTES, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW } from "../constants.ts";
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
 import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 
@@ -96,10 +97,12 @@ export async function trackedComplete(
   // may omit services; everything downstream of here receives the resolved
   // bag explicitly.
   const svc = services ?? getDefaultServices();
+  svc.budget.reserveCall();
+  const safeRequest = svc.scrubber.scrubValue(reqBody).value;
   const start = Date.now();
   try {
     const resolvedOpts = cacheOpts(opts, model.provider, phase, svc);
-    const resp = await svc.llm.complete(model, reqBody, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const resp = await svc.llm.complete(model, safeRequest, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
@@ -110,8 +113,8 @@ export async function trackedComplete(
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
     }, svc);
     try {
-      if (inputT > 0 && "messages" in reqBody) {
-        const rawText = JSON.stringify((reqBody as unknown as Record<string, unknown>).messages);
+      if (inputT > 0 && "messages" in safeRequest) {
+        const rawText = JSON.stringify((safeRequest as unknown as Record<string, unknown>).messages);
         const calibration = svc.tokenCalibration;
         calibrateFromResponse(
           estimateTokens(rawText, model.provider, model.id, calibration),
@@ -245,7 +248,45 @@ function scheduleExtractionCacheCleanup(): void {
  * Without this offset, incremental extraction produces corrupted indexes that
  * break timeline ordering, topic segmentation, and downstream verification.
  */
-export function mergeExtractions(base: StructuredExtraction, delta: StructuredExtraction, baseMsgCount: number): StructuredExtraction {
+export function reconcileCachedErrors(
+  errors: StructuredExtraction["errors"],
+  deltaMessages: LlmMessage[],
+  deltaToolCalls: ToolCallIndex,
+  baseMsgCount: number,
+): StructuredExtraction["errors"] {
+  return errors.map(error => {
+    if (error.resolved) return { ...error };
+    let retryAttempted = error.retryAttempted;
+    let resolved = false;
+    for (let j = 0; j < deltaMessages.length; j++) {
+      const globalIndex = baseMsgCount + j;
+      if (globalIndex <= error.index || globalIndex >= error.index + ERROR_RETRY_WINDOW) continue;
+      const message = deltaMessages[j];
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      const retry = message.content.flatMap(flattenToolCallBlock).find(call => call.name === error.tool);
+      if (!retry) continue;
+      retryAttempted = true;
+      for (let k = j + 1; k < Math.min(deltaMessages.length, j + ERROR_RESOLVE_WINDOW); k++) {
+        const result = deltaMessages[k];
+        if (result.role !== "toolResult" || result.isError) continue;
+        const matches = retry.id != null
+          ? result.toolCallId === retry.id
+          : deltaToolCalls.get(result.toolCallId ?? "")?.name === error.tool;
+        if (matches) { resolved = true; break; }
+      }
+      break;
+    }
+    return { ...error, retryAttempted, resolved };
+  });
+}
+
+export function mergeExtractions(
+  base: StructuredExtraction,
+  delta: StructuredExtraction,
+  baseMsgCount: number,
+  deltaMessages: LlmMessage[] = [],
+  deltaToolCalls: ToolCallIndex = new Map(),
+): StructuredExtraction {
   // ── Offset every index-bearing field in delta ──
   const offsetErrors = delta.errors.map(e => ({ ...e, index: e.index + baseMsgCount }));
   const offsetDecisions = delta.decisions.map(d => ({ ...d, index: d.index + baseMsgCount }));
@@ -262,12 +303,22 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
   }));
   const offsetMedia = (delta.mediaAttachments ?? []).map(a => ({ ...a, index: a.index + baseMsgCount }));
 
+  const modified = new Map(base.modifiedFiles.map(file => [file.path, { ...file }]));
+  for (const file of offsetModifiedFiles) {
+    const previous = modified.get(file.path);
+    modified.set(file.path, previous
+      ? { ...file, toolCalls: previous.toolCalls + file.toolCalls, lastModifiedIndex: Math.max(previous.lastModifiedIndex, file.lastModifiedIndex) }
+      : file);
+  }
+  const reconciledBaseErrors = reconcileCachedErrors(base.errors, deltaMessages, deltaToolCalls, baseMsgCount);
+  const mergedErrors = [...reconciledBaseErrors, ...offsetErrors];
+
   return {
-    modifiedFiles: [...new Map([...base.modifiedFiles, ...offsetModifiedFiles].map(f => [f.path, f])).values()],
+    modifiedFiles: [...modified.values()],
     readFiles: [...new Set([...base.readFiles, ...delta.readFiles])],
     deletedFiles: [...new Set([...base.deletedFiles, ...delta.deletedFiles])],
     mediaAttachments: [...(base.mediaAttachments ?? []), ...offsetMedia],
-    errors: [...base.errors, ...offsetErrors],
+    errors: mergedErrors,
     decisions: [...base.decisions, ...offsetDecisions],
     constraints: [...base.constraints, ...offsetConstraints],
     topics: [...base.topics, ...offsetTopics],
@@ -278,7 +329,7 @@ export function mergeExtractions(base: StructuredExtraction, delta: StructuredEx
     // "last N" must span the cache boundary: the suffix alone is incomplete
     // when it carries fewer than N user messages / errors.
     lastUserMessages: [...base.lastUserMessages, ...delta.lastUserMessages].slice(-5),
-    lastErrors: [...base.lastErrors, ...delta.lastErrors].slice(-3),
+    lastErrors: mergedErrors.filter(error => !error.resolved).map(error => error.message).slice(-3),
     messageCount: baseMsgCount + delta.messageCount,
   };
 }

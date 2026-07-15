@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeEach } from "bun:test";
 import {
-  ToolSupportCache, MetricsSink, ExtractionCacheStats,
+  ToolSupportCache, MetricsSink, ExtractionCacheStats, BudgetGuard, BudgetExceededError,
   createServices, getDefaultServices, resetDefaultServices, setDefaultServices,
 } from "../src/infra/services.ts";
 import { getMetricsSummary, trackedComplete } from "../src/utils/cache.ts";
@@ -70,6 +70,25 @@ describe("MetricsSink", () => {
     // implementation detail we deliberately don't lock down — we only assert
     // the bound.
     expect(sink.snapshot().length).toBeLessThanOrEqual(10);
+  });
+});
+
+describe("BudgetGuard", () => {
+  it("reserves calls atomically and rejects the first call over budget", () => {
+    const guard = new BudgetGuard(2);
+    guard.reserveCall();
+    guard.reserveCall();
+    expect(() => guard.reserveCall()).toThrow(BudgetExceededError);
+    expect(guard.reason()).toBe("calls");
+    expect(guard.callCount()).toBe(2);
+  });
+
+  it("rejects calls after the latency deadline with a fake clock", () => {
+    let now = 100;
+    const guard = new BudgetGuard(0, 5000, { now: () => now });
+    now = 5100;
+    expect(() => guard.reserveCall()).toThrow("latency budget exhausted");
+    expect(guard.reason()).toBe("latency");
   });
 });
 

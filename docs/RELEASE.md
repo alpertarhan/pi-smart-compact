@@ -16,6 +16,7 @@ Use this checklist before publishing `pi-smart-compact`.
 ```bash
 bun run typecheck
 bun test
+bun run gate
 bun run build
 bun run compat:pi
 ```

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { resolveCompactionWindow } from "../src/app/steps/window.ts";
 import type { PreparedRc } from "../src/app/run-context.ts";
 import type { SessionMessageEntry } from "../src/types.ts";
+import { makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
 
 function messageEntry(
   id: string,
@@ -28,6 +29,7 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
         getSessionId: () => "test-session",
       },
     },
+    estimator: makeTokenEstimator("openai", "test", new TokenCalibrationStore()),
     profileCfg: {
       keepRecentTokens,
       summaryBudgetTokens: 6_000,
@@ -115,6 +117,25 @@ describe("resolveCompactionWindow tool-result boundary", () => {
 
     expect(result).not.toBeNull();
     expect(result?.firstKeptId).toBe("m2-assistant-toolcall");
+  });
+
+  it("counts large tool-call arguments in the recent-tail budget", () => {
+    const branch: SessionMessageEntry[] = [];
+    for (let i = 0; i < 45; i++) {
+      branch.push(messageEntry("a" + i, i ? "r" + (i - 1) : null, {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "w" + i, name: "write", arguments: { path: "src/f" + i + ".ts", content: "x".repeat(2000) } }],
+      }));
+      branch.push(messageEntry("r" + i, "a" + i, {
+        role: "toolResult", toolCallId: "w" + i, content: [{ type: "text", text: "ok" }],
+      }));
+    }
+
+    const result = resolveCompactionWindow(makePreparedRc(branch, 20_000));
+
+    expect(result).not.toBeNull();
+    expect(branch.length - result!.keepFrom).toBeGreaterThan(50);
+    expect(result!.accTokens).toBeGreaterThanOrEqual(20_000);
   });
 
   it("does not emit a compaction if the first kept entry would still be a toolResult", () => {

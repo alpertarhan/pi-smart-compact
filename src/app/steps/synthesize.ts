@@ -43,7 +43,6 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
 
   let finalSummary: string;
   let method: "eesv" | "single-pass" | "heuristic";
-  let llmCalls = 0;
   let summaries: ChunkSummary[] = [];
   let explorationReport: import("../../types.ts").ExplorationReport | null = null;
   let explorationRounds = 0;
@@ -61,12 +60,13 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       const r = await singlePassCompact(
         convText, extraction, null, rc.prevContext + rc.projectCtx,
         rc.summaryModel, rc.summaryAuth, pc.summaryBudgetTokens, rc.cancellation.signal, rc.services,
+        rc.config.focusWeighting ? rc.focus : undefined,
       );
-      finalSummary = r.summary; method = "single-pass"; llmCalls = r.llmCalls;
+      finalSummary = r.summary; method = "single-pass";
     } catch (err) {
       rc.notify("Single-pass failed: " + (err instanceof Error ? err.message : String(err)), "warning");
       finalSummary = assembleFallback([], extraction);
-      method = "heuristic"; llmCalls = 0;
+      method = "heuristic";
     }
   } else {
     const needsExploration = !shouldSkipExplore && shouldExplore(extraction);
@@ -81,7 +81,9 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       try {
         const expResult = await exploreConversation(
           rc.llmMessages, extraction, rc.segModel, rc.segAuth,
-          rc.prevContext || undefined, rc.userNote, rc.cancellation.signal,
+          rc.prevContext || undefined,
+          [rc.userNote, rc.config.focusWeighting && rc.focus ? "Focus extra preservation on: " + rc.focus : undefined].filter(Boolean).join("\n") || undefined,
+          rc.cancellation.signal,
           MAX_EXPLORATION_ROUNDS, rc.notify, rc.services,
         );
         explorationReport = expResult.report;
@@ -140,7 +142,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       }));
     }
 
-    const chunks = chunkLlmMessages(rc.llmMessages, boundaries, pc);
+    const chunks = chunkLlmMessages(rc.llmMessages, boundaries, pc, rc.estimator, rc.config.focusWeighting ? rc.focus : undefined);
     chunkCount = chunks.length;
     rc.notify("Chunked: " + chunkCount + " chunks", "info");
     rc.vlog("Chunk topics: " + chunks.map(c => c.topic + "[" + c.startIndex + "-" + c.endIndex + "]").join(", "));
@@ -174,6 +176,13 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       const errors: (Error | null)[] = new Array(totalBatches).fill(null);
       let completed = 0;
       for (let wave = 0; wave < totalBatches; wave += concurrency) {
+        if (rc.services.budget.reason()) {
+          for (let index = wave; index < totalBatches; index++) {
+            results[index] = batches[index].map(chunk => failedChunkSummary(chunk));
+          }
+          rc.notify("Synthesis budget exhausted — remaining batches use deterministic fallback", "warning");
+          break;
+        }
         const waveBatches = batches.slice(wave, Math.min(wave + concurrency, totalBatches));
         const wavePromises = waveBatches.map(async (batch, i) => {
           const idx = wave + i;
@@ -205,19 +214,18 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         model: rc.modelLabel, profile: rc.profile, extraction, totalBatches: batches.length,
       });
     }
-    let assemblyCalls = 1;
     try {
       const r = await assembleLLM(
         summaries, extraction, explorationReport, rc.summaryModel, rc.summaryAuth,
         pc.summaryBudgetTokens, rc.prevContext, rc.cancellation.signal, rc.services,
+        rc.config.focusWeighting ? rc.focus : undefined,
       );
       if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
     } catch (err) {
       log.warn("Assembly failed", err);
-      finalSummary = assembleFallback(summaries, extraction); assemblyCalls = 0;
+      finalSummary = assembleFallback(summaries, extraction);
     }
     method = "eesv";
-    llmCalls = explorationRounds + batches.length + assemblyCalls;
   }
 
   const out = rc as ExtractedRc & {
@@ -234,7 +242,10 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   out.finalSummary = finalSummary;
   out.method = method;
   out.methodForMetrics = method;
-  out.llmCalls = llmCalls;
+  // The run-scoped metrics sink is the single source of truth for network
+  // calls, including probes, direct/retry fallbacks, failed batches and patch
+  // calls that manual round arithmetic cannot represent accurately.
+  out.llmCalls = rc.services.metrics.summary().totalCalls;
   out.summaries = summaries;
   out.explorationReport = explorationReport;
   out.explorationRounds = explorationRounds;

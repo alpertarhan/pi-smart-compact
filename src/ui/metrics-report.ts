@@ -25,7 +25,7 @@ function compactNumber(value: number): string {
 
 function statusClass(status?: string): "good" | "warn" | "bad" {
   if (status === "timeout" || status === "error") return "bad";
-  if (status === "dry-run") return "warn";
+  if (status === "dry-run" || status === "cancelled") return "warn";
   return "good";
 }
 

@@ -33,6 +33,7 @@ import crypto from "node:crypto";
 import type { LLMCallMetric } from "../types.ts";
 import { METRICS_BUFFER_MAX, ONE_HOUR_MS } from "../constants.ts";
 import { TokenCalibrationStore } from "../utils/tokens.ts";
+import { SecretScrubber } from "../domain/scrub.ts";
 
 /**
  * In-memory cache for "does this provider support tools?".
@@ -120,6 +121,43 @@ export class MetricsSink {
  * Tracks hits vs misses on `loadCachedExtraction`. Surfaced into the metrics
  * dashboard so we can tune the prefix-match tolerance over time.
  */
+export class BudgetExceededError extends Error {
+  constructor(readonly reason: "calls" | "latency") {
+    super("Smart Compact " + reason + " budget exhausted");
+    this.name = "BudgetExceededError";
+  }
+}
+
+/** Atomic per-run reservation guard; safe for concurrent batch wave launches. */
+export class BudgetGuard {
+  private calls = 0;
+  private startedAt: number;
+  private lastReason: "calls" | "latency" | null = null;
+
+  constructor(
+    private readonly maxCalls = 0,
+    private readonly maxLatencyMs = 0,
+    private readonly clock: Clock = systemClock,
+  ) {
+    this.startedAt = clock.now();
+  }
+
+  reserveCall(): void {
+    if (this.maxLatencyMs > 0 && this.clock.now() - this.startedAt >= this.maxLatencyMs) {
+      this.lastReason = "latency";
+      throw new BudgetExceededError("latency");
+    }
+    if (this.maxCalls > 0 && this.calls >= this.maxCalls) {
+      this.lastReason = "calls";
+      throw new BudgetExceededError("calls");
+    }
+    this.calls++;
+  }
+
+  callCount(): number { return this.calls; }
+  reason(): "calls" | "latency" | null { return this.lastReason; }
+}
+
 export class ExtractionCacheStats {
   private hits = 0;
   private misses = 0;
@@ -143,6 +181,8 @@ export interface SmartCompactServices {
   metrics: MetricsSink;
   extractionCacheStats: ExtractionCacheStats;
   tokenCalibration: TokenCalibrationStore;
+  budget: BudgetGuard;
+  scrubber: SecretScrubber;
   /** Per-run prompt-cache namespace for providers that support prompt caching. */
   compactSessionId: string;
 }
@@ -162,6 +202,8 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
     metrics: overrides.metrics ?? new MetricsSink(),
     extractionCacheStats: overrides.extractionCacheStats ?? new ExtractionCacheStats(),
     tokenCalibration: overrides.tokenCalibration ?? new TokenCalibrationStore(),
+    budget: overrides.budget ?? new BudgetGuard(),
+    scrubber: overrides.scrubber ?? new SecretScrubber(),
     compactSessionId: overrides.compactSessionId ?? makeCompactSessionId(),
   };
 }

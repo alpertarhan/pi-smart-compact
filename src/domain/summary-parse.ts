@@ -8,34 +8,30 @@
  * `Files Modified` matched but `Files modified` had to be lowercased first,
  * etc.
  *
- * This module performs one structural parse up front: every `^#{1,3} ` line
- * becomes a section, and the text between headings becomes its body. After
+ * This module performs one structural parse up front: H1/H2 headings and
+ * recognized canonical H3 headings start sections. Unknown H3 headings remain
+ * in their parent body so Progress subsections retain their structure. After
  * that, the rest of the code can ask `findSection(summary, "goal")` and let
  * the classifier handle aliases.
  *
- * The parser is intentionally tolerant — it accepts H1/H2/H3 and trims
- * surrounding whitespace — because we expect occasional formatting drift from
- * smaller LLMs.
+ * Duplicate recognized kinds are merged at their first position with exact
+ * duplicate body lines removed. Unknown sections remain independent.
  */
 
 import { CanonicalSummary, Section, SectionKind, classifyHeading, canonicalHeading } from "./summary-schema.ts";
 
-/**
- * When true, `renderSummary` rewrites every recognized section's heading to
- * its canonical form (`## Goal`, `## Next Steps`, ...). This is used by patch
- * paths that want to guarantee verification can find the section regardless
- * of what the LLM emitted. Default behaviour preserves the original heading
- * so user-visible markdown stays close to the model's output.
- */
+/** H1/H2 always start sections; H3 starts one only when its kind is recognized. */
+const HEADING_RE = /^(#{1,3})\s+(.+?)\s*$/;
 
-/**
- * Only H1/H2 lines start a new section. Earlier versions accepted H3 as well,
- * which caused the `## Progress\n### Done\n...\n### In Progress\n...` block
- * to be flattened into 3 separate sections — leaving `Progress` with an empty
- * body and pushing `Done` / `In Progress` to top level. Now H3 stays inside
- * the body of its parent section, which is what every prompt template assumes.
- */
-const HEADING_RE = /^(#{1,2})\s+(.+?)\s*$/;
+function mergeBodies(first: string, second: string): string {
+  const seen = new Set<string>();
+  return [first, second]
+    .filter(Boolean)
+    .flatMap(body => body.split("\n"))
+    .filter(line => seen.has(line) ? false : (seen.add(line), true))
+    .join("\n")
+    .trim();
+}
 
 export function parseSummary(markdown: string): CanonicalSummary {
   const sections: Section[] = [];
@@ -47,23 +43,25 @@ export function parseSummary(markdown: string): CanonicalSummary {
 
   const flush = () => {
     if (!started) return;
-    sections.push({
-      kind: currentKind,
-      heading: currentHeading.trim(),
-      body: bodyLines.join("\n").trim(),
-    });
+    const body = bodyLines.join("\n").trim();
+    const existing = currentKind === "unknown" ? undefined : sections.find(s => s.kind === currentKind);
+    if (existing) existing.body = mergeBodies(existing.body, body);
+    else sections.push({ kind: currentKind, heading: currentHeading.trim(), body });
   };
 
   for (const line of lines) {
     const m = line.match(HEADING_RE);
     if (m) {
-      flush();
-      // Drop the leading hashes so callers see the human label only.
-      currentHeading = "## " + m[2].trim();
-      currentKind = classifyHeading(m[2]);
-      bodyLines = [];
-      started = true;
-      continue;
+      const kind = classifyHeading(m[2]);
+      if (m[1].length <= 2 || kind !== "unknown") {
+        flush();
+        // Normalize heading depth while preserving the model's label.
+        currentHeading = "## " + m[2].trim();
+        currentKind = kind;
+        bodyLines = [];
+        started = true;
+        continue;
+      }
     }
     if (started) bodyLines.push(line);
   }

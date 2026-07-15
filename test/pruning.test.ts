@@ -46,6 +46,61 @@ describe("pruneRedundant", () => {
     const result = pruneRedundant(msgs);
     expect(result.prunedCount).toBeGreaterThan(0);
     expect(result.reasons.some(r => r.reason.includes("Duplicate file reads"))).toBe(true);
+    expect(result.messages.some(message => message.toolCallId === "r1")).toBe(false);
+    expect(result.messages.some(message => message.toolCallId === "r2")).toBe(true);
+  });
+
+  it("does not collapse read and grep calls for the same path", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "inspect a.ts"),
+      makeAssistantWithToolCall("r1", "read", { path: "a.ts" }),
+      makeToolResult("r1", "file content"),
+      makeAssistantWithToolCall("g1", "grep", { path: "a.ts", pattern: "foo" }),
+      makeToolResult("g1", "foo:1"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    expect(result.messages.filter(message => message.role === "toolResult").map(message => message.toolCallId)).toEqual(["r1", "g1"]);
+  });
+
+  it("does not collapse grep calls with different patterns", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "search a.ts"),
+      makeAssistantWithToolCall("g1", "grep", { path: "a.ts", pattern: "foo" }),
+      makeToolResult("g1", "foo:1"),
+      makeAssistantWithToolCall("g2", "grep", { pattern: "bar", path: "a.ts" }),
+      makeToolResult("g2", "bar:2"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    expect(result.messages.filter(message => message.role === "toolResult")).toHaveLength(2);
+  });
+
+  it("does not collapse reads with different offsets or limits", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "read chunks"),
+      makeAssistantWithToolCall("r1", "read", { path: "a.ts", offset: 1, limit: 20 }),
+      makeToolResult("r1", "first chunk"),
+      makeAssistantWithToolCall("r2", "read", { limit: 20, path: "a.ts", offset: 21 }),
+      makeToolResult("r2", "second chunk"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    expect(result.messages.filter(message => message.role === "toolResult")).toHaveLength(2);
+  });
+
+  it("collapses identical reads despite argument key order", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "read twice"),
+      makeAssistantWithToolCall("r1", "functions.read", { path: "a.ts", offset: 1, limit: 20 }),
+      makeToolResult("r1", "first"),
+      makeAssistantWithToolCall("r2", "read", { limit: 20, offset: 1, path: "a.ts" }),
+      makeToolResult("r2", "second"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    expect(result.messages.some(message => message.toolCallId === "r1")).toBe(false);
+    expect(result.messages.some(message => message.toolCallId === "r2")).toBe(true);
   });
 
   it("preserves an unrelated edit beside a duplicate read", () => {

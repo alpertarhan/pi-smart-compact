@@ -78,7 +78,7 @@ export function runDamageDetection(rc: RunContext): void {
     if (damage.damageScore > 0) {
       rc.notify("Previous compaction damage: " + damage.summary, "warning");
     }
-    logDamageReport(rc.sessionId, damage, safeDetails);
+    logDamageReport(rc.sessionId, damage, safeDetails, rc.projectId);
     // Feed re-read files forward as remediation hints so the next compaction
     // preserves them instead of losing them again.
     if (damage.reReadFiles.length > 0) {

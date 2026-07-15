@@ -159,6 +159,10 @@ function deriveFromRelativePaths(paths: string[]): string {
  * Using cwd/git-root as primary prevents cross-project fingerprint contamination
  * when a session has no file operations (review, discussion, debugging).
  */
+export function deriveProjectIdFromCwd(cwd: string): string {
+  return hashProjectId(findGitRoot(cwd) ?? cwd);
+}
+
 export function deriveProjectId(cwd: string, extraction: StructuredExtraction, sessionId?: string): string {
   // Priority 1: cwd / git root (most stable across sessions)
   if (cwd && cwd !== "/" && cwd !== process.env.HOME) {

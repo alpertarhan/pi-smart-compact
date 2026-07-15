@@ -1,5 +1,30 @@
 # Changelog
 
+## [7.21.0] - 2026-07-15
+
+### Fixed
+- Canonical summary parsing now recognizes canonical H3 headings, merges duplicate sections, and preserves H3-only summaries during state injection.
+- File verification uses collision-aware path needles; one monorepo basename can no longer satisfy multiple modified files.
+- Every deterministic verification gap is repaired regardless of scalar score; typed gaps and repair provenance replace string-prefix policy.
+- Recent-tail and batch planning count structured tool-call arguments with run-scoped provider/model calibration.
+- Access pruning deduplicates only identical tool name + argument signatures; read/search/list evidence no longer collapses by path alone.
+- MCP snake-case edit aliases are classified as mutations without treating ambiguous `path + text` payloads universally as writes.
+- Incremental extraction reconciles cached unresolved errors against successful retries in the new suffix.
+- LLM call counts now come from the run-scoped metrics sink, including probes, retries, failures and patches.
+
+### Added
+- High-confidence secret scrubbing at provider, extraction-cache, backup, state and pending-summary boundaries; optional PII scrubbing.
+- Optional fail-closed manual Apply/Cancel approval gate with verification provenance.
+- Exact max-call and max-latency budgets with deterministic degradation, plus `--focus` budget weighting.
+- Online `session_compact` → `message_end` damage monitoring and opt-in adaptive preservation policy.
+- `/smart-compact loops` manager for resolve/reopen, priority and pin/unpin overrides with stable summary identity across runs.
+- Deterministic adversarial EESV release gate (`bun run gate`) covering parser, verification, tools, cache, budgets, scrubbing and damage.
+
+### Changed
+- Public README redesigned for npm, GitHub and Pi package surfaces with install-first quick start, progressive EESV documentation, complete configuration, safety/privacy guidance and current recovery/observability flows.
+- Extraction and exploration share one deduplicated fact context; runtime call accounting now comes from the metrics sink instead of inferred round counts.
+- CI and the release checklist now run the adversarial EESV gate.
+
 ## [7.20.0] - 2026-07-14
 
 ### Fixed

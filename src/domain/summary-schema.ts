@@ -51,7 +51,7 @@ export type SectionKind =
 
 export interface Section {
   kind: SectionKind;
-  /** Original heading as parsed from the markdown (preserves the user-facing label). */
+  /** Parsed heading with normalized H2 depth; the user-facing label is preserved. */
   heading: string;
   /** Body of the section, leading/trailing whitespace trimmed. */
   body: string;

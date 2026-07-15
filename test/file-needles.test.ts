@@ -16,6 +16,8 @@
 import { describe, it, expect } from "bun:test";
 import {
   buildPathNeedles,
+  buildUniquePathNeedles,
+  isKnownPathReference,
   GENERIC_BASENAMES,
   MIN_BARE_BASENAME_LEN,
 } from "../src/utils/file-needles.ts";
@@ -87,6 +89,23 @@ describe("buildPathNeedles — short basename gate", () => {
   it("keeps long, non-generic basenames", () => {
     const needles = buildPathNeedles("src/utils/file-needles.ts");
     expect(needles).toContain("file-needles.ts");
+  });
+});
+
+describe("buildUniquePathNeedles", () => {
+  it("drops a shared basename and keeps the shortest unique suffix", () => {
+    const paths = ["packages/api/src/auth.ts", "packages/web/src/auth.ts"];
+    expect(buildUniquePathNeedles(paths[0], paths)).toEqual(["api/src/auth.ts", "packages/api/src/auth.ts"]);
+    expect(buildUniquePathNeedles(paths[1], paths)).toEqual(["web/src/auth.ts", "packages/web/src/auth.ts"]);
+  });
+
+  it("normalizes Windows separators", () => {
+    expect(buildUniquePathNeedles("src\\auth.ts", ["src/auth.ts"])).toContain("src/auth.ts");
+  });
+
+  it("recognizes a suffix reference to a known path", () => {
+    expect(isKnownPathReference("api/src/auth.ts", ["packages/api/src/auth.ts"])).toBe(true);
+    expect(isKnownPathReference("src/missing.ts", ["packages/api/src/auth.ts"])).toBe(false);
   });
 });
 

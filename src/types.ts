@@ -3,6 +3,7 @@
  */
 
 import type { Model, Api } from "@earendil-works/pi-ai";
+import type { SectionKind } from "./domain/summary-schema.ts";
 
 /** Session type classification */
 export type SessionType = "implementation" | "review" | "debugging" | "discussion";
@@ -28,6 +29,14 @@ export interface CompactConfig {
   backupEnabled: boolean;
   backupDir: string;
   minContextPercent: number; // Don't compact below this threshold
+  requireApproval: boolean;
+  scrubSecrets: boolean;
+  scrubPii: boolean;
+  maxLlmCalls: number; // 0 = unlimited
+  maxLatencyMs: number; // 0 = unlimited soft budget; hard timeout stays separate
+  focusWeighting: boolean;
+  adaptiveDamageFeedback: boolean;
+  onlineDamageMonitor: boolean;
   /** File paths that must always survive compaction, regardless of what the
    *  LLM summary chooses to include. Surfaced in the summary's Files Read. */
   pinPaths: string[];
@@ -85,7 +94,7 @@ export interface CompactMetricsEntry {
   model?: string;
   provider?: string;
   runType?: "manual" | "auto" | "tool";
-  status?: "success" | "timeout" | "error" | "dry-run";
+  status?: "success" | "timeout" | "error" | "dry-run" | "cancelled";
   contextPercent?: number;
   toolPercent?: number;
   tokensBefore?: number;
@@ -97,6 +106,8 @@ export interface CompactMetricsEntry {
   verificationGaps?: number;
   phaseTimings?: PipelinePhaseTiming[];
   durationMs?: number;
+  redactions?: number;
+  adapted?: boolean;
 }
 
 export interface TopicBoundary {
@@ -136,6 +147,8 @@ export interface SmartCompactDetails {
   model: string;
   qualityScore: number;
   tokensBefore: number;
+  provenance?: VerificationProvenance;
+  redactions?: number;
   compactionState?: CompactionState;
   openLoops?: OpenLoop[];
 }
@@ -198,10 +211,29 @@ export interface ModelOption {
   supportsTools: boolean | "probe";
 }
 
+export type VerificationGap =
+  | { kind: "missing-section"; section: SectionKind }
+  | { kind: "missing-file"; path: string }
+  | { kind: "missing-error"; message: string }
+  | { kind: "missing-constraint"; text: string }
+  | { kind: "missing-decision"; summary: string }
+  | { kind: "missing-goal"; goal: string }
+  | { kind: "fabricated-file"; ref: string }
+  | { kind: "inconsistency"; detail: string }
+  | { kind: "missing-open-loops"; unresolvedCount: number };
+
 export interface VerificationResult {
   ok: boolean;
-  gaps: string[];
+  gaps: VerificationGap[];
   score: number;
+}
+
+export interface VerificationProvenance {
+  initialScore: number;
+  deterministicPatched: VerificationGap[];
+  llmPatched: boolean;
+  finalScore: number;
+  remainingGaps: VerificationGap[];
 }
 
 export interface ExplorationReport {
@@ -328,6 +360,14 @@ export interface OpenLoop {
   sourceIndex?: number;
 }
 
+export interface LoopOverride {
+  id: string;
+  summaryKey: string;
+  status?: OpenLoop["status"];
+  priority?: OpenLoop["priority"];
+  pinned?: boolean;
+}
+
 /** Structured machine-readable compaction state */
 export interface CompactionState {
   goal: string | null;
@@ -339,6 +379,7 @@ export interface CompactionState {
   unresolvedErrors: Array<{ id: string; message: string; tool: string; files: string[] }>;
   resolvedErrors: Array<{ id: string; message: string; tool: string }>;
   openLoops: OpenLoop[];
+  loopOverrides?: LoopOverride[];
   topics: Array<{ title: string; type: string; priority: string }>;
   nextActions: string[];
   criticalContext: string[];

@@ -1,252 +1,205 @@
 /**
- * Phase 4: Verification + Quality Score.
+ * Phase 4: deterministic verification and repair.
  *
- * Verification was historically a long chain of `summary.toLowerCase().includes(...)`
- * checks. That worked but coupled the score to the exact markdown wording, so
- * `### Goal` instead of `## Goal` registered as a missing section even though
- * the content was right there. We now parse the summary once into a
- * `CanonicalSummary` (see `domain/summary-schema.ts`) and run section-level
- * checks against the structured form. The text-content checks (file names,
- * error snippets, decisions) still run on the body string, but only after the
- * section has been positively identified by `kind`.
- *
- * Deterministic patching writes structured sections back into the summary via
- * `appendToSection` / `upsertSection`, so a follow-up parse round always sees
- * the canonical headings even when the LLM produced something idiosyncratic.
+ * Verification findings are structured data. Formatting belongs at the UI/LLM
+ * boundary; repair logic switches on `kind` and never reparses its own prose.
  */
 
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { StructuredExtraction, VerificationResult } from "../types.ts";
+import type { StructuredExtraction, VerificationGap, VerificationResult } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import { extractFileRefs } from "../utils/file-ref-detect.ts";
+import { buildUniquePathNeedles, isKnownPathReference } from "../utils/file-needles.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
+import { canonicalHeading } from "../domain/summary-schema.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 
+export function formatVerificationGap(gap: VerificationGap): string {
+  switch (gap.kind) {
+    case "missing-section": return "Missing section: " + canonicalHeading(gap.section);
+    case "missing-file": return "Missing modified file: " + gap.path;
+    case "missing-error": return "Missing error: " + gap.message.slice(0, TRUNC.SNIPPET);
+    case "missing-constraint": return "Missing constraint: " + gap.text.slice(0, TRUNC.TOPIC_LABEL);
+    case "missing-decision": return "Missing decision: " + gap.summary.slice(0, TRUNC.TOPIC_LABEL);
+    case "missing-goal": return "Main goal may be missing from summary";
+    case "fabricated-file": return "Potentially fabricated file: " + gap.ref;
+    case "inconsistency": return "Inconsistency: " + gap.detail;
+    case "missing-open-loops": return "Missing Open Loops section despite " + gap.unresolvedCount + " unresolved errors";
+  }
+}
+
+export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
+  return gap.kind !== "fabricated-file" && gap.kind !== "inconsistency";
+}
+
 export function verifySummary(summary: string, extraction: StructuredExtraction): VerificationResult {
   const parsed = parseSummary(summary);
-  const gaps: string[] = [];
-  const lower = summary.toLowerCase();
+  const gaps: VerificationGap[] = [];
+  const lower = summary.toLowerCase().replace(/\\/g, "/");
   let score = 100;
 
-  // Section presence checks now run on parsed kinds, which means `### Goal`
-  // and `## Goals` both satisfy the `goal` requirement.
-  const requiredSections: Array<{ kind: import("../domain/summary-schema.ts").SectionKind; label: string; penalty: number }> = [
-    { kind: "goal", label: "## Goal", penalty: 5 },
-    { kind: "progress", label: "## Progress", penalty: 5 },
-    { kind: "critical-context", label: "## Critical Context", penalty: 3 },
+  const requiredSections: Array<{ kind: "goal" | "progress" | "critical-context"; penalty: number }> = [
+    { kind: "goal", penalty: 5 },
+    { kind: "progress", penalty: 5 },
+    { kind: "critical-context", penalty: 3 },
   ];
   for (const req of requiredSections) {
     if (!findSection(parsed, req.kind)) {
-      gaps.push("Missing section: " + req.label);
+      gaps.push({ kind: "missing-section", section: req.kind });
       score -= req.penalty;
     }
   }
 
-  for (const f of extraction.modifiedFiles) {
-    const pathLower = f.path.toLowerCase();
-    const parts = pathLower.split("/");
-    const suffixes: string[] = [];
-    for (let j = 0; j < parts.length; j++) {
-      suffixes.push(parts.slice(j).join("/"));
-    }
-    const pathMatch = suffixes.some(s => s.length > 2 && lower.includes(s));
-    if (!pathMatch) {
-      gaps.push("Missing modified file: " + f.path);
+  const modifiedPaths = extraction.modifiedFiles.map(file => file.path);
+  for (const file of extraction.modifiedFiles) {
+    const needles = buildUniquePathNeedles(file.path, modifiedPaths);
+    if (!needles.some(needle => lower.includes(needle))) {
+      gaps.push({ kind: "missing-file", path: file.path });
       score -= 5;
     }
   }
 
-  for (const e of extraction.errors.filter(e => !e.resolved)) {
-    // Normalize whitespace before slicing: a leading "\n  " on the raw error
-    // text broke the exact-substring match even when the error was quoted verbatim.
-    const snippet = e.message.trim().replace(/\s+/g, " ").slice(0, TRUNC.ERROR_SNIPPET).toLowerCase();
+  for (const error of extraction.errors.filter(error => !error.resolved)) {
+    const snippet = error.message.trim().replace(/\s+/g, " ").slice(0, TRUNC.ERROR_SNIPPET).toLowerCase();
     if (snippet.length > 5 && !lower.includes(snippet)) {
-      gaps.push("Missing error: " + e.message.slice(0, TRUNC.SNIPPET));
+      gaps.push({ kind: "missing-error", message: error.message });
       score -= 5;
     }
   }
 
-  for (const c of extraction.constraints.filter(c => c.confidence >= 0.8)) {
-    const keywords = extractCheckKeywords(c.text, 3);
-    const found = keywords.some(k => lower.includes(k.toLowerCase()));
-    if (!found && keywords.length > 0) {
-      gaps.push("Missing constraint: " + c.text.slice(0, TRUNC.TOPIC_LABEL));
+  for (const constraint of extraction.constraints.filter(constraint => constraint.confidence >= 0.8)) {
+    const keywords = extractCheckKeywords(constraint.text, 3);
+    if (keywords.length > 0 && !keywords.some(keyword => lower.includes(keyword.toLowerCase()))) {
+      gaps.push({ kind: "missing-constraint", text: constraint.text });
       score -= 3;
     }
   }
 
   if (extraction.mainGoal) {
-    const goalWords = extractCheckKeywords(extraction.mainGoal, 4);
-    const goalFound = goalWords.some(w => lower.includes(w.toLowerCase()));
-    if (!goalFound) { gaps.push("Main goal may be missing from summary"); score -= 10; }
+    const keywords = extractCheckKeywords(extraction.mainGoal, 4);
+    if (keywords.length > 0 && !keywords.some(keyword => lower.includes(keyword.toLowerCase()))) {
+      gaps.push({ kind: "missing-goal", goal: extraction.mainGoal });
+      score -= 10;
+    }
   }
 
-  // File-ref heuristic delegated to `utils/file-ref-detect.ts` so the
-  // version-vs-path classifier can be unit-tested in isolation. The
-  // contract is the same: only return tokens that look like real file
-  // references (no SemVer literals, no bare names without an extension).
-  const summaryFileRefs = extractFileRefs(summary);
-  // Plain array (not Set): membership is suffix-based, so every lookup scans
-  // all entries anyway — the previous `[...set].some(...)` re-materialized
-  // the array on every ref, O(refs × files) allocations for zero benefit.
-  const knownFiles = [
-    ...extraction.modifiedFiles.map(f => f.path.toLowerCase()),
-    ...extraction.readFiles.map(f => f.toLowerCase()),
-  ];
-  for (const ref of summaryFileRefs) {
-    const refLower = ref.toLowerCase();
-    const isKnown = knownFiles.some(kf => (kf.endsWith("/" + refLower) || kf === refLower || (kf.endsWith(refLower) && refLower.length > 3)));
-    if (!isKnown) {
-      gaps.push("Potentially fabricated file: " + ref);
+  const knownFiles = [...modifiedPaths, ...extraction.readFiles];
+  for (const ref of extractFileRefs(summary)) {
+    if (!isKnownPathReference(ref, knownFiles)) {
+      gaps.push({ kind: "fabricated-file", ref });
       score -= 4;
     }
   }
 
-  // Inconsistency check: a file marked Done that has an unresolved error in
-  // the extraction signals stale completion claims. We pull the Progress
-  // section structurally so heading-case differences don't bypass the check.
   const progressSection = findSection(parsed, "progress");
   if (progressSection) {
-    const doneMatch = progressSection.body.match(/###\s*Done[\s\S]*?(?=###|$)/i);
-    const doneSection = doneMatch?.[0] ?? "";
-    if (doneSection) {
-      for (const f of extraction.modifiedFiles) {
-        const bn = f.path.split("/").pop() ?? "";
-        const markedDone = doneSection.toLowerCase().includes(bn.toLowerCase());
-        if (!markedDone) continue;
-        const unresolved = extraction.errors.find(e => e.message.toLowerCase().includes(bn.toLowerCase()) && !e.resolved);
-        if (unresolved) {
-          gaps.push("Inconsistency: " + bn + " marked Done but has unresolved error");
-          score -= 5;
-        }
+    const doneSection = progressSection.body.match(/###\s*Done[\s\S]*?(?=###|$)/i)?.[0] ?? "";
+    for (const file of extraction.modifiedFiles) {
+      const basename = file.path.split("/").pop() ?? "";
+      if (!doneSection.toLowerCase().includes(basename.toLowerCase())) continue;
+      const unresolved = extraction.errors.find(error => !error.resolved && error.message.toLowerCase().includes(basename.toLowerCase()));
+      if (unresolved) {
+        gaps.push({ kind: "inconsistency", detail: basename + " marked Done but has unresolved error" });
+        score -= 5;
       }
     }
   }
 
-  const highConfDecisions = extraction.decisions.filter(d => d.type === "explicit");
-  if (highConfDecisions.length > 0) {
-    const decisionSection = findSection(parsed, "decisions");
-    const decisionBody = decisionSection?.body.toLowerCase() ?? "";
-    for (const d of highConfDecisions) {
-      const keywords = extractCheckKeywords(d.summary, 3);
-      if (keywords.length > 0 && !keywords.some(k => decisionBody.includes(k.toLowerCase()))) {
-        gaps.push("Missing decision: " + d.summary.slice(0, TRUNC.TOPIC_LABEL));
-        score -= 3;
-      }
+  const decisionBody = findSection(parsed, "decisions")?.body.toLowerCase() ?? "";
+  for (const decision of extraction.decisions.filter(decision => decision.type === "explicit")) {
+    const keywords = extractCheckKeywords(decision.summary, 3);
+    if (keywords.length > 0 && !keywords.some(keyword => decisionBody.includes(keyword.toLowerCase()))) {
+      gaps.push({ kind: "missing-decision", summary: decision.summary });
+      score -= 3;
     }
   }
 
-  // Open Loop coverage: if extraction surfaces multiple unresolved errors but
-  // the summary has no dedicated open-loop section (or any unresolved-style
-  // language), call out the gap structurally.
-  const unresolvedCount = extraction.errors.filter(e => !e.resolved).length;
-  if (unresolvedCount >= 2) {
-    const hasOpenLoops = findSection(parsed, "open-loops") || lower.includes("unresolved");
-    if (!hasOpenLoops) {
-      gaps.push("Missing Open Loops section despite " + unresolvedCount + " unresolved errors");
-      score -= 5;
-    }
+  const unresolvedCount = extraction.errors.filter(error => !error.resolved).length;
+  if (unresolvedCount >= 2 && !findSection(parsed, "open-loops") && !lower.includes("unresolved")) {
+    gaps.push({ kind: "missing-open-loops", unresolvedCount });
+    score -= 5;
   }
 
   const finalScore = Math.max(0, score);
   return { ok: gaps.length === 0 && finalScore >= 85, gaps, score: finalScore };
 }
 
-/**
- * Deterministic patch — injects missing items directly into the summary
- * without an LLM call. All structural mutations go through the canonical
- * parse/upsert path so the resulting markdown always has the canonical
- * headings, even if the LLM produced lowercase or differently punctuated ones.
- */
-export function patchDeterministic(summary: string, gaps: string[], extraction: StructuredExtraction): string {
+/** Apply every safe, deterministic repair. Hallucination/inconsistency gaps stay visible for LLM/user review. */
+export function patchDeterministic(summary: string, gaps: VerificationGap[], extraction: StructuredExtraction): string {
   let canonical: CanonicalSummary = parseSummary(summary);
+  const verificationNotes: string[] = [];
 
-  const fileGaps = gaps.filter(g => g.startsWith("Missing modified file:"));
-  const errorGaps = gaps.filter(g => g.startsWith("Missing error:"));
-  const constraintGaps = gaps.filter(g => g.startsWith("Missing constraint:"));
-  const decisionGaps = gaps.filter(g => g.startsWith("Missing decision:"));
-  const sectionGaps = gaps.filter(g => g.startsWith("Missing section:"));
-  const otherGaps = gaps.filter(g =>
-    !g.startsWith("Missing modified file:") &&
-    !g.startsWith("Missing error:") &&
-    !g.startsWith("Missing constraint:") &&
-    !g.startsWith("Missing decision:") &&
-    !g.startsWith("Missing section:") &&
-    !g.startsWith("Potentially fabricated") &&
-    !g.startsWith("Inconsistency")
-  );
-
-  const ensureMissingSection = (header: string): void => {
-    // Map the heading literal back to a structural kind so upsertSection can
-    // produce canonical markdown regardless of what the LLM emitted before.
-    if (header === "## Goal") {
-      canonical = upsertSection(canonical, "goal", (extraction.mainGoal ?? "Continue the current coding task.") + "\n");
-    } else if (header === "## Progress") {
-      canonical = upsertSection(canonical, "progress", "### Done\n- See preceding summary.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n- None recorded.\n");
-    } else if (header === "## Critical Context") {
-      canonical = upsertSection(canonical, "critical-context", "- None recorded.\n");
+  for (const gap of gaps) {
+    switch (gap.kind) {
+      case "missing-section": {
+        if (gap.section === "goal") {
+          canonical = upsertSection(canonical, "goal", extraction.mainGoal ?? "Continue the current coding task.");
+        } else if (gap.section === "progress") {
+          canonical = upsertSection(canonical, "progress", "### Done\n- See preceding summary.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n- None recorded.");
+        } else if (gap.section === "critical-context") {
+          canonical = upsertSection(canonical, "critical-context", "- None recorded.");
+        }
+        break;
+      }
+      case "missing-file":
+        canonical = appendToSection(canonical, "files-modified", "- " + gap.path);
+        break;
+      case "missing-error":
+        canonical = appendToSection(canonical, "critical-context", "- Unresolved error: " + gap.message.slice(0, TRUNC.MESSAGE));
+        break;
+      case "missing-constraint":
+        canonical = appendToSection(canonical, "constraints", "- " + gap.text.slice(0, TRUNC.CONSTRAINT_TEXT));
+        break;
+      case "missing-decision":
+        canonical = appendToSection(canonical, "decisions", "- **" + gap.summary.slice(0, TRUNC.DECISION_DETAIL) + "**");
+        break;
+      case "missing-goal":
+        canonical = upsertSection(canonical, "goal", gap.goal);
+        break;
+      case "missing-open-loops": {
+        const unresolved = extraction.errors.filter(error => !error.resolved).slice(0, gap.unresolvedCount);
+        const body = unresolved.map(error => "- [high] Resolve " + error.message.slice(0, TRUNC.SNIPPET)).join("\n");
+        canonical = upsertSection(canonical, "open-loops", body || "- Review unresolved errors.", "next-steps");
+        break;
+      }
+      case "fabricated-file":
+      case "inconsistency":
+        verificationNotes.push(formatVerificationGap(gap));
+        break;
     }
-  };
-
-  for (const gap of sectionGaps) {
-    ensureMissingSection(gap.replace("Missing section: ", ""));
   }
 
-  if (fileGaps.length > 0) {
-    const entries = fileGaps.map(g => "- " + g.replace("Missing modified file: ", "")).join("\n");
-    canonical = appendToSection(canonical, "files-modified", entries);
+  if (verificationNotes.length > 0) {
+    canonical = upsertSection(canonical, "verification-note", verificationNotes.map(note => "- " + note).join("\n"));
   }
-
-  if (errorGaps.length > 0) {
-    const entries = errorGaps.map(g => "- " + g).join("\n");
-    canonical = appendToSection(canonical, "critical-context", entries);
-  }
-
-  if (constraintGaps.length > 0) {
-    const entries = constraintGaps.map(g => "- " + g).join("\n");
-    canonical = appendToSection(canonical, "constraints", entries);
-  }
-
-  if (decisionGaps.length > 0) {
-    const entries = decisionGaps.map(g => "- **" + g.replace("Missing decision: ", "") + "**").join("\n");
-    canonical = appendToSection(canonical, "decisions", entries);
-  }
-
-  // Patching renders with canonical headings so a later verify pass cannot
-  // miss a section because the original markdown used `### Goal` or `Goals:`.
-  let rendered = renderSummary(canonical, { canonicalHeadings: true });
-  if (otherGaps.length > 0) {
-    rendered += "\n## Verification Note\n" + otherGaps.map(g => "- " + g).join("\n") + "\n";
-  }
-  return rendered;
+  return renderSummary(canonical, { canonicalHeadings: true });
 }
 
 export async function patchSummary(
-  summary: string, gaps: string[],
+  summary: string, gaps: VerificationGap[],
   model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, signal?: AbortSignal,
   services?: SmartCompactServices,
 ): Promise<string> {
   const patchPrompt = "The summary below is missing some critical information. Add the missing items WITHOUT restructuring the summary.\n\nMissing items:\n" +
-    gaps.map((g, i) => (i + 1) + ". " + g).join("\n") +
+    gaps.map((gap, index) => (index + 1) + ". " + formatVerificationGap(gap)).join("\n") +
     "\n\nCurrent summary:\n" + summary +
     "\n\nReturn the COMPLETE updated summary with missing items integrated. Keep the same format.";
 
   try {
-    // Cap maxTokens to the provider's true output ceiling. The previous
-    // hard-coded 8192 caused provider-side errors for DeepSeek/MiniMax
-    // (4096) and silently wasted budget on providers with higher ceilings.
-    const providerCap = getProviderCaps(model.provider).maxOutputTokens;
-    const maxTokens = Math.min(8192, providerCap);
-    const resp = await trackedComplete("patch", model, {
+    const maxTokens = Math.min(8192, getProviderCaps(model.provider).maxOutputTokens);
+    const response = await trackedComplete("patch", model, {
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user" as const, content: [{ type: "text" as const, text: patchPrompt }], timestamp: Date.now() }],
     }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens, signal }, services);
-    const patched = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
+    const patched = response.content.filter((content): content is import("@earendil-works/pi-ai").TextContent => content.type === "text").map(content => content.text).join("\n").trim();
     return patched.startsWith("##") ? patched : summary;
-  } catch (e) { log.debug("patchSummary LLM failed", e); return summary; }
+  } catch (error) {
+    log.debug("patchSummary LLM failed", error);
+    return summary;
+  }
 }
