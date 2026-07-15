@@ -220,6 +220,26 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
 }
 ```
 
+### Per-phase reasoning
+
+Exploration can use a cheaper reasoning level while final synthesis and repair
+use a stronger one:
+
+```json
+{
+  "smartCompact": {
+    "segmentationThinkingLevel": "low",
+    "summaryThinkingLevel": "high"
+  }
+}
+```
+
+`segmentationThinkingLevel` applies to exploration; `summaryThinkingLevel`
+applies to synthesis, assembly, and repair. Supported values are `minimal`,
+`low`, `medium`, `high`, `xhigh`, and `max`. Leave either value as `null` to
+preserve the provider's existing behavior. An explicit call-level reasoning
+option takes precedence over these defaults.
+
 <details>
 <summary><strong>All configuration keys</strong></summary>
 
