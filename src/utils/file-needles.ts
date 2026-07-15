@@ -47,8 +47,12 @@ export const MIN_BARE_BASENAME_LEN = 5;
  * path. All needles are lowercased so substring matching can be done with
  * `errorMessage.toLowerCase().includes(needle)` cheaply.
  */
+function normalizePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+}
+
 export function buildPathNeedles(filePath: string): string[] {
-  const parts = filePath.toLowerCase().split("/").filter(Boolean);
+  const parts = normalizePath(filePath).split("/").filter(Boolean);
   if (parts.length === 0) return [];
   const needles: string[] = [];
   const basename = parts[parts.length - 1];
@@ -63,4 +67,30 @@ export function buildPathNeedles(filePath: string): string[] {
     needles.push(parts.slice(j).join("/"));
   }
   return needles;
+}
+
+/**
+ * Return only suffixes that identify exactly one path in the supplied set.
+ * A bare `auth.ts` is useful when unique, but must not let one monorepo package
+ * satisfy verification for every sibling package that owns an `auth.ts`.
+ */
+export function buildUniquePathNeedles(filePath: string, allPaths: readonly string[]): string[] {
+  const normalized = allPaths.map(normalizePath);
+  return buildPathNeedles(filePath).filter(needle => {
+    let owners = 0;
+    for (const candidate of normalized) {
+      if (candidate === needle || candidate.endsWith("/" + needle)) owners++;
+      if (owners > 1) return false;
+    }
+    return owners === 1;
+  });
+}
+
+/** Whether an extracted file reference can refer to at least one known path. */
+export function isKnownPathReference(ref: string, knownPaths: readonly string[]): boolean {
+  const normalizedRef = normalizePath(ref);
+  return knownPaths.some(path => {
+    const normalizedPath = normalizePath(path);
+    return normalizedPath === normalizedRef || normalizedPath.endsWith("/" + normalizedRef);
+  });
 }

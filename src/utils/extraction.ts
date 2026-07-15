@@ -8,7 +8,7 @@ import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_SCAN_MAX_LEN, ERR
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
-import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
+import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
 
 /** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
 export const TRUNCATE_RE = /…✂\d+$/;
@@ -144,10 +144,8 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
     const filePath = extractToolPath(tc.arguments);
     if (!filePath) continue;
 
-    // Classify by argument shape, not tool name (domain/tool-semantics.ts) —
-    // auto-adapts to any tool without a name list.
-    const cls = classifyTool(tc.arguments);
-    if (cls === "mutates") {
+    const operation = classifyToolOperation(tc.arguments, tc.name);
+    if (operation === "mutate") {
       // pi-toolkit truncation hides whether a write was a no-op, so a truncated
       // result is treated as modified (safe default); otherwise skip true no-ops.
       const resultText = extractText(m.content);
@@ -155,9 +153,11 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
         const existing = modMap.get(filePath);
         modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
       }
-    } else if (cls === "accesses") {
-      // path-only: could be a read or a delete. Args can't tell them apart, so
-      // fall back to the result text (see DELETE_RESULT_RE). Defaults to read.
+    } else if (operation === "delete") {
+      delSet.add(filePath);
+    } else if (operation === "read" || operation === "search" || operation === "list") {
+      // Unknown path-only tools default to read; preserve result-text fallback
+      // for providers whose delete tool has no useful name.
       if (DELETE_RESULT_RE.test(extractText(m.content))) delSet.add(filePath);
       else readSet.add(filePath);
     }
@@ -186,7 +186,7 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     // Error-pattern scan for command-executing tools (bash/hypa_shell/...).
     // Gated by argument shape, not by tool name, so it auto-covers shell-like
     // tools this code has never seen. Explicit m.isError is handled above.
-    if (tc && classifyTool(tc.arguments) === "executes") {
+    if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute") {
       const txt = extractText(m.content);
       if (LIKELY_ERROR_RE.test(txt) && txt.length < ERROR_SCAN_MAX_LEN) {
         errors.push({ index: i, tool: tc.name, message: txt.slice(0, TRUNC.MESSAGE), retryAttempted: false, resolved: false });
@@ -299,16 +299,16 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
           if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
           lastFile = fn;
           currentPrimaryFile = fp;
-          const toolCls = classifyTool(tool.arguments);
-          if (toolCls === "mutates") { if (currentType !== "implementation") currentType = "implementation"; }
-          else if (toolCls === "accesses") { if (currentType === "exploration") currentType = "review"; }
+          const operation = classifyToolOperation(tool.arguments, tool.name);
+          if (operation === "mutate" || operation === "delete") { if (currentType !== "implementation") currentType = "implementation"; }
+          else if (operation === "read" || operation === "search" || operation === "list") { if (currentType === "exploration") currentType = "review"; }
         }
       }
     }
     if (m.role === "toolResult" && m.isError) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
     if (m.role === "toolResult" && !m.isError) {
       const tc = tcIdx.get(m.toolCallId ?? "");
-      if (tc && classifyTool(tc.arguments) === "executes" && /error|fail/i.test(txt)) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
+      if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute" && /error|fail/i.test(txt)) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
     }
     if (m.role === "user" && SHIFT_RE.test(txt) && tokenAcc > pc.minChunkTokens) brk = true;
     if (tokenAcc >= pc.maxChunkTokens) brk = true;

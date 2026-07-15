@@ -11,7 +11,7 @@
 import { describe, it, expect } from "bun:test";
 import { extractStructured, extractOpenLoops } from "../src/utils/extraction.ts";
 import { buildCompactionState, computeDelta } from "../src/utils/state.ts";
-import { verifySummary } from "../src/phases/verify.ts";
+import { verifySummary, formatVerificationGap } from "../src/phases/verify.ts";
 import { PROFILES } from "../src/constants.ts";
 import type { LlmMessage, StructuredExtraction, CompactionState } from "../src/types.ts";
 
@@ -292,7 +292,7 @@ describe("Fabrication Safety", () => {
 
     const result = verifySummary(fabricatedSummary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(g => g.includes("fabricated"))).toBe(true);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(true);
   });
 
   it("verification accepts all real files", () => {
@@ -314,6 +314,6 @@ describe("Fabrication Safety", () => {
     ].join("\n");
 
     const result = verifySummary(goodSummary, extraction);
-    expect(result.gaps.some(g => g.includes("fabricated"))).toBe(false);
+    expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(false);
   });
 });

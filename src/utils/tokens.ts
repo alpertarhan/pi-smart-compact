@@ -3,7 +3,7 @@
  */
 
 import { CHARS_PER_TOKEN, TUNING } from "../constants.ts";
-import type { ProviderCapabilities } from "../types.ts";
+import type { LlmMessage, ProviderCapabilities } from "../types.ts";
 
 const PROVIDER_MAP: Record<string, ProviderCapabilities> = {
   // ── Anthropic family ──
@@ -204,4 +204,35 @@ export function estimateTokens(text: string, provider?: string, model?: string, 
 
 export function calibrateFromResponse(estimated: number, actual: number, provider?: string, model?: string, calibration = _fallbackCalibration): void {
   calibration.calibrate(estimated, actual, provider, model);
+}
+
+export interface TokenEstimator {
+  text(text: string): number;
+  message(message: Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">): number;
+  messages(messages: ReadonlyArray<Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">>): number;
+}
+
+/**
+ * Bind provider/model calibration once per run. Message estimates use the
+ * actual structured content, including tool-call arguments that text-only
+ * extraction intentionally omits.
+ */
+export function makeTokenEstimator(
+  provider?: string,
+  model?: string,
+  calibration: TokenCalibrationStore = _fallbackCalibration,
+): TokenEstimator {
+  const text = (value: string) => estimateTokens(value, provider, model, calibration);
+  const serializable = (message: Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">) => ({
+    role: message.role,
+    content: message.content,
+    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName ? { toolName: message.toolName } : {}),
+    ...(message.isError ? { isError: true } : {}),
+  });
+  return {
+    text,
+    message: message => text(JSON.stringify(serializable(message))),
+    messages: messages => text(JSON.stringify(messages.map(serializable))),
+  };
 }

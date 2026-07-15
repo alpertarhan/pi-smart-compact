@@ -2,6 +2,8 @@ import { performance } from "node:perf_hooks";
 import { PROFILES } from "../src/constants.ts";
 import { buildToolCallIndex, extractStructured } from "../src/utils/extraction.ts";
 import { pruneRedundant } from "../src/utils/pruning.ts";
+import { parseSummary } from "../src/domain/summary-parse.ts";
+import { buildUniquePathNeedles } from "../src/utils/file-needles.ts";
 import type { LlmMessage } from "../src/types.ts";
 
 const fullConversation: LlmMessage[] = Array.from({ length: 2_500 }, (_, i): LlmMessage[] => [
@@ -12,6 +14,8 @@ const fullConversation: LlmMessage[] = Array.from({ length: 2_500 }, (_, i): Llm
   { role: "toolResult", toolCallId: "read-" + i, content: [{ type: "text", text: "export const value = " + i + ";" }] },
 ]).flat();
 const incrementalDelta = fullConversation.slice(-100);
+const oneMegabyteSummary = "## Goal\n" + "x".repeat(1_000_000);
+const collidingPaths = Array.from({ length: 500 }, (_, i) => "packages/p" + i + "/src/index.ts");
 let sink = 0;
 
 interface Benchmark {
@@ -42,6 +46,16 @@ const benchmarks: Benchmark[] = [
     name: "prune 5k messages",
     iterations: 5,
     run: () => { sink += pruneRedundant(fullConversation).messages.length; },
+  },
+  {
+    name: "parse 1MB canonical summary",
+    iterations: 5,
+    run: () => { sink += parseSummary(oneMegabyteSummary).sections[0]?.body.length ?? 0; },
+  },
+  {
+    name: "unique needles across 500 paths",
+    iterations: 20,
+    run: () => { sink += buildUniquePathNeedles(collidingPaths[250], collidingPaths).length; },
   },
 ];
 

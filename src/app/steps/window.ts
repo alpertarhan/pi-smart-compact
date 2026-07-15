@@ -16,10 +16,8 @@
 
 import type { PreparedRc, WindowedRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
-import type { SessionMessageEntry } from "../../types.ts";
-import { estimateTokens } from "../../utils/tokens.ts";
+import type { LlmMessage, SessionMessageEntry } from "../../types.ts";
 import { smartKeepBoundary, guardToolCallBoundary } from "../../utils/helpers.ts";
-import { extractText } from "../../utils/extraction.ts";
 import { resolveSessionId } from "../../infra/session-identity.ts";
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
@@ -35,13 +33,10 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   let accTokens = 0;
   let keepFrom = msgs.length;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    const msg = msgs[i].message as Record<string, unknown>;
-    // extractText already handles string | block[] | undefined and shares the
-    // same approximation as the rest of the pipeline. The earlier code used
-    // JSON.stringify on the raw content which over-counts tokens (it includes
-    // type markers, escapes, and tool args verbatim).
-    const contentText = extractText(msg?.content);
-    accTokens += estimateTokens(contentText);
+    // The model receives structured tool-call arguments as context, so the
+    // recent-tail budget must count them too. The run-scoped estimator applies
+    // the same provider/model calibration used by synthesis planning.
+    accTokens += rc.estimator.message(msgs[i].message as LlmMessage);
     if (accTokens >= rc.profileCfg.keepRecentTokens) { keepFrom = i; break; }
   }
   keepFrom = smartKeepBoundary(msgs, keepFrom, branch);

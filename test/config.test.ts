@@ -155,6 +155,39 @@ describe("validateSmartCompactConfig", () => {
     validateSmartCompactConfig(sc);
     expect(sc.pinPaths).toEqual(["src/auth.ts", "README.md"]);
   });
+
+  it("validates roadmap security and policy flags", () => {
+    const sc: Record<string, unknown> = {
+      requireApproval: "yes",
+      scrubSecrets: true,
+      scrubPii: false,
+      focusWeighting: true,
+      adaptiveDamageFeedback: false,
+      onlineDamageMonitor: true,
+    };
+    validateSmartCompactConfig(sc);
+    expect(sc.requireApproval).toBeUndefined();
+    expect(sc.scrubSecrets).toBe(true);
+  });
+
+  it("validates optional call and latency budgets", () => {
+    const valid: Record<string, unknown> = { maxLlmCalls: 8, maxLatencyMs: 20_000 };
+    validateSmartCompactConfig(valid);
+    expect(valid).toEqual({ maxLlmCalls: 8, maxLatencyMs: 20_000 });
+    const invalid: Record<string, unknown> = { maxLlmCalls: -1, maxLatencyMs: 1000 };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.maxLlmCalls).toBeUndefined();
+    expect(invalid.maxLatencyMs).toBeUndefined();
+  });
+
+  it("ships risky roadmap features behind safe defaults", () => {
+    expect(DEFAULT_CONFIG.requireApproval).toBe(false);
+    expect(DEFAULT_CONFIG.scrubSecrets).toBe(true);
+    expect(DEFAULT_CONFIG.scrubPii).toBe(false);
+    expect(DEFAULT_CONFIG.adaptiveDamageFeedback).toBe(false);
+    expect(DEFAULT_CONFIG.maxLlmCalls).toBe(0);
+    expect(DEFAULT_CONFIG.maxLatencyMs).toBe(0);
+  });
 });
 
 describe("computeToolCharPercentage", () => {

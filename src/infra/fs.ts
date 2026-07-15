@@ -177,6 +177,29 @@ export function appendLineLocked(target: string, line: string): void {
   }
 }
 
+/** Read the newest valid JSONL records without loading an entire bounded log. */
+export function readJsonlTail<T>(target: string, limit: number, maxBytes = 512 * 1024): T[] {
+  if (limit <= 0 || !fs.existsSync(target)) return [];
+  const stat = fs.statSync(target);
+  const length = Math.min(stat.size, maxBytes);
+  const buffer = Buffer.alloc(length);
+  const fd = fs.openSync(target, "r");
+  try { fs.readSync(fd, buffer, 0, length, stat.size - length); }
+  finally { fs.closeSync(fd); }
+  let text = buffer.toString("utf8");
+  if (stat.size > length) {
+    const newline = text.indexOf("\n");
+    text = newline >= 0 ? text.slice(newline + 1) : "";
+  }
+  const values: T[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try { values.push(JSON.parse(line) as T); }
+    catch { /* corrupt/incomplete lines are ignored at this recovery boundary */ }
+  }
+  return values.slice(-limit);
+}
+
 /** Keep only complete trailing lines that fit within `maxBytes`. */
 export function trimFileTailLocked(target: string, maxBytes: number): void {
   const release = acquireLockSync(target);

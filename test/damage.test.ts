@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { detectDamage } from "../src/utils/damage.ts";
+import { detectDamage, OnlineDamageMonitor } from "../src/utils/damage.ts";
 import type { LlmMessage, SmartCompactDetails } from "../src/types.ts";
 
 function userMsg(text: string): LlmMessage {
@@ -58,6 +58,26 @@ function makeDetails(over: Partial<SmartCompactDetails> = {}): SmartCompactDetai
   };
 }
 
+describe("OnlineDamageMonitor", () => {
+  it("activates after compaction and emits the first actionable observation", () => {
+    const monitor = new OnlineDamageMonitor(15);
+    monitor.activate("session-1", "project-1", makeDetails());
+    const observation = monitor.observe("session-1", assistantToolCall("read", { path: "src/auth.ts" }));
+    expect(observation?.report.damageScore).toBeGreaterThan(0);
+    expect(observation?.projectId).toBe("project-1");
+    expect(monitor.size()).toBe(0);
+  });
+
+  it("stops a clean monitor at the configured message window", () => {
+    const monitor = new OnlineDamageMonitor(2);
+    monitor.activate("session-1", "project-1", makeDetails());
+    expect(monitor.observe("session-1", assistantText("continue"))).toBeNull();
+    const observation = monitor.observe("session-1", assistantText("done"));
+    expect(observation?.report.damageScore).toBe(0);
+    expect(monitor.size()).toBe(0);
+  });
+});
+
 describe("detectDamage", () => {
   it("reports zero score for a clean post-compaction history", () => {
     const messages: LlmMessage[] = [
@@ -91,6 +111,14 @@ describe("detectDamage", () => {
     ];
     const report = detectDamage(messages, makeDetails());
     expect(report.signals.some(s => s.type === "re-read")).toBe(true);
+  });
+
+  it("does not mistake a path + text mutation for a re-read", () => {
+    const messages: LlmMessage[] = [
+      assistantToolCall("write_file", { path: "src/auth.ts", text: "replacement" }),
+    ];
+    const report = detectDamage(messages, makeDetails());
+    expect(report.signals.filter(s => s.type === "re-read")).toHaveLength(0);
   });
 
   it("does not flag a re-read for a file that was never in the compacted section", () => {

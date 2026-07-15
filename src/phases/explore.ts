@@ -14,6 +14,7 @@ import { getProviderCaps } from "../utils/tokens.ts";
 import * as log from "../utils/logger.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import { getDefaultServices } from "../infra/services.ts";
+import { buildExtractionContext } from "../utils/helpers.ts";
 
 // Tool support is cached on the per-run services container. The previous
 // module-level `_toolSupportCache` leaked TTL'd state across pi sessions and
@@ -297,15 +298,11 @@ export async function exploreConversation(
   const svc = services ?? getDefaultServices();
 
   const extractionContext = [
-    "## Deterministic Extraction (verified facts)",
+    buildExtractionContext(extraction),
     "Message count: " + extraction.messageCount,
     "Main goal: " + (extraction.mainGoal ?? "unknown"),
-    "Files modified (" + extraction.modifiedFiles.length + "): " + (extraction.modifiedFiles.map(f => f.path).join(", ") || "none"),
-    "Files read (" + extraction.readFiles.length + "): " + (extraction.readFiles.join(", ") || "none"),
-    "Errors (" + extraction.errors.length + "): " + (extraction.errors.map(e => "[" + e.tool + "] " + e.message.slice(0, TRUNC.SNIPPET) + (e.resolved ? " (resolved)" : e.retryAttempted ? " (retry attempted)" : "")).join("; ") || "none"),
-    "Decisions (" + extraction.decisions.length + "): " + (extraction.decisions.map(d => d.type + ": " + d.summary.slice(0, TRUNC.SNIPPET)).join("; ") || "none"),
-    "Constraints (" + extraction.constraints.length + "): " + (extraction.constraints.map(cc => "[" + cc.category + "] " + cc.text.slice(0, TRUNC.SNIPPET)).join("; ") || "none"),
-    "Heuristic topics (" + extraction.topics.length + "): " + (extraction.topics.map(t => "[" + t.startIndex + "-" + t.endIndex + "] " + t.type).join("; ") || "none"),
+    "Files read: " + (extraction.readFiles.join(", ") || "none"),
+    "Heuristic topics: " + (extraction.topics.map(t => "[" + t.startIndex + "-" + t.endIndex + "] " + t.type).join("; ") || "none"),
     extraction.lastUserMessages.length ? "Last user messages: " + extraction.lastUserMessages.map(m => m.slice(0, TRUNC.TOPIC_LABEL)).join(" | ") : "",
     extraction.lastErrors.length ? "Last errors: " + extraction.lastErrors.map(e => e.slice(0, TRUNC.TOPIC_LABEL)).join(" | ") : "",
   ].filter(Boolean).join("\n");

@@ -158,6 +158,16 @@ open-loop coverage.
 **Repair order is intentional:** (1) accept if good enough → (2) deterministic
 patch first (free, idempotent) → (3) LLM patch only if still insufficient.
 
+## EESV hardening and control surfaces
+
+- **Canonical summary IR** accepts recognized H1/H2/H3 headings, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
+- **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Provenance is persisted and shown before optional approval.
+- **Fine tool semantics** separate read/search/list/mutate/delete/execute operations. Pruning deduplicates only identical idempotent access signatures.
+- **Unified token planning** uses one run-scoped provider/model-calibrated estimator and counts structured tool-call arguments in window and batch decisions.
+- **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in.
+- **Policy controls** include focus weighting, exact call/latency budgets, fail-closed manual approval, online damage monitoring, and persisted open-loop overrides.
+- **Release gate** (`bun run gate`) covers adversarial parser, verification, tool, cache, budget, scrub and damage fixtures.
+
 ## State, caching & persistence
 
 Post-verification, `app/steps/state.ts` + `src/utils/state.ts` enrich the
@@ -289,7 +299,9 @@ Pure semantics — no I/O, no async, no globals.
 | File | Responsibility |
 | --- | --- |
 | `domain/summary-schema.ts` | canonical section kinds + heading classification |
-| `domain/summary-parse.ts` | parse/render summary into structured sections; placement (`before`/`after`) |
+| `domain/summary-parse.ts` | parse/render canonical H1/H2/H3 sections; merge duplicates; placement (`before`/`after`) |
+| `domain/tool-semantics.ts` | fine tool operation taxonomy with broad compatibility wrapper |
+| `domain/scrub.ts` | pure secret/PII redaction primitives and run-scoped scrubber |
 
 ### Algorithm layer (`src/phases/`)
 
@@ -297,7 +309,7 @@ Pure semantics — no I/O, no async, no globals.
 | --- | --- |
 | `phases/explore.ts` | targeted exploration with tool-call probing |
 | `phases/synthesize.ts` | chunking, single-pass compact, batch summarization, assembly |
-| `phases/verify.ts` | scoring, gap detection, summary patching |
+| `phases/verify.ts` | typed gap detection, collision-safe coverage, deterministic/LLM repair |
 
 ### Infrastructure layer (`src/infra/`)
 

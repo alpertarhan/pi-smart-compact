@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: bun test
 
+      - name: EESV adversarial gate
+        run: bun run gate
+
       - name: Build
         run: bun run build
 

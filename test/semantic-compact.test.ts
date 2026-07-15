@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseExplorationReport } from "../src/phases/explore";
-import { verifySummary } from "../src/phases/verify";
+import { verifySummary, formatVerificationGap } from "../src/phases/verify";
 import type { LlmMessage, ProfileConfig, StructuredExtraction } from "../src/types";
 import { extractStructured } from "../src/utils/extraction";
 import { estimateTokens } from "../src/utils/tokens";
@@ -111,7 +111,7 @@ describe("verifySummary", () => {
 
     const result = verifySummary(summary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(gap => gap.includes("Missing modified file"))).toBe(true);
+    expect(result.gaps.some(gap => formatVerificationGap(gap).includes("Missing modified file"))).toBe(true);
     expect(result.score).toBeLessThan(100);
   });
 });

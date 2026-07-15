@@ -14,18 +14,27 @@ import { advance } from "../run-context.ts";
 import {
   buildCompactionState, injectOpenLoopsSection, extractNextActions,
   extractCriticalContext, loadCompactionState, computeDelta, injectDeltaSection,
-  hasDeltaChanges, ensurePinnedPaths,
+  hasDeltaChanges, ensurePinnedPaths, applyLoopOverrides,
 } from "../../utils/state.ts";
 import { extractOpenLoops } from "../../utils/extraction.ts";
 import { readRemediationHints } from "../../utils/damage.ts";
-import { estimateTokens } from "../../utils/tokens.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
   const extraction = rc.extraction;
   let summary = rc.finalSummary;
 
-  const openLoops = extractOpenLoops(rc.llmMessages, extraction);
+  const prevState = loadCompactionState(rc.projectId);
+  const loopOverrides = prevState?.loopOverrides ?? [];
+  const extractedLoops = extractOpenLoops(rc.llmMessages, extraction);
+  const currentKeys = new Set(extractedLoops.map(loop => loop.summary.toLowerCase().replace(/\s+/g, " ").trim()));
+  const pinnedPrevious = (prevState?.openLoops ?? []).filter(loop => {
+    const key = loop.summary.toLowerCase().replace(/\s+/g, " ").trim();
+    const override = loopOverrides.find(item => item.summaryKey === key);
+    return override?.pinned && !currentKeys.has(key);
+  });
+  const managedLoops = applyLoopOverrides([...extractedLoops, ...pinnedPrevious], loopOverrides);
+  const openLoops = managedLoops.filter(loop => loop.status !== "resolved");
   if (openLoops.length > 0) {
     rc.notify(
       "Open Loops: " + openLoops.length + " detected (" +
@@ -53,14 +62,13 @@ export function buildState(rc: VerifiedRc): StatedRc {
 
   const nextActions = extractNextActions(summary);
   const criticalContextItems = extractCriticalContext(summary);
-  const compactionState = buildCompactionState(
-    extraction, openLoops, rc.explorationReport, nextActions, criticalContextItems,
+  let compactionState = buildCompactionState(
+    extraction, managedLoops, rc.explorationReport, nextActions, criticalContextItems, loopOverrides,
   );
 
   // Cross-compaction delta: when previous state exists, surface what changed
   // since last time so the agent sees a focused diff rather than the entire
   // recomputed state.
-  const prevState = loadCompactionState(rc.projectId);
   if (prevState) {
     const delta = computeDelta(prevState, compactionState);
     if (hasDeltaChanges(delta)) {
@@ -73,9 +81,14 @@ export function buildState(rc: VerifiedRc): StatedRc {
     }
   }
 
+  // Defense in depth: LLM requests and extraction caches are already scrubbed,
+  // but deterministic state/delta injection is another write boundary.
+  summary = rc.services.scrubber.scrubText(summary).value;
+  compactionState = rc.services.scrubber.scrubValue(compactionState).value;
+
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
-  const estimatedAfter = estimateTokens(summary) + rc.accTokens;
+  const estimatedAfter = rc.estimator.text(summary) + rc.accTokens;
   const tokensSaved = Math.max(0, rc.totalTokens - estimatedAfter);
 
   const details: SmartCompactDetails = {
@@ -89,7 +102,9 @@ export function buildState(rc: VerifiedRc): StatedRc {
     explorationRounds: rc.explorationRounds, explorationBoundaries: rc.explorationReport?.boundaries.length ?? 0,
     model: rc.modelLabel, qualityScore: rc.verificationScore,
     tokensBefore: rc.totalTokens,
+    provenance: rc.verificationProvenance,
     compactionState, openLoops,
+    redactions: rc.services.scrubber.count(),
   };
 
   const out = rc as VerifiedRc & {

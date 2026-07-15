@@ -30,7 +30,6 @@ import {
 import { deriveProjectId, findGitRoot, loadProjectFingerprint, buildProjectContext } from "../../utils/fingerprint.ts";
 import { getPreviousCompactionContext } from "../../utils/helpers.ts";
 import { isPrefixOf, legacyPrefixMatch } from "../../utils/id-fingerprint.ts";
-import { estimateTokens } from "../../utils/tokens.ts";
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { asSerializableMessages } from "../../infra/ai-messages.ts";
 import { backupConversation } from "../../utils/helpers.ts";
@@ -62,9 +61,9 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
 
   const extractionStart = pruneEnd;
   const convText = serializeConversation(asSerializableMessages(rc.llmMessages));
-  const convTokens = estimateTokens(convText);
+  const convTokens = rc.estimator.text(convText);
 
-  const backupPath = backupConversation(convText, rc.sessionId);
+  const backupPath = backupConversation(rc.services.scrubber.scrubText(convText).value, rc.sessionId);
   const prevContext = getPreviousCompactionContext(rc.branch);
 
   const cachedExt = loadCachedExtraction(rc.sessionId);
@@ -116,7 +115,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     // expects offsets relative to newMsgs[0].
     const deltaTcIdx = buildToolCallIndex(newMsgs);
     const delta = extractStructured(newMsgs, rc.profileCfg, deltaTcIdx);
-    extraction = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount);
+    extraction = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx);
     rc.notify(
       "Phase 1 Incremental: " + cachedExt.messageCount + " cached + " + newMsgs.length + " new pruned messages",
       "info",
@@ -140,6 +139,10 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     rc.vlog("Full extraction — " + rc.llmMessages.length + " messages, tier=" + rc.tier);
     recordExtractionCacheMiss(rc.services);
   }
+
+  // Extraction caches are durable artifacts too: redact sensitive text before
+  // it crosses the disk/prompt/state boundary. Paths and indexes are preserved.
+  extraction = rc.services.scrubber.scrubValue(extraction).value;
 
   // messageCount is the pruned domain; entryIds is unpruned; keptEntryIds is
   // the pruning-prefix used for safe incremental extraction next time.

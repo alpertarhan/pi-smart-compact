@@ -77,6 +77,8 @@ export interface SmartCompactOptions {
   isRunning: Cell<boolean>;
   autoTriggered?: boolean;
   userNote?: string;
+  focus?: string;
+  maxLlmCalls?: number;
   skipCompact?: boolean;
   /** Explicit user command may bypass adaptive context-pressure tier gate. */
   force?: boolean;
@@ -120,6 +122,8 @@ function makeBase(opts: SmartCompactOptions): RcBase {
       force: !!opts.force,
     },
     userNote: opts.userNote,
+    focus: opts.focus,
+    maxLlmCalls: opts.maxLlmCalls,
     timeoutMs: opts.timeoutMs ?? 0,
     phaseTimings: [],
     pipelineStart,
@@ -267,19 +271,34 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     if (!willApply) recordSuccessMetrics(stated, "success");
 
     if (!stated.flags.autoTriggered) {
+      const approvalRequired = willApply && stated.config.requireApproval && stated.ctx.hasUI;
+      let decision: "apply" | "cancel" | "closed" = approvalRequired ? "cancel" : "closed";
       try {
-        let resultTimer: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<void>(resolve => { resultTimer = setTimeout(resolve, 5000); });
-        try {
-          await Promise.race([showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services), timeoutPromise]);
-        } finally {
-          // Clear the fallback timer whether the screen or the timeout won
-          // the race — otherwise it lingers up to 5s after we've moved on.
-          if (resultTimer) clearTimeout(resultTimer);
+        if (approvalRequired) {
+          // Approval is fail-closed and never races an auto-apply timer.
+          decision = await showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services, { approval: true });
+        } else {
+          let resultTimer: ReturnType<typeof setTimeout> | undefined;
+          const timeoutPromise = new Promise<"closed">(resolve => { resultTimer = setTimeout(() => resolve("closed"), 5000); });
+          try {
+            decision = await Promise.race([
+              showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services),
+              timeoutPromise,
+            ]);
+          } finally {
+            if (resultTimer) clearTimeout(resultTimer);
+          }
         }
       } catch (err) {
         log.warn("Result screen error", err);
-        stated.notify("Result screen skipped", "info");
+        stated.notify(approvalRequired ? "Approval UI failed — compaction cancelled" : "Result screen skipped", approvalRequired ? "warning" : "info");
+        decision = approvalRequired ? "cancel" : "closed";
+      }
+      if (approvalRequired && decision !== "apply") {
+        stated.pendingRef.clear();
+        recordSuccessMetrics(stated, "cancelled");
+        stated.notify("Compaction cancelled — current conversation unchanged", "info");
+        return;
       }
     }
 

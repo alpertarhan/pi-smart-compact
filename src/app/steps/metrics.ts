@@ -25,7 +25,7 @@ function runType(rc: RcBase): "manual" | "auto" | "tool" {
   return rc.flags.skipCompact ? "tool" : rc.flags.autoTriggered ? "auto" : "manual";
 }
 
-export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run"): void {
+export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run" | "cancelled"): void {
   const ecs = getExtractionCacheStats(rc.services);
   appendMetricsLog(rc.sessionId, {
     profile: rc.profile, tier: rc.tier,
@@ -48,6 +48,9 @@ export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run"
     extractionCacheMisses: ecs.misses,
     extractionCacheHitRate: ecs.hitRate,
     extractionCacheMissReason: rc.extractionCacheMissReason,
+    fallbackReason: rc.services.budget.reason() ? "budget-" + rc.services.budget.reason() : undefined,
+    redactions: rc.services.scrubber.count(),
+    adapted: rc.adapted,
   }, rc.services);
 
   const ms = getMetricsSummary(rc.services);

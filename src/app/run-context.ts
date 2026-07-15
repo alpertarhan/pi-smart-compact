@@ -44,6 +44,7 @@ import type {
 import type { PendingSlot } from "./pending-slot.ts";
 import type { PruningResult } from "../utils/pruning.ts";
 import type { CompactionTier } from "../utils/helpers.ts";
+import type { TokenEstimator } from "../utils/tokens.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 
 // ── Shared infra types (unchanged) ───────────────────────────────────────────
@@ -101,6 +102,8 @@ export interface RcBase {
   isRunning: Cell<boolean>;
   flags: RunFlags;
   userNote?: string;
+  focus?: string;
+  maxLlmCalls?: number;
   timeoutMs: number;
   phaseTimings: PipelinePhaseTiming[];
   pipelineStart: number;
@@ -122,6 +125,8 @@ export interface PreparedExt {
   config: CompactConfig;
   profileCfg: ProfileConfig;
   providerCaps: ProviderCapabilities;
+  estimator: TokenEstimator;
+  adapted: boolean;
   summaryAuth: ResolvedAuth;
   segAuth: ResolvedAuth;
 }
@@ -214,6 +219,7 @@ export interface VerifiedExt extends SynthesizedExt {
   readonly _verified: true;
   verificationScore: number;
   verificationGaps: string[];
+  verificationProvenance: import("../types.ts").VerificationProvenance;
   verified: boolean;
 }
 export type VerifiedRc = RcBase & VerifiedExt;

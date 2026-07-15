@@ -9,7 +9,7 @@ import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncate
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   CompactMetricsEntry, CompressionProfile, ModelOption, ProgressState,
-  SmartCompactDetails, StructuredExtraction,
+  SmartCompactDetails, StructuredExtraction, OpenLoop, LoopOverride,
 } from "../types.ts";
 import type { BackupEntry } from "../utils/helpers.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
@@ -26,6 +26,7 @@ import {
   metricScore,
 } from "./dashboard-format.ts";
 import path from "node:path";
+import { applyLoopOverrides, upsertLoopOverride } from "../utils/state.ts";
 
 export function renderContextBar(theme: Theme, pct: number, tokens: number, barLen = 24): string {
   const clamped = Math.min(Math.max(pct, 0), 100);
@@ -173,11 +174,12 @@ export async function showResultScreen(
   details: SmartCompactDetails,
   extraction: StructuredExtraction,
   services: SmartCompactServices,
-): Promise<void> {
+  opts: { approval?: boolean } = {},
+): Promise<"apply" | "cancel" | "closed"> {
   await ctx.ui.custom<void>((tui, theme, _kb, done) => {
     const c = new Container();
     c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    c.addChild(new Text(theme.fg("accent", theme.bold("  \u2705 Smart Compact Complete")), 1, 0));
+    c.addChild(new Text(theme.fg("accent", theme.bold(opts.approval ? "  \uD83D\uDD0E Smart Compact Review" : "  \u2705 Smart Compact Complete")), 1, 0));
     c.addChild(new Text("", 0, 0));
 
     const estimatedAfter = (details.tokensBefore ?? 0) - (details.tokensSaved ?? 0);
@@ -199,6 +201,18 @@ export async function showResultScreen(
 
     const scoreColor = details.qualityScore >= 80 ? "success" : details.qualityScore >= 50 ? "warning" : "error";
     c.addChild(new Text(theme.fg("text", "  Quality: ") + theme.fg(scoreColor, details.qualityScore + "/100"), 0, 0));
+    if (details.provenance) {
+      const provenance = details.provenance;
+      c.addChild(new Text(
+        theme.fg("dim", "  Provenance: score " + provenance.initialScore + " → deterministic " + provenance.deterministicPatched.length +
+          (provenance.llmPatched ? " → LLM patch" : "") + " → " + provenance.finalScore +
+          " (" + provenance.remainingGaps.length + " remaining)"),
+        0, 0,
+      ));
+    }
+    if ((details.redactions ?? 0) > 0) {
+      c.addChild(new Text(theme.fg("warning", "  Security: " + details.redactions + " sensitive value(s) redacted"), 0, 0));
+    }
     c.addChild(new Text("", 0, 0));
 
     c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDCCB Extraction")), 0, 0));
@@ -322,7 +336,7 @@ export async function showResultScreen(
       c.addChild(new Text("", 0, 0));
     }
 
-    c.addChild(new Text(theme.fg("dim", "  Press any key to close"), 0, 0));
+    c.addChild(new Text(theme.fg("dim", opts.approval ? "  Press any key to continue to Apply/Cancel" : "  Press any key to close"), 0, 0));
     c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
     return {
@@ -331,6 +345,14 @@ export async function showResultScreen(
       handleInput: (_d: string) => done(undefined),
     };
   }, { overlay: true, overlayOptions: { width: "70%", anchor: "center", maxHeight: "80%" } });
+
+  if (!opts.approval) return "closed";
+  const approved = await ctx.ui.confirm(
+    "Apply Smart Compact?",
+    "Quality " + details.qualityScore + "/100 · " + details.gaps.length + " remaining gap(s) · " +
+      details.tokensSaved.toLocaleString() + " estimated tokens saved.\n\nCancel keeps the current conversation unchanged.",
+  );
+  return approved ? "apply" : "cancel";
 }
 
 type DashboardView = "menu" | "overview" | "latest" | "session" | "recent";
@@ -482,6 +504,45 @@ export async function showRestorePicker(
       handleInput: (d: string) => { sel.handleInput(d); tui.requestRender(); },
     };
   });
+}
+
+export async function showOpenLoopsUI(
+  ctx: ExtensionCommandContext,
+  sourceLoops: OpenLoop[],
+  initialOverrides: LoopOverride[] = [],
+): Promise<LoopOverride[] | null> {
+  let overrides = initialOverrides.slice();
+  let changed = false;
+  while (true) {
+    const loops = applyLoopOverrides(sourceLoops, overrides);
+    const labels = loops.map((loop, index) =>
+      (index + 1) + ". [" + loop.status + "/" + loop.priority + "] " + loop.summary.slice(0, TRUNC.TOPIC_LABEL),
+    );
+    const choice = await ctx.ui.select("Open loops", [...labels, "Done"]);
+    if (!choice || choice === "Done") return changed ? overrides : null;
+    const index = labels.indexOf(choice);
+    const loop = loops[index];
+    if (!loop) continue;
+    const summaryKey = loop.summary.toLowerCase().replace(/\s+/g, " ").trim();
+    const existing = overrides.find(item => item.summaryKey === summaryKey);
+    const action = await ctx.ui.select("Manage: " + loop.summary.slice(0, 60), [
+      loop.status === "resolved" ? "Reopen" : "Resolve",
+      existing?.pinned ? "Unpin" : "Pin",
+      "Set priority",
+      "Back",
+    ]);
+    if (!action || action === "Back") continue;
+    if (action === "Resolve" || action === "Reopen") {
+      overrides = upsertLoopOverride(overrides, loop, { status: action === "Resolve" ? "resolved" : "open" });
+    } else if (action === "Pin" || action === "Unpin") {
+      overrides = upsertLoopOverride(overrides, loop, { pinned: action === "Pin" });
+    } else if (action === "Set priority") {
+      const priority = await ctx.ui.select("Priority", ["critical", "high", "normal", "low"]);
+      if (priority) overrides = upsertLoopOverride(overrides, loop, { priority: priority as OpenLoop["priority"] });
+      else continue;
+    }
+    changed = true;
+  }
 }
 
 /** Scrollable viewer for a restored backup's content. */

@@ -15,15 +15,6 @@ export interface PruningResult {
   prunedCount: number;
   prunedTokenSaving: number;
   reasons: Array<{ count: number; reason: string }>;
-  /**
-   * ToolCallIndex computed during pruning, keyed by **input** (unpruned)
-   * message offsets. Downstream consumers that work against the pruned
-   * message list (e.g. `extractStructured`) MUST NOT reuse this map verbatim
-   * because `msgIndex` values refer to the pre-prune positions. It is still
-   * useful for callers that want a quick `toolCallId → {name, arguments}`
-   * lookup over the original list.
-   */
-  toolCallIndex: ToolCallIndex;
 }
 
 // Pattern for agent acknowledgment messages with no information
@@ -34,7 +25,14 @@ const PI_STATUS_RE = /^\[pi-auto-context\]/;
 
 // Maximum chars to keep from a tool result output
 import { MAX_TOOL_OUTPUT_CHARS, LIKELY_ERROR_RE, ERROR_SCAN_MAX_LEN } from "../constants.ts";
-import { classifyTool, extractToolPath } from "../domain/tool-semantics.ts";
+import { classifyToolOperation, normalizeToolName } from "../domain/tool-semantics.ts";
+
+function stableArguments(args: Record<string, unknown>): string {
+  return JSON.stringify(args, (_key, value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+  });
+}
 
 /**
  * Detect and collapse redundant message sequences.
@@ -54,7 +52,6 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
       prunedCount: 0,
       prunedTokenSaving: 0,
       reasons: [],
-      toolCallIndex: ensuredIndex,
     };
   }
 
@@ -66,22 +63,22 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   const removedToolCallIds = new Set<string>();
   const reasonMap = new Map<string, number>();
 
-  // ── 1. Duplicate file reads: keep only last read per file ──
-  const readIndices = new Map<string, number[]>(); // filepath → [indices of toolResult]
+  // ── 1. Identical idempotent access calls: keep only the last ──
+  const accessIndices = new Map<string, number[]>();
   for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].role !== "toolResult") continue;
+    if (msgs[i].role !== "toolResult" || msgs[i].isError) continue;
     const tc = tcIdx.get(msgs[i].toolCallId ?? "");
-    // Dedup lookups by argument shape (read/grep/find/ls…), not tool name —
-    // same name-agnostic rule as the other consumers. See domain/tool-semantics.ts.
-    if (!tc || classifyTool(tc.arguments) !== "accesses") continue;
-    const fp = extractToolPath(tc.arguments);
-    if (!fp) continue;
-    const arr = readIndices.get(fp) ?? [];
+    if (!tc) continue;
+    const operation = classifyToolOperation(tc.arguments, tc.name);
+    if (operation !== "read" && operation !== "search" && operation !== "list") continue;
+    const key = normalizeToolName(tc.name) + "\0" + stableArguments(tc.arguments);
+    const arr = accessIndices.get(key) ?? [];
     arr.push(i);
-    readIndices.set(fp, arr);
+    accessIndices.set(key, arr);
   }
-  for (const [fp, indices] of readIndices) {
-    // Keep last read, prune the rest
+  for (const indices of accessIndices.values()) {
+    // Remove the paired result and only its matching call block. An assistant
+    // message may contain unrelated calls that must survive.
     for (let j = 0; j < indices.length - 1; j++) {
       const toolCallId = msgs[indices[j]].toolCallId ?? "";
       keep.delete(indices[j]);
@@ -255,6 +252,5 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     prunedCount,
     prunedTokenSaving: Math.max(0, originalTokens - prunedTokens),
     reasons,
-    toolCallIndex: tcIdx,
   };
 }
