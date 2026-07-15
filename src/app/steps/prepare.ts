@@ -39,6 +39,10 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc | null> {
     }
   }
   const providerCaps = getProviderCaps(rc.summaryModel.provider);
+  rc.services.thinkingLevels = {
+    summaryThinkingLevel: config.summaryThinkingLevel,
+    segmentationThinkingLevel: config.segmentationThinkingLevel,
+  };
   rc.services.scrubber = new SecretScrubber(config.scrubSecrets, config.scrubPii);
   if (config.maxLatencyMs > 0) {
     rc.timeoutMs = rc.timeoutMs > 0 ? Math.min(rc.timeoutMs, config.maxLatencyMs) : config.maxLatencyMs;

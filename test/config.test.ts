@@ -16,6 +16,18 @@ describe("validateSmartCompactConfig", () => {
     expect(sc.profile).toBe("light");
   });
 
+  it("validates per-phase thinking levels", () => {
+    const sc: Record<string, unknown> = {
+      summaryThinkingLevel: "max",
+      segmentationThinkingLevel: "extreme",
+    };
+    validateSmartCompactConfig(sc);
+    expect(sc.summaryThinkingLevel).toBe("max");
+    expect(sc.segmentationThinkingLevel).toBeUndefined();
+    expect(DEFAULT_CONFIG.summaryThinkingLevel).toBeNull();
+    expect(DEFAULT_CONFIG.segmentationThinkingLevel).toBeNull();
+  });
+
   it("deletes invalid autoTrigger (string)", () => {
     const sc = { autoTrigger: "true" };
     validateSmartCompactConfig(sc);

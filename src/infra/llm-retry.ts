@@ -27,8 +27,8 @@
  * the common shapes; anything unrecognized retries once at most.
  */
 
-import type { Model, Api, AssistantMessage, Context, ProviderStreamOptions } from "@earendil-works/pi-ai";
-import type { LlmClient } from "./llm-client.ts";
+import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
+import type { LlmClient, LlmCompleteOptions } from "./llm-client.ts";
 import * as log from "../utils/logger.ts";
 
 export interface RetryPolicy {
@@ -122,7 +122,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export function withRetry(inner: LlmClient, policy: RetryPolicy = DEFAULT_RETRY_POLICY): LlmClient {
   return {
-    async complete(model: Model<Api>, body: Context, opts: ProviderStreamOptions): Promise<AssistantMessage> {
+    async complete(model: Model<Api>, body: Context, opts: LlmCompleteOptions): Promise<AssistantMessage> {
       let lastErr: unknown;
       for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
         try {

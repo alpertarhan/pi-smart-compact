@@ -30,7 +30,7 @@ import { systemClock } from "./clock.ts";
 import type { LlmClient } from "./llm-client.ts";
 import { getLlmClient } from "./llm-client.ts";
 import crypto from "node:crypto";
-import type { LLMCallMetric } from "../types.ts";
+import type { CompactConfig, LLMCallMetric } from "../types.ts";
 import { METRICS_BUFFER_MAX, ONE_HOUR_MS } from "../constants.ts";
 import { TokenCalibrationStore } from "../utils/tokens.ts";
 import { SecretScrubber } from "../domain/scrub.ts";
@@ -183,6 +183,8 @@ export interface SmartCompactServices {
   tokenCalibration: TokenCalibrationStore;
   budget: BudgetGuard;
   scrubber: SecretScrubber;
+  /** Config snapshot used to select generic reasoning levels for each phase. */
+  thinkingLevels: Pick<CompactConfig, "summaryThinkingLevel" | "segmentationThinkingLevel">;
   /** Per-run prompt-cache namespace for providers that support prompt caching. */
   compactSessionId: string;
 }
@@ -204,6 +206,7 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
     tokenCalibration: overrides.tokenCalibration ?? new TokenCalibrationStore(),
     budget: overrides.budget ?? new BudgetGuard(),
     scrubber: overrides.scrubber ?? new SecretScrubber(),
+    thinkingLevels: overrides.thinkingLevels ?? { summaryThinkingLevel: null, segmentationThinkingLevel: null },
     compactSessionId: overrides.compactSessionId ?? makeCompactSessionId(),
   };
 }

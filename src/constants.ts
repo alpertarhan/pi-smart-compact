@@ -52,6 +52,8 @@ export const DEFAULT_CONFIG = {
   profiles: PROFILES,
   summaryModel: null as string | null,
   segmentationModel: null as string | null,
+  summaryThinkingLevel: null,
+  segmentationThinkingLevel: null,
   autoTrigger: true,
   autoTriggerTimeoutMs: 120000,
   backupEnabled: true,

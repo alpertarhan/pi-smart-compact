@@ -31,6 +31,9 @@ const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
   "explore", "explore-loop", "explore-retry", "explore-direct",
   "single-pass", "batch", "assemble", "patch",
 ]);
+const SEGMENTATION_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
+  "probe", "explore", "explore-loop", "explore-retry", "explore-direct",
+]);
 
 export function cacheOpts(
   opts: CacheAwareOptions,
@@ -101,8 +104,14 @@ export async function trackedComplete(
   const safeRequest = svc.scrubber.scrubValue(reqBody).value;
   const start = Date.now();
   try {
-    const resolvedOpts = cacheOpts(opts, model.provider, phase, svc);
-    const resp = await svc.llm.complete(model, safeRequest, resolvedOpts as import("@earendil-works/pi-ai").ProviderStreamOptions);
+    const configuredReasoning = SEGMENTATION_PHASES.has(phase)
+      ? svc.thinkingLevels.segmentationThinkingLevel
+      : svc.thinkingLevels.summaryThinkingLevel;
+    const callOpts = opts.reasoning !== undefined || configuredReasoning === null
+      ? opts
+      : { ...opts, reasoning: configuredReasoning };
+    const resolvedOpts = cacheOpts(callOpts, model.provider, phase, svc);
+    const resp = await svc.llm.complete(model, safeRequest, resolvedOpts);
     const latency = Date.now() - start;
     const usage = resp.usage;
     const inputT = usage?.input ?? 0;
