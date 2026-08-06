@@ -2,7 +2,7 @@
  * Phase 3: Hierarchical Synthesis.
  */
 
-import type { Model, Api } from "@earendil-works/pi-ai";
+import type { Model, Api, ProviderHeaders } from "@earendil-works/pi-ai";
 import type {
   LlmMessage, LlmChunk, ChunkSummary, StructuredExtraction,
   ExplorationReport, ProfileConfig,
@@ -14,6 +14,7 @@ import { extractText } from "../utils/extraction.ts";
 import { filterToolCalls } from "../utils/type-guards.ts";
 import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries, inferSessionType } from "../utils/helpers.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
+import { batchCacheKey, getCachedBatch, setCachedBatch } from "../infra/synthesis-cache.ts";
 
 function boundedToolArgs(value: unknown, depth = 0): unknown {
   if (typeof value === "string") return value.length > TRUNC.DETAIL ? value.slice(0, TRUNC.DETAIL) + "…" : value;
@@ -35,6 +36,31 @@ function estimateChunkTokens(msgs: LlmMessage[], estimator: TokenEstimator): num
   return estimator.text(msgs.map(renderBatchMessage).join("\n"));
 }
 
+function splitOversizedChunk(ch: LlmChunk, maxTokens: number, estimator: TokenEstimator): LlmChunk[] {
+  if (ch.tokenEstimate <= maxTokens || ch.messages.length <= 1) return [ch];
+  const parts: LlmChunk[] = [];
+  let start = 0;
+  while (start < ch.messages.length) {
+    let end = start;
+    let tokens = 0;
+    while (end < ch.messages.length) {
+      const next = estimateChunkTokens([ch.messages[end]], estimator);
+      if (end > start && tokens + next > maxTokens) break;
+      tokens += next;
+      end++;
+    }
+    parts.push({
+      ...ch,
+      startIndex: ch.startIndex + start,
+      endIndex: ch.startIndex + end - 1,
+      tokenEstimate: tokens,
+      messages: ch.messages.slice(start, end),
+    });
+    start = end;
+  }
+  return parts.map((part, index) => ({ ...part, topic: ch.topic + " (part " + (index + 1) + "/" + parts.length + ")" }));
+}
+
 export function chunkLlmMessages(
   msgs: LlmMessage[],
   boundaries: import("../types.ts").TopicBoundary[],
@@ -44,11 +70,20 @@ export function chunkLlmMessages(
 ): LlmChunk[] {
   if (!msgs.length) return [];
   if (!boundaries.length) {
-    return [{
+    const full = {
       startIndex: 0, endIndex: msgs.length - 1,
       tokenEstimate: estimateChunkTokens(msgs, estimator),
-      topic: "Full conversation", priority: "normal", messages: msgs,
-    }];
+      topic: "Full conversation", priority: "normal" as const, messages: msgs,
+    };
+    const parts = splitOversizedChunk(full, pc.maxChunkTokens, estimator);
+    if (focus) {
+      const needle = focus.toLowerCase();
+      for (const part of parts) {
+        const haystack = (part.topic + " " + part.messages.map(renderBatchMessage).join(" ")).toLowerCase();
+        if (haystack.includes(needle)) part.priority = "high";
+      }
+    }
+    return parts;
   }
 
   const sorted = [...boundaries].sort((a, b) => a.afterIndex - b.afterIndex);
@@ -92,20 +127,21 @@ export function chunkLlmMessages(
       merged.push(ch);
     }
   }
+  const bounded = merged.flatMap(chunk => splitOversizedChunk(chunk, pc.maxChunkTokens, estimator));
   if (focus) {
     const needle = focus.toLowerCase();
-    for (const chunk of merged) {
+    for (const chunk of bounded) {
       const haystack = (chunk.topic + " " + chunk.messages.map(renderBatchMessage).join(" ")).toLowerCase();
       if (haystack.includes(needle) && (chunk.priority === "normal" || chunk.priority === "low")) chunk.priority = "high";
     }
   }
-  return merged;
+  return bounded;
 }
 
 export async function singlePassCompact(
   convText: string, extraction: StructuredExtraction, report: ExplorationReport | null,
   prevContext: string,
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, budgetTokens: number, signal?: AbortSignal,
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders }, budgetTokens: number, signal?: AbortSignal,
   services?: SmartCompactServices, focus?: string,
 ): Promise<{ summary: string; llmCalls: 1 }> {
   const extractionCtx = buildExtractionContext(extraction);
@@ -134,8 +170,8 @@ export async function singlePassCompact(
 
 export async function summarizeBatch(
   batch: LlmChunk[], extraction: StructuredExtraction,
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, signal?: AbortSignal,
-  services?: SmartCompactServices,
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders }, signal?: AbortSignal,
+  services?: SmartCompactServices, maxOutputTokens?: number, cacheScope?: string,
 ): Promise<ChunkSummary[]> {
   const range = { start: batch[0].startIndex, end: batch[batch.length - 1].endIndex };
   const extractionCtx = buildExtractionContext(extraction, range);
@@ -156,6 +192,12 @@ export async function summarizeBatch(
   const promptPrefix = BATCH_PROMPT_PREFIX;
 
   const dynamicSuffix = BATCH_PROMPT_SUFFIX.replace("{EXTRACTION_CONTEXT}", extractionCtx + decisionCtx).replace("{TEXT}", text);
+  const cacheKey = cacheScope ? batchCacheKey({
+    scope: cacheScope, provider: model.provider, model: model.id, dynamicSuffix,
+    maxOutputTokens: maxOutputTokens ?? null,
+  }) : null;
+  const cached = cacheKey ? getCachedBatch(cacheKey) : null;
+  if (cached) return cached;
 
   const resp = await trackedComplete("batch", model, {
     systemPrompt: COMPACT_SYSTEM_PREFIX,
@@ -163,7 +205,11 @@ export async function summarizeBatch(
       { role: "user" as const, content: [{ type: "text" as const, text: promptPrefix }], timestamp: Date.now() },
       { role: "user" as const, content: [{ type: "text" as const, text: dynamicSuffix }], timestamp: Date.now() },
     ],
-  }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens: Math.min(Math.max(4096, batch.length * 1500), getProviderCaps(model.provider).maxOutputTokens), signal }, services);
+  }, {
+    apiKey: auth.apiKey, headers: auth.headers,
+    maxTokens: maxOutputTokens ?? Math.min(Math.max(1_000, batch.length * 250), 4_096, getProviderCaps(model.provider).maxOutputTokens),
+    signal,
+  }, services);
   const output = resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n");
 
   // ID-based parsing: map chunk number -> section content
@@ -176,7 +222,7 @@ export async function summarizeBatch(
     }
   }
 
-  return batch.map((ch, i) => {
+  const result = batch.map((ch, i) => {
     const id = i + 1;
     const sec = sectionMap.get(id) ?? "";
     const f = (n: string) => { const m = sec.match(new RegExp("\\*\\*" + n + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i")); return m ? m[1].trim() : ""; };
@@ -192,11 +238,13 @@ export async function summarizeBatch(
       priority: ["critical", "high", "normal", "low"].includes(prio) ? prio as ChunkSummary["priority"] : ch.priority,
     };
   });
+  if (cacheKey) setCachedBatch(cacheKey, result);
+  return result;
 }
 
 export async function assembleLLM(
   summaries: ChunkSummary[], extraction: StructuredExtraction, report: ExplorationReport | null,
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, budget: number,
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders }, budget: number,
   prevContext: string, signal?: AbortSignal, services?: SmartCompactServices, focus?: string,
 ): Promise<string> {
   const pp = preProcessSummaries(summaries, budget, focus);
@@ -224,16 +272,28 @@ export async function assembleLLM(
 export function assembleFallback(summaries: ChunkSummary[], extraction: StructuredExtraction): string {
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
+  const unresolved = extraction.errors.filter(error => !error.resolved);
+  const inProgress = summaries.filter(item => item.priority === "critical" || item.priority === "high")
+    .map(item => "- [ ] " + item.summary.slice(0, TRUNC.PREVIEW));
+  if (!inProgress.length) {
+    inProgress.push(...extraction.lastUserMessages.slice(-3).map(message => "- [ ] " + message.slice(0, TRUNC.PREVIEW)));
+  }
+  inProgress.push(...detModified.map(file => "- [ ] Continue work in " + file));
+  const next = extraction.lastUserMessages.at(-1)?.slice(0, TRUNC.PREVIEW)
+    ?? extraction.timeline.at(-1)?.summary.slice(0, TRUNC.PREVIEW)
+    ?? "Continue from the latest preserved context.";
   return [
-    "## Goal", extraction.mainGoal ?? "See topics below.", "",
-    "## Constraints & Preferences", ...extraction.constraints.map(c => "- [" + c.category + "] " + c.text.slice(0, TRUNC.PREVIEW_MID)), "",
-    "## Progress", "### Done", "- See topics below", "### In Progress", ...summaries.filter(s => s.priority === "high").map(s => "- [ ] " + s.summary.slice(0, TRUNC.PREVIEW)), "### Blocked", "- None", "",
-    "## Key Decisions", ...extraction.decisions.map(d => "- **" + d.summary.slice(0, TRUNC.TOPIC_LABEL) + "**" + (d.userResponse ? " → " + d.userResponse : "")), "",
-    "## Files Modified", ...detModified.map(f => "- " + f), "",
-    "## Files Read", ...detRead.map(f => "- " + f), "",
-    "## Next Steps", "1. See topics below", "",
-    "## Critical Context", ...extraction.errors.filter(e => !e.resolved).map(e => "- Unresolved error: " + e.message.slice(0, TRUNC.TOPIC_LABEL)), "",
-    "## Topics Covered", ...summaries.map(s => "- **" + s.topic + "** [" + s.priority + "]: " + s.summary.slice(0, TRUNC.PREVIEW_MID)),
+    "## Goal", extraction.mainGoal ?? "Continue the current task.", "",
+    "## Constraints & Preferences", ...(extraction.constraints.length ? extraction.constraints.map(c => "- [" + c.category + "] " + c.text.slice(0, TRUNC.PREVIEW_MID)) : ["- None recorded."]), "",
+    "## Progress", "### Done", "- No explicit completion recorded.",
+    "### In Progress", ...(inProgress.length ? inProgress : ["- Continue current work."]),
+    "### Blocked", ...(unresolved.length ? unresolved.map(error => "- " + error.message.slice(0, TRUNC.PREVIEW)) : ["- None recorded."]), "",
+    "## Key Decisions", ...(extraction.decisions.length ? extraction.decisions.map(d => "- **" + d.summary.slice(0, TRUNC.TOPIC_LABEL) + "**" + (d.userResponse ? " → " + d.userResponse : "")) : ["- None recorded."]), "",
+    "## Files Modified", ...(detModified.length ? detModified.map(f => "- " + f) : ["- None recorded."]), "",
+    "## Files Read", ...(detRead.length ? detRead.map(f => "- " + f) : ["- None recorded."]), "",
+    "## Next Steps", "1. " + next, "",
+    "## Critical Context", ...(unresolved.length ? unresolved.map(e => "- Unresolved error: " + e.message.slice(0, TRUNC.TOPIC_LABEL)) : ["- None recorded."]), "",
+    "## Topics Covered", ...(summaries.length ? summaries.map(s => "- **" + s.topic + "** [" + s.priority + "]: " + s.summary.slice(0, TRUNC.PREVIEW_MID)) : extraction.topics.map((topic, index) => "- Topic " + (index + 1) + ": " + (topic.primaryFile ?? topic.type))),
   ].join("\n");
 }
 

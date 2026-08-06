@@ -1,7 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { verifySummary, patchDeterministic, formatVerificationGap } from "../src/phases/verify.ts";
 import { verifyAndPatch } from "../src/app/steps/verify.ts";
-import type { StructuredExtraction } from "../src/types.ts";
+import type { CompactionState, StructuredExtraction } from "../src/types.ts";
+import { createServices } from "../src/infra/services.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
   return {
@@ -9,6 +10,14 @@ function makeExtraction(partial: Partial<StructuredExtraction> = {}): Structured
     errors: [], decisions: [], constraints: [], topics: [], timeline: [],
     mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 0,
     ...partial,
+  };
+}
+
+function makeState(partial: Partial<CompactionState> = {}): CompactionState {
+  return {
+    goal: null, decisions: [], constraints: [], modifiedFiles: [], readFiles: [], deletedFiles: [],
+    unresolvedErrors: [], resolvedErrors: [], openLoops: [], topics: [], nextActions: [], criticalContext: [],
+    sessionType: "implementation", compactionVersion: "test", ...partial,
   };
 }
 
@@ -132,9 +141,76 @@ Build
     const result = verifySummary(summary, extraction);
     expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(true);
   });
+
+  it("accepts legitimate file references carried from scoped continuity", () => {
+    const continuity = makeState({ modifiedFiles: ["src/legacy-auth.ts"] });
+    const summary = "## Goal\nContinue auth\n## Progress\n- src/legacy-auth.ts remains relevant\n## Critical Context\n- stable";
+    const result = verifySummary(summary, makeExtraction(), continuity);
+
+    expect(result.gaps.some(gap => gap.kind === "fabricated-file")).toBe(false);
+  });
+
+  it("detects and deterministically repairs missing carried facts", () => {
+    const continuity = makeState({
+      goal: "Ship auth",
+      decisions: [{ id: "decision-1", summary: "Use JSON web tokens for authentication", type: "explicit" }],
+      constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
+      unresolvedErrors: [{ id: "error-1", message: "auth test fails", tool: "bash", files: [] }],
+      openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth test", files: [] }],
+    });
+    const summary = "## Goal\nContinue\n## Progress\n- working\n## Critical Context\n- none";
+    const before = verifySummary(summary, makeExtraction(), continuity);
+    const patched = patchDeterministic(summary, before.gaps, makeExtraction(), continuity);
+    const after = verifySummary(patched, makeExtraction(), continuity);
+
+    expect(before.gaps.some(gap => gap.kind === "missing-decision")).toBe(true);
+    expect(patched).toContain("Use JSON web tokens for authentication");
+    expect(patched).toContain("No new dependencies");
+    expect(patched).toContain("auth test fails");
+    expect(patched).toContain("fix auth test");
+    expect(after.gaps.filter(gap => gap.kind.startsWith("missing-")).length).toBe(0);
+  });
 });
 
 describe("verifyAndPatch", () => {
+  it("routes an optional LLM repair through the verification model", async () => {
+    let routedModel = "";
+    const services = createServices({
+      llm: { complete: async model => {
+        routedModel = model.provider + "/" + model.id;
+        throw new Error("stop after route assertion");
+      } },
+    });
+    const fakeFiles = Array.from({ length: 10 }, (_, index) => "- src/fake-" + index + ".ts").join("\n");
+    await verifyAndPatch({
+      finalSummary: "## Goal\nBuild auth\n## Progress\n- working\n## Critical Context\n- stable\n## Files Read\n" + fakeFiles,
+      extraction: makeExtraction({ mainGoal: "Build auth" }),
+      summaries: [], mode: "thorough", flags: { autoTriggered: true },
+      summaryModel: { provider: "openai", id: "summary" },
+      verifyModel: { provider: "anthropic", id: "verifier" },
+      summaryAuth: { apiKey: "summary-key" }, verifyAuth: { apiKey: "verify-key" },
+      cancellation: { signal: new AbortController().signal },
+      services, notify: () => {}, vlog: () => {},
+    } as any);
+    expect(routedModel).toBe("anthropic/verifier");
+  });
+
+  it("uses the deterministic quality floor when model output invents evidence", async () => {
+    const extraction = makeExtraction({ mainGoal: "Build auth", lastUserMessages: ["Finish auth"] });
+    const result = await verifyAndPatch({
+      finalSummary: "## Goal\nBuild auth\n## Progress\n- working\n## Critical Context\n- stable\n## Files Read\n- src/invented.ts",
+      extraction,
+      summaries: [],
+      mode: "aggressive",
+      flags: { autoTriggered: true },
+      notify: () => {},
+      vlog: () => {},
+    } as any);
+    expect(result.finalSummary).not.toContain("src/invented.ts");
+    expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
+    expect(result.verificationScore).toBeGreaterThan(result.verificationProvenance.initialScore);
+  });
+
   it("repairs a patchable high-score gap instead of skipping it", async () => {
     const extraction = makeExtraction({ modifiedFiles: [{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 1 }] });
     const result = await verifyAndPatch({

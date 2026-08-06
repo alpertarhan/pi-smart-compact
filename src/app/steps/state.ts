@@ -13,18 +13,23 @@ import type { VerifiedRc, StatedRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import {
   buildCompactionState, injectOpenLoopsSection, extractNextActions,
-  extractCriticalContext, loadCompactionState, computeDelta, injectDeltaSection,
+  extractCriticalContext, computeDelta, injectDeltaSection,
   hasDeltaChanges, ensurePinnedPaths, applyLoopOverrides,
+  mergeCompactionStates, renderContinuityCapsule,
 } from "../../utils/state.ts";
 import { extractOpenLoops } from "../../utils/extraction.ts";
 import { readRemediationHints } from "../../utils/damage.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
+import { VERSION } from "../../constants.ts";
+import {
+  verifySummary, patchDeterministic, formatVerificationGap, isDeterministicallyPatchable,
+} from "../../phases/verify.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
   const extraction = rc.extraction;
   let summary = rc.finalSummary;
 
-  const prevState = loadCompactionState(rc.projectId);
+  const prevState = rc.previousState;
   const loopOverrides = prevState?.loopOverrides ?? [];
   const extractedLoops = extractOpenLoops(rc.llmMessages, extraction);
   const currentKeys = new Set(extractedLoops.map(loop => loop.summary.toLowerCase().replace(/\s+/g, " ").trim()));
@@ -34,14 +39,14 @@ export function buildState(rc: VerifiedRc): StatedRc {
     return override?.pinned && !currentKeys.has(key);
   });
   const managedLoops = applyLoopOverrides([...extractedLoops, ...pinnedPrevious], loopOverrides);
-  const openLoops = managedLoops.filter(loop => loop.status !== "resolved");
-  if (openLoops.length > 0) {
+  const currentOpenLoops = managedLoops.filter(loop => loop.status !== "resolved");
+  if (currentOpenLoops.length > 0) {
     rc.notify(
-      "Open Loops: " + openLoops.length + " detected (" +
-        openLoops.filter(l => l.priority === "high").length + " high)",
+      "Open Loops: " + currentOpenLoops.length + " detected (" +
+        currentOpenLoops.filter(l => l.priority === "high").length + " high)",
       "info",
     );
-    summary = injectOpenLoopsSection(summary, openLoops);
+    summary = injectOpenLoopsSection(summary, currentOpenLoops);
   }
 
   // Pinned paths ("never compact") + remediation hints (files the agent
@@ -62,9 +67,17 @@ export function buildState(rc: VerifiedRc): StatedRc {
 
   const nextActions = extractNextActions(summary);
   const criticalContextItems = extractCriticalContext(summary);
-  let compactionState = buildCompactionState(
+  const currentState = buildCompactionState(
     extraction, managedLoops, rc.explorationReport, nextActions, criticalContextItems, loopOverrides,
   );
+  currentState.scope = rc.continuityScope;
+  currentState.factOverrides = prevState?.factOverrides ?? [];
+  let compactionState = mergeCompactionStates(prevState, currentState);
+  if (preserve.length > 0) {
+    compactionState.readFiles = Array.from(new Set([...preserve, ...compactionState.readFiles])).slice(0, 100);
+  }
+  const openLoops = compactionState.openLoops.filter(loop => loop.status !== "resolved");
+  summary = injectOpenLoopsSection(summary, openLoops);
 
   // Cross-compaction delta: when previous state exists, surface what changed
   // since last time so the agent sees a focused diff rather than the entire
@@ -81,10 +94,32 @@ export function buildState(rc: VerifiedRc): StatedRc {
     }
   }
 
+  const continuity = renderContinuityCapsule(compactionState, undefined, summary);
+  if (continuity) summary = summary.trimEnd() + "\n\n" + continuity;
+
   // Defense in depth: LLM requests and extraction caches are already scrubbed,
   // but deterministic state/delta injection is another write boundary.
   summary = rc.services.scrubber.scrubText(summary).value;
   compactionState = rc.services.scrubber.scrubValue(compactionState).value;
+
+  // The continuity ledger is injected after the LLM verification stage. Run a
+  // final deterministic verification against the merged state so its score
+  // reflects cross-generation fidelity, not only the current extraction.
+  let postVerification = verifySummary(summary, extraction, compactionState);
+  const postPatchable = postVerification.gaps.filter(isDeterministicallyPatchable);
+  if (postPatchable.length > 0) {
+    summary = patchDeterministic(summary, postVerification.gaps, extraction, compactionState);
+    postVerification = verifySummary(summary, extraction, compactionState);
+  }
+  rc.verified = postVerification.ok;
+  rc.verificationScore = postVerification.score;
+  rc.verificationGaps = postVerification.gaps.map(formatVerificationGap);
+  rc.verificationProvenance = {
+    ...rc.verificationProvenance,
+    deterministicPatched: [...rc.verificationProvenance.deterministicPatched, ...postPatchable],
+    finalScore: postVerification.score,
+    remainingGaps: postVerification.gaps,
+  };
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
@@ -97,10 +132,18 @@ export function buildState(rc: VerifiedRc): StatedRc {
     topics: rc.summaries.length ? rc.summaries.map(s => s.topic) : [rc.method],
     readFiles: detRead, modifiedFiles: detModified,
     totalMessages: rc.toCompact.length, totalTokensSummarized: rc.convTokens,
-    llmCalls: rc.llmCalls, profile: rc.profile, backupPath: rc.backupPath, tokensSaved,
+    llmCalls: rc.llmCalls, profile: rc.profile, mode: rc.mode, backupPath: rc.backupPath, tokensSaved,
     verified: rc.verified, gaps: rc.verificationGaps,
     explorationRounds: rc.explorationRounds, explorationBoundaries: rc.explorationReport?.boundaries.length ?? 0,
-    model: rc.modelLabel, qualityScore: rc.verificationScore,
+    model: rc.modelLabel,
+    providerRoutes: rc.summaryModel ? {
+      explore: (rc.segModel ?? rc.summaryModel).provider + "/" + (rc.segModel ?? rc.summaryModel).id,
+      synthesize: rc.summaryModel.provider + "/" + rc.summaryModel.id,
+      verify: (rc.verifyModel ?? rc.summaryModel).provider + "/" + (rc.verifyModel ?? rc.summaryModel).id,
+    } : undefined,
+    version: VERSION,
+    releaseChannel: rc.config?.telemetryChannel ?? "stable",
+    qualityScore: rc.verificationScore,
     tokensBefore: rc.totalTokens,
     provenance: rc.verificationProvenance,
     compactionState, openLoops,

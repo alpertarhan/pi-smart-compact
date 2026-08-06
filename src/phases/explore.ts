@@ -2,7 +2,7 @@
  * Phase 2: Targeted LLM Exploration.
  */
 
-import type { Model, Api, ToolCall, TextContent, Message, Tool } from "@earendil-works/pi-ai";
+import type { Model, Api, ToolCall, TextContent, Message, Tool, ProviderHeaders } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary } from "../types.ts";
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
@@ -289,7 +289,7 @@ export function fallbackExplorationReport(llmMessages: LlmMessage[]): Exploratio
  */
 export async function exploreConversation(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders },
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal, maxRounds = MAX_EXPLORATION_ROUNDS,
   notify?: (msg: string, type?: "info" | "success" | "warning" | "error") => void,
@@ -332,10 +332,10 @@ export async function exploreConversation(
     }
 
     const probeResp = await trackedComplete("explore", model, {
-      systemPrompt: COMPACT_SYSTEM_PREFIX,
+      systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
       messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
       tools: EXPLORATION_TOOLS,
-    }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
+    }, { apiKey: auth.apiKey, headers: auth.headers, signal, maxTokens: Math.min(4096, model.maxTokens || 4096) }, svc);
 
     const toolCalls = probeResp.content.filter((c): c is ToolCall => c.type === "toolCall");
 
@@ -367,7 +367,7 @@ export async function exploreConversation(
             systemPrompt: COMPACT_SYSTEM_PREFIX + "\n\n" + EXPLORER_SYSTEM_PROMPT,
             messages,
             tools: EXPLORATION_TOOLS,
-          }, { apiKey: auth.apiKey, headers: auth.headers, signal }, svc);
+          }, { apiKey: auth.apiKey, headers: auth.headers, signal, maxTokens: Math.min(4096, model.maxTokens || 4096) }, svc);
         } catch (err) {
           log.warn("Explore loop error", err);
           break;
@@ -436,7 +436,7 @@ export async function exploreConversation(
 }
 
 export async function explorationRetry(
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders },
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal,
@@ -462,7 +462,7 @@ export async function explorationRetry(
 
 export async function directExploration(
   llmMessages: LlmMessage[], extraction: StructuredExtraction,
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> },
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders },
   prevSummary: string | undefined, userNote: string | undefined,
   signal?: AbortSignal,
   services?: SmartCompactServices,

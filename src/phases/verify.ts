@@ -5,8 +5,8 @@
  * boundary; repair logic switches on `kind` and never reparses its own prose.
  */
 
-import type { Model, Api } from "@earendil-works/pi-ai";
-import type { StructuredExtraction, VerificationGap, VerificationResult } from "../types.ts";
+import type { Model, Api, ProviderHeaders } from "@earendil-works/pi-ai";
+import type { CompactionState, StructuredExtraction, VerificationGap, VerificationResult } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
@@ -37,11 +37,37 @@ export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
   return gap.kind !== "fabricated-file" && gap.kind !== "inconsistency";
 }
 
-export function verifySummary(summary: string, extraction: StructuredExtraction): VerificationResult {
+export function verifySummary(
+  summary: string,
+  extraction: StructuredExtraction,
+  continuity: CompactionState | null = null,
+): VerificationResult {
   const parsed = parseSummary(summary);
   const gaps: VerificationGap[] = [];
   const lower = summary.toLowerCase().replace(/\\/g, "/");
   let score = 100;
+  const uniqueByText = <T>(items: T[], text: (item: T) => string): T[] => {
+    const seen = new Set<string>();
+    return items.filter(item => {
+      const key = text(item).toLowerCase().replace(/\s+/g, " ").trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const unresolvedEvidence = uniqueByText([
+    ...extraction.errors.filter(error => !error.resolved).map(error => ({ message: error.message })),
+    ...(continuity?.unresolvedErrors ?? []).map(error => ({ message: error.message })),
+  ], item => item.message);
+  const constraintEvidence = uniqueByText([
+    ...extraction.constraints.filter(item => item.confidence >= 0.8).map(item => ({ text: item.text })),
+    ...(continuity?.constraints ?? []).filter(item => item.confidence >= 0.8).map(item => ({ text: item.text })),
+  ], item => item.text);
+  const decisionEvidence = uniqueByText([
+    ...extraction.decisions.filter(item => item.type === "explicit").map(item => ({ summary: item.summary })),
+    ...(continuity?.decisions ?? []).filter(item => item.type === "explicit").map(item => ({ summary: item.summary })),
+  ], item => item.summary);
+  const goalEvidence = extraction.mainGoal ?? continuity?.goal ?? null;
 
   const requiredSections: Array<{ kind: "goal" | "progress" | "critical-context"; penalty: number }> = [
     { kind: "goal", penalty: 5 },
@@ -64,7 +90,7 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
-  for (const error of extraction.errors.filter(error => !error.resolved)) {
+  for (const error of unresolvedEvidence) {
     const snippet = error.message.trim().replace(/\s+/g, " ").slice(0, TRUNC.ERROR_SNIPPET).toLowerCase();
     if (snippet.length > 5 && !lower.includes(snippet)) {
       gaps.push({ kind: "missing-error", message: error.message });
@@ -72,7 +98,7 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
-  for (const constraint of extraction.constraints.filter(constraint => constraint.confidence >= 0.8)) {
+  for (const constraint of constraintEvidence) {
     const keywords = extractCheckKeywords(constraint.text, 3);
     if (keywords.length > 0 && !keywords.some(keyword => lower.includes(keyword.toLowerCase()))) {
       gaps.push({ kind: "missing-constraint", text: constraint.text });
@@ -80,15 +106,20 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
-  if (extraction.mainGoal) {
-    const keywords = extractCheckKeywords(extraction.mainGoal, 4);
+  if (goalEvidence) {
+    const keywords = extractCheckKeywords(goalEvidence, 4);
     if (keywords.length > 0 && !keywords.some(keyword => lower.includes(keyword.toLowerCase()))) {
-      gaps.push({ kind: "missing-goal", goal: extraction.mainGoal });
+      gaps.push({ kind: "missing-goal", goal: goalEvidence });
       score -= 10;
     }
   }
 
-  const knownFiles = [...modifiedPaths, ...extraction.readFiles];
+  const knownFiles = Array.from(new Set([
+    ...modifiedPaths, ...extraction.readFiles, ...extraction.deletedFiles,
+    ...(continuity?.modifiedFiles ?? []), ...(continuity?.readFiles ?? []), ...(continuity?.deletedFiles ?? []),
+    ...(continuity?.unresolvedErrors ?? []).flatMap(error => error.files),
+    ...(continuity?.openLoops ?? []).flatMap(loop => loop.files),
+  ]));
   for (const ref of extractFileRefs(summary)) {
     if (!isKnownPathReference(ref, knownFiles)) {
       gaps.push({ kind: "fabricated-file", ref });
@@ -102,7 +133,7 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     for (const file of extraction.modifiedFiles) {
       const basename = file.path.split("/").pop() ?? "";
       if (!doneSection.toLowerCase().includes(basename.toLowerCase())) continue;
-      const unresolved = extraction.errors.find(error => !error.resolved && error.message.toLowerCase().includes(basename.toLowerCase()));
+      const unresolved = unresolvedEvidence.find(error => error.message.toLowerCase().includes(basename.toLowerCase()));
       if (unresolved) {
         gaps.push({ kind: "inconsistency", detail: basename + " marked Done but has unresolved error" });
         score -= 5;
@@ -111,7 +142,7 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
   }
 
   const decisionBody = findSection(parsed, "decisions")?.body.toLowerCase() ?? "";
-  for (const decision of extraction.decisions.filter(decision => decision.type === "explicit")) {
+  for (const decision of decisionEvidence) {
     const keywords = extractCheckKeywords(decision.summary, 3);
     if (keywords.length > 0 && !keywords.some(keyword => decisionBody.includes(keyword.toLowerCase()))) {
       gaps.push({ kind: "missing-decision", summary: decision.summary });
@@ -119,8 +150,8 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
     }
   }
 
-  const unresolvedCount = extraction.errors.filter(error => !error.resolved).length;
-  if (unresolvedCount >= 2 && !findSection(parsed, "open-loops") && !lower.includes("unresolved")) {
+  const unresolvedCount = unresolvedEvidence.length + (continuity?.openLoops.filter(loop => loop.status !== "resolved").length ?? 0);
+  if (unresolvedCount >= 1 && !findSection(parsed, "open-loops") && !lower.includes("unresolved")) {
     gaps.push({ kind: "missing-open-loops", unresolvedCount });
     score -= 5;
   }
@@ -130,7 +161,12 @@ export function verifySummary(summary: string, extraction: StructuredExtraction)
 }
 
 /** Apply every safe, deterministic repair. Hallucination/inconsistency gaps stay visible for LLM/user review. */
-export function patchDeterministic(summary: string, gaps: VerificationGap[], extraction: StructuredExtraction): string {
+export function patchDeterministic(
+  summary: string,
+  gaps: VerificationGap[],
+  extraction: StructuredExtraction,
+  continuity: CompactionState | null = null,
+): string {
   let canonical: CanonicalSummary = parseSummary(summary);
   const verificationNotes: string[] = [];
 
@@ -162,8 +198,13 @@ export function patchDeterministic(summary: string, gaps: VerificationGap[], ext
         canonical = upsertSection(canonical, "goal", gap.goal);
         break;
       case "missing-open-loops": {
-        const unresolved = extraction.errors.filter(error => !error.resolved).slice(0, gap.unresolvedCount);
-        const body = unresolved.map(error => "- [high] Resolve " + error.message.slice(0, TRUNC.SNIPPET)).join("\n");
+        const current = extraction.errors.filter(error => !error.resolved)
+          .map(error => "- [high] Resolve " + error.message.slice(0, TRUNC.SNIPPET));
+        const carriedErrors = (continuity?.unresolvedErrors ?? [])
+          .map(error => "- [high] Resolve " + error.message.slice(0, TRUNC.SNIPPET));
+        const carriedLoops = (continuity?.openLoops ?? []).filter(loop => loop.status !== "resolved")
+          .map(loop => "- [" + loop.priority + "] " + loop.summary.slice(0, TRUNC.SNIPPET));
+        const body = Array.from(new Set([...current, ...carriedErrors, ...carriedLoops])).slice(0, gap.unresolvedCount).join("\n");
         canonical = upsertSection(canonical, "open-loops", body || "- Review unresolved errors.", "next-steps");
         break;
       }
@@ -182,7 +223,7 @@ export function patchDeterministic(summary: string, gaps: VerificationGap[], ext
 
 export async function patchSummary(
   summary: string, gaps: VerificationGap[],
-  model: Model<Api>, auth: { apiKey: string; headers?: Record<string, string> }, signal?: AbortSignal,
+  model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders }, signal?: AbortSignal,
   services?: SmartCompactServices,
 ): Promise<string> {
   const patchPrompt = "The summary below is missing some critical information. Add the missing items WITHOUT restructuring the summary.\n\nMissing items:\n" +

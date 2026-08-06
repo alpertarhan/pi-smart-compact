@@ -1,6 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { extractOpenLoops } from "../src/utils/extraction.ts";
-import { buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext, computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection, saveCompactionState, loadCompactionState, applyLoopOverrides, upsertLoopOverride } from "../src/utils/state.ts";
+import {
+  buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext,
+  computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection,
+  saveCompactionState, loadCompactionState, loadScopedCompactionState,
+  applyLoopOverrides, upsertLoopOverride, mergeCompactionStates, renderContinuityCapsule,
+  upsertContinuityOverride,
+} from "../src/utils/state.ts";
+import { scopedCompactionStateFile } from "../src/infra/paths.ts";
 import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport, CompactionState } from "../src/types.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
@@ -247,6 +254,38 @@ function makeFullState(partial: Partial<CompactionState> = {}): CompactionState 
   };
 }
 
+describe("continuity state", () => {
+  it("carries absent decisions, constraints, errors, and loops without growing unbounded", () => {
+    const previous = makeFullState({
+      goal: "Ship auth",
+      decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
+      constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
+      unresolvedErrors: [{ id: "error-1", message: "auth test fails", tool: "bash", files: ["auth.ts"] }],
+      openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth test", files: ["auth.ts"] }],
+    });
+    const merged = mergeCompactionStates(previous, makeFullState({ goal: null }));
+
+    expect(merged.goal).toBe("Ship auth");
+    expect(merged.decisions.map(item => item.summary)).toContain("Use JWT");
+    expect(merged.constraints.map(item => item.text)).toContain("No new dependencies");
+    expect(merged.unresolvedErrors.map(item => item.message)).toContain("auth test fails");
+    expect(merged.openLoops.map(item => item.summary)).toContain("fix auth test");
+  });
+
+  it("renders only continuity facts missing from the visible summary", () => {
+    const state = makeFullState({
+      goal: "Ship auth",
+      decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
+      constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
+    });
+    const capsule = renderContinuityCapsule(state, 1_000, "## Key Decisions\n- Use JWT");
+
+    expect(capsule).toContain("Goal: Ship auth");
+    expect(capsule).toContain("Constraint: No new dependencies");
+    expect(capsule).not.toContain("Decision: Use JWT");
+  });
+});
+
 describe("computeDelta", () => {
   it("detects new decisions", () => {
     const prev = makeFullState();
@@ -424,5 +463,33 @@ describe("saveCompactionState / loadCompactionState", () => {
 
   it("returns null for non-existent state", () => {
     expect(loadCompactionState("nonexistent-" + Date.now())).toBeNull();
+  });
+
+  it("isolates state by session and rejects divergent branch ancestry", () => {
+    const projectId = "scoped-" + Date.now();
+    const sessionId = "session-a";
+    const state = makeFullState({
+      goal: "Scoped goal",
+      scope: { schemaVersion: 2, projectId, sessionId, branchHeadId: "head-a" },
+    });
+    saveCompactionState(projectId, state);
+
+    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-a", "new"] )?.goal).toBe("Scoped goal");
+    expect(loadScopedCompactionState({ projectId, sessionId: "session-b" }, ["head-a"])).toBeNull();
+    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "other-head"])).toBeNull();
+    expect(loadCompactionState(projectId)).toBeNull();
+    try { require("fs").unlinkSync(scopedCompactionStateFile(projectId, sessionId)); } catch {}
+  });
+
+  it("removes a carried fact only through an explicit continuity override", () => {
+    const previous = makeFullState({
+      decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
+    });
+    const overrides = upsertContinuityOverride([], "decision", "Use JWT", { status: "superseded", replacement: "Use sessions" });
+    const merged = mergeCompactionStates(previous, makeFullState({ factOverrides: overrides }));
+
+    expect(merged.decisions.map(item => item.summary)).not.toContain("Use JWT");
+    expect(merged.factOverrides?.[0].replacement).toBe("Use sessions");
+    expect(merged.criticalContext).toContain("Superseded decision: Use sessions");
   });
 });

@@ -34,18 +34,19 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Model, Api } from "@earendil-works/pi-ai";
+import type { Model, Api, ProviderHeaders } from "@earendil-works/pi-ai";
 import type {
-  CompressionProfile, LlmMessage, StructuredExtraction,
+  CompressionProfile, CompactionMode, EffectiveCompactionMode, LlmMessage, StructuredExtraction,
   ExplorationReport, ChunkSummary, SessionMessageEntry, PipelinePhaseTiming,
   CompactConfig, ProfileConfig, ProviderCapabilities, SmartCompactDetails,
-  CompactionState, OpenLoop, Cell,
+  CompactionState, ContinuityScope, OpenLoop, Cell,
 } from "../types.ts";
 import type { PendingSlot } from "./pending-slot.ts";
 import type { PruningResult } from "../utils/pruning.ts";
 import type { CompactionTier } from "../utils/helpers.ts";
 import type { TokenEstimator } from "../utils/tokens.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
+import type { SessionRunLock } from "./session-run-lock.ts";
 
 // ── Shared infra types (unchanged) ───────────────────────────────────────────
 
@@ -78,7 +79,7 @@ export interface RunFlags {
 
 export interface ResolvedAuth {
   apiKey: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
 }
 
 // ── Stage 0: Base ────────────────────────────────────────────────────────────
@@ -99,18 +100,22 @@ export interface RcBase {
   services: SmartCompactServices;
   cancellation: CancellationToken;
   pendingRef: PendingRef;
-  isRunning: Cell<boolean>;
+  isRunning: Cell<boolean> | SessionRunLock;
   flags: RunFlags;
   userNote?: string;
   focus?: string;
   maxLlmCalls?: number;
+  maxLlmInputTokens?: number;
   timeoutMs: number;
   phaseTimings: PipelinePhaseTiming[];
   pipelineStart: number;
   phaseStart: number;
   summaryModel: Model<Api>;
   segModel: Model<Api>;
+  verifyModel: Model<Api>;
   modelLabel: string;
+  requestedMode: CompactionMode;
+  mode: EffectiveCompactionMode;
   profile: CompressionProfile;
 }
 
@@ -129,6 +134,7 @@ export interface PreparedExt {
   adapted: boolean;
   summaryAuth: ResolvedAuth;
   segAuth: ResolvedAuth;
+  verifyAuth: ResolvedAuth;
 }
 export type PreparedRc = RcBase & PreparedExt;
 
@@ -186,6 +192,8 @@ export interface ExtractedExt extends TieredExt {
   prevContext: string;
   projectCtx: string;
   projectId: string;
+  continuityScope: ContinuityScope;
+  previousState: CompactionState | null;
   /**
    * Serialized pruned conversation text. Computed once in `extractWithCache`
    * and reused by `summarizeConversation` so we don't `serializeConversation`

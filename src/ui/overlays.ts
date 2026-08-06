@@ -4,17 +4,18 @@
 
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
-import { TRUNC } from "../constants.ts";
+import { PROFILES, TRUNC } from "../constants.ts";
 import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
-  CompactMetricsEntry, CompressionProfile, ModelOption, ProgressState,
+  CompactMetricsEntry, CompactionMode, ModelOption, ProgressState,
   SmartCompactDetails, StructuredExtraction, OpenLoop, LoopOverride,
 } from "../types.ts";
 import type { BackupEntry } from "../utils/helpers.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
+import { MODE_POLICIES, resolveMode } from "../app/mode-policy.ts";
 import {
   DASHBOARD_PAGE_SIZE,
   formatCurrentSession,
@@ -27,6 +28,10 @@ import {
 } from "./dashboard-format.ts";
 import path from "node:path";
 import { applyLoopOverrides, upsertLoopOverride } from "../utils/state.ts";
+import {
+  buildDashboardInsights, formatDashboardCanary, formatDashboardProviders,
+  formatDashboardQuality, type DashboardInsights,
+} from "./dashboard-insights.ts";
 
 export function renderContextBar(theme: Theme, pct: number, tokens: number, barLen = 24): string {
   const clamped = Math.min(Math.max(pct, 0), 100);
@@ -105,21 +110,26 @@ export async function selectModel(
   return options[parseInt(result.slice(6), 10)] ?? null;
 }
 
-export async function selectProfile(
+export async function selectMode(
   ctx: ExtensionCommandContext,
   selectedModel: ModelOption,
   opts: { contextTokens: number; contextPercent: number },
-): Promise<CompressionProfile | null> {
+): Promise<CompactionMode | null> {
   const estAfter = (budget: number, keep: number) => budget + Math.min(opts.contextTokens, keep);
-  const profiles: { value: CompressionProfile; label: string; desc: string; budget: number; keep: number }[] = [
-    { value: "light", label: "\u2601\uFE0F  Light", desc: "Max detail", budget: 10000, keep: 30000 },
-    { value: "balanced", label: "\u2696\uFE0F  Balanced", desc: "Recommended", budget: 6000, keep: 20000 },
-    { value: "aggressive", label: "\uD83D\uDD25 Aggressive", desc: "Minimal", budget: 3000, keep: 10000 },
+  const modes: Array<{ value: CompactionMode; label: string; desc: string }> = [
+    { value: "auto", label: "Auto", desc: "Adapts from pressure and session risk" },
+    { value: "balanced", label: "Balanced", desc: "Token and continuity balance" },
+    { value: "aggressive", label: "Aggressive", desc: "Maximum context recovery" },
+    { value: "fast", label: "Fast", desc: "Minimum waiting and LLM calls" },
+    { value: "thorough", label: "Thorough (Slow)", desc: "Maximum context fidelity" },
   ];
-  const items: SelectItem[] = profiles.map(p => {
-    const after = estAfter(p.budget, p.keep);
-    const pct = opts.contextTokens > 0 ? Math.round((1 - after / opts.contextTokens) * 100) : 0;
-    return { value: p.value, label: p.label, description: p.desc + " \u2014 est. ~" + after.toLocaleString() + "t after (save ~" + pct + "%)" };
+  const items: SelectItem[] = modes.map(item => {
+    const effective = item.value === "auto" ? resolveMode("auto", opts.contextPercent) : item.value;
+    const policy = MODE_POLICIES[effective];
+    const profile = PROFILES[policy.profile];
+    const after = estAfter(profile.summaryBudgetTokens, profile.keepRecentTokens);
+    const pct = opts.contextTokens > 0 ? Math.max(0, Math.round((1 - after / opts.contextTokens) * 100)) : 0;
+    return { value: item.value, label: item.label, description: item.desc + " \u2014 \u2264" + policy.maxLlmCalls + " calls / \u2264" + Math.round(policy.maxInputTokens / 1000) + "K prompt \u00b7 ~" + Math.round(policy.softLatencyMs / 1000) + "s soft target \u00b7 save ~" + pct + "%" };
   });
   const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
     const c = new Container();
@@ -129,16 +139,16 @@ export async function selectProfile(
     c.addChild(new Text(theme.fg("dim", "  Model: " + selectedModel.label), 0, 0));
     c.addChild(new Text(renderContextBar(theme, opts.contextPercent, opts.contextTokens), 0, 0));
     c.addChild(new Text("", 0, 0));
-    c.addChild(new Text(theme.fg("text", "  Select compression profile:"), 1, 0));
+    c.addChild(new Text(theme.fg("text", "  Select optimization mode:"), 1, 0));
     c.addChild(new Text("", 0, 0));
-    const sel = new SelectList(items, 3, {
+    const sel = new SelectList(items, 5, {
       selectedPrefix: t => theme.fg("accent", t),
       selectedText: t => theme.fg("accent", t),
       description: t => theme.fg("muted", t),
       scrollInfo: t => theme.fg("dim", t),
       noMatch: t => theme.fg("warning", t),
     });
-    sel.setSelectedIndex(1);
+    sel.setSelectedIndex(0);
     sel.onSelect = item => done(item.value);
     sel.onCancel = () => done(null);
     c.addChild(sel);
@@ -152,7 +162,7 @@ export async function selectProfile(
     };
   });
   if (!result) return null;
-  return profiles.find(p => p.value === result)?.value ?? null;
+  return modes.find(mode => mode.value === result)?.value ?? null;
 }
 
 // `ExtensionContext` is the narrower base type used by the pipeline so that
@@ -193,10 +203,13 @@ export async function showResultScreen(
     c.addChild(new Text(
       theme.fg("text", "  Method: ") +
       theme.fg(methodColor, details.method.toUpperCase()) +
-      theme.fg("dim", " \u2022 " + details.llmCalls + " LLM call(s) \u2022 Profile: " + details.profile),
+      theme.fg("dim", " \u2022 " + details.llmCalls + " LLM call(s) \u2022 Mode: " + (details.mode ?? details.profile)),
       0, 0));
     if (details.model) {
       c.addChild(new Text(theme.fg("dim", "  Model: " + details.model), 0, 0));
+    }
+    if (details.providerRoutes) {
+      c.addChild(new Text(theme.fg("dim", "  Routes: Explore " + details.providerRoutes.explore + " • Synthesize " + details.providerRoutes.synthesize + " • Verify " + details.providerRoutes.verify), 0, 0));
     }
 
     const scoreColor = details.qualityScore >= 80 ? "success" : details.qualityScore >= 50 ? "warning" : "error";
@@ -355,18 +368,22 @@ export async function showResultScreen(
   return approved ? "apply" : "cancel";
 }
 
-type DashboardView = "menu" | "overview" | "latest" | "session" | "recent";
+type DashboardView = "menu" | "overview" | "quality" | "providers" | "canary" | "latest" | "session" | "recent";
 type DashboardAction = "html" | null;
 
 export async function showMetricsDashboardUI(
   ctx: ExtensionCommandContext,
-  opts: { entries: CompactMetricsEntry[]; currentSessionId?: string; report: string },
+  opts: { entries: CompactMetricsEntry[]; currentSessionId?: string; report: string; insights?: DashboardInsights },
 ): Promise<DashboardAction> {
   const entries = opts.entries;
   const latest = entries[entries.length - 1];
+  const insights = opts.insights ?? buildDashboardInsights(entries);
   const currentRuns = opts.currentSessionId ? entries.filter(entry => entry.sessionId === opts.currentSessionId) : [];
   const menuItems: Array<{ view?: DashboardView; action?: DashboardAction; label: string; desc: string }> = [
-    { view: "overview", label: "Overview report", desc: entries.length + " recent run(s), profile/provider comparison" },
+    { view: "overview", label: "Overview report", desc: entries.length + " run(s) · Data Confidence " + insights.confidence.score + "/100" },
+    { view: "quality", label: "Quality & confidence", desc: "Verifier evidence, repair gain, and ≥85 trust target" },
+    { view: "providers", label: "Provider routes", desc: insights.providers.length + " stage/provider/model comparison row(s)" },
+    { view: "canary", label: "Canary vs stable", desc: insights.canary.decision.toUpperCase() + " · " + insights.canary.dataConfidence + "% canary confidence" },
     { view: "latest", label: "Latest run details", desc: latest ? formatMetricRunCompact(latest) : "No run recorded yet" },
     { view: "session", label: "Current session", desc: (opts.currentSessionId ?? "unknown") + " — " + currentRuns.length + " run(s)" },
     { view: "recent", label: "Recent runs", desc: "Last " + Math.min(entries.length, 30) + " run(s)" },
@@ -380,6 +397,9 @@ export async function showMetricsDashboardUI(
 
     const pageLines = (): string[] => {
       if (view === "overview") return opts.report.split("\n");
+      if (view === "quality") return formatDashboardQuality(insights);
+      if (view === "providers") return formatDashboardProviders(insights);
+      if (view === "canary") return formatDashboardCanary(insights);
       if (view === "latest") return formatRunDetails(latest, "Latest run details");
       if (view === "session") return formatCurrentSession(entries, opts.currentSessionId);
       if (view === "recent") return formatRecentRuns(entries);
@@ -393,7 +413,7 @@ export async function showMetricsDashboardUI(
 
     const renderHeader = (width: number): string[] => [
       truncateToWidth(theme.fg("accent", theme.bold("  📊 Smart Compact Dashboard")) + theme.fg("dim", "  " + entries.length + " recorded run(s)"), width),
-      truncateToWidth(theme.fg("dim", "  session: " + (opts.currentSessionId ?? "unknown")) + theme.fg("dim", latest ? " • latest score " + metricScore(latest) : ""), width),
+      truncateToWidth(theme.fg("dim", "  session: " + (opts.currentSessionId ?? "unknown")) + theme.fg("dim", latest ? " • latest score " + metricScore(latest) : "") + theme.fg(insights.confidence.targetMet ? "success" : "warning", " • Data Confidence " + insights.confidence.score + "/100"), width),
       truncateToWidth(theme.fg("borderMuted", "─".repeat(Math.max(0, width))), width),
     ];
 
@@ -461,12 +481,12 @@ export async function showMetricsDashboardUI(
 export async function showCompactUI(
   ctx: ExtensionCommandContext,
   opts: { contextTokens: number; contextPercent: number; currentModel: string; defaultModelIndex: number },
-): Promise<{ model: ModelOption; profile: CompressionProfile } | null> {
+): Promise<{ model: ModelOption; mode: CompactionMode } | null> {
   const selectedModel = await selectModel(ctx, opts);
   if (!selectedModel) return null;
-  const selectedProfile = await selectProfile(ctx, selectedModel, { contextTokens: opts.contextTokens, contextPercent: opts.contextPercent });
-  if (!selectedProfile) return null;
-  return { model: selectedModel, profile: selectedProfile };
+  const selectedMode = await selectMode(ctx, selectedModel, { contextTokens: opts.contextTokens, contextPercent: opts.contextPercent });
+  if (!selectedMode) return null;
+  return { model: selectedModel, mode: selectedMode };
 }
 
 /** Picker for `/smart-compact restore` — list backups, return the chosen path. */

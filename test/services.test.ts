@@ -76,7 +76,9 @@ describe("MetricsSink", () => {
 describe("BudgetGuard", () => {
   it("reserves calls atomically and rejects the first call over budget", () => {
     const guard = new BudgetGuard(2);
+    expect(guard.remainingCalls()).toBe(2);
     guard.reserveCall();
+    expect(guard.remainingCalls()).toBe(1);
     guard.reserveCall();
     expect(() => guard.reserveCall()).toThrow(BudgetExceededError);
     expect(guard.reason()).toBe("calls");
@@ -89,6 +91,19 @@ describe("BudgetGuard", () => {
     now = 5100;
     expect(() => guard.reserveCall()).toThrow("latency budget exhausted");
     expect(guard.reason()).toBe("latency");
+  });
+
+  it("reserves aggregate prompt tokens and reconciles estimates with provider usage", () => {
+    const guard = new BudgetGuard(0, 0, { now: () => 0 }, 100, 50);
+    guard.reserveCall(70);
+    expect(guard.inputTokenCount()).toBe(70);
+    expect(() => guard.reserveCall(40)).toThrow("tokens budget exhausted");
+    guard.reconcileInput(70, 20);
+    guard.reserveCall(40);
+    expect(guard.inputTokenCount()).toBe(60);
+    guard.recordOutput(50);
+    expect(guard.outputTokenCount()).toBe(50);
+    expect(() => guard.reserveCall(1)).toThrow("tokens budget exhausted");
   });
 });
 

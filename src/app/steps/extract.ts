@@ -33,6 +33,7 @@ import { isPrefixOf, legacyPrefixMatch } from "../../utils/id-fingerprint.ts";
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { asSerializableMessages } from "../../infra/ai-messages.ts";
 import { backupConversation } from "../../utils/helpers.ts";
+import { loadScopedCompactionState, renderContinuityCapsule } from "../../utils/state.ts";
 
 export function extractWithCache(rc: TieredRc): ExtractedRc {
   const extractStepStart = Date.now();
@@ -161,6 +162,17 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     );
   }
   const projectCtx = buildProjectContext(fingerprint);
+  const manager = rc.ctx.sessionManager as { getBranch?: () => readonly { id?: string }[] } | undefined;
+  const fullBranch = manager?.getBranch ? Array.from(manager.getBranch()) : rc.branch as Array<{ id?: string }>;
+  const branchEntryIds = fullBranch.map(entry => entry.id).filter((id): id is string => typeof id === "string");
+  const continuityScope = {
+    schemaVersion: 2 as const,
+    projectId,
+    sessionId: rc.sessionId,
+    ...(branchEntryIds.length ? { branchHeadId: branchEntryIds[branchEntryIds.length - 1] } : {}),
+  };
+  const previousState = loadScopedCompactionState(continuityScope, branchEntryIds);
+  const continuity = previousState ? renderContinuityCapsule(previousState) : "";
 
   const out = rc as TieredRc & {
     _extracted: true;
@@ -172,6 +184,8 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     prevContext: string;
     projectCtx: string;
     projectId: string;
+    continuityScope: typeof continuityScope;
+    previousState: import("../../types.ts").CompactionState | null;
     convText: string;
     convTokens: number;
     backupPath: string | null;
@@ -181,9 +195,11 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   out.currentKeptEntryIds = currentKeptEntryIds;
   out.extraction = extraction;
   out.extractionCacheMissReason = missReason;
-  out.prevContext = prevContext;
+  out.prevContext = [prevContext, continuity].filter(Boolean).join("\n\n");
   out.projectCtx = projectCtx;
   out.projectId = projectId;
+  out.continuityScope = continuityScope;
+  out.previousState = previousState;
   out.convText = convText;
   out.convTokens = convTokens;
   out.backupPath = backupPath;

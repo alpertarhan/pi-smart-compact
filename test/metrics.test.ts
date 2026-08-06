@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { recordFailureMetrics } from "../src/app/steps/metrics.ts";
+import { VERSION } from "../src/constants.ts";
 
 let cache: typeof import("../src/utils/cache.ts");
 let metricsReport: typeof import("../src/ui/metrics-report.ts");
@@ -30,6 +32,28 @@ describe("metrics reporting", () => {
     expect(report).toContain("Profile comparison");
     expect(report).toContain("balanced: n=1");
     expect(report).toContain("anthropic: n=1");
+    expect(report).toContain("Data Confidence:");
+    expect(report).toContain("Quality drilldown");
+    expect(report).toContain("Canary / stable control");
+    expect(report).toContain("Stage provider/model comparison");
+  });
+
+  it("persists schema-v2 failure taxonomy without error text", () => {
+    const svc = services.createServices();
+    recordFailureMetrics({
+      services: svc,
+      cancellation: { timedOut: false },
+      flags: { autoTriggered: true },
+      summaryModel: { provider: "openai", id: "gpt" },
+      profile: "balanced", mode: "balanced", modelLabel: "openai/gpt",
+      pipelineStart: Date.now(),
+    } as any, Object.assign(new Error("secret provider body"), { status: 429 }), {
+      sessionId: "failed-session", contextPercent: 80, toolPercent: 50,
+    });
+    const entry = cache.readMetricsLog().at(-1);
+    expect(entry?.metricsSchemaVersion).toBe(2);
+    expect(entry?.failureKind).toBe("rate-limit");
+    expect(JSON.stringify(entry)).not.toContain("secret provider body");
   });
 
   it("writes a local html dashboard", () => {
@@ -37,7 +61,31 @@ describe("metrics reporting", () => {
     const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
     expect(fp).toBeTruthy();
     expect(fs.existsSync(fp!)).toBe(true);
-    expect(fs.readFileSync(fp!, "utf8")).toContain("Smart Compact Metrics");
+    const html = fs.readFileSync(fp!, "utf8");
+    expect(html).toContain("Smart Compact Metrics");
+    expect(html).toContain("Data Confidence");
+    expect(html).toContain("Canary vs stable");
+    expect(html).toContain("Quality drilldown");
+  });
+
+  it("renders >=85 Data Confidence, canary deltas, and stage provider evidence", () => {
+    const svc = services.createServices();
+    for (let index = 0; index < 40; index++) {
+      cache.appendMetricsLog("trust-" + index, {
+        metricsSchemaVersion: 2, version: VERSION, releaseChannel: index < 20 ? "stable" : "canary",
+        status: "success", provider: "openai", model: "openai/gpt", method: "eesv",
+        durationMs: 1_000, avgLatency: 500, verificationScore: 95,
+        initialVerificationScore: 90, remainingVerificationGaps: 0,
+        totalCalls: 1, totalInput: 1_000, totalOutput: 100,
+        providerRoutes: [{ stage: "synthesize", provider: "openai", model: "gpt", calls: 1, successes: 1, avgLatencyMs: 500, inputTokens: 1_000, outputTokens: 100 }],
+      }, svc);
+    }
+    const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
+    const html = fs.readFileSync(fp!, "utf8");
+    expect(html).toContain("100/100");
+    expect(html).toContain("PROMOTE");
+    expect(html).toContain("Stage provider/model comparison");
+    expect(html).toContain("openai/gpt");
   });
 
   it("caps provider cache hit rate when cacheRead exceeds uncached input", () => {

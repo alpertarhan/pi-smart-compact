@@ -26,10 +26,9 @@ import { getDefaultServices, type SmartCompactServices } from "../infra/services
 
 // Prompt-cache namespace id comes from the services bag's `compactSessionId`
 // (set once per run by `createServices`).
-/** Internal compaction phases that should never use prompt caching — one-shot, not worth write cost. */
+/** One-shot phases that should not pay a provider prompt-cache write cost. */
 const INTERNAL_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
-  "explore", "explore-loop", "explore-retry", "explore-direct",
-  "single-pass", "batch", "assemble", "patch",
+  "explore-retry", "explore-direct", "single-pass", "batch", "assemble", "patch",
 ]);
 const SEGMENTATION_PHASES: ReadonlySet<LLMCallMetric["phase"]> = new Set([
   "probe", "explore", "explore-loop", "explore-retry", "explore-direct",
@@ -41,17 +40,23 @@ export function cacheOpts(
   phase: LLMCallMetric["phase"] | undefined,
   services: SmartCompactServices,
 ): CacheAwareOptions & { sessionId?: string } {
-  // Internal compaction LLM calls are one-shot: cache write cost (1.25x–2x) is never amortized.
+  // pi-ai/provider retries would bypass the run call budget and can replay a
+  // six-figure prompt. Phase fallbacks are cheaper and already deterministic.
+  const safeOpts = {
+    ...opts,
+    maxRetries: opts.maxRetries ?? 0,
+    codexWatchdogMs: opts.codexWatchdogMs ?? services.codexWatchdogMs,
+  };
   if (phase && INTERNAL_PHASES.has(phase)) {
-    return { ...opts, cacheRetention: "none" as const };
+    return { ...safeOpts, cacheRetention: "none" as const };
   }
 
   const strategy = provider ? getProviderCaps(provider).cacheStrategy : "none";
   const retention = strategy === "none" ? "none" as const : (opts.cacheRetention ?? "short" as const);
   if (retention === "none") {
-    return { ...opts, cacheRetention: "none" as const };
+    return { ...safeOpts, cacheRetention: "none" as const };
   }
-  return { ...opts, sessionId: services.compactSessionId, cacheRetention: retention };
+  return { ...safeOpts, sessionId: services.compactSessionId, cacheRetention: retention };
 }
 
 // ── Metrics ──
@@ -100,8 +105,10 @@ export async function trackedComplete(
   // may omit services; everything downstream of here receives the resolved
   // bag explicitly.
   const svc = services ?? getDefaultServices();
-  svc.budget.reserveCall();
   const safeRequest = svc.scrubber.scrubValue(reqBody).value;
+  const rawRequest = JSON.stringify(safeRequest);
+  const estimatedInput = estimateTokens(rawRequest, model.provider, model.id, svc.tokenCalibration);
+  svc.budget.reserveCall(estimatedInput);
   const start = Date.now();
   try {
     const configuredReasoning = SEGMENTATION_PHASES.has(phase)
@@ -117,17 +124,18 @@ export async function trackedComplete(
     const inputT = usage?.input ?? 0;
     const outputT = usage?.output ?? 0;
     const cacheT = usage?.cacheRead ?? 0;
+    svc.budget.reconcileInput(estimatedInput, effectivePromptInputTokens(inputT, cacheT));
+    svc.budget.recordOutput(outputT);
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: inputT, outputTokens: outputT,
       cacheHitTokens: cacheT, latencyMs: latency, success: true,
     }, svc);
     try {
-      if (inputT > 0 && "messages" in safeRequest) {
-        const rawText = JSON.stringify((safeRequest as unknown as Record<string, unknown>).messages);
+      if (inputT > 0) {
         const calibration = svc.tokenCalibration;
         calibrateFromResponse(
-          estimateTokens(rawText, model.provider, model.id, calibration),
-          inputT,
+          estimateTokens(rawRequest, model.provider, model.id, calibration),
+          effectivePromptInputTokens(inputT, cacheT),
           model.provider,
           model.id,
           calibration,

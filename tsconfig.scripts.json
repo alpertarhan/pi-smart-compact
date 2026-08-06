@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": "."
+  },
+  "include": ["scripts/provider-*.ts", "scripts/telemetry-report.ts", "scripts/release-audit.ts"],
+  "exclude": ["dist", "test", "node_modules"]
+}

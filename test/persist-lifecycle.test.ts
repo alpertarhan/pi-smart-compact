@@ -17,6 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { applyCompaction } from "../src/app/steps/persist.ts";
+import { readMetricsLog } from "../src/utils/cache.ts";
 
 // applyCompaction records outcome metrics (JSONL append under HOME); isolate
 // the writes so the suite never touches the developer's real metrics log.
@@ -115,6 +116,11 @@ describe("applyCompaction onError", () => {
     applyCompaction(rc);
     // pendingRef is consumed by session_before_compact, not by applyCompaction.
     expect(rc.pendingRef.isPresent()).toBe(true);
+    const metric = readMetricsLog().at(-1);
+    expect(metric?.metricsSchemaVersion).toBe(2);
+    expect(metric?.version).toBeDefined();
+    expect(metric?.releaseChannel).toBe("stable");
+    expect(metric?.providerRoutes).toEqual([]);
   });
 });
 

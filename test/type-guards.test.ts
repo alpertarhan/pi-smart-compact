@@ -186,6 +186,17 @@ describe("isValidSmartCompactDetails", () => {
     expect(isValidSmartCompactDetails(validDetails({ backupPath: 42 }))).toBe(false);
     expect(isValidSmartCompactDetails(validDetails({ backupPath: false }))).toBe(false);
   });
+  it("accepts only concrete effective modes when mode is present", () => {
+    expect(isValidSmartCompactDetails(validDetails({ mode: "fast" }))).toBe(true);
+    expect(isValidSmartCompactDetails(validDetails({ mode: "auto" }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ mode: "turbo" }))).toBe(false);
+  });
+  it("validates optional stage provider routes", () => {
+    expect(isValidSmartCompactDetails(validDetails({ releaseChannel: "preview" }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ releaseChannel: "canary", version: "8.0.0" }))).toBe(true);
+    expect(isValidSmartCompactDetails(validDetails({ providerRoutes: { explore: "a", synthesize: "b", verify: 42 } }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ providerRoutes: { explore: "a", synthesize: "b", verify: "c" } }))).toBe(true);
+  });
 });
 
 describe("sanitizeSmartCompactDetails", () => {

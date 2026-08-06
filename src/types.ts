@@ -2,13 +2,15 @@
  * Core type definitions for the Smart Compact extension.
  */
 
-import type { Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Model, Api, ThinkingLevel, ProviderHeaders } from "@earendil-works/pi-ai";
 import type { SectionKind } from "./domain/summary-schema.ts";
 
 /** Session type classification */
 export type SessionType = "implementation" | "review" | "debugging" | "discussion";
 
 export type CompressionProfile = "light" | "balanced" | "aggressive";
+export type CompactionMode = "auto" | "balanced" | "aggressive" | "fast" | "thorough";
+export type EffectiveCompactionMode = Exclude<CompactionMode, "auto">;
 
 export interface ProfileConfig {
   summaryBudgetTokens: number;
@@ -20,10 +22,13 @@ export interface ProfileConfig {
 }
 
 export interface CompactConfig {
+  /** Execution preset. `profile` remains the backwards-compatible compression detail knob. */
+  mode: CompactionMode;
   profile: CompressionProfile;
   profiles: Record<CompressionProfile, ProfileConfig>;
   summaryModel: string | null;
   segmentationModel: string | null;
+  verificationModel: string | null;
   summaryThinkingLevel: ThinkingLevel | null;
   segmentationThinkingLevel: ThinkingLevel | null;
   autoTrigger: boolean;
@@ -34,9 +39,16 @@ export interface CompactConfig {
   requireApproval: boolean;
   scrubSecrets: boolean;
   scrubPii: boolean;
-  maxLlmCalls: number; // 0 = unlimited
+  maxLlmCalls: number; // 0 = selected mode cap
+  /** Explicit aggregate prompt-token cap; 0 uses the selected mode's safe cap. */
+  maxLlmInputTokens: number;
+  /** ChatGPT Codex per-call watchdog; 0 derives 15–90s from the requested output cap. */
+  codexMaxCallMs: number;
   maxLatencyMs: number; // 0 = unlimited soft budget; hard timeout stays separate
   focusWeighting: boolean;
+  zeroCallEnabled: boolean;
+  contextGraphEnabled: boolean;
+  telemetryChannel: "stable" | "canary";
   adaptiveDamageFeedback: boolean;
   onlineDamageMonitor: boolean;
   /** File paths that must always survive compaction, regardless of what the
@@ -71,13 +83,35 @@ export interface LLMCallMetric {
   success: boolean;
 }
 
+export type ProviderRouteStage = "explore" | "synthesize" | "verify";
+
+export interface ProviderRouteMetric {
+  stage: ProviderRouteStage;
+  provider: string;
+  model: string;
+  calls: number;
+  successes: number;
+  avgLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface PipelinePhaseTiming {
   phase: "prepare" | "recover" | "prune" | "extract" | "explore" | "synthesize" | "verify" | "state" | "persist" | "damage";
   durationMs: number;
 }
 
+export type TelemetryFailureKind =
+  | "cancelled" | "timeout" | "rate-limit" | "authentication"
+  | "budget" | "output-limit" | "provider" | "persistence"
+  | "validation" | "internal";
+
 export interface CompactMetricsEntry {
   ts: string;
+  metricsSchemaVersion?: 2;
+  version?: string;
+  releaseChannel?: "stable" | "canary";
+  failureKind?: TelemetryFailureKind;
   sessionId: string;
   totalCalls: number;
   totalInput: number;
@@ -91,6 +125,7 @@ export interface CompactMetricsEntry {
   extractionCacheHitRate?: number;
   extractionCacheMissReason?: string;
   profile?: string;
+  mode?: CompactionMode;
   tier?: string;
   method?: string;
   model?: string;
@@ -106,10 +141,16 @@ export interface CompactMetricsEntry {
   fallbackReason?: string;
   verificationScore?: number;
   verificationGaps?: number;
+  initialVerificationScore?: number;
+  deterministicPatchCount?: number;
+  llmPatched?: boolean;
+  qualityFloorUsed?: boolean;
+  remainingVerificationGaps?: number;
   phaseTimings?: PipelinePhaseTiming[];
   durationMs?: number;
   redactions?: number;
   adapted?: boolean;
+  providerRoutes?: ProviderRouteMetric[];
 }
 
 export interface TopicBoundary {
@@ -140,6 +181,7 @@ export interface SmartCompactDetails {
   totalTokensSummarized: number;
   llmCalls: number;
   profile: CompressionProfile;
+  mode?: EffectiveCompactionMode;
   backupPath: string | null;
   tokensSaved: number;
   verified: boolean;
@@ -147,6 +189,9 @@ export interface SmartCompactDetails {
   explorationRounds: number;
   explorationBoundaries: number;
   model: string;
+  providerRoutes?: { explore: string; synthesize: string; verify: string };
+  version?: string;
+  releaseChannel?: "stable" | "canary";
   qualityScore: number;
   tokensBefore: number;
   provenance?: VerificationProvenance;
@@ -234,6 +279,7 @@ export interface VerificationProvenance {
   initialScore: number;
   deterministicPatched: VerificationGap[];
   llmPatched: boolean;
+  qualityFloorUsed?: boolean;
   finalScore: number;
   remainingGaps: VerificationGap[];
 }
@@ -306,8 +352,10 @@ export type LlmContentBlock = LlmTextBlock | LlmToolCallBlock | string;
 
 export interface CacheAwareOptions {
   apiKey?: string;
-  headers?: Record<string, string>;
+  headers?: ProviderHeaders;
   maxTokens?: number;
+  maxRetries?: number;
+  codexWatchdogMs?: number;
   signal?: AbortSignal;
   reasoning?: ThinkingLevel;
   cacheRetention?: "none" | "short" | "long";
@@ -371,6 +419,24 @@ export interface LoopOverride {
   pinned?: boolean;
 }
 
+export type ContinuityFactKind = "decision" | "constraint" | "error" | "loop";
+export interface ContinuityOverride {
+  id: string;
+  kind: ContinuityFactKind;
+  summaryKey: string;
+  status: "active" | "resolved" | "superseded";
+  replacement?: string;
+  updatedAt: number;
+}
+
+/** Durable scope for state reuse: project identity + session + branch ancestry. */
+export interface ContinuityScope {
+  schemaVersion: 2;
+  projectId: string;
+  sessionId: string;
+  branchHeadId?: string;
+}
+
 /** Structured machine-readable compaction state */
 export interface CompactionState {
   goal: string | null;
@@ -383,6 +449,8 @@ export interface CompactionState {
   resolvedErrors: Array<{ id: string; message: string; tool: string }>;
   openLoops: OpenLoop[];
   loopOverrides?: LoopOverride[];
+  factOverrides?: ContinuityOverride[];
+  scope?: ContinuityScope;
   topics: Array<{ title: string; type: string; priority: string }>;
   nextActions: string[];
   criticalContext: string[];
@@ -404,4 +472,5 @@ export interface ProgressState {
   currentBatch?: number;
   model?: string;
   profile?: string;
+  mode?: CompactionMode;
 }

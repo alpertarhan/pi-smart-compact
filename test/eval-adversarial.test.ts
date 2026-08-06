@@ -109,8 +109,28 @@ describe("adversarial planning and safety", () => {
       { type: "message", id: "a" + index, parentId: index ? "r" + (index - 1) : null, timestamp: new Date().toISOString(), message },
       { type: "message", id: "r" + index, parentId: "a" + index, timestamp: new Date().toISOString(), message: { role: "toolResult", toolCallId: "w" + index, content: [{ type: "text", text: "ok" }] } },
     ]);
-    const window = resolveCompactionWindow({ ctx: { getContextUsage: () => ({ tokens: 100_000 }), model: { contextWindow: 120_000 }, sessionManager: { getBranch: () => branch, getSessionId: () => "s" } }, profileCfg: { keepRecentTokens: 20_000 }, estimator } as any);
+    const window = resolveCompactionWindow({
+      ctx: {
+        getContextUsage: () => ({ tokens: 100_000 }), model: { contextWindow: 120_000 },
+        sessionManager: { getBranch: () => branch, buildContextEntries: () => branch, getSessionId: () => "s" },
+      },
+      profileCfg: { keepRecentTokens: 20_000 }, estimator,
+      flags: { force: true }, config: { minContextPercent: 60 }, notify: () => {},
+    } as any);
     expect(window!.accTokens).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it("splits oversized semantic chunks at the configured token ceiling", () => {
+    const estimator = makeTokenEstimator("openai", "test");
+    const messages: LlmMessage[] = Array.from({ length: 30 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: [{ type: "text", text: "message " + index + " " + "x".repeat(500) }],
+    }));
+    const chunks = chunkLlmMessages(messages, [], { ...PROFILES.balanced, maxChunkTokens: 700 }, estimator);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every(chunk => chunk.tokenEstimate <= 700)).toBe(true);
+    expect(chunks.flatMap(chunk => chunk.messages)).toEqual(messages);
   });
 
   it("enforces the call budget at the shared LLM seam", async () => {
@@ -137,6 +157,7 @@ describe("adversarial planning and safety", () => {
     const message: LlmMessage = { role: "assistant", content: [{ type: "toolCall", id: "r", name: "read", arguments: { path: "src/a.ts" } }] };
     expect(monitor.observe("s", message)).toBeNull();
     monitor.activate("s", "p", { modifiedFiles: ["src/a.ts"], readFiles: [], topics: [], method: "eesv" } as any);
+    expect(monitor.observe("s", message)).toBeNull();
     expect(monitor.observe("s", message)?.report.damageScore).toBeGreaterThan(0);
   });
 });

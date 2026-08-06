@@ -14,6 +14,7 @@ import { flattenToolCallBlock } from "./extraction.ts";
 import { extractToolPath } from "../domain/tool-semantics.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
+const VALID_MODES = ["auto", "balanced", "aggressive", "fast", "thorough"] as const;
 const VALID_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
 
@@ -25,6 +26,14 @@ const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChu
  * This prevents silent misconfiguration (e.g. profile: "super").
  */
 export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
+  if ("mode" in sc && !(VALID_MODES as readonly string[]).includes(sc.mode as string)) {
+    log.warn("smart-compact config: invalid mode '" + sc.mode + "', expected auto|balanced|aggressive|fast|thorough. Using default 'auto'.");
+    delete sc.mode;
+  }
+  if ("telemetryChannel" in sc && sc.telemetryChannel !== "stable" && sc.telemetryChannel !== "canary") {
+    log.warn("smart-compact config: telemetryChannel must be stable|canary, got " + String(sc.telemetryChannel));
+    delete sc.telemetryChannel;
+  }
   if ("profile" in sc && !(VALID_PROFILES as readonly string[]).includes(sc.profile as string)) {
     log.warn("smart-compact config: invalid profile '" + sc.profile + "', expected light|balanced|aggressive. Using default 'balanced'.");
     delete sc.profile;
@@ -37,19 +46,17 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
     log.warn("smart-compact config: backupEnabled must be boolean, got " + typeof sc.backupEnabled);
     delete sc.backupEnabled;
   }
-  for (const key of ["requireApproval", "scrubSecrets", "scrubPii", "focusWeighting", "adaptiveDamageFeedback", "onlineDamageMonitor"] as const) {
+  for (const key of ["requireApproval", "scrubSecrets", "scrubPii", "focusWeighting", "zeroCallEnabled", "contextGraphEnabled", "adaptiveDamageFeedback", "onlineDamageMonitor"] as const) {
     if (key in sc && typeof sc[key] !== "boolean") {
       log.warn("smart-compact config: " + key + " must be boolean, got " + typeof sc[key]);
       delete sc[key];
     }
   }
-  if ("summaryModel" in sc && sc.summaryModel !== null && typeof sc.summaryModel !== "string") {
-    log.warn("smart-compact config: summaryModel must be string|null, got " + typeof sc.summaryModel);
-    delete sc.summaryModel;
-  }
-  if ("segmentationModel" in sc && sc.segmentationModel !== null && typeof sc.segmentationModel !== "string") {
-    log.warn("smart-compact config: segmentationModel must be string|null, got " + typeof sc.segmentationModel);
-    delete sc.segmentationModel;
+  for (const key of ["summaryModel", "segmentationModel", "verificationModel"] as const) {
+    if (key in sc && sc[key] !== null && typeof sc[key] !== "string") {
+      log.warn("smart-compact config: " + key + " must be string|null, got " + typeof sc[key]);
+      delete sc[key];
+    }
   }
   for (const key of ["summaryThinkingLevel", "segmentationThinkingLevel"] as const) {
     const value = sc[key];
@@ -100,8 +107,22 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
   if ("maxLlmCalls" in sc) {
     const value = sc.maxLlmCalls;
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 100) {
-      log.warn("smart-compact config: maxLlmCalls must be 0–100; 0 means unlimited.");
+      log.warn("smart-compact config: maxLlmCalls must be 0–100; 0 uses the selected mode cap.");
       delete sc.maxLlmCalls;
+    }
+  }
+  if ("maxLlmInputTokens" in sc) {
+    const value = sc.maxLlmInputTokens;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 1_000_000) {
+      log.warn("smart-compact config: maxLlmInputTokens must be 0–1000000; 0 uses the mode cap.");
+      delete sc.maxLlmInputTokens;
+    }
+  }
+  if ("codexMaxCallMs" in sc) {
+    const value = sc.codexMaxCallMs;
+    if (typeof value !== "number" || !Number.isInteger(value) || (value !== 0 && (value < 5_000 || value > 300_000))) {
+      log.warn("smart-compact config: codexMaxCallMs must be 0 or 5000–300000; 0 derives a cap from maxTokens.");
+      delete sc.codexMaxCallMs;
     }
   }
   if ("maxLatencyMs" in sc) {
@@ -154,6 +175,11 @@ export function loadConfig(): CompactConfig {
     const sc = raw[CONFIG_KEY] ?? raw[CONFIG_KEY_ALT] ?? {};
     validateSmartCompactConfig(sc as Record<string, unknown>);
     const merged = { ...DEFAULT_CONFIG, ...sc } as CompactConfig;
+    // Existing installs used only `profile`; preserve their behavior until
+    // they opt into the new mode key.
+    if (!("mode" in sc) && "profile" in sc) {
+      merged.mode = sc.profile === "light" ? "thorough" : sc.profile as CompactConfig["mode"];
+    }
     if (sc.profiles) merged.profiles = { ...PROFILES, ...sc.profiles } as Record<CompressionProfile, import("../types.ts").ProfileConfig>;
     if (!merged.backupDir) merged.backupDir = defaultBackupDir();
     _cfg = merged; _cfgMtime = stat.mtimeMs; _cfgPath = p; return _cfg;
@@ -319,13 +345,20 @@ export function buildRestoreMessage(content: string, source: string): {
 }
 
 export function getPreviousCompactionContext(branch: unknown[]): string {
-  interface BranchEntry { type: string; details?: { topics?: string[]; method?: string } }
+  interface BranchEntry { type: string; timestamp?: string; summary?: string; details?: { topics?: string[]; method?: string } }
   const compactions = branch.filter((e): e is BranchEntry => (e as BranchEntry).type === "compaction");
   if (!compactions.length) return "";
-  const last = compactions[compactions.length - 1] as BranchEntry;
+  const last = compactions.reduce((latest, entry) => {
+    const latestTime = Date.parse(latest.timestamp ?? "") || 0;
+    const entryTime = Date.parse(entry.timestamp ?? "") || 0;
+    return entryTime >= latestTime ? entry : latest;
+  });
   const topics = last.details?.topics ?? [];
-  if (!topics.length) return "";
-  return "\n[IMPORTANT: Previous compaction exists (" + (last.details?.method ?? "unknown") + "). Already summarized topics: " + topics.join(", ") + ". Build upon this, don't re-summarize the same content.]";
+  const previousSummary = typeof last.summary === "string" ? last.summary.slice(0, TRUNC.PREVIOUS_SUMMARY) : "";
+  return [
+    "[IMPORTANT: Previous compaction exists (" + (last.details?.method ?? "unknown") + "). Already summarized topics: " + (topics.join(", ") || "unknown") + ". Build upon this, don't drop still-relevant facts.]",
+    previousSummary ? "Previous verified summary:\n" + previousSummary : "",
+  ].filter(Boolean).join("\n\n");
 }
 
 // SessionMessageEntry is now imported from types.ts
@@ -489,7 +522,7 @@ export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: num
 }
 
 export function extractUserNote(args: string): string | undefined {
-  const SKIP = new Set(["verbose", "debug", "dry-run", "light", "balanced", "aggressive"]);
+  const SKIP = new Set(["verbose", "debug", "dry-run", "auto", "light", "balanced", "aggressive", "fast", "thorough", "slow"]);
   const tokens = args.trim().split(/\s+/).filter(Boolean);
   // We only want to strip the *first* token if it looks like a
   // `--flag` / `provider/model` style argument; user notes themselves

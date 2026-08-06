@@ -56,7 +56,7 @@ describe("stage machine type chain", () => {
     // prepareRun. This is enforced at the type level — we sample it here.
     type Diff = Exclude<keyof PreparedRc, keyof RcBase>;
     // `_prepared` plus the resolved config fields appear in Diff.
-    const hasPreparedDiff: Diff extends "_prepared" | "config" | "profileCfg" | "providerCaps" | "summaryAuth" | "segAuth" ? true : true = true;
+    const hasPreparedDiff: Diff extends "_prepared" | "config" | "profileCfg" | "providerCaps" | "summaryAuth" | "segAuth" | "verifyAuth" ? true : true = true;
     expect(hasPreparedDiff).toBe(true);
   });
 });

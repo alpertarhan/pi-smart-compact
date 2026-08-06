@@ -4,6 +4,8 @@ import { buildToolCallIndex, extractStructured } from "../src/utils/extraction.t
 import { pruneRedundant } from "../src/utils/pruning.ts";
 import { parseSummary } from "../src/domain/summary-parse.ts";
 import { buildUniquePathNeedles } from "../src/utils/file-needles.ts";
+import { chunkLlmMessages } from "../src/phases/synthesize.ts";
+import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { LlmMessage } from "../src/types.ts";
 
 const fullConversation: LlmMessage[] = Array.from({ length: 2_500 }, (_, i): LlmMessage[] => [
@@ -16,6 +18,7 @@ const fullConversation: LlmMessage[] = Array.from({ length: 2_500 }, (_, i): Llm
 const incrementalDelta = fullConversation.slice(-100);
 const oneMegabyteSummary = "## Goal\n" + "x".repeat(1_000_000);
 const collidingPaths = Array.from({ length: 500 }, (_, i) => "packages/p" + i + "/src/index.ts");
+const estimator = makeTokenEstimator("openai", "benchmark");
 let sink = 0;
 
 interface Benchmark {
@@ -46,6 +49,11 @@ const benchmarks: Benchmark[] = [
     name: "prune 5k messages",
     iterations: 5,
     run: () => { sink += pruneRedundant(fullConversation).messages.length; },
+  },
+  {
+    name: "chunk + bound 5k messages",
+    iterations: 5,
+    run: () => { sink += chunkLlmMessages(fullConversation, [], PROFILES.balanced, estimator).length; },
   },
   {
     name: "parse 1MB canonical summary",

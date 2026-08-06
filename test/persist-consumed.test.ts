@@ -56,6 +56,26 @@ describe("persistConsumedState", () => {
     expect(state!.goal).toBe("test goal");
   });
 
+  it("indexes a consumed scoped state into Smart Recall", async () => {
+    const { persistConsumedState } = await import("../src/app/steps/persist.ts");
+    const { recallContext } = await import("../src/infra/context-graph.ts");
+    const { VERSION } = await import("../src/constants.ts");
+    const projectId = "test-project-graph";
+    persistConsumedState({
+      summary: "## Goal\nship recall", firstKeptEntryId: "e1", tokensBefore: 100,
+      details: {} as never, sessionId: "s-graph", projectId,
+      compactionState: {
+        goal: "Ship persistent recall", decisions: [{ id: "decision-1", summary: "Use FTS5", type: "explicit" }], constraints: [],
+        modifiedFiles: [], readFiles: [], deletedFiles: [], unresolvedErrors: [], resolvedErrors: [],
+        openLoops: [], topics: [], nextActions: [], criticalContext: [], sessionType: "implementation",
+        compactionVersion: VERSION, updatedAt: Date.now(),
+        scope: { schemaVersion: 2, projectId, sessionId: "s-graph", branchHeadId: "b1" },
+      } as never,
+    });
+
+    expect(recallContext({ projectId, sessionId: "s-graph", branchEntryIds: ["b1"] }, "FTS5")[0].content).toContain("FTS5");
+  });
+
   it("is a no-op without projectId (legacy payloads) and never throws", async () => {
     const { persistConsumedState } = await import("../src/app/steps/persist.ts");
     expect(() => persistConsumedState({

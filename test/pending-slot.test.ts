@@ -118,8 +118,9 @@ describe("PendingSlot — cross-session leak guard", () => {
       expect(r.expected).toBe("sess_A");
       expect(r.actual).toBe("sess_B");
     }
-    // Mismatched payloads are dropped — session B must never see session A's data.
-    expect(slot.isPresent()).toBe(false);
+    // Session B cannot consume A, but A's payload remains available to A.
+    expect(slot.isPresent("sess_A")).toBe(true);
+    expect(slot.consume(ctxWith("sess_A")).kind).toBe("ok");
   });
 
   it("two unresolved sessions never satisfy each other (regression: B1)", () => {
@@ -164,7 +165,35 @@ describe("PendingSlot — clear", () => {
   });
 });
 
-describe("PendingSlot — set overwrite", () => {
+describe("PendingSlot — session-scoped storage", () => {
+  it("keeps independent pending summaries for concurrent sessions", () => {
+    const slot = createPendingSlot({ ttlMs: 60_000 });
+    slot.set(makePayload("sess_a", "A"));
+    slot.set(makePayload("sess_b", "B"));
+
+    expect(slot.size()).toBe(2);
+    const b = slot.consume(ctxWith("sess_b"));
+    assertOk(b);
+    expect(b.pending.summary).toBe("B");
+    const a = slot.consume(ctxWith("sess_a"));
+    assertOk(a);
+    expect(a.pending.summary).toBe("A");
+  });
+
+  it("evicts the oldest session at the configured bound", () => {
+    let t = 0;
+    const slot = createPendingSlot({ ttlMs: 60_000, maxEntries: 2, now: () => ++t });
+    slot.set(makePayload("sess_a"));
+    slot.set(makePayload("sess_b"));
+    slot.set(makePayload("sess_c"));
+
+    expect(slot.isPresent("sess_a")).toBe(false);
+    expect(slot.isPresent("sess_b")).toBe(true);
+    expect(slot.isPresent("sess_c")).toBe(true);
+  });
+});
+
+describe("PendingSlot — same-session overwrite", () => {
   it("a second set replaces the previous payload and resets createdAt", () => {
     let t = 0;
     const slot = createPendingSlot({ ttlMs: 100, now: () => t });
