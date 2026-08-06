@@ -6,7 +6,10 @@
  * `complete` from pi-ai. Also verifies `resetLlmClient` restores the default.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { setLlmClient, resetLlmClient, defaultLlmClient, getLlmClient, rawLlmClient } from "../src/infra/llm-client.ts";
+import {
+  setLlmClient, resetLlmClient, defaultLlmClient, getLlmClient, rawLlmClient,
+  isChatGptCodex, resolveCodexWatchdogMs, withCodexWireLimit,
+} from "../src/infra/llm-client.ts";
 import { createServices } from "../src/infra/services.ts";
 import { trackedComplete } from "../src/utils/cache.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
@@ -60,7 +63,7 @@ describe("llm-client seam", () => {
     expect(openaiModel).toBeDefined();
     let payload: any;
 
-    await rawLlmClient.complete(openaiModel!, {
+    await expect(rawLlmClient.complete(openaiModel!, {
       messages: [{ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() }],
     }, {
       apiKey: "test",
@@ -69,9 +72,47 @@ describe("llm-client seam", () => {
         payload = value;
         throw new Error("payload captured");
       },
-    });
+    })).rejects.toThrow("payload captured");
 
     expect(payload?.reasoning?.effort).toBe("low");
+  });
+
+  it("does not retry provider requests and caches the growing exploration loop", async () => {
+    const captured: any[] = [];
+    const services = createServices({
+      llm: {
+        complete: async (_model, _body, opts) => {
+          captured.push(opts);
+          return { content: [], usage: { input: 10, output: 1, cacheRead: 0 } } as any;
+        },
+      },
+    });
+    const body = { systemPrompt: "x", messages: [] } as any;
+
+    await trackedComplete("explore-loop", model, body, { apiKey: "k" }, services);
+    await trackedComplete("batch", model, body, { apiKey: "k" }, services);
+
+    expect(captured[0]).toMatchObject({ maxRetries: 0, cacheRetention: "short", sessionId: services.compactSessionId });
+    expect(captured[1]).toMatchObject({ maxRetries: 0, cacheRetention: "none" });
+    expect(captured[1].sessionId).toBeUndefined();
+  });
+
+  it("uses a watchdog for ChatGPT Codex and a wire cap for custom Codex endpoints", async () => {
+    const chatgpt = { ...model, provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" } as any;
+    const custom = { ...chatgpt, baseUrl: "https://codex-proxy.example/v1" };
+    const opts: any = { maxTokens: 1234, onPayload: (payload: any) => ({ ...payload, chained: true }) };
+
+    expect(isChatGptCodex(chatgpt)).toBe(true);
+    expect(withCodexWireLimit(chatgpt, opts)).toBe(opts);
+    const limited = withCodexWireLimit(custom, opts);
+    expect(await limited.onPayload?.({ model: "x" }, custom)).toEqual({ model: "x", chained: true, max_output_tokens: 1234 });
+  });
+
+  it("derives a bounded Codex watchdog and accepts a calibrated override", () => {
+    expect(resolveCodexWatchdogMs(1)).toBe(15_000);
+    expect(resolveCodexWatchdogMs(4_096)).toBe(42_768);
+    expect(resolveCodexWatchdogMs(128_000)).toBe(90_000);
+    expect(resolveCodexWatchdogMs(4_096, 25_000)).toBe(25_000);
   });
 
   it("resetLlmClient restores the default", () => {

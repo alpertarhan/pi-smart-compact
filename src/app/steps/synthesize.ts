@@ -22,23 +22,103 @@ import type { ChunkSummary, TopicBoundary } from "../../types.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import { exploreConversation, shouldExplore } from "../explore-wrap.ts";
 import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback, failedChunkSummary } from "../../phases/synthesize.ts";
-import { MAX_EXPLORATION_ROUNDS } from "../../constants.ts";
+import { MAX_EXPLORATION_ROUNDS, PROFILES } from "../../constants.ts";
+import {
+  batchOutputLimit, continuityRisk, deterministicExtractionConfidence, effectiveBudget,
+  MODE_POLICIES, modeFromLegacyProfile, resolveMode,
+} from "../mode-policy.ts";
 import { createBatches } from "../../utils/helpers.ts";
 import { extractText } from "../../utils/extraction.ts";
 import * as log from "../../utils/logger.ts";
 import type { ExtractedRc, SynthesizedRc } from "../run-context.ts";
 import { advance, markMeasuredPhase } from "../run-context.ts";
+import { getCachedSynthesis, setCachedSynthesis, synthesisCacheKey } from "../../infra/synthesis-cache.ts";
 
 export async function summarizeConversation(rc: ExtractedRc): Promise<SynthesizedRc> {
   let synthPhaseStart = Date.now();
   const extraction = rc.extraction;
+  // Backwards-compatible direct callers/tests may construct a pre-mode Rc.
+  rc.mode ??= rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced";
+  rc.requestedMode ??= rc.mode;
+  if (rc.requestedMode === "auto") {
+    const refined = resolveMode(
+      "auto", rc.contextPercent, extraction,
+      continuityRisk(rc.previousState) + (rc.adapted ? 12 : 0),
+    );
+    if (refined !== rc.mode) {
+      const oldBase = { ...PROFILES[rc.profile], ...(rc.config.profiles?.[rc.profile] ?? {}) };
+      const keepScale = rc.profileCfg.keepRecentTokens / oldBase.keepRecentTokens;
+      const summaryScale = rc.profileCfg.summaryBudgetTokens / oldBase.summaryBudgetTokens;
+      rc.mode = refined;
+      rc.profile = MODE_POLICIES[refined].profile;
+      rc.profileCfg = { ...PROFILES[rc.profile], ...(rc.config.profiles?.[rc.profile] ?? {}) };
+      rc.profileCfg.keepRecentTokens = Math.round(rc.profileCfg.keepRecentTokens * keepScale);
+      rc.profileCfg.summaryBudgetTokens = Math.round(rc.profileCfg.summaryBudgetTokens * summaryScale);
+      const policy = MODE_POLICIES[refined];
+      rc.services.budget.setLimits(
+        rc.maxLlmCalls ?? effectiveBudget(rc.config.maxLlmCalls, policy.maxLlmCalls),
+        rc.maxLlmInputTokens ?? effectiveBudget(rc.config.maxLlmInputTokens, policy.maxInputTokens),
+        policy.maxOutputTokens,
+      );
+      rc.notify("Auto mode selected " + refined + " from deterministic session risk", "info");
+    }
+  }
   const pc = rc.profileCfg;
-  const shouldSkipExplore = rc.tier === "light";
+  const policy = MODE_POLICIES[rc.mode];
+  const cacheKey = synthesisCacheKey(rc);
+  const cached = getCachedSynthesis(cacheKey);
+  if (cached) {
+    rc.notify("Synthesis cache hit — no LLM calls", "info");
+    const hit = rc as ExtractedRc & {
+      _synthesized: true; finalSummary: string; method: "eesv" | "single-pass" | "heuristic";
+      methodForMetrics: string; llmCalls: number; summaries: ChunkSummary[];
+      explorationReport: import("../../types.ts").ExplorationReport | null;
+      explorationRounds: number; chunkCount: number;
+    };
+    hit.finalSummary = cached.finalSummary;
+    hit.method = cached.method;
+    hit.methodForMetrics = cached.method + "-cache";
+    hit.llmCalls = 0;
+    hit.summaries = cached.summaries;
+    hit.explorationReport = cached.explorationReport;
+    hit.explorationRounds = cached.explorationRounds;
+    hit.chunkCount = cached.chunkCount;
+    markMeasuredPhase(hit, "synthesize", synthPhaseStart);
+    return advance<ExtractedRc, SynthesizedRc>(hit, "_synthesized");
+  }
+  const zeroCall = rc.config.zeroCallEnabled !== false
+    && (rc.mode === "fast" || rc.mode === "aggressive")
+    && !rc.focus && !rc.userNote
+    && deterministicExtractionConfidence(extraction) >= 0.85;
+  if (zeroCall) {
+    const finalSummary = assembleFallback([], extraction);
+    setCachedSynthesis(cacheKey, {
+      finalSummary, method: "heuristic", summaries: [], explorationReport: null,
+      explorationRounds: 0, chunkCount: 0,
+    });
+    rc.notify("Zero-call deterministic compaction (high-confidence extraction)", "info");
+    const deterministic = rc as ExtractedRc & {
+      _synthesized: true; finalSummary: string; method: "heuristic"; methodForMetrics: string;
+      llmCalls: number; summaries: ChunkSummary[];
+      explorationReport: null; explorationRounds: number; chunkCount: number;
+    };
+    deterministic.finalSummary = finalSummary;
+    deterministic.method = "heuristic";
+    deterministic.methodForMetrics = "zero-call";
+    deterministic.llmCalls = 0;
+    deterministic.summaries = [];
+    deterministic.explorationReport = null;
+    deterministic.explorationRounds = 0;
+    deterministic.chunkCount = 0;
+    markMeasuredPhase(deterministic, "synthesize", synthPhaseStart);
+    return advance<ExtractedRc, SynthesizedRc>(deterministic, "_synthesized");
+  }
+  const shouldSkipExplore = !policy.explore;
   // convText was computed and cached on `rc` in extractWithCache to avoid a
   // second `serializeConversation` over the same pruned array (~50ms on
   // 5k-message sessions).
   const convText = rc.convText;
-  const singlePassMaxTokens = Math.round(pc.singlePassMaxTokens * rc.providerCaps.singlePassTokenMultiplier);
+  const singlePassMaxTokens = Math.round(pc.singlePassMaxTokens * rc.providerCaps.singlePassTokenMultiplier * policy.singlePassMultiplier);
   rc.vlog("Tier=" + rc.tier + " | convTokens=" + rc.convTokens + " | singlePassMax=" + singlePassMaxTokens);
 
   let finalSummary: string;
@@ -161,10 +241,17 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     if (totalBatches <= 1) {
       const single = batches[0];
       if (single) {
-        try {
-          summaries.push(...await summarizeBatch(single, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services));
-        } catch (err) {
+        if (rc.services.budget.remainingCalls() <= 1) {
           summaries.push(...single.map(ch => failedChunkSummary(ch)));
+        } else {
+          try {
+            summaries.push(...await summarizeBatch(
+              single, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services,
+              batchOutputLimit(rc.mode, single.length, rc.providerCaps.maxOutputTokens), rc.sessionId,
+            ));
+          } catch (err) {
+            summaries.push(...single.map(ch => failedChunkSummary(ch)));
+          }
         }
       } else {
         // Defensive: empty chunk list (no messages to summarize). Skip batch
@@ -174,8 +261,17 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     } else {
       const results: ChunkSummary[][] = new Array(totalBatches);
       const errors: (Error | null)[] = new Array(totalBatches).fill(null);
-      let completed = 0;
-      for (let wave = 0; wave < totalBatches; wave += concurrency) {
+      // Reserve one call for final assembly; map calls without reduce produce
+      // more prose but a less coherent continuation summary.
+      const batchCallLimit = Math.max(0, Math.min(totalBatches, rc.services.budget.remainingCalls() - 1));
+      for (let index = batchCallLimit; index < totalBatches; index++) {
+        results[index] = batches[index].map(chunk => failedChunkSummary(chunk));
+      }
+      if (batchCallLimit < totalBatches) {
+        rc.notify("Call budget: " + (totalBatches - batchCallLimit) + " batch(es) use deterministic fallback to reserve assembly", "info");
+      }
+      let completed = totalBatches - batchCallLimit;
+      for (let wave = 0; wave < batchCallLimit; wave += concurrency) {
         if (rc.services.budget.reason()) {
           for (let index = wave; index < totalBatches; index++) {
             results[index] = batches[index].map(chunk => failedChunkSummary(chunk));
@@ -183,11 +279,14 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
           rc.notify("Synthesis budget exhausted — remaining batches use deterministic fallback", "warning");
           break;
         }
-        const waveBatches = batches.slice(wave, Math.min(wave + concurrency, totalBatches));
+        const waveBatches = batches.slice(wave, Math.min(wave + concurrency, batchCallLimit));
         const wavePromises = waveBatches.map(async (batch, i) => {
           const idx = wave + i;
           try {
-            results[idx] = await summarizeBatch(batch, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services);
+            results[idx] = await summarizeBatch(
+              batch, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services,
+              batchOutputLimit(rc.mode, batch.length, rc.providerCaps.maxOutputTokens), rc.sessionId,
+            );
           } catch (err) {
             errors[idx] = err instanceof Error ? err : new Error(String(err));
             results[idx] = batch.map(ch => failedChunkSummary(ch));
@@ -250,6 +349,9 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   out.explorationReport = explorationReport;
   out.explorationRounds = explorationRounds;
   out.chunkCount = chunkCount;
+  setCachedSynthesis(cacheKey, {
+    finalSummary, method, summaries, explorationReport, explorationRounds, chunkCount,
+  });
   markMeasuredPhase(out, "synthesize", synthPhaseStart);
   return advance<ExtractedRc, SynthesizedRc>(out, "_synthesized");
 }

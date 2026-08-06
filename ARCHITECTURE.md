@@ -24,6 +24,8 @@ section is about lifecycle.
 | `/smart-compact` | Manual command. Interactive picker or direct args. Bypasses the adaptive gate. |
 | `session_before_compact` | Auto hook. Consumes any pending summary, else runs when context pressure is high. |
 | `smart_compact` tool | Agent-callable. Prepares a pending summary; never compacts mid-turn. |
+| `smart_recall` tool | Searches only the current project's bounded context graph; same session/branch ranks first. |
+| `smart_save_memory` tool | Persists one explicit user-confirmed project fact after secret/PII scrubbing. |
 
 A short-lived pending compaction is staged in the [`PendingSlot`](#pending-compaction-slot)
 and handed to Pi when compaction is applied.
@@ -39,7 +41,7 @@ validates another Pi release in an isolated temporary workspace.
 
 ```mermaid
 flowchart LR
-    A[Session branch] --> B[Keep recent tail]
+    A[Active Pi context] --> B[Keep recent tail]
     B --> C[Extract deterministic facts]
     C --> D{Complex enough?}
     D -- No --> E[Single-pass synthesis]
@@ -102,19 +104,34 @@ assertions: the type system proves `buildState` has run.
 `src/index.ts` resolves models, parses command arguments, and routes work into
 `runSmartCompact()`. Before any expensive work, the system checks context size
 against the threshold in `src/constants.ts`. Auto / tool runs are skipped while
-context is small; manual `/smart-compact` bypasses the gate.
+context is small; manual `/smart-compact` bypasses the gate. A pending summary
+for the same session is reused instead of invoking the pipeline again. The
+selected `CompactionMode` resolves to a concrete policy before the first model
+call; `auto` uses context pressure and deterministic extraction risk.
+
+Model routes are stage-specific but never inferred from mode. With no explicit
+configuration, Explore, Synthesize, and Verify all use the selected Pi model.
+`segmentationModel`, `summaryModel`, and `verificationModel` can independently
+override those routes. `prepareRun()` resolves credentials once per distinct
+provider/model route; call metrics preserve the actual route.
 
 ### Keep window and preprocessing
 
-`app/steps/window.ts` keeps a recent tail of messages untouched so very recent
-context stays live, anchored by:
+`app/steps/window.ts` starts from Pi's compaction-aware
+`buildContextEntries()` view, never the append-only session history, then keeps
+a recent tail untouched so very recent context stays live, anchored by:
 
 - **pi-toolkit anchor protection** — never compact past the latest on-branch anchor
 - **`toolCall` / `toolResult` boundary guard** — never orphan a result from its call
 
+Boundary expansion is re-counted after both guards. If the protected tail plus
+the summary budget cannot fall below the configured context trigger, automatic
+and tool runs return control to Pi's native compactor before any LLM call.
+
 Before summarization the pipeline also prunes redundant messages, serializes the
-compacted portion, creates a backup, loads previous compaction context, checks
-the incremental extraction cache, and loads the project fingerprint.
+compacted portion, creates a backup, loads the previous verified summary plus
+bounded continuity state, checks the incremental extraction cache, and loads
+the project fingerprint.
 
 ### Extract
 
@@ -128,23 +145,27 @@ open loops. **This is the ground truth** that synthesis and verification trust.
 ### Explore
 
 Primary: [`src/phases/explore.ts`](./src/phases/explore.ts). Optional — runs only
-when the session looks complex (gated by `shouldExplore`). The model inspects
+in `thorough` mode or when `auto` selects that policy from deterministic risk. The model inspects
 the conversation through a small toolset: message ranges, conversation search,
 recent user messages, local context around an index, file-change lookups, and
 error chains. Tool support is runtime-probed once and cached per run; if a
 provider has no function calling, the system falls back to a direct structured
-analysis path.
+analysis path. The growing tool conversation is capped at three rounds, each
+response is capped where the provider supports output limits, and the shared
+prefix uses short-lived prompt caching.
 
 ### Synthesize
 
-Primary: [`src/phases/synthesize.ts`](./src/phases/synthesize.ts). Two modes:
+Primary: [`src/phases/synthesize.ts`](./src/phases/synthesize.ts). Three paths:
 
+- **Deterministic zero-call** — high-confidence Fast/Aggressive extractions.
 - **Single-pass** — when the compacted conversation fits under the configured threshold.
-- **Hierarchical** — for larger sessions: merge heuristic + exploratory boundaries → chunk → batch by token budget → summarize batches → assemble.
+- **Hierarchical** — for larger sessions: merge available boundaries → split oversized semantic chunks → batch by token budget → summarize batches → assemble.
 
 Behaviors: session-aware prompting, decision propagation across later batches,
-provider-aware output limits and concurrency (wave scheduling), and a
-deterministic fallback assembly when LLM assembly fails.
+mode-specific single-pass thresholds and output limits, provider-aware
+concurrency (wave scheduling), aggregate prompt-token reservation, and a
+deterministic fallback assembly when any budget or LLM call fails.
 
 ### Verify
 
@@ -156,14 +177,16 @@ done/unresolved inconsistencies, missing explicit decisions, and missing
 open-loop coverage.
 
 **Repair order is intentional:** (1) accept if good enough → (2) deterministic
-patch first (free, idempotent) → (3) LLM patch only if still insufficient.
+patch first (free, idempotent) → (3) one LLM patch only in `thorough` mode if
+still insufficient → (4) replace lower-scoring output with the deterministic
+quality floor. Final verification runs again after continuity injection.
 
 ## EESV hardening and control surfaces
 
 - **Canonical summary IR** accepts recognized H1/H2/H3 headings, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
 - **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Provenance is persisted and shown before optional approval.
 - **Fine tool semantics** separate read/search/list/mutate/delete/execute operations. Pruning deduplicates only identical idempotent access signatures.
-- **Unified token planning** uses one run-scoped provider/model-calibrated estimator and counts structured tool-call arguments in window and batch decisions.
+- **Unified token planning** uses one run-scoped provider/model-calibrated estimator, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, and reserves/reconciles every request against the mode's aggregate prompt-token cap.
 - **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in.
 - **Policy controls** include focus weighting, exact call/latency budgets, fail-closed manual approval, online damage monitoring, and persisted open-loop overrides.
 - **Release gate** (`bun run gate`) covers adversarial parser, verification, tool, cache, budget, scrub and damage fixtures.
@@ -177,15 +200,26 @@ reusable state.
 | Concern | Where | Notes |
 | --- | --- | --- |
 | Open-loop injection | `utils/state.ts` | inserted before Next Steps via the canonical parser |
-| `CompactionState` | `utils/state.ts` | machine-readable, reused across compactions |
+| `CompactionState` | `utils/state.ts` | conservatively merged and bounded; absence is not deletion |
+| Continuity Ledger | `utils/state.ts` | deterministic carry-forward of goal, decisions, constraints, unresolved errors, and loops |
 | Cross-compaction delta | `utils/state.ts` | "Changes Since Last Compaction" section |
 | Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | SHA-256 prefix fingerprint + tail; safe only when the pruned prefix still matches |
 | Session-log recovery | `utils/session-log.ts` | streaming JSONL parse; bypasses pi-toolkit truncation by entry-id mapping |
 | Project fingerprint | `utils/fingerprint.ts` | language / framework / key dirs across sessions |
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
+| Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 non-structural nodes per project |
+
+Consumed verified state is indexed into one local SQLite database partitioned by
+project fingerprint. Recall starts from FTS5 lexical matches, expands one hop
+through file-reference edges, then applies session, branch, fact-kind,
+confidence, recency, and explicit-memory weights. Exact equivalent facts are
+deduplicated before bounded output. Resolved/superseded state is removed from
+the active FTS index; another project's rows are never eligible.
 
 **Important retention limits:** pending in-memory compaction 5 min · exploration
-tool-support cache 30 min · extraction cache 1 h · compaction state 7 d · remediation hints 7 d · metrics and damage JSONL logs 5 MiB each.
+tool-support cache 30 min · extraction cache 1 h · compaction state 7 d · context
+graph 2,000 fact nodes per project · remediation hints 7 d · metrics and damage
+JSONL logs 5 MiB each.
 
 ## Concurrency & safety model
 
@@ -244,6 +278,44 @@ drives pipeline behavior:
 | `singlePassTokenMultiplier` | single-pass vs chunked threshold |
 | `tokenRatioEstimate` | token estimation; refined by per-(provider,model) **EMA calibration** |
 
+The Codex limiter is hybrid. Custom Codex endpoints receive
+`max_output_tokens` through Pi AI's payload hook. The ChatGPT subscription
+endpoint rejects every wire output-cap field, so it uses a derived 15–90s
+per-call stream watchdog plus a visible-output ceiling; aborts route to the
+phase's deterministic fallback.
+
+### Provider evaluation and routing evidence
+
+[`src/domain/provider-evaluation.ts`](./src/domain/provider-evaluation.ts)
+collapses call telemetry into Explore/Synthesize/Verify routes and compares
+provider/models across a deterministic context-pressure × tool-density matrix.
+Only schema-v2 rows contribute verifier quality; legacy rows contribute latency
+and reliability. Recommendations require minimum samples, ≥80% call reliability, and ≥50%
+schema-v2 quality coverage, shrink toward neutral under low confidence, and are advisory only.
+They never mutate config or replace the selected model. The opt-in live harness
+runs three identical bounded continuity scenarios across explicitly named
+models.
+
+### Privacy-safe telemetry and canary decisions
+
+[`src/domain/telemetry.ts`](./src/domain/telemetry.ts) maps raw exceptions to a
+content-free failure taxonomy, aggregates schema-v2 run quality without IDs or
+conversation data, and compares an explicitly tagged `canary` cohort against
+`stable` history. A deterministic gate returns Hold, Rollback, or Promote from
+sample/quality coverage plus failure, verifier quality, p95 latency, token,
+heuristic-fallback, and post-compaction-damage thresholds. It is deliberately
+advisory: rollout selection, configuration changes, and rollback remain
+external operations.
+
+Dashboard trust calculations live in
+[`src/ui/dashboard-insights.ts`](./src/ui/dashboard-insights.ts). Data
+Confidence is an auditable 100-point score over sample size, schema-v2
+coverage, verifier-quality coverage, required-field completeness, and
+freshness; ≥85 is the high-confidence target. TUI and HTML surfaces share the
+same quality-repair, stage/provider/model, failure-taxonomy, and
+stable-vs-canary aggregates. Missing/legacy evidence lowers the score and
+produces remediation guidance instead of being imputed.
+
 ## Dependency injection
 
 [`src/infra/services.ts`](./src/infra/services.ts) is a per-`runSmartCompact`
@@ -254,7 +326,7 @@ across tests. Each run gets its own container:
 | Service | Role |
 | --- | --- |
 | `clock` | injectable wall clock (deterministic tests) |
-| `llm` | LLM client seam (production wraps with retry) |
+| `llm` | LLM client seam (production does not replay failed requests) |
 | `toolSupport` | provider tool-support cache (1 h TTL) |
 | `metrics` | bounded metrics sink |
 | `extractionCacheStats` | hit / miss counters |
@@ -272,6 +344,8 @@ The code is organized into six layers, each with a single responsibility.
 | `src/index.ts` | extension registration, command parsing, auto-trigger hook |
 | `src/constants.ts` | version, thresholds, prompts, config keys |
 | `src/types.ts` | shared types and discriminated unions |
+| `domain/provider-evaluation.ts` | advisory provider scenario matrix and route telemetry aggregation |
+| `domain/telemetry.ts` | privacy-safe aggregates, failure taxonomy, and canary rollback gates |
 
 ### Orchestration layer (`src/app/`)
 
@@ -279,6 +353,7 @@ The code is organized into six layers, each with a single responsibility.
 | --- | --- |
 | `app/run-smart-compact.ts` | top-level pipeline orchestrator |
 | `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
+| `app/mode-policy.ts` | Auto planner and finite Fast/Balanced/Aggressive/Thorough policies |
 | `app/pending-slot.ts` | encapsulated pending-compaction state cell |
 | `app/explore-wrap.ts` | thin re-export shim isolating the explore import for headless tests |
 | `app/steps/prepare.ts` | resolve config, auth, provider caps |
@@ -321,8 +396,8 @@ All external-world interaction.
 | `infra/paths.ts` | canonical cache/session/backup paths |
 | `infra/git.ts` | cached git-root discovery |
 | `infra/clock.ts` | injectable wall clock |
-| `infra/llm-client.ts` | LLM client seam (production wraps with retry) |
-| `infra/llm-retry.ts` | 429/5xx exponential backoff + jitter + Retry-After |
+| `infra/llm-client.ts` | LLM seam, custom-Codex wire cap, and ChatGPT Codex stream watchdog |
+| `infra/llm-retry.ts` | opt-in/tested 429/5xx backoff utility (not on the default cost path) |
 | `infra/services.ts` | per-run services container |
 | `infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
 | `infra/ai-messages.ts` | boundary adapters between `LlmMessage` and pi-ai `Message` |
@@ -351,8 +426,9 @@ All external-world interaction.
 
 | File | Responsibility |
 | --- | --- |
-| `ui/overlays.ts` | model/profile pickers, progress, result, dashboard screens |
+| `ui/overlays.ts` | model/mode pickers, progress, result, dashboard screens |
 | `ui/dashboard-format.ts` | shared pure formatters for metrics surfaces |
+| `ui/dashboard-insights.ts` | Data Confidence, quality/provider drilldowns, and canary trust views |
 | `ui/metrics-report.ts` | text report + local HTML metrics dashboard |
 
 ## Design principles

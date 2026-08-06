@@ -171,6 +171,26 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(callCount).toBeGreaterThan(0);
   });
 
+  it("uses zero LLM calls for high-confidence fast-mode extraction", async () => {
+    const messages = [userMsg("Update src/auth.ts"), assistantMsg("Updated it")];
+    let callCount = 0;
+    setLlmClient({ complete: async () => { callCount++; throw new Error("must not call"); } });
+    const tiered = makeTieredRc(messages);
+    tiered.mode = "fast";
+    tiered.requestedMode = "fast";
+    const extracted = extractWithCache(tiered);
+    extracted.extraction.mainGoal = "Update auth";
+    extracted.extraction.lastUserMessages = ["Update src/auth.ts"];
+    extracted.extraction.modifiedFiles = [{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 1 }];
+
+    const synthesized = await summarizeConversation(extracted);
+
+    expect(synthesized.methodForMetrics).toBe("zero-call");
+    expect(synthesized.llmCalls).toBe(0);
+    expect(callCount).toBe(0);
+    expect(synthesized.finalSummary).toContain("src/auth.ts");
+  });
+
   it("falls back to heuristic synthesis when every LLM call fails", async () => {
     const messages: LlmMessage[] = [
       userMsg("Quick question about src/helpers.ts."),

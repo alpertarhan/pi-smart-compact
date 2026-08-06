@@ -62,6 +62,7 @@ describe("OnlineDamageMonitor", () => {
   it("activates after compaction and emits the first actionable observation", () => {
     const monitor = new OnlineDamageMonitor(15);
     monitor.activate("session-1", "project-1", makeDetails());
+    expect(monitor.observe("session-1", assistantToolCall("read", { path: "src/auth.ts" }))).toBeNull();
     const observation = monitor.observe("session-1", assistantToolCall("read", { path: "src/auth.ts" }));
     expect(observation?.report.damageScore).toBeGreaterThan(0);
     expect(observation?.projectId).toBe("project-1");
@@ -90,23 +91,28 @@ describe("detectDamage", () => {
     expect(report.summary).toContain("No regression signals");
   });
 
-  it("flags a re-read when the agent reads a previously modified file", () => {
-    const messages: LlmMessage[] = [
+  it("records one re-read for remediation without treating normal continuation as damage", () => {
+    const report = detectDamage([
       assistantToolCall("read", { path: "src/auth.ts" }),
-    ];
-    const report = detectDamage(messages, makeDetails());
-    const reReads = report.signals.filter(s => s.type === "re-read");
-    expect(reReads).toHaveLength(1);
-    expect(reReads[0].severity).toBe("medium");
-    // Remediation: the re-read path is collected for the next compaction.
+    ], makeDetails());
+    expect(report.signals.filter(s => s.type === "re-read")).toHaveLength(0);
     expect(report.reReadFiles).toEqual(["src/auth.ts"]);
-    // The score should reflect a medium-severity signal (10 points).
+    expect(report.damageScore).toBe(0);
+  });
+
+  it("flags repeated reads of the same compacted file", () => {
+    const report = detectDamage([
+      assistantToolCall("read", { path: "src/auth.ts" }),
+      assistantToolCall("read", { path: "src/auth.ts" }),
+    ], makeDetails());
+    expect(report.signals.filter(s => s.type === "re-read")).toHaveLength(1);
     expect(report.damageScore).toBe(10);
     expect(report.summary).toContain("1 re-read");
   });
 
   it("flags a re-read when the agent reads a previously read file too", () => {
     const messages: LlmMessage[] = [
+      assistantToolCall("read", { path: "src/old-config.ts" }),
       assistantToolCall("read", { path: "src/old-config.ts" }),
     ];
     const report = detectDamage(messages, makeDetails());
@@ -155,6 +161,7 @@ describe("detectDamage", () => {
     const reQs = report.signals.filter(s => s.type === "re-question");
     expect(reQs.length).toBeGreaterThan(0);
     expect(reQs[0].severity).toBe("low");
+    expect(report.damageScore).toBe(0);
   });
 
   it("caps the damage score at 100 even with many signals", () => {

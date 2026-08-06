@@ -1,152 +1,100 @@
-/**
- * Pending-compaction slot.
- *
- * A single-element, owner-private state cell that holds the *most recently
- * prepared* `PendingCompaction` until the next `session_before_compact`
- * event consumes it. Concurrency model:
- *
- *   - One producer (`runSmartCompact` → `stagePendingCompaction`).
- *   - One consumer (`session_before_compact` event handler).
- *   - Single-threaded JS event loop; no atomic primitives needed.
- *
- * Design rationale — why an encapsulated factory instead of a mutable
- * `{ value, createdAt }` ref-cell:
- *
- *   1. **Invariant centralization.** The "set → consume → clear" lifecycle
- *      lives in one file. Callers cannot accidentally null `value` without
- *      also resetting `createdAt`, nor can they read a `value` snapshot
- *      against a freshly-overwritten `createdAt` (the original bare-ref
- *      shape allowed this race; see B3 in code-review #3).
- *
- *   2. **Observable consume result.** `consume()` returns a discriminated
- *      union that records *why* a payload was rejected (empty / expired /
- *      session-mismatch). The previous helper folded all three into
- *      `null`, which hid information the caller might want to surface as
- *      metrics or differentiated notifications.
- *
- *   3. **Atomic snapshot.** Every consume path destructures a single
- *      `{ value, createdAt }` snapshot up front so the TTL and id checks
- *      operate on a coherent view, even if a future maintainer threads an
- *      `await` into the middle of the function.
- *
- *   4. **No host-context coupling.** The slot does NOT call
- *      `ctx.ui.notify` itself — the caller decides the UX (silent metric,
- *      toast, log line). This keeps the module pure / fully unit-testable
- *      without a fake host context.
- */
+/** Session-scoped pending compaction store with TTL and bounded memory. */
 
 import type { PendingCompaction } from "../types.ts";
 import { resolveSessionId, type SessionIdentityContext } from "../infra/session-identity.ts";
 
-/**
- * Outcome of `PendingSlot.consume()`. Discriminated union so callers can
- * react differently to each rejection reason (e.g. log a stale payload at
- * `warn`, but a cross-session mismatch at `error`).
- */
 export type ConsumeResult =
   | { kind: "ok"; pending: PendingCompaction }
   | { kind: "empty" }
   | { kind: "expired"; ageMs: number }
   | { kind: "mismatch"; expected: string; actual: string };
 
-/**
- * Public surface of an owned pending-compaction slot. Producers call
- * `set()` once they have a finished summary; consumers call `consume()` at
- * the next compact boundary. `isPresent()` is a non-mutating peek used by
- * the orchestrator for UI wording ("prepared, awaiting native /compact"
- * vs. "run finished").
- */
 export interface PendingSlot {
   set(pending: PendingCompaction): void;
   consume(ctx: SessionIdentityContext): ConsumeResult;
-  clear(): void;
-  isPresent(): boolean;
-  /**
-   * Side-effect-free read. Returns the staged payload without consuming it
-   * or running any guard checks. Intended for *display* paths (e.g. a tool
-   * response that wants to surface `tokensBefore` after a prepare-only run).
-   * Callers must NOT pass the returned payload to the host — only `consume`
-   * enforces the freshness + session-match invariants.
-   */
-  peek(): Readonly<PendingCompaction> | null;
+  clear(sessionId?: string): void;
+  isPresent(sessionId?: string): boolean;
+  peek(sessionId?: string): Readonly<PendingCompaction> | null;
+  size(): number;
 }
 
-/**
- * Optional injection seam for `Date.now`. Tests pass a fake clock so they
- * can advance time without `await new Promise(setTimeout)`. Production
- * callers omit this and get real wall-clock time.
- */
 export interface PendingSlotOptions {
   ttlMs: number;
   now?: () => number;
+  maxEntries?: number;
+}
+
+interface PendingEntry {
+  value: PendingCompaction;
+  createdAt: number;
 }
 
 export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
   const ttlMs = opts.ttlMs;
   const now = opts.now ?? Date.now;
+  const maxEntries = Math.max(1, opts.maxEntries ?? 16);
+  const entries = new Map<string, PendingEntry>();
 
-  let value: PendingCompaction | null = null;
-  let createdAt = 0;
+  const prune = () => {
+    const timestamp = now();
+    for (const [sessionId, entry] of entries) {
+      if (timestamp - entry.createdAt > ttlMs) entries.delete(sessionId);
+    }
+  };
+
+  const newest = (): PendingEntry | undefined => {
+    let result: PendingEntry | undefined;
+    for (const entry of entries.values()) {
+      if (!result || entry.createdAt >= result.createdAt) result = entry;
+    }
+    return result;
+  };
 
   return {
-    set(pending: PendingCompaction): void {
-      value = pending;
-      createdAt = now();
+    set(pending): void {
+      prune();
+      entries.delete(pending.sessionId);
+      while (entries.size >= maxEntries) {
+        const oldestSession = entries.keys().next().value as string | undefined;
+        if (!oldestSession) break;
+        entries.delete(oldestSession);
+      }
+      entries.set(pending.sessionId, { value: pending, createdAt: now() });
     },
 
-    consume(ctx: SessionIdentityContext): ConsumeResult {
-      // Atomic snapshot: read both fields into locals before any further
-      // logic. Even though the JS event loop is single-threaded, this
-      // protects against future refactors that thread an `await` between
-      // the read and the checks below.
-      const snapshotValue = value;
-      const snapshotCreatedAt = createdAt;
-
-      if (!snapshotValue) return { kind: "empty" };
-
-      const ageMs = now() - snapshotCreatedAt;
+    consume(ctx): ConsumeResult {
+      const currentSessionId = resolveSessionId(ctx);
+      const entry = entries.get(currentSessionId);
+      if (!entry) {
+        const other = entries.values().next().value as PendingEntry | undefined;
+        return other
+          ? { kind: "mismatch", expected: other.value.sessionId, actual: currentSessionId }
+          : { kind: "empty" };
+      }
+      const ageMs = now() - entry.createdAt;
       if (ageMs > ttlMs) {
-        // Drop the stale payload so a future consume doesn't keep tripping
-        // over it. The producer (orchestrator) will simply re-prepare on
-        // the next run.
-        value = null;
-        createdAt = 0;
+        entries.delete(currentSessionId);
         return { kind: "expired", ageMs };
       }
-
-      const currentSessionId = resolveSessionId(ctx);
-      if (snapshotValue.sessionId !== currentSessionId) {
-        // Cross-session leak guard: a payload prepared by session A must
-        // never be applied to session B (two pi sessions can share a Node
-        // process via sub-agents). Drop the payload; the originating
-        // session will re-prepare on its next attempt.
-        value = null;
-        createdAt = 0;
-        return {
-          kind: "mismatch",
-          expected: snapshotValue.sessionId,
-          actual: currentSessionId,
-        };
-      }
-
-      // Successful consume: clear the slot atomically with the return so
-      // a re-entrant consume immediately sees `empty`.
-      value = null;
-      createdAt = 0;
-      return { kind: "ok", pending: snapshotValue };
+      entries.delete(currentSessionId);
+      return { kind: "ok", pending: entry.value };
     },
 
-    clear(): void {
-      value = null;
-      createdAt = 0;
+    clear(sessionId): void {
+      if (sessionId) entries.delete(sessionId);
+      else entries.clear();
     },
 
-    isPresent(): boolean {
-      return value !== null;
+    isPresent(sessionId): boolean {
+      prune();
+      return sessionId ? entries.has(sessionId) : entries.size > 0;
     },
 
-    peek(): Readonly<PendingCompaction> | null {
-      return value;
+    peek(sessionId): Readonly<PendingCompaction> | null {
+      prune();
+      return (sessionId ? entries.get(sessionId) : newest())?.value ?? null;
     },
+
+    size(): number { prune(); return entries.size; },
   };
 }

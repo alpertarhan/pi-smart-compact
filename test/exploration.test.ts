@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import { parseExplorationReport, fallbackExplorationReport, shouldExplore, buildExplorationReportFromParsed } from "../src/phases/explore.ts";
+import { parseExplorationReport, fallbackExplorationReport, shouldExplore, buildExplorationReportFromParsed, exploreConversation } from "../src/phases/explore.ts";
+import { createServices } from "../src/infra/services.ts";
+import { MAX_EXPLORATION_ROUNDS } from "../src/constants.ts";
 import type { LlmMessage } from "../src/types.ts";
 
 describe("parseExplorationReport", () => {
@@ -118,6 +120,44 @@ describe("fallbackExplorationReport", () => {
     const report = fallbackExplorationReport(msgs);
     expect(report.mainGoal).toBe("Build a CLI tool");
     expect(report.boundaries.length).toBe(0);
+  });
+});
+
+describe("exploration cost guard", () => {
+  it("caps the growing tool loop and every exploration response", async () => {
+    const requests: Array<{ tools: boolean; maxTokens?: number }> = [];
+    let call = 0;
+    const services = createServices({
+      llm: {
+        complete: async (model, body, opts) => {
+          call++;
+          const hasTools = Array.isArray((body as any).tools);
+          requests.push({ tools: hasTools, maxTokens: opts.maxTokens });
+          const content = hasTools
+            ? [{ type: "toolCall", id: "call-" + call, name: "get_context_around", arguments: { index: 1, radius: 1 } }]
+            : [{ type: "text", text: '{"boundaries":[{"afterIndex":1,"topic":"done","priority":"normal","confidence":0.8}],"mainGoal":"g","sessionType":"implementation"}' }];
+          return {
+            role: "assistant", content, api: model.api, provider: model.provider, model: model.id,
+            usage: { input: 10, output: 5, cacheRead: 0 }, stopReason: hasTools ? "toolUse" : "stop", timestamp: Date.now(),
+          } as any;
+        },
+      },
+    });
+    const messages = [
+      { role: "user", content: "one" },
+      { role: "assistant", content: "two" },
+      { role: "user", content: "three" },
+    ] as LlmMessage[];
+    const extraction = {
+      modifiedFiles: [], readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
+      mainGoal: "g", lastUserMessages: [], lastErrors: [], messageCount: messages.length,
+    } as any;
+    const model = { id: "test", provider: "openai", api: "openai-responses", contextWindow: 128_000, maxTokens: 128_000 } as any;
+
+    await exploreConversation(messages, extraction, model, { apiKey: "k" }, undefined, undefined, undefined, undefined, undefined, services);
+
+    expect(requests.filter(request => request.tools)).toHaveLength(MAX_EXPLORATION_ROUNDS);
+    expect(requests.filter(request => request.tools).every(request => request.maxTokens === 4096)).toBe(true);
   });
 });
 

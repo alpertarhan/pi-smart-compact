@@ -49,6 +49,7 @@ import type { SmartCompactDetails } from "../types.ts";
  */
 const KNOWN_METHODS = new Set(["eesv", "single-pass", "heuristic"]);
 const KNOWN_PROFILES = new Set(["light", "balanced", "aggressive"]);
+const KNOWN_MODES = new Set(["balanced", "aggressive", "fast", "thorough"]);
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every(x => typeof x === "string");
@@ -80,6 +81,14 @@ export function isValidSmartCompactDetails(d: unknown): d is SmartCompactDetails
   if (r.gaps !== undefined && !isStringArray(r.gaps)) return false;
   if (r.verified !== undefined && typeof r.verified !== "boolean") return false;
   if (r.backupPath !== undefined && r.backupPath !== null && typeof r.backupPath !== "string") return false;
+  if (r.mode !== undefined && (typeof r.mode !== "string" || !KNOWN_MODES.has(r.mode))) return false;
+  if (r.version !== undefined && typeof r.version !== "string") return false;
+  if (r.releaseChannel !== undefined && r.releaseChannel !== "stable" && r.releaseChannel !== "canary") return false;
+  if (r.providerRoutes !== undefined) {
+    if (!r.providerRoutes || typeof r.providerRoutes !== "object") return false;
+    const routes = r.providerRoutes as Record<string, unknown>;
+    if (["explore", "synthesize", "verify"].some(key => typeof routes[key] !== "string")) return false;
+  }
 
   return true;
 }
@@ -111,6 +120,7 @@ export function sanitizeSmartCompactDetails(d: unknown): SmartCompactDetails | n
     totalTokensSummarized: typeof r.totalTokensSummarized === "number" ? r.totalTokensSummarized : 0,
     llmCalls: typeof r.llmCalls === "number" ? r.llmCalls : 0,
     profile: KNOWN_PROFILES.has(r.profile as string) ? (r.profile as SmartCompactDetails["profile"]) : "balanced",
+    ...(KNOWN_MODES.has(r.mode as string) ? { mode: r.mode as SmartCompactDetails["mode"] } : {}),
     backupPath: typeof r.backupPath === "string" ? r.backupPath : null,
     tokensSaved: typeof r.tokensSaved === "number" ? r.tokensSaved : 0,
     verified: typeof r.verified === "boolean" ? r.verified : false,

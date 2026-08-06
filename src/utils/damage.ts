@@ -32,7 +32,6 @@ export interface DamageReport {
 const COMPLAINT_PATTERNS = [
   /(?:I already (?:told|said|mentioned|explained) you|(?:we|I) (?:already|just) (?:discussed|went over|covered) this|you forgot|you lost|nerede kaldı|hatırlamıyor|unuttun)/i,
   /(?:that'?s? not (?:what I|right)|that'?s? wrong|yanlış|hayır değil|no that'|that doesn'?t match)/i,
-  /(?:go back to|return to|(?:look|check) again|tekrar bak|geri dön)/i,
 ];
 
 /**
@@ -48,6 +47,7 @@ export function detectDamage(
 ): DamageReport {
   const signals: RegressionSignal[] = [];
   const reReadFiles: string[] = [];
+  const reReadCounts = new Map<string, number>();
   const compactedFiles = new Set(details.modifiedFiles.map(f => f.toLowerCase()));
   const compactedReadFiles = new Set(details.readFiles.map(f => f.toLowerCase()));
 
@@ -67,12 +67,18 @@ export function detectDamage(
           if (fp) {
             const fpLower = fp.toLowerCase();
             if (compactedFiles.has(fpLower) || compactedReadFiles.has(fpLower)) {
-              signals.push({
-                type: "re-read",
-                severity: "medium",
-                detail: "Agent re-read compacted file: " + fp,
-              });
               if (!reReadFiles.includes(fp)) reReadFiles.push(fp);
+              const count = (reReadCounts.get(fpLower) ?? 0) + 1;
+              reReadCounts.set(fpLower, count);
+              // One re-read is normal continuation behavior. Repeated reads of
+              // the same compacted file are a stronger loss signal.
+              if (count === 2) {
+                signals.push({
+                  type: "re-read",
+                  severity: "medium",
+                  detail: "Agent repeatedly re-read compacted file: " + fp,
+                });
+              }
             }
           }
         }
@@ -109,26 +115,27 @@ export function detectDamage(
     }
   }
 
-  // Calculate damage score
+  const dedupedSignals = Array.from(new Map(signals.map(signal => [signal.type + ":" + signal.detail, signal])).values());
+
+  // Low-severity topic mentions are observational, not damage by themselves.
   let damageScore = 0;
-  for (const s of signals) {
+  for (const s of dedupedSignals) {
     if (s.severity === "high") damageScore += 25;
     else if (s.severity === "medium") damageScore += 10;
-    else damageScore += 3;
   }
   damageScore = Math.min(100, damageScore);
 
   // Build summary
   const parts: string[] = [];
-  const reReads = signals.filter(s => s.type === "re-read").length;
-  const complaints = signals.filter(s => s.type === "user-complaint").length;
-  const reQuestions = signals.filter(s => s.type === "re-question").length;
+  const reReads = dedupedSignals.filter(s => s.type === "re-read").length;
+  const complaints = dedupedSignals.filter(s => s.type === "user-complaint").length;
+  const reQuestions = dedupedSignals.filter(s => s.type === "re-question").length;
   if (reReads) parts.push(reReads + " re-read(s)");
   if (complaints) parts.push(complaints + " user complaint(s)");
   if (reQuestions) parts.push(reQuestions + " re-question(s)");
 
   return {
-    signals,
+    signals: dedupedSignals,
     damageScore,
     summary: parts.length
       ? "Damage score: " + damageScore + "/100 — " + parts.join(", ")
@@ -153,6 +160,9 @@ export function logDamageReport(
       projectId,
       method: details.method,
       profile: details.profile,
+      mode: details.mode,
+      version: details.version,
+      releaseChannel: details.releaseChannel,
       qualityScore: details.qualityScore,
       damageScore: report.damageScore,
       signals: report.signals.length,

@@ -31,11 +31,11 @@ export function metricScore(entry: CompactMetricsEntry | undefined): string {
 export function formatMetricRun(entry: CompactMetricsEntry, index?: number): string {
   const prefix = typeof index === "number" ? String(index).padStart(2, " ") + ". " : "";
   const time = entry.ts ? new Date(entry.ts).toLocaleString() : "unknown time";
-  return prefix + time + " | " + (entry.profile ?? "?") + " | " + (entry.provider ?? entry.model ?? "?") + " | " + (entry.method ?? "?") + " | " + (entry.status ?? "?") + " | score " + metricScore(entry) + " | saved " + metricNum(entry.tokensSaved) + "t";
+  return prefix + time + " | " + (entry.mode ?? entry.profile ?? "?") + " | " + (entry.provider ?? entry.model ?? "?") + " | " + (entry.method ?? "?") + " | " + (entry.status ?? "?") + " | score " + metricScore(entry) + " | saved " + metricNum(entry.tokensSaved) + "t";
 }
 
 export function formatMetricRunCompact(entry: CompactMetricsEntry): string {
-  return "score " + metricScore(entry) + " • saved " + metricNum(entry.tokensSaved) + "t • " + (entry.status ?? "?") + " • " + (entry.profile ?? "?") + " / " + (entry.provider ?? entry.model ?? "?");
+  return "score " + metricScore(entry) + " • saved " + metricNum(entry.tokensSaved) + "t • " + (entry.status ?? "?") + " • " + (entry.mode ?? entry.profile ?? "?") + " / " + (entry.provider ?? entry.model ?? "?");
 }
 
 function formatPhaseTiming(phase: PipelinePhaseTiming, total: number): string {
@@ -51,15 +51,23 @@ export function formatRunDetails(entry: CompactMetricsEntry | undefined, title: 
     "",
     "Session: " + entry.sessionId,
     "Time: " + (entry.ts ? new Date(entry.ts).toLocaleString() : "unknown"),
-    "Status: " + (entry.status ?? "unknown") + " | run: " + (entry.runType ?? "?") + " | profile: " + (entry.profile ?? "?"),
+    "Status: " + (entry.status ?? "unknown") + " | run: " + (entry.runType ?? "?") + " | mode: " + (entry.mode ?? entry.profile ?? "?"),
     "Provider/model: " + (entry.provider ?? "?") + " / " + (entry.model ?? "?"),
+    "Version/channel: " + (entry.version ?? "legacy") + " / " + (entry.releaseChannel ?? "stable"),
     "Method: " + (entry.method ?? "?") + " | duration: " + metricMs(totalDuration),
-    "Quality: " + metricScore(entry) + " | gaps: " + metricNum(entry.verificationGaps),
+    "Quality: " + metricScore(entry) + " | initial: " + metricNum(entry.initialVerificationScore) + " | gaps: " + metricNum(entry.remainingVerificationGaps ?? entry.verificationGaps),
     "Tokens: before " + metricNum(entry.tokensBefore) + "t | saved " + metricNum(entry.tokensSaved) + "t | prune saved " + metricNum(entry.pruneSavedTokens) + "t",
     "LLM: " + metricNum(entry.totalCalls) + " calls | input " + metricNum(entry.totalInput) + "t | output " + metricNum(entry.totalOutput) + "t | provider cache " + metricPct(entry.cacheHitRate),
     "Extraction cache: " + metricNum(entry.extractionCacheHits) + " hit / " + metricNum(entry.extractionCacheMisses) + " miss | rate " + metricPct(entry.extractionCacheHitRate),
     "Context: " + metricNum(entry.contextPercent) + "% | tool share: " + metricNum(entry.toolPercent) + "% | chunks: " + metricNum(entry.chunkCount),
   ];
+  if (entry.providerRoutes?.length) {
+    lines.push("Routes: " + entry.providerRoutes.map(route => route.stage + "=" + route.provider + "/" + route.model).join(" | "));
+  }
+  if (entry.deterministicPatchCount || entry.llmPatched || entry.qualityFloorUsed) {
+    lines.push("Repair: deterministic " + (entry.deterministicPatchCount ?? 0) + " | LLM " + (entry.llmPatched ? "yes" : "no") + " | quality floor " + (entry.qualityFloorUsed ? "yes" : "no"));
+  }
+  if (entry.failureKind) lines.push("Failure kind: " + entry.failureKind);
   if (entry.extractionCacheMissReason) lines.push("Extraction miss reason: " + entry.extractionCacheMissReason);
   if (entry.fallbackReason) lines.push("Reason: " + entry.fallbackReason);
   if (entry.phaseTimings?.length) {
@@ -100,5 +108,5 @@ export function formatRecentRuns(entries: CompactMetricsEntry[]): string[] {
 }
 
 export function isDashboardTitleLine(line: string): boolean {
-  return line.startsWith("#") || line === "Latest run details" || line === "Current session" || line === "Recent runs" || line === "Phase timings:" || line === "Runs in this session:";
+  return line.startsWith("#") || line === "Latest run details" || line === "Current session" || line === "Recent runs" || line === "Quality drilldown" || line === "Provider routes" || line === "Canary / stable control" || line === "Phase timings:" || line === "Runs in this session:";
 }

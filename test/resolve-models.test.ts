@@ -60,11 +60,22 @@ describe("resolveModels precedence", () => {
     expect(resolveModels(ctx, ANTHROPIC, config, false).sumModel).toBe(ANTHROPIC);
   });
 
-  it("config.segmentationModel still overrides segModel (TUI exposes only summary)", () => {
+  it("routes exploration and verification only when explicitly configured", () => {
     const ctx = mkCtx({ models: [OPENAI, ANTHROPIC], session: OPENAI });
-    const config = cfg({ segmentationModel: "anthropic/claude-sonnet" });
-    const { segModel, sumModel } = resolveModels(ctx, OPENAI, config, true);
+    const config = cfg({
+      segmentationModel: "anthropic/claude-sonnet",
+      verificationModel: "anthropic/claude-sonnet",
+    });
+    const { segModel, sumModel, verifyModel } = resolveModels(ctx, OPENAI, config, true);
     expect(sumModel).toBe(OPENAI); // explicit won
-    expect(segModel).toBe(ANTHROPIC); // segmentation config still applied
+    expect(segModel).toBe(ANTHROPIC);
+    expect(verifyModel).toBe(ANTHROPIC);
+  });
+
+  it("keeps every stage on the selected model by default", () => {
+    const ctx = mkCtx({ models: [OPENAI, ANTHROPIC], session: OPENAI });
+    expect(resolveModels(ctx, OPENAI, cfg(), true)).toEqual({
+      sumModel: OPENAI, segModel: OPENAI, verifyModel: OPENAI,
+    });
   });
 });

@@ -22,6 +22,8 @@ import type { RunContext } from "../run-context.ts";
 import type { PendingCompaction, LlmMessage } from "../../types.ts";
 import { saveProjectFingerprint } from "../../utils/fingerprint.ts";
 import { saveCompactionState } from "../../utils/state.ts";
+import { indexCompactionState } from "../../infra/context-graph.ts";
+import { loadConfig } from "../../utils/helpers.ts";
 import { detectDamage, logDamageReport, writeRemediationHints } from "../../utils/damage.ts";
 import { sanitizeSmartCompactDetails } from "../../utils/type-guards.ts";
 import { recordSuccessMetrics, recordFailureMetrics } from "./metrics.ts";
@@ -46,7 +48,10 @@ export function persistConsumedState(pending: PendingCompaction): void {
   if (!pending.projectId) return;
   try {
     if (pending.extraction) saveProjectFingerprint(pending.projectId, pending.extraction);
-    if (pending.compactionState) saveCompactionState(pending.projectId, pending.compactionState);
+    if (pending.compactionState) {
+      saveCompactionState(pending.projectId, pending.compactionState);
+      if (loadConfig().contextGraphEnabled) indexCompactionState(pending.projectId, pending.compactionState);
+    }
   } catch (e) { log.warn("persistConsumedState failed", e); }
 }
 
@@ -135,11 +140,11 @@ export function applyCompaction(rc: StatedRc): void {
     onError: e => {
       // Clear the pending summary so a later `session_before_compact` event
       // can't apply a half-rotten payload that Pi already refused.
-      rc.pendingRef.clear();
+      rc.pendingRef.clear(rc.sessionId);
       recordFailureMetrics(rc, e, {
         sessionId: rc.sessionId, tier: rc.tier, contextPercent: rc.contextPercent,
         toolPercent: rc.toolPercent, totalTokens: rc.totalTokens,
-        methodForMetrics: rc.method, profile: rc.profile,
+        methodForMetrics: rc.method, profile: rc.profile, mode: rc.mode,
       });
       rc.ctx.ui.notify("Failed: " + e.message, "error");
     },

@@ -19,8 +19,12 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Cell } from "../types.ts";
+import type { SessionRunLock } from "./session-run-lock.ts";
+import { acquireRunLock, releaseRunLock } from "./session-run-lock.ts";
+import { resolveSessionId } from "../infra/session-identity.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { CompressionProfile } from "../types.ts";
+import type { CompactionMode, CompressionProfile } from "../types.ts";
+import { MODE_POLICIES, modeFromLegacyProfile, resolveMode } from "./mode-policy.ts";
 import { showResultScreen } from "../ui/overlays.ts";
 import * as log from "../utils/logger.ts";
 
@@ -70,15 +74,20 @@ export interface SmartCompactOptions {
   ctx: ExtensionContext;
   summaryModel: Model<Api>;
   segModel: Model<Api>;
-  profile: CompressionProfile;
+  /** Optional explicit verification/repair route; defaults to the summary model. */
+  verifyModel?: Model<Api>;
+  /** New execution preset. Omit to preserve the legacy profile mapping. */
+  mode?: CompactionMode;
+  profile?: CompressionProfile;
   verbose?: boolean;
   dryRun?: boolean;
   pendingRef: PendingRef;
-  isRunning: Cell<boolean>;
+  isRunning: Cell<boolean> | SessionRunLock;
   autoTriggered?: boolean;
   userNote?: string;
   focus?: string;
   maxLlmCalls?: number;
+  maxLlmInputTokens?: number;
   skipCompact?: boolean;
   /** Explicit user command may bypass adaptive context-pressure tier gate. */
   force?: boolean;
@@ -106,6 +115,10 @@ function makeBase(opts: SmartCompactOptions): RcBase {
   };
   const vlog = (msg: string) => { if (opts.verbose) log.info(msg); };
   const pipelineStart = Date.now();
+  const requestedMode = opts.mode ?? modeFromLegacyProfile(opts.profile ?? "balanced");
+  const contextPercent = opts.ctx.getContextUsage()?.percent ?? 0;
+  const mode = resolveMode(requestedMode, contextPercent);
+  const profile = opts.mode ? MODE_POLICIES[mode].profile : (opts.profile ?? MODE_POLICIES[mode].profile);
   return {
     ctx: opts.ctx,
     notify,
@@ -124,24 +137,28 @@ function makeBase(opts: SmartCompactOptions): RcBase {
     userNote: opts.userNote,
     focus: opts.focus,
     maxLlmCalls: opts.maxLlmCalls,
+    maxLlmInputTokens: opts.maxLlmInputTokens,
     timeoutMs: opts.timeoutMs ?? 0,
     phaseTimings: [],
     pipelineStart,
     phaseStart: pipelineStart,
     summaryModel: opts.summaryModel,
     segModel: opts.segModel,
+    verifyModel: opts.verifyModel ?? opts.summaryModel,
     modelLabel: opts.summaryModel ? opts.summaryModel.provider + "/" + opts.summaryModel.id : "unknown",
-    profile: opts.profile,
+    requestedMode,
+    mode,
+    profile,
   };
 }
 
 export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> {
-  if (opts.isRunning.value) return;
   if (!opts.summaryModel || !opts.segModel) {
     if (!opts.autoTriggered) opts.ctx.ui.notify("Model resolve failed", "error");
     return;
   }
-  opts.isRunning.value = true;
+  const runSessionId = resolveSessionId(opts.ctx);
+  if (!acquireRunLock(opts.isRunning, runSessionId)) return;
 
   const base = makeBase(opts);
   const abortFromHost = () => {
@@ -158,8 +175,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   let finalRc: StatedRc | null = null;
   let failureSummaryFields: {
     sessionId?: string; tier?: string; contextPercent?: number; toolPercent?: number;
-    totalTokens?: number; methodForMetrics?: string; profile: string;
-  } = { profile: opts.profile };
+    totalTokens?: number; methodForMetrics?: string; profile: string; mode?: CompactionMode;
+  } = { profile: base.profile, mode: base.mode };
 
   // Expose this run's cancellation knobs to the caller (the extension entry
   // point uses them to fire an outer Promise.race timeout if a provider
@@ -213,7 +230,12 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     const extracted = extractWithCache(tiered);
 
     const synthesized = await summarizeConversation(extracted);
-    failureSummaryFields = { ...failureSummaryFields, methodForMetrics: synthesized.methodForMetrics };
+    failureSummaryFields = {
+      ...failureSummaryFields,
+      methodForMetrics: synthesized.methodForMetrics,
+      mode: synthesized.mode,
+      profile: synthesized.profile,
+    };
 
     const verified = await verifyAndPatch(synthesized);
     markPhase(verified, "verify");
@@ -253,7 +275,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // verify and persist. We don't want a late-arriving cancellation to leave
     // a fresh pendingRef alive after the caller has already given up on us.
     if (stated.cancellation.timedOut) {
-      stated.pendingRef.clear();
+      stated.pendingRef.clear(stated.sessionId);
       return;
     }
 
@@ -295,7 +317,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         decision = approvalRequired ? "cancel" : "closed";
       }
       if (approvalRequired && decision !== "apply") {
-        stated.pendingRef.clear();
+        stated.pendingRef.clear(stated.sessionId);
         recordSuccessMetrics(stated, "cancelled");
         stated.notify("Compaction cancelled — current conversation unchanged", "info");
         return;
@@ -307,7 +329,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // ctx.compact() now would attempt to apply a payload Pi has already
     // decided to bypass.
     if (stated.cancellation.timedOut) {
-      stated.pendingRef.clear();
+      stated.pendingRef.clear(stated.sessionId);
       return;
     }
 
@@ -321,11 +343,11 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   } finally {
     opts.abortSignal?.removeEventListener("abort", abortFromHost);
     if (base.cancellation.timeoutId) clearTimeout(base.cancellation.timeoutId);
-    opts.isRunning.value = false;
+    releaseRunLock(opts.isRunning, runSessionId);
     // If the timeout fired we always clear the pending summary so a stale
     // payload cannot be picked up by the next session_before_compact event.
     if (base.cancellation.timedOut) {
-      base.pendingRef.clear();
+      base.pendingRef.clear(runSessionId);
     }
     const pipelineMs = Date.now() - base.pipelineStart;
     if (base.flags.autoTriggered && !base.cancellation.timedOut) {
@@ -336,7 +358,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       // the lifecycle a user actually sees (an `Applied ✓` toast follows
       // when Pi confirms the compact).
       const dur = pipelineMs < 1000 ? pipelineMs + "ms" : (pipelineMs / 1000).toFixed(1) + "s";
-      const hasPending = base.pendingRef.isPresent();
+      const hasPending = base.pendingRef.isPresent(runSessionId);
       base.ctx.ui.notify(
         hasPending
           ? "Smart compact prepared in " + dur + " — awaiting native /compact"

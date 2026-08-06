@@ -1,5 +1,43 @@
 # Changelog
 
+## [Unreleased]
+
+No changes yet.
+
+## [8.0.0-rc.1] - 2026-08-06
+
+### Added
+
+- **Adaptive modes** — `/smart-compact` and the tool now support `auto`, `balanced`, `aggressive`, `fast`, and `thorough` execution policies with finite call and prompt-token ceilings plus observed output-token stop thresholds. Legacy `light` remains a `thorough` alias.
+- **Continuity Ledger** — previous verified summaries and bounded structured state now carry goals, decisions, constraints, unresolved errors, and open loops forward until explicit resolution.
+- **Aggregate prompt budget** — every LLM request reserves estimated input centrally and reconciles against provider usage; `--max-input-tokens` / `max_input_tokens` can override the mode ceiling.
+- **Codex hybrid output limiter** — custom Codex endpoints receive `max_output_tokens`; ChatGPT subscription Codex uses a configurable per-call stream watchdog and visible-output ceiling because its endpoint rejects all server-side output-cap fields.
+- **Smart Recall context graph** — consumed verified state is indexed into a project-isolated, 2,000-node SQLite FTS5 graph with file-reference edges, weighted same-session/branch retrieval, active fact resolution, and bounded `smart_recall` results.
+- **Explicit project memory** — `smart_save_memory` stores deduplicated, user-confirmed durable facts after configured secret/PII scrubbing; `contextGraphEnabled` disables indexing and both memory tools.
+- **Stage-aware provider routing** — Explore, Synthesis, and Verify can use independent explicitly configured models; all default to the selected model and mode changes never reroute providers.
+- **Provider evaluation harness** — schema-v2 per-stage telemetry feeds an advisory context-pressure × tool-density matrix, plus an explicit paid-API scenario probe; neither path edits routing automatically.
+- **Privacy-safe canary telemetry** — aggregate-only exports omit conversation/session/project data, failures use a stable content-free taxonomy, and explicit stable/canary tags drive Hold/Rollback/Promote gates for quality, failures, latency, tokens, fallback, and damage.
+- **Dashboard trust UX** — TUI/text/HTML surfaces now show an auditable Data Confidence score (≥85 target), quality bands and repair gain, stage/provider/model evidence with quality coverage, stable-vs-canary deltas, rollback triggers, and failure taxonomy.
+- **Session-aware run control** — same-session runs serialize, different sessions share a bounded global concurrency of two, pending state is TTL/LRU bounded, and synthesis caches key by session/branch/model/mode.
+- **Native continuity bridge** — after Pi native compaction, scoped continuity is delivered exactly once at the next agent start instead of being lost or repeatedly injected.
+
+### Fixed
+
+- **Runaway token consumption** — compaction windows now use Pi's active, compaction-aware entries instead of re-summarizing append-only session history. Retained tokens are re-counted after anchor/tool-call boundary expansion; non-viable automatic windows fall back to native compaction before any LLM call.
+- **Repeated staged runs** — a same-session pending summary is reused rather than regenerated.
+- **Unbounded LLM amplification** — safe defaults now use at most 8 calls, 3 exploration rounds, minimal per-phase reasoning, no automatic whole-request retries, explicit exploration output caps, and prompt caching for the growing exploration loop.
+- **Calibration skew** — request calibration includes system/tools and cached prompt tokens instead of calibrating message text against incomplete usage.
+- **Oversized synthesis chunks** — `maxChunkTokens` is now enforced by splitting large semantic segments; batch output budgets match the requested 2–4 sentence summaries instead of allocating 1,500 tokens per chunk.
+- **Cross-generation context loss** — absent prior facts are no longer interpreted as deleted; cumulative state is conservatively merged and bounded.
+- **Cross-session/branch contamination** — continuity state now carries project/session/branch ancestry scope with Branch > Session > Project precedence; legacy project-wide state is not injected into unrelated work.
+- **Post-compaction false positives** — one normal file re-read or topic mention no longer counts as damage; repeated re-reads and explicit correction language remain actionable signals.
+
+### Changed
+
+- High-confidence Fast/Aggressive runs can use zero-call deterministic synthesis; the verifier replaces lower-scoring model output with a deterministic quality floor, and Auto planning escalates from continuity/prior-damage risk.
+- Recent-tail retention scales with model context, preserves the two newest user turns when enough history exists, and validates mode-specific post-compaction headroom.
+- Refreshed the development lockfile to Pi `0.84.0`, TypeBox `1.3.11`, and `@types/node` `26.1.2` while preserving Pi host packages as wildcard-only peer dependencies.
+
 ## [7.22.0] - 2026-07-15
 
 ### Added

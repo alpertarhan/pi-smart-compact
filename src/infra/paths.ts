@@ -68,6 +68,11 @@ export function metricsLogFile(): string {
   return path.join(cacheDir(), "compact-metrics.jsonl");
 }
 
+/** Project-scoped persistent context graph (SQLite + FTS5). */
+export function contextGraphFile(): string {
+  return path.join(smartCompactCacheDir(), "context-graph.sqlite");
+}
+
 /** Damage reports JSONL log. */
 export function damageReportsFile(): string {
   return path.join(smartCompactCacheDir(), "damage-reports.jsonl");
@@ -83,9 +88,16 @@ export function projectFingerprintFile(projectId: string): string {
   return path.join(projectFingerprintDir(), projectId + ".json");
 }
 
-/** Compaction state file for a given project id. */
+/** Legacy project-wide compaction state file (v1). */
 export function compactionStateFile(projectId: string): string {
-  return path.join(compactionStateDir(), projectId + ".json");
+  return path.join(compactionStateDir(), projectId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json");
+}
+
+/** Session-scoped state file; branch ancestry is validated inside the envelope. */
+export function scopedCompactionStateFile(projectId: string, sessionId: string): string {
+  const project = projectId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const session = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(compactionStateDir(), project, session + ".json");
 }
 
 /** Remediation hints file — files to re-preserve after a damage event. */

@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "7.22.0";
+export const VERSION = "8.0.0-rc.1";
 export const CHARS_PER_TOKEN = 3.8;
 
 export const COMPACT_SYSTEM_PREFIX =
@@ -48,12 +48,14 @@ export const PROFILES: Record<CompressionProfile, ProfileConfig> = {
 };
 
 export const DEFAULT_CONFIG = {
+  mode: "auto" as const,
   profile: "balanced" as CompressionProfile,
   profiles: PROFILES,
   summaryModel: null as string | null,
   segmentationModel: null as string | null,
-  summaryThinkingLevel: null,
-  segmentationThinkingLevel: null,
+  verificationModel: null as string | null,
+  summaryThinkingLevel: "minimal" as const,
+  segmentationThinkingLevel: "minimal" as const,
   autoTrigger: true,
   autoTriggerTimeoutMs: 120000,
   backupEnabled: true,
@@ -62,9 +64,14 @@ export const DEFAULT_CONFIG = {
   requireApproval: false,
   scrubSecrets: true,
   scrubPii: false,
-  maxLlmCalls: 0,
+  maxLlmCalls: 8,
+  maxLlmInputTokens: 0,
+  codexMaxCallMs: 0,
   maxLatencyMs: 0,
   focusWeighting: true,
+  zeroCallEnabled: true,
+  contextGraphEnabled: true,
+  telemetryChannel: "stable" as const,
   adaptiveDamageFeedback: false,
   onlineDamageMonitor: true,
   pinPaths: [] as string[],
@@ -167,7 +174,7 @@ export const LOG_PREFIX = "[smart-compact]";
 
 // ── Thresholds ──
 export const MIN_TOKEN_THRESHOLD = 5000;
-export const MAX_EXPLORATION_ROUNDS = 8;
+export const MAX_EXPLORATION_ROUNDS = 3;
 
 // ── Backup retention policy ──
 //
@@ -226,6 +233,8 @@ export const TRUNC = {
   DETAIL: 300,
   PREVIEW_LONG: 400,
   PREVIEW_XL: 500,
+  PREVIOUS_SUMMARY: 12_000,
+  CONTINUITY_CAPSULE: 4_000,
   CHUNK_FALLBACK: 180,
   DECISION_DETAIL: 60,
   TOPIC_LABEL: 100,
@@ -285,6 +294,6 @@ export const EXPLORER_SYSTEM_PROMPT =
   "3. Find implicit constraints (user tone, frustration, urgency)\n" +
   "4. Assess completion status accurately\n" +
   "5. Extract the narrative arc\n\n" +
-  "Use tools BEFORE forming conclusions. You may make up to 8 tool calls.\n\n" +
+  "Use tools BEFORE forming conclusions. Finish within 3 tool rounds.\n\n" +
   "After exploration, output ONLY a JSON object (no markdown):\n" +
   '{"boundaries":[{"afterIndex":N,"topic":"...","priority":"critical|high|normal|low","confidence":0.0-1.0}],"mainGoal":"...","sessionType":"implementation|review|debugging|discussion","enrichedConstraints":[...],"crossReferences":[...],"statusAssessment":{"done":[...],"inProgress":[...],"blocked":[...]},"criticalContext":[...],"keyDecisions":[...]}';

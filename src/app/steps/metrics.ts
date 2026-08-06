@@ -16,6 +16,10 @@
  */
 
 import type { RcBase, StatedRc } from "../run-context.ts";
+import { aggregateProviderRoutes } from "../../domain/provider-evaluation.ts";
+import { classifyTelemetryFailure } from "../../domain/telemetry.ts";
+import { VERSION } from "../../constants.ts";
+import { loadConfig } from "../../utils/helpers.ts";
 import {
   appendMetricsLog, getMetricsSummary, getExtractionCacheStats,
   effectivePromptInputTokens,
@@ -28,7 +32,11 @@ function runType(rc: RcBase): "manual" | "auto" | "tool" {
 export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run" | "cancelled"): void {
   const ecs = getExtractionCacheStats(rc.services);
   appendMetricsLog(rc.sessionId, {
-    profile: rc.profile, tier: rc.tier,
+    metricsSchemaVersion: 2,
+    version: VERSION,
+    releaseChannel: rc.config?.telemetryChannel ?? loadConfig().telemetryChannel,
+    providerRoutes: aggregateProviderRoutes(rc.services.metrics.snapshot()),
+    profile: rc.profile, mode: rc.mode, tier: rc.tier,
     contextPercent: Math.round(rc.contextPercent),
     toolPercent: rc.toolPercent,
     tokensBefore: rc.totalTokens,
@@ -37,7 +45,12 @@ export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run"
     chunkCount: rc.chunkCount || 1,
     verificationScore: rc.verificationScore,
     verificationGaps: rc.verificationGaps.length,
-    method: rc.method,
+    initialVerificationScore: rc.verificationProvenance?.initialScore ?? rc.verificationScore,
+    deterministicPatchCount: rc.verificationProvenance?.deterministicPatched.length ?? 0,
+    llmPatched: rc.verificationProvenance?.llmPatched ?? false,
+    qualityFloorUsed: rc.verificationProvenance?.qualityFloorUsed ?? false,
+    remainingVerificationGaps: rc.verificationProvenance?.remainingGaps.length ?? rc.verificationGaps.length,
+    method: rc.methodForMetrics,
     model: rc.modelLabel,
     provider: rc.summaryModel.provider,
     runType: runType(rc),
@@ -82,6 +95,7 @@ export interface FailureSummaryFields {
   totalTokens?: number;
   methodForMetrics?: string;
   profile: string;
+  mode?: import("../../types.ts").CompactionMode;
 }
 
 export function recordFailureMetrics(
@@ -89,8 +103,17 @@ export function recordFailureMetrics(
   err: unknown,
   fields: FailureSummaryFields,
 ): void {
+  const releaseChannel = (rc as RcBase & { config?: { telemetryChannel?: "stable" | "canary" } }).config?.telemetryChannel
+    ?? loadConfig().telemetryChannel;
+  const failureKind = classifyTelemetryFailure(err, rc.cancellation.timedOut);
   appendMetricsLog(fields.sessionId ?? "unknown", {
+    metricsSchemaVersion: 2,
+    version: VERSION,
+    releaseChannel,
+    failureKind,
+    providerRoutes: aggregateProviderRoutes(rc.services.metrics.snapshot()),
     profile: fields.profile,
+    mode: fields.mode,
     tier: fields.tier,
     contextPercent: fields.contextPercent != null ? Math.round(fields.contextPercent) : undefined,
     toolPercent: fields.toolPercent,
@@ -100,7 +123,7 @@ export function recordFailureMetrics(
     provider: rc.summaryModel.provider,
     runType: runType(rc),
     status: rc.cancellation.timedOut ? "timeout" : "error",
-    fallbackReason: err instanceof Error ? err.message : String(err),
+    fallbackReason: "failure:" + failureKind,
     phaseTimings: rc.phaseTimings,
     durationMs: Date.now() - rc.pipelineStart,
   }, rc.services);

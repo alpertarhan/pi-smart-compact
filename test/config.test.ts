@@ -16,6 +16,15 @@ describe("validateSmartCompactConfig", () => {
     expect(sc.profile).toBe("light");
   });
 
+  it("validates the optimization mode", () => {
+    const valid: Record<string, unknown> = { mode: "thorough" };
+    validateSmartCompactConfig(valid);
+    expect(valid.mode).toBe("thorough");
+    const invalid: Record<string, unknown> = { mode: "turbo" };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.mode).toBeUndefined();
+  });
+
   it("validates per-phase thinking levels", () => {
     const sc: Record<string, unknown> = {
       summaryThinkingLevel: "max",
@@ -24,8 +33,28 @@ describe("validateSmartCompactConfig", () => {
     validateSmartCompactConfig(sc);
     expect(sc.summaryThinkingLevel).toBe("max");
     expect(sc.segmentationThinkingLevel).toBeUndefined();
-    expect(DEFAULT_CONFIG.summaryThinkingLevel).toBeNull();
-    expect(DEFAULT_CONFIG.segmentationThinkingLevel).toBeNull();
+    expect(DEFAULT_CONFIG.summaryThinkingLevel).toBe("minimal");
+    expect(DEFAULT_CONFIG.segmentationThinkingLevel).toBe("minimal");
+  });
+
+  it("validates the local telemetry release channel", () => {
+    const sc: Record<string, unknown> = { telemetryChannel: "preview" };
+    validateSmartCompactConfig(sc);
+    expect(sc.telemetryChannel).toBeUndefined();
+    expect(DEFAULT_CONFIG.telemetryChannel).toBe("stable");
+  });
+
+  it("validates optional stage model routes", () => {
+    const sc: Record<string, unknown> = {
+      summaryModel: "openai/summary",
+      segmentationModel: 42,
+      verificationModel: "anthropic/verifier",
+    };
+    validateSmartCompactConfig(sc);
+    expect(sc.summaryModel).toBe("openai/summary");
+    expect(sc.segmentationModel).toBeUndefined();
+    expect(sc.verificationModel).toBe("anthropic/verifier");
+    expect(DEFAULT_CONFIG.verificationModel).toBeNull();
   });
 
   it("deletes invalid autoTrigger (string)", () => {
@@ -174,30 +203,45 @@ describe("validateSmartCompactConfig", () => {
       scrubSecrets: true,
       scrubPii: false,
       focusWeighting: true,
+      zeroCallEnabled: true,
+      contextGraphEnabled: true,
+      telemetryChannel: "stable",
       adaptiveDamageFeedback: false,
       onlineDamageMonitor: true,
     };
     validateSmartCompactConfig(sc);
     expect(sc.requireApproval).toBeUndefined();
     expect(sc.scrubSecrets).toBe(true);
+    expect(sc.zeroCallEnabled).toBe(true);
+    expect(sc.contextGraphEnabled).toBe(true);
+    expect(sc.telemetryChannel).toBe("stable");
   });
 
   it("validates optional call and latency budgets", () => {
-    const valid: Record<string, unknown> = { maxLlmCalls: 8, maxLatencyMs: 20_000 };
+    const valid: Record<string, unknown> = { maxLlmCalls: 8, maxLlmInputTokens: 120_000, codexMaxCallMs: 25_000, maxLatencyMs: 20_000 };
     validateSmartCompactConfig(valid);
-    expect(valid).toEqual({ maxLlmCalls: 8, maxLatencyMs: 20_000 });
-    const invalid: Record<string, unknown> = { maxLlmCalls: -1, maxLatencyMs: 1000 };
+    expect(valid).toEqual({ maxLlmCalls: 8, maxLlmInputTokens: 120_000, codexMaxCallMs: 25_000, maxLatencyMs: 20_000 });
+    const invalid: Record<string, unknown> = { maxLlmCalls: -1, maxLlmInputTokens: -1, codexMaxCallMs: 1_000, maxLatencyMs: 1000 };
     validateSmartCompactConfig(invalid);
     expect(invalid.maxLlmCalls).toBeUndefined();
+    expect(invalid.maxLlmInputTokens).toBeUndefined();
+    expect(invalid.codexMaxCallMs).toBeUndefined();
     expect(invalid.maxLatencyMs).toBeUndefined();
   });
 
-  it("ships risky roadmap features behind safe defaults", () => {
+  it("ships roadmap features with explicit safety defaults", () => {
     expect(DEFAULT_CONFIG.requireApproval).toBe(false);
     expect(DEFAULT_CONFIG.scrubSecrets).toBe(true);
     expect(DEFAULT_CONFIG.scrubPii).toBe(false);
+    expect(DEFAULT_CONFIG.zeroCallEnabled).toBe(true);
+    expect(DEFAULT_CONFIG.contextGraphEnabled).toBe(true);
     expect(DEFAULT_CONFIG.adaptiveDamageFeedback).toBe(false);
-    expect(DEFAULT_CONFIG.maxLlmCalls).toBe(0);
+    expect(DEFAULT_CONFIG.mode).toBe("auto");
+    expect(DEFAULT_CONFIG.maxLlmCalls).toBe(8);
+    expect(DEFAULT_CONFIG.maxLlmInputTokens).toBe(0);
+    expect(DEFAULT_CONFIG.codexMaxCallMs).toBe(0);
+    expect(DEFAULT_CONFIG.summaryThinkingLevel).toBe("minimal");
+    expect(DEFAULT_CONFIG.segmentationThinkingLevel).toBe("minimal");
     expect(DEFAULT_CONFIG.maxLatencyMs).toBe(0);
   });
 });

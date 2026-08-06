@@ -26,7 +26,7 @@ describe("assembleFallback (deterministic fallback when LLM assembly fails)", ()
 
   it("uses the extracted mainGoal and falls back to a placeholder when absent", () => {
     expect(assembleFallback([], makeExtraction({ mainGoal: "Ship auth" }))).toContain("Ship auth");
-    expect(assembleFallback([], makeExtraction({ mainGoal: null }))).toContain("See topics below.");
+    expect(assembleFallback([], makeExtraction({ mainGoal: null }))).toContain("Continue the current task.");
   });
 
   it("includes deterministically-extracted modified and read files", () => {

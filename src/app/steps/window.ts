@@ -3,7 +3,7 @@
  *
  * Stage: `PreparedRc` → `WindowedRc | null`.
  *
- * The window is the prefix of branch messages we will summarize. Walks back
+ * The window is the prefix of active-context messages we will summarize. Walks back
  * from the tail accumulating tokens up to `keepRecentTokens`, then anchors:
  *
  *  - `smartKeepBoundary` respects the latest on-branch anchor and avoids
@@ -17,6 +17,7 @@
 import type { PreparedRc, WindowedRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import type { LlmMessage, SessionMessageEntry } from "../../types.ts";
+import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { smartKeepBoundary, guardToolCallBoundary } from "../../utils/helpers.ts";
 import { resolveSessionId } from "../../infra/session-identity.ts";
 
@@ -24,12 +25,22 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   const usage = rc.ctx.getContextUsage();
   const totalTokens = usage?.tokens ?? 0;
 
-  const branch = rc.ctx.sessionManager.getBranch();
+  // getBranch() is append-only history and still contains messages already
+  // replaced by earlier compactions. Only buildContextEntries() represents
+  // what the model currently sees; summarizing full history caused repeated
+  // compactions to process the same six-figure prefix again.
+  const manager = rc.ctx.sessionManager;
+  const branch = typeof manager.buildContextEntries === "function"
+    ? manager.buildContextEntries()
+    : manager.getBranch();
   const msgs = branch.filter(
     (e: { type: string; id?: string; message?: unknown }) => e.type === "message" && e.message != null,
   ) as SessionMessageEntry[];
   if (msgs.length < 3) return null;
 
+  const adaptiveKeepTokens = rc.ctx.model
+    ? Math.min(rc.profileCfg.keepRecentTokens * 2, Math.max(rc.profileCfg.keepRecentTokens, rc.ctx.model.contextWindow * 0.04))
+    : rc.profileCfg.keepRecentTokens;
   let accTokens = 0;
   let keepFrom = msgs.length;
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -37,8 +48,12 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
     // recent-tail budget must count them too. The run-scoped estimator applies
     // the same provider/model calibration used by synthesis planning.
     accTokens += rc.estimator.message(msgs[i].message as LlmMessage);
-    if (accTokens >= rc.profileCfg.keepRecentTokens) { keepFrom = i; break; }
+    if (accTokens >= adaptiveKeepTokens) { keepFrom = i; break; }
   }
+  const recentUsers = msgs
+    .map((entry, index) => ({ index, role: (entry.message as { role?: string })?.role }))
+    .filter(entry => entry.role === "user");
+  if (recentUsers.length >= 3) keepFrom = Math.min(keepFrom, recentUsers[recentUsers.length - 2].index);
   keepFrom = smartKeepBoundary(msgs, keepFrom, branch);
   // `firstKeptEntryId` is required by Pi's compaction API. When the recent
   // token walk never reaches `keepRecentTokens`, keepFrom is the empty suffix
@@ -48,6 +63,11 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   if (keepFrom >= msgs.length) keepFrom = msgs.length - 1;
   keepFrom = guardToolCallBoundary(msgs, keepFrom);
 
+  // Anchor/tool-call safety can move the boundary far earlier than the token
+  // walk selected. Recount the actual retained tail; keeping the stale ~20k
+  // estimate made metrics claim 100k+ savings while the context stayed full.
+  accTokens = rc.estimator.messages(msgs.slice(keepFrom).map(e => e.message as LlmMessage));
+
   if ((msgs[keepFrom]?.message as Record<string, unknown> | undefined)?.role === "toolResult") {
     return null;
   }
@@ -56,6 +76,22 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   if (!toCompact.length) return null;
 
   const contextPercent = rc.ctx.model && totalTokens ? (totalTokens / rc.ctx.model.contextWindow) * 100 : 0;
+  if (!rc.flags.force && rc.ctx.model && totalTokens > 0 && rc.config.minContextPercent > 0) {
+    const allMessageTokens = rc.estimator.messages(msgs.map(e => e.message as LlmMessage));
+    const fixedContextTokens = Math.max(0, totalTokens - allMessageTokens);
+    const projectedTokens = fixedContextTokens + accTokens + rc.profileCfg.summaryBudgetTokens;
+    const mode = rc.mode ?? (rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced");
+    const targetPercent = MODE_POLICIES[mode].targetContextPercent;
+    const targetTokens = rc.ctx.model.contextWindow * targetPercent / 100;
+    if (projectedTokens >= targetTokens) {
+      rc.notify(
+        "Smart compact skipped: protected recent context would remain above " +
+        targetPercent + "% after compaction; using native compaction instead.",
+        "warning",
+      );
+      return null;
+    }
+  }
   const firstKeptId = msgs[keepFrom].id as string;
   // Use the shared helper instead of a local sentinel. A literal fallback
   // (e.g. "unknown") would compare equal across unrelated sessions and

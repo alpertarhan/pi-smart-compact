@@ -26,6 +26,7 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
       getContextUsage: () => ({ tokens: 135_000, contextWindow: 150_000, percent: 90 }),
       sessionManager: {
         getBranch: () => branch,
+        buildContextEntries: () => branch,
         getSessionId: () => "test-session",
       },
     },
@@ -38,6 +39,9 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
       singlePassMaxTokens: 30_000,
       batchMaxTokens: 24_000,
     },
+    config: { minContextPercent: 60 },
+    flags: { verbose: false, dryRun: false, autoTriggered: false, skipCompact: true, force: true },
+    notify: () => {},
     _prepared: true,
   } as unknown as PreparedRc;
 }
@@ -163,5 +167,74 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const result = resolveCompactionWindow(makePreparedRc(branch));
 
     expect(result).toBeNull();
+  });
+
+  it("uses Pi's compaction-aware active entries instead of append-only history", () => {
+    const active = [
+      messageEntry("active-1", null, { role: "user", content: [{ type: "text", text: "old active" }] }),
+      messageEntry("active-2", "active-1", { role: "assistant", content: [{ type: "text", text: "active work" }] }),
+      messageEntry("active-3", "active-2", { role: "user", content: [{ type: "text", text: "recent request" }] }),
+      messageEntry("active-4", "active-3", { role: "assistant", content: [{ type: "text", text: "recent answer" }] }),
+    ];
+    const rc = makePreparedRc([], 1);
+    (rc.ctx.sessionManager as any).getBranch = () => { throw new Error("append-only history must not be read"); };
+    (rc.ctx.sessionManager as any).buildContextEntries = () => active;
+
+    const result = resolveCompactionWindow(rc);
+
+    expect(result?.msgs.map(message => message.id)).toEqual(active.map(message => message.id));
+    expect(result?.toCompact.map(message => message.id)).toEqual(active.slice(0, 3).map(message => message.id));
+  });
+
+  it("keeps the two most recent user turns when enough history exists", () => {
+    const branch = [
+      messageEntry("u1", null, { role: "user", content: [{ type: "text", text: "first" }] }),
+      messageEntry("a1", "u1", { role: "assistant", content: [{ type: "text", text: "first answer" }] }),
+      messageEntry("u2", "a1", { role: "user", content: [{ type: "text", text: "second" }] }),
+      messageEntry("a2", "u2", { role: "assistant", content: [{ type: "text", text: "second answer" }] }),
+      messageEntry("u3", "a2", { role: "user", content: [{ type: "text", text: "third" }] }),
+      messageEntry("a3", "u3", { role: "assistant", content: [{ type: "text", text: "third answer" }] }),
+    ];
+
+    const result = resolveCompactionWindow(makePreparedRc(branch, 1));
+
+    expect(result?.firstKeptId).toBe("u2");
+  });
+
+  it("recounts the retained tail after anchor protection expands it", () => {
+    const toolCallId = "anchor-call";
+    const branch = [
+      messageEntry("old", null, { role: "user", content: [{ type: "text", text: "old " + "x".repeat(500) }] }),
+      messageEntry("anchor-request", "old", { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "context", arguments: { action: "anchor" } }] }),
+      messageEntry("anchor", "anchor-request", { role: "toolResult", toolCallId, toolName: "context", details: { anchor: true }, content: [{ type: "text", text: "checkpoint" }] }),
+      messageEntry("kept-1", "anchor", { role: "assistant", content: [{ type: "text", text: "kept " + "y".repeat(500) }] }),
+      messageEntry("kept-2", "kept-1", { role: "user", content: [{ type: "text", text: "tail" }] }),
+    ];
+    const rc = makePreparedRc(branch, 1);
+
+    const result = resolveCompactionWindow(rc);
+
+    expect(result?.firstKeptId).toBe("anchor-request");
+    expect(result?.accTokens).toBe(rc.estimator.messages(branch.slice(1).map(item => item.message as any)));
+  });
+
+  it("falls back before spending tokens when a protected tail cannot drop below the trigger", () => {
+    const notices: string[] = [];
+    const toolCallId = "anchor-call";
+    const branch = [
+      messageEntry("old", null, { role: "user", content: [{ type: "text", text: "old context" }] }),
+      messageEntry("anchor-request", "old", { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "context", arguments: { action: "anchor" } }] }),
+      messageEntry("anchor", "anchor-request", { role: "toolResult", toolCallId, toolName: "context", details: { anchor: true }, content: [{ type: "text", text: "checkpoint" }] }),
+      messageEntry("kept", "anchor", { role: "assistant", content: [{ type: "text", text: "protected " + "y".repeat(2_000) }] }),
+    ];
+    const rc = makePreparedRc(branch, 1);
+    rc.flags.force = false;
+    rc.ctx.model = { id: "primary", provider: "openai", contextWindow: 1_000 } as any;
+    rc.ctx.getContextUsage = () => ({ tokens: 900, contextWindow: 1_000, percent: 90 } as any);
+    rc.profileCfg.summaryBudgetTokens = 100;
+    rc.notify = message => { notices.push(message); };
+
+    expect(resolveCompactionWindow(rc)).toBeNull();
+    expect(notices[0]).toContain("using native compaction instead");
   });
 });

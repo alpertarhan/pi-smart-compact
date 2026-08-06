@@ -31,7 +31,7 @@ import type { LlmClient } from "./llm-client.ts";
 import { getLlmClient } from "./llm-client.ts";
 import crypto from "node:crypto";
 import type { CompactConfig, LLMCallMetric } from "../types.ts";
-import { METRICS_BUFFER_MAX, ONE_HOUR_MS } from "../constants.ts";
+import { DEFAULT_CONFIG, METRICS_BUFFER_MAX, ONE_HOUR_MS } from "../constants.ts";
 import { TokenCalibrationStore } from "../utils/tokens.ts";
 import { SecretScrubber } from "../domain/scrub.ts";
 
@@ -122,7 +122,7 @@ export class MetricsSink {
  * dashboard so we can tune the prefix-match tolerance over time.
  */
 export class BudgetExceededError extends Error {
-  constructor(readonly reason: "calls" | "latency") {
+  constructor(readonly reason: "calls" | "latency" | "tokens") {
     super("Smart Compact " + reason + " budget exhausted");
     this.name = "BudgetExceededError";
   }
@@ -131,18 +131,22 @@ export class BudgetExceededError extends Error {
 /** Atomic per-run reservation guard; safe for concurrent batch wave launches. */
 export class BudgetGuard {
   private calls = 0;
+  private inputTokens = 0;
+  private outputTokens = 0;
   private startedAt: number;
-  private lastReason: "calls" | "latency" | null = null;
+  private lastReason: "calls" | "latency" | "tokens" | null = null;
 
   constructor(
-    private readonly maxCalls = 0,
+    private maxCalls = 0,
     private readonly maxLatencyMs = 0,
     private readonly clock: Clock = systemClock,
+    private maxInputTokens = 0,
+    private maxOutputTokens = 0,
   ) {
     this.startedAt = clock.now();
   }
 
-  reserveCall(): void {
+  reserveCall(estimatedInputTokens = 0): void {
     if (this.maxLatencyMs > 0 && this.clock.now() - this.startedAt >= this.maxLatencyMs) {
       this.lastReason = "latency";
       throw new BudgetExceededError("latency");
@@ -151,11 +155,36 @@ export class BudgetGuard {
       this.lastReason = "calls";
       throw new BudgetExceededError("calls");
     }
+    if ((this.maxInputTokens > 0 && this.inputTokens + estimatedInputTokens > this.maxInputTokens) ||
+        (this.maxOutputTokens > 0 && this.outputTokens >= this.maxOutputTokens)) {
+      this.lastReason = "tokens";
+      throw new BudgetExceededError("tokens");
+    }
     this.calls++;
+    this.inputTokens += estimatedInputTokens;
+  }
+
+  reconcileInput(estimated: number, actual: number): void {
+    this.inputTokens = Math.max(0, this.inputTokens - estimated + actual);
+    if (this.maxInputTokens > 0 && this.inputTokens >= this.maxInputTokens) this.lastReason = "tokens";
+  }
+
+  recordOutput(actual: number): void {
+    this.outputTokens += Math.max(0, actual);
+    if (this.maxOutputTokens > 0 && this.outputTokens >= this.maxOutputTokens) this.lastReason = "tokens";
+  }
+
+  setLimits(maxCalls: number, maxInputTokens: number, maxOutputTokens = 0): void {
+    this.maxCalls = maxCalls;
+    this.maxInputTokens = maxInputTokens;
+    this.maxOutputTokens = maxOutputTokens;
   }
 
   callCount(): number { return this.calls; }
-  reason(): "calls" | "latency" | null { return this.lastReason; }
+  remainingCalls(): number { return this.maxCalls > 0 ? Math.max(0, this.maxCalls - this.calls) : Number.POSITIVE_INFINITY; }
+  inputTokenCount(): number { return this.inputTokens; }
+  outputTokenCount(): number { return this.outputTokens; }
+  reason(): "calls" | "latency" | "tokens" | null { return this.lastReason; }
 }
 
 export class ExtractionCacheStats {
@@ -185,6 +214,8 @@ export interface SmartCompactServices {
   scrubber: SecretScrubber;
   /** Config snapshot used to select generic reasoning levels for each phase. */
   thinkingLevels: Pick<CompactConfig, "summaryThinkingLevel" | "segmentationThinkingLevel">;
+  /** 0 derives the ChatGPT Codex watchdog from each call's requested output cap. */
+  codexWatchdogMs: number;
   /** Per-run prompt-cache namespace for providers that support prompt caching. */
   compactSessionId: string;
 }
@@ -206,7 +237,11 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
     tokenCalibration: overrides.tokenCalibration ?? new TokenCalibrationStore(),
     budget: overrides.budget ?? new BudgetGuard(),
     scrubber: overrides.scrubber ?? new SecretScrubber(),
-    thinkingLevels: overrides.thinkingLevels ?? { summaryThinkingLevel: null, segmentationThinkingLevel: null },
+    thinkingLevels: overrides.thinkingLevels ?? {
+      summaryThinkingLevel: DEFAULT_CONFIG.summaryThinkingLevel,
+      segmentationThinkingLevel: DEFAULT_CONFIG.segmentationThinkingLevel,
+    },
+    codexWatchdogMs: overrides.codexWatchdogMs ?? DEFAULT_CONFIG.codexMaxCallMs,
     compactSessionId: overrides.compactSessionId ?? makeCompactSessionId(),
   };
 }

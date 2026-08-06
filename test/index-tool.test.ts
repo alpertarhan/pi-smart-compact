@@ -2,6 +2,18 @@ import { describe, expect, it } from "bun:test";
 import smartCompactExtension from "../src/index.ts";
 
 describe("smart_compact tool cancellation", () => {
+  it("publishes mode and aggregate token-budget controls", () => {
+    let tool: any;
+    smartCompactExtension({
+      registerCommand: () => {},
+      registerTool: (definition: any) => { if (definition.name === "smart_compact") tool = definition; },
+      on: () => {},
+    } as any);
+
+    expect(tool.parameters.properties.mode.description).toContain("auto");
+    expect(tool.parameters.properties.max_input_tokens).toBeDefined();
+  });
+
   it("does not start the pipeline when the host signal is already aborted", async () => {
     let tool: any;
     smartCompactExtension({

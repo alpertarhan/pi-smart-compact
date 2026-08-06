@@ -1,6 +1,6 @@
 {
   "name": "pi-smart-compact",
-  "version": "7.22.0",
+  "version": "8.0.0-rc.1",
   "description": "Verification-oriented smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification, metrics, and safety checks.",
   "packageManager": "bun@1.3.14",
   "license": "MIT",
@@ -45,13 +45,18 @@
   "scripts": {
     "sync-version": "bun run scripts/sync-version.ts",
     "prebuild": "bun run sync-version",
-    "build": "rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && mkdir dist && bun build ./src/index.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' && bun build ./scripts/provider-eval.ts ./scripts/provider-scenario-eval.ts ./scripts/telemetry-report.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",
     "test": "bun test",
     "bench": "bun bench/hot-paths.bench.ts",
     "gate": "bun run scripts/eval-gate.ts",
+    "provider-eval": "bun run dist/provider-eval.js",
+    "provider-eval:live": "bun run dist/provider-scenario-eval.js",
+    "telemetry-report": "bun run dist/telemetry-report.js",
     "compat:pi": "bun run scripts/check-pi-compat.ts",
-    "typecheck": "bun x tsc --noEmit",
-    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+    "release:audit": "bun run scripts/release-audit.ts",
+    "release:check": "bun run typecheck && bun test && bun run gate && bun run build && bun run release:audit",
+    "typecheck": "bun x tsc --noEmit && bun x tsc -p tsconfig.scripts.json",
+    "prepublishOnly": "bun run release:check"
   },
   "pi": {
     "extensions": ["./dist/index.js"],
@@ -64,7 +69,7 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "typescript": "^7.0.2"
   },
   "publishConfig": {

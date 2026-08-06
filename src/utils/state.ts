@@ -5,17 +5,31 @@
  */
 
 import fs from "node:fs";
-import type { StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType, LoopOverride } from "../types.ts";
+import type {
+  StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType,
+  LoopOverride, ContinuityOverride, ContinuityScope,
+} from "../types.ts";
 import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX } from "../constants.ts";
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
 import * as log from "./logger.ts";
-import { compactionStateFile } from "../infra/paths.ts";
+import { compactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { parseSummary, findSection, upsertSection, renderSummary, appendToSection } from "../domain/summary-parse.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 
-function getStatePath(projectId: string): string {
-  return compactionStateFile(projectId);
+function getStatePath(projectId: string, state?: CompactionState): string {
+  return state?.scope?.sessionId
+    ? scopedCompactionStateFile(projectId, state.scope.sessionId)
+    : compactionStateFile(projectId);
+}
+
+function freshState(fp: string, data: CompactionState | null): CompactionState | null {
+  if (!data) return null;
+  let updatedAt = data.updatedAt;
+  if (!updatedAt) {
+    try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
+  }
+  return Date.now() - updatedAt > SEVEN_DAYS_MS ? null : data;
 }
 
 /**
@@ -27,7 +41,7 @@ function getStatePath(projectId: string): string {
  */
 export function saveCompactionState(projectId: string, state: CompactionState): void {
   try {
-    writeJsonSync(getStatePath(projectId), state, true);
+    writeJsonSync(getStatePath(projectId, state), state, true);
   } catch (e) { log.warn("saveCompactionState failed", e); }
 }
 
@@ -36,17 +50,19 @@ export function saveCompactionState(projectId: string, state: CompactionState): 
  */
 export function loadCompactionState(projectId: string): CompactionState | null {
   const fp = getStatePath(projectId);
-  const data = readJsonSync<CompactionState>(fp);
-  if (!data) return null;
-  // Expire after 7 days — updatedAt from v7.8.0+, fallback to file mtime for older states
-  if (data.compactionVersion) {
-    let updatedAt = data.updatedAt;
-    if (!updatedAt) {
-      try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
-    }
-    if (Date.now() - updatedAt > SEVEN_DAYS_MS) return null;
-  }
-  return data;
+  return freshState(fp, readJsonSync<CompactionState>(fp));
+}
+
+export function loadScopedCompactionState(
+  scope: Pick<ContinuityScope, "projectId" | "sessionId">,
+  branchEntryIds: readonly string[] = [],
+): CompactionState | null {
+  const fp = scopedCompactionStateFile(scope.projectId, scope.sessionId);
+  const state = freshState(fp, readJsonSync<CompactionState>(fp));
+  if (!state?.scope || state.scope.schemaVersion !== 2) return null;
+  if (state.scope.projectId !== scope.projectId || state.scope.sessionId !== scope.sessionId) return null;
+  if (state.scope.branchHeadId && branchEntryIds.length > 0 && !branchEntryIds.includes(state.scope.branchHeadId)) return null;
+  return state;
 }
 
 export function applyLoopOverrides(loops: OpenLoop[], overrides: LoopOverride[]): OpenLoop[] {
@@ -75,6 +91,40 @@ export function upsertLoopOverride(overrides: LoopOverride[], loop: OpenLoop, pa
   const copy = overrides.slice();
   copy[index] = next;
   return copy;
+}
+
+export function upsertContinuityOverride(
+  overrides: ContinuityOverride[], kind: ContinuityOverride["kind"], text: string,
+  patch: Pick<ContinuityOverride, "status"> & Partial<Pick<ContinuityOverride, "replacement">>,
+): ContinuityOverride[] {
+  const summaryKey = normalizeFactKey(text);
+  const index = overrides.findIndex(item => item.kind === kind && item.summaryKey === summaryKey);
+  const next: ContinuityOverride = {
+    ...(index >= 0 ? overrides[index] : { id: kind + "-override-" + (overrides.length + 1), kind, summaryKey }),
+    ...patch, kind, summaryKey, updatedAt: Date.now(),
+  };
+  if (index < 0) return [...overrides, next];
+  const copy = overrides.slice();
+  copy[index] = next;
+  return copy;
+}
+
+export function applyContinuityOverrides(state: CompactionState, overrides: ContinuityOverride[]): CompactionState {
+  const inactive = new Set(
+    overrides.filter(item => item.status !== "active").map(item => item.kind + ":" + item.summaryKey),
+  );
+  const replacements = overrides
+    .filter(item => item.status === "superseded" && item.replacement)
+    .map(item => "Superseded " + item.kind + ": " + item.replacement);
+  return {
+    ...state,
+    decisions: state.decisions.filter(item => !inactive.has("decision:" + normalizeFactKey(item.summary))),
+    constraints: state.constraints.filter(item => !inactive.has("constraint:" + normalizeFactKey(item.text))),
+    unresolvedErrors: state.unresolvedErrors.filter(item => !inactive.has("error:" + normalizeFactKey(item.message))),
+    openLoops: state.openLoops.filter(item => !inactive.has("loop:" + normalizeFactKey(item.summary))),
+    criticalContext: mergeBy(replacements, state.criticalContext, normalizeFactKey, 20),
+    factOverrides: overrides,
+  };
 }
 
 export function buildCompactionState(
@@ -139,6 +189,89 @@ export function buildCompactionState(
     compactionVersion: VERSION,
     updatedAt: Date.now(),
   };
+}
+
+function mergeBy<T>(current: T[], previous: T[], key: (item: T) => string, limit: number): T[] {
+  const seen = new Set<string>();
+  return [...current, ...previous].filter(item => {
+    const normalized = key(item);
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  }).slice(0, limit);
+}
+
+/**
+ * Conservative cross-compaction merge: absence from the latest active window
+ * is not evidence that a decision, constraint, error, or loop was resolved.
+ * Current facts win, old unresolved facts remain, and every collection is
+ * bounded so continuity cannot grow without limit.
+ */
+export function mergeCompactionStates(previous: CompactionState | null, current: CompactionState): CompactionState {
+  if (!previous) return applyContinuityOverrides(current, current.factOverrides ?? []);
+  const factOverrides = mergeBy(
+    current.factOverrides ?? [], previous.factOverrides ?? [],
+    item => item.kind + ":" + item.summaryKey, 50,
+  );
+  const activeCurrent = applyContinuityOverrides(current, factOverrides);
+  const activePrevious = applyContinuityOverrides(previous, factOverrides);
+  const resolvedKeys = new Set(activeCurrent.resolvedErrors.map(error => normalizeFactKey(error.message)));
+  const decisions = mergeBy(activeCurrent.decisions, activePrevious.decisions, item => normalizeFactKey(item.summary), 30)
+    .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
+  const constraints = mergeBy(activeCurrent.constraints, activePrevious.constraints, item => normalizeFactKey(item.text), 30)
+    .map((item, index) => ({ ...item, id: "constraint-" + (index + 1) }));
+  const unresolvedErrors = mergeBy(
+    activeCurrent.unresolvedErrors,
+    activePrevious.unresolvedErrors.filter(error => !resolvedKeys.has(normalizeFactKey(error.message))),
+    item => normalizeFactKey(item.message),
+    15,
+  ).map((item, index) => ({ ...item, id: ID_PREFIX.ERROR + (index + 1) }));
+  const openLoops = mergeBy(
+    activeCurrent.openLoops,
+    activePrevious.openLoops.filter(loop => loop.status !== "resolved"),
+    item => normalizeFactKey(item.summary),
+    25,
+  ).map((item, index) => ({ ...item, id: ID_PREFIX.OPEN_LOOP + (index + 1) }));
+  const oldGoal = activePrevious.goal && activeCurrent.goal && normalizeFactKey(activePrevious.goal) !== normalizeFactKey(activeCurrent.goal)
+    ? ["Previous goal: " + activePrevious.goal]
+    : [];
+  return applyContinuityOverrides({
+    ...activeCurrent,
+    goal: activeCurrent.goal ?? activePrevious.goal,
+    decisions,
+    constraints,
+    modifiedFiles: mergeBy(activeCurrent.modifiedFiles, activePrevious.modifiedFiles, normalizeFactKey, 100),
+    readFiles: mergeBy(activeCurrent.readFiles, activePrevious.readFiles, normalizeFactKey, 100),
+    deletedFiles: mergeBy(activeCurrent.deletedFiles, activePrevious.deletedFiles, normalizeFactKey, 50),
+    unresolvedErrors,
+    resolvedErrors: mergeBy(activeCurrent.resolvedErrors, activePrevious.resolvedErrors, item => normalizeFactKey(item.message), 20),
+    openLoops,
+    loopOverrides: mergeBy(activeCurrent.loopOverrides ?? [], activePrevious.loopOverrides ?? [], item => item.summaryKey, 50),
+    factOverrides,
+    topics: mergeBy(activeCurrent.topics, activePrevious.topics, item => normalizeFactKey(item.title), 30),
+    nextActions: mergeBy(activeCurrent.nextActions, activePrevious.nextActions, normalizeFactKey, 15),
+    criticalContext: mergeBy([...oldGoal, ...activeCurrent.criticalContext], activePrevious.criticalContext, normalizeFactKey, 20),
+    updatedAt: Date.now(),
+  }, factOverrides);
+}
+
+/** Build the bounded, deterministic context that must survive every generation. */
+export function renderContinuityCapsule(state: CompactionState, maxChars = TRUNC.CONTINUITY_CAPSULE, existing = ""): string {
+  const haystack = normalizeFactKey(existing);
+  const lines: string[] = ["## Continuity Ledger"];
+  const add = (label: string, value: string) => {
+    const text = value.trim();
+    if (!text || haystack.includes(normalizeFactKey(text))) return;
+    const line = "- " + label + ": " + text;
+    if (lines.join("\n").length + line.length + 1 <= maxChars) lines.push(line);
+  };
+  if (state.goal) add("Goal", state.goal);
+  for (const item of state.constraints) add("Constraint", item.text);
+  for (const item of state.decisions) add("Decision", item.summary + (item.userResponse ? " → " + item.userResponse : ""));
+  for (const item of state.unresolvedErrors) add("Unresolved error", item.message);
+  for (const item of state.openLoops.filter(loop => loop.status !== "resolved")) add("Open loop", item.summary);
+  for (const item of state.criticalContext) add("Critical", item);
+  return lines.length > 1 ? lines.join("\n") : "";
 }
 
 /**
