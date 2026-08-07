@@ -41,26 +41,36 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   const adaptiveKeepTokens = rc.ctx.model
     ? Math.min(rc.profileCfg.keepRecentTokens * 2, Math.max(rc.profileCfg.keepRecentTokens, rc.ctx.model.contextWindow * 0.04))
     : rc.profileCfg.keepRecentTokens;
+  const mode = rc.mode ?? (rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced");
+  const targetPercent = MODE_POLICIES[mode].targetContextPercent;
+  const messageTokens = msgs.map(entry => rc.estimator.message(entry.message as LlmMessage));
+  const allMessageTokens = messageTokens.reduce((sum, tokens) => sum + tokens, 0);
+  const fixedContextTokens = Math.max(0, totalTokens - allMessageTokens);
+  const targetRetainedTokens = rc.ctx.model
+    ? Math.max(0, rc.ctx.model.contextWindow * targetPercent / 100 - fixedContextTokens - rc.profileCfg.summaryBudgetTokens)
+    : adaptiveKeepTokens;
+  // Keep as much recent context as the mode's post-compaction target allows,
+  // never less than the profile safety floor.
+  const retentionBudget = Math.max(adaptiveKeepTokens, targetRetainedTokens);
   let accTokens = 0;
-  let keepFrom = msgs.length;
+  let keepFrom = msgs.length - 1;
   for (let i = msgs.length - 1; i >= 0; i--) {
-    // The model receives structured tool-call arguments as context, so the
-    // recent-tail budget must count them too. The run-scoped estimator applies
-    // the same provider/model calibration used by synthesis planning.
-    accTokens += rc.estimator.message(msgs[i].message as LlmMessage);
-    if (accTokens >= adaptiveKeepTokens) { keepFrom = i; break; }
+    const next = messageTokens[i];
+    if (accTokens >= adaptiveKeepTokens && accTokens + next > retentionBudget) {
+      keepFrom = i + 1;
+      break;
+    }
+    accTokens += next;
+    keepFrom = i;
   }
   const recentUsers = msgs
     .map((entry, index) => ({ index, role: (entry.message as { role?: string })?.role }))
     .filter(entry => entry.role === "user");
-  if (recentUsers.length >= 3) keepFrom = Math.min(keepFrom, recentUsers[recentUsers.length - 2].index);
+  if (recentUsers.length) {
+    const protectedUser = recentUsers[recentUsers.length >= 2 ? recentUsers.length - 2 : recentUsers.length - 1];
+    keepFrom = Math.min(keepFrom, protectedUser.index);
+  }
   keepFrom = smartKeepBoundary(msgs, keepFrom, branch);
-  // `firstKeptEntryId` is required by Pi's compaction API. When the recent
-  // token walk never reaches `keepRecentTokens`, keepFrom is the empty suffix
-  // index (`msgs.length`), so resolve that fallback before applying pair
-  // safety. Otherwise a trailing toolResult can become the first kept entry
-  // while its matching assistant toolCall is compacted away.
-  if (keepFrom >= msgs.length) keepFrom = msgs.length - 1;
   keepFrom = guardToolCallBoundary(msgs, keepFrom);
 
   // Anchor/tool-call safety can move the boundary far earlier than the token
@@ -77,13 +87,9 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
 
   const contextPercent = rc.ctx.model && totalTokens ? (totalTokens / rc.ctx.model.contextWindow) * 100 : 0;
   if (!rc.flags.force && rc.ctx.model && totalTokens > 0 && rc.config.minContextPercent > 0) {
-    const allMessageTokens = rc.estimator.messages(msgs.map(e => e.message as LlmMessage));
-    const fixedContextTokens = Math.max(0, totalTokens - allMessageTokens);
     const projectedTokens = fixedContextTokens + accTokens + rc.profileCfg.summaryBudgetTokens;
-    const mode = rc.mode ?? (rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced");
-    const targetPercent = MODE_POLICIES[mode].targetContextPercent;
     const targetTokens = rc.ctx.model.contextWindow * targetPercent / 100;
-    if (projectedTokens >= targetTokens) {
+    if (projectedTokens > targetTokens) {
       rc.notify(
         "Smart compact skipped: protected recent context would remain above " +
         targetPercent + "% after compaction; using native compaction instead.",

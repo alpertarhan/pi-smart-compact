@@ -2,7 +2,8 @@
  * Per-run services container tests.
  *
  * The services bag is what lets two pi sessions run without their metrics,
- * extraction-cache stats, and tool-support cache leaking into each other.
+ * extraction-cache stats leaking into each other while production-only
+ * provider capability/calibration knowledge can be shared safely.
  * Locking down the contract here means a future refactor can swap default
  * services freely as long as these assertions hold.
  */
@@ -10,7 +11,7 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import {
   ToolSupportCache, MetricsSink, ExtractionCacheStats, BudgetGuard, BudgetExceededError,
-  createServices, getDefaultServices, resetDefaultServices, setDefaultServices,
+  createServices, createProductionServices, getDefaultServices, resetDefaultServices, setDefaultServices,
 } from "../src/infra/services.ts";
 import { getMetricsSummary, trackedComplete } from "../src/utils/cache.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
@@ -34,6 +35,17 @@ describe("ToolSupportCache", () => {
     cache.set("openai/gpt-x", false, 0);
     // Past the window — the provider may have recovered, force re-probe.
     expect(cache.get("openai/gpt-x", 2000)).toBeUndefined();
+    expect(cache.size()).toBe(0);
+  });
+
+  it("evicts least-recently-used entries at its bound", () => {
+    const cache = new ToolSupportCache(1000, 2);
+    cache.set("a", true, 0);
+    cache.set("b", true, 0);
+    expect(cache.get("a", 1)).toBe(true);
+    cache.set("c", true, 1);
+    expect(cache.get("b", 1)).toBeUndefined();
+    expect(cache.get("a", 1)).toBe(true);
   });
 });
 
@@ -93,6 +105,19 @@ describe("BudgetGuard", () => {
     expect(guard.reason()).toBe("latency");
   });
 
+  it("reserves output before concurrent calls and reconciles actual usage", () => {
+    const guard = new BudgetGuard(0, 0, { now: () => 0 }, 1_000, 100);
+    const first = guard.reserveCall(10, 60);
+    expect(guard.remainingOutputTokens()).toBe(40);
+    expect(() => guard.reserveCall(10, 50)).toThrow("tokens budget exhausted");
+    guard.reconcileOutput(first, 20);
+    expect(guard.outputTokenCount()).toBe(20);
+    expect(guard.remainingOutputTokens()).toBe(80);
+    const second = guard.reserveCall(10, 50);
+    guard.commitFailedOutput(second);
+    expect(guard.outputTokenCount()).toBe(70);
+  });
+
   it("reserves aggregate prompt tokens and reconciles estimates with provider usage", () => {
     const guard = new BudgetGuard(0, 0, { now: () => 0 }, 100, 50);
     guard.reserveCall(70);
@@ -133,6 +158,18 @@ describe("ExtractionCacheStats", () => {
 });
 
 describe("run-scoped services", () => {
+  it("shares only bounded provider knowledge between production runs", () => {
+    const a = createProductionServices();
+    const b = createProductionServices();
+    const isolated = createServices();
+    expect(a.toolSupport).toBe(b.toolSupport);
+    expect(a.tokenCalibration).toBe(b.tokenCalibration);
+    expect(a.metrics).not.toBe(b.metrics);
+    expect(a.budget).not.toBe(b.budget);
+    expect(isolated.toolSupport).not.toBe(a.toolSupport);
+    expect(isolated.tokenCalibration).not.toBe(a.tokenCalibration);
+  });
+
   it("trackedComplete records metrics and calibration only on the supplied services", async () => {
     const model = { id: "m", provider: "openai", contextWindow: 128000 } as Model<Api>;
     const mk = (input: number) => createServices({

@@ -169,7 +169,10 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     schemaVersion: 2 as const,
     projectId,
     sessionId: rc.sessionId,
-    ...(branchEntryIds.length ? { branchHeadId: branchEntryIds[branchEntryIds.length - 1] } : {}),
+    ...(branchEntryIds.length ? {
+      branchHeadId: branchEntryIds[branchEntryIds.length - 1],
+      branchAncestryIds: branchEntryIds.slice(-256),
+    } : {}),
   };
   const previousState = loadScopedCompactionState(continuityScope, branchEntryIds);
   const continuity = previousState ? renderContinuityCapsule(previousState) : "";

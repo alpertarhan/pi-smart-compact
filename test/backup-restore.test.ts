@@ -43,9 +43,11 @@ describe("listBackups", () => {
     expect(list[0].path).toContain("s1-new.md");
   });
 
-  it("ignores non-markdown files", () => {
+  it("ignores files it does not own", () => {
     writeBackup("s1-x.md", "2026-06-01T00:00:00.000Z", "s1", "x");
-    fs.writeFileSync(path.join(tmp, ".pi", "agent", "compact-backups", "notes.txt"), "junk");
+    const dir = path.join(tmp, ".pi", "agent", "compact-backups");
+    fs.writeFileSync(path.join(dir, "notes.txt"), "junk");
+    fs.writeFileSync(path.join(dir, "user-notes.md"), "keep me");
     expect(listBackups().length).toBe(1);
   });
 
@@ -65,8 +67,11 @@ describe("readBackupContent", () => {
     expect(readBackupContent(fp)).toBe("## Goal\nDo the thing.\n\nMore body.");
   });
 
-  it("returns null for a missing file", () => {
+  it("returns null for missing or foreign files", () => {
     expect(readBackupContent(path.join(tmp, "nope.md"))).toBeNull();
+    const foreign = path.join(tmp, "notes.md");
+    fs.writeFileSync(foreign, "private notes");
+    expect(readBackupContent(foreign)).toBeNull();
   });
 
   it("returns null for an empty body", () => {

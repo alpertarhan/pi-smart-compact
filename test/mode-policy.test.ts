@@ -32,6 +32,11 @@ describe("compaction mode policy", () => {
       messageCount: 500,
     }))).toBeLessThan(0.85);
     expect(deterministicExtractionConfidence(extraction({
+      modifiedFiles: [{ path: "src/a.ts", operations: ["edit"] }],
+      lastUserMessages: ["finish"],
+      messageCount: 20,
+    }), { conversationTokens: 180_000, toolPercent: 85 })).toBeLessThan(0.85);
+    expect(deterministicExtractionConfidence(extraction({
       mainGoal: undefined,
       errors: Array.from({ length: 3 }, (_, index) => ({ index, tool: "bash", message: "failed", retryAttempted: false, resolved: false })),
     }))).toBeLessThan(0.5);

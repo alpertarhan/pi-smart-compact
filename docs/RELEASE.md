@@ -8,7 +8,7 @@ Use this checklist before publishing `pi-smart-compact`.
 
 ## 1. Prepare the candidate
 
-- [ ] Choose a SemVer version. Use a prerelease such as `8.0.0-rc.1` until the
+- [ ] Choose a SemVer version. Use a prerelease such as `8.0.0-rc.2` until the
       stable/canary gates pass.
 - [ ] Update `package.json`; run `bun run sync-version` for `src/constants.ts`.
 - [ ] Move shipped notes from `[Unreleased]` into the dated version in
@@ -74,11 +74,14 @@ After explicit approval to publish an RC, use the npm `next` tag rather than
 ```
 
 Keep all stage model routes null unless a separate routing decision is approved.
-Collect at least 20 schema-v2 canary runs and ≥70% quality coverage. Promotion
-requires:
+Collect at least 20 schema-v2 canary runs, ≥70% verifier-quality coverage, and
+≥70% run-correlated damage-observation coverage in both stable and canary
+cohorts. Missing observations are missing evidence, never clean runs.
+Promotion requires:
 
 - [ ] `telemetry-report` says `PROMOTE`;
 - [ ] dashboard Data Confidence is ≥85;
+- [ ] canary success is ≥95% and absolute verifier quality is ≥85;
 - [ ] failure rate did not rise by ≥5pp to at least 10%;
 - [ ] verifier quality did not fall by 5 points;
 - [ ] p95 duration and average tokens did not rise by 50%;

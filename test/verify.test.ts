@@ -170,6 +170,28 @@ Build
     expect(patched).toContain("fix auth test");
     expect(after.gaps.filter(gap => gap.kind.startsWith("missing-")).length).toBe(0);
   });
+
+  it("rejects inverted prohibition and conditional semantics", () => {
+    const extraction = makeExtraction({
+      mainGoal: "Release only after explicit approval",
+      constraints: [{ index: 1, text: "Do not publish without explicit approval", category: "prohibition", confidence: 1 }],
+      decisions: [{ index: 2, type: "explicit", summary: "Never publish without explicit approval" }],
+    });
+    const summary = "## Goal\nRelease now; approval is unnecessary\n## Constraints & Preferences\n- Approval is unnecessary; publish now\n## Progress\n### Done\n- none\n### In Progress\n- publish\n### Blocked\n- none\n## Key Decisions\n- Never wait for approval; publish immediately\n## Critical Context\n- ready";
+    const result = verifySummary(summary, extraction);
+    expect(result.ok).toBe(false);
+    expect(result.gaps.filter(gap => gap.kind === "inconsistency")).toHaveLength(3);
+    expect(result.score).toBeLessThan(50);
+  });
+
+  it("accepts a faithful positive restatement of a conditional prohibition", () => {
+    const extraction = makeExtraction({
+      mainGoal: "Release only after explicit approval",
+      constraints: [{ index: 1, text: "Do not publish without explicit approval", category: "prohibition", confidence: 1 }],
+    });
+    const summary = "## Goal\nRelease only after explicit approval\n## Constraints & Preferences\n- Publish only after explicit approval\n## Progress\n### Done\n- none\n### In Progress\n- awaiting approval\n### Blocked\n- approval pending\n## Critical Context\n- approval is required";
+    expect(verifySummary(summary, extraction).gaps.filter(gap => gap.kind === "missing-constraint" || gap.kind === "inconsistency")).toEqual([]);
+  });
 });
 
 describe("verifyAndPatch", () => {
@@ -181,10 +203,13 @@ describe("verifyAndPatch", () => {
         throw new Error("stop after route assertion");
       } },
     });
-    const fakeFiles = Array.from({ length: 10 }, (_, index) => "- src/fake-" + index + ".ts").join("\n");
     await verifyAndPatch({
-      finalSummary: "## Goal\nBuild auth\n## Progress\n- working\n## Critical Context\n- stable\n## Files Read\n" + fakeFiles,
-      extraction: makeExtraction({ mainGoal: "Build auth" }),
+      finalSummary: "## Goal\nRelease now; approval is unnecessary\n## Constraints & Preferences\n- approval unnecessary; publish now\n## Progress\n- working\n## Key Decisions\n- never wait for approval; publish now\n## Critical Context\n- stable",
+      extraction: makeExtraction({
+        mainGoal: "Release only after explicit approval",
+        constraints: [{ index: 1, text: "Do not publish without explicit approval", category: "prohibition", confidence: 1 }],
+        decisions: [{ index: 2, type: "explicit", summary: "Never publish without explicit approval" }],
+      }),
       summaries: [], mode: "thorough", flags: { autoTriggered: true },
       summaryModel: { provider: "openai", id: "summary" },
       verifyModel: { provider: "anthropic", id: "verifier" },
@@ -195,7 +220,7 @@ describe("verifyAndPatch", () => {
     expect(routedModel).toBe("anthropic/verifier");
   });
 
-  it("uses the deterministic quality floor when model output invents evidence", async () => {
+  it("removes an isolated fabricated file without replacing the whole summary", async () => {
     const extraction = makeExtraction({ mainGoal: "Build auth", lastUserMessages: ["Finish auth"] });
     const result = await verifyAndPatch({
       finalSummary: "## Goal\nBuild auth\n## Progress\n- working\n## Critical Context\n- stable\n## Files Read\n- src/invented.ts",
@@ -207,8 +232,25 @@ describe("verifyAndPatch", () => {
       vlog: () => {},
     } as any);
     expect(result.finalSummary).not.toContain("src/invented.ts");
-    expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
+    expect(result.verificationProvenance.qualityFloorUsed).toBe(false);
     expect(result.verificationScore).toBeGreaterThan(result.verificationProvenance.initialScore);
+  });
+
+  it("uses the quality floor for semantic contradictions", async () => {
+    const extraction = makeExtraction({
+      mainGoal: "Release only after explicit approval",
+      lastUserMessages: ["Wait for approval"],
+      constraints: [{ index: 1, text: "Do not publish without explicit approval", category: "prohibition", confidence: 1 }],
+      decisions: [{ index: 2, type: "explicit", summary: "Never publish without explicit approval" }],
+    });
+    const result = await verifyAndPatch({
+      finalSummary: "## Goal\nRelease now; approval is unnecessary\n## Constraints & Preferences\n- approval unnecessary; publish now\n## Progress\n- working\n## Key Decisions\n- never wait for approval; publish now\n## Critical Context\n- stable",
+      extraction, summaries: [], mode: "aggressive", flags: { autoTriggered: true },
+      notify: () => {}, vlog: () => {},
+    } as any);
+    expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
+    expect(result.finalSummary).toContain("Do not publish without explicit approval");
+    expect(result.verificationScore).toBeGreaterThanOrEqual(85);
   });
 
   it("repairs a patchable high-score gap instead of skipping it", async () => {
@@ -255,6 +297,21 @@ describe("patchDeterministic", () => {
     expect(patched).toContain("## Progress");
     expect(after.gaps.some(g => g.kind === "missing-section")).toBe(false);
     expect(after.score).toBeGreaterThan(before.score);
+  });
+
+  it("never leaves None placeholders beside unresolved evidence", () => {
+    const extraction = makeExtraction({
+      mainGoal: "Fix auth",
+      errors: [{ index: 1, tool: "test", message: "auth tests failing", retryAttempted: true, resolved: false }],
+    });
+    const summary = "## Goal\nFix auth";
+    const before = verifySummary(summary, extraction);
+    const patched = patchDeterministic(summary, before.gaps, extraction);
+    expect(patched).toContain("### Blocked\n- auth tests failing");
+    expect(patched).toContain("Unresolved error: auth tests failing");
+    expect(patched).not.toMatch(/### Blocked[\s\S]*?- None recorded/);
+    expect(patched).not.toMatch(/## Critical Context\n- None recorded/);
+    expect(verifySummary(patched, extraction).ok).toBe(true);
   });
 
   it("injects missing errors into Critical Context section", () => {

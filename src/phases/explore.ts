@@ -16,10 +16,19 @@ import type { SmartCompactServices } from "../infra/services.ts";
 import { getDefaultServices } from "../infra/services.ts";
 import { buildExtractionContext } from "../utils/helpers.ts";
 
-// Tool support is cached on the per-run services container. The previous
-// module-level `_toolSupportCache` leaked TTL'd state across pi sessions and
-// across tests; per-run scoping keeps a flaky provider state confined to the
-// session that observed it. See `infra/services.ts#ToolSupportCache`.
+// Production services share bounded provider/model capability knowledge across
+// runs; tests keep isolated service bags. Only an explicit provider rejection
+// is cached as unsupported, so rate limits/outages cannot poison later runs.
+
+function explicitlyRejectsTools(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const record = error as Record<string, unknown>;
+  const status = Number(record.status ?? record.statusCode
+    ?? (record.response as Record<string, unknown> | undefined)?.status);
+  const message = String(record.message ?? "");
+  return (status === 400 || status === 404 || status === 422)
+    && /(?:(?:tools?|function(?:[ -]calling)?).{0,60}(?:unsupported|not supported|unknown|unavailable|invalid)|(?:unsupported|does not support|doesn't support).{0,60}(?:tools?|function))/i.test(message);
+}
 
 /**
  * Determine whether exploration is worthwhile based on session complexity.
@@ -313,16 +322,17 @@ export async function exploreConversation(
     (userNote ? "\n\n## User Steering\n\"" + userNote + "\"" : "");
 
   // Check tool support cache before probe
-  const cacheKey = model.provider + "/" + model.id;
+  const cacheLabel = model.provider + "/" + model.id;
+  const cacheKey = [model.provider, model.api, model.baseUrl ?? "", model.id].join("\0");
   const toolSupport = svc.toolSupport;
   const now = svc.clock.now();
   const cachedSupport = toolSupport.get(cacheKey, now);
 
-  let supportsTools = false;
+  let supportsTools = cachedSupport === true;
   try {
     if (cachedSupport === false) {
       // Provider known to not support tools — skip probe
-      if (notify) notify("Tool support cached: unsupported (" + cacheKey + ")", "info");
+      if (notify) notify("Tool support cached: unsupported (" + cacheLabel + ")", "info");
       const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);
       if (!report.boundaries.length) {
         const retried = await explorationRetry(model, auth, llmMessages, extraction, prevSummary, userNote, signal, svc);
@@ -421,9 +431,10 @@ export async function exploreConversation(
       return { report, rounds: 1, toolSupported: parsedOk };
     }
   } catch (e) {
-    // Probe failed — cache as unsupported so the next run skips the probe.
-    log.warn("Tool calling probe failed for " + cacheKey, e);
-    toolSupport.set(cacheKey, false, svc.clock.now());
+    // Cache only a definitive capability rejection. Transient/auth failures
+    // must be retried by a later run rather than poisoning the shared cache.
+    log.warn("Tool calling probe failed for " + cacheLabel, e);
+    if (explicitlyRejectsTools(e)) toolSupport.set(cacheKey, false, svc.clock.now());
     if (notify) notify("Tool calling not supported, using direct exploration", "warning");
   }
 

@@ -33,6 +33,7 @@ import * as log from "../../utils/logger.ts";
 import type { ExtractedRc, SynthesizedRc } from "../run-context.ts";
 import { advance, markMeasuredPhase } from "../run-context.ts";
 import { getCachedSynthesis, setCachedSynthesis, synthesisCacheKey } from "../../infra/synthesis-cache.ts";
+import { resolveStageAuth } from "../stage-auth.ts";
 
 export async function summarizeConversation(rc: ExtractedRc): Promise<SynthesizedRc> {
   let synthPhaseStart = Date.now();
@@ -89,7 +90,10 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   const zeroCall = rc.config.zeroCallEnabled !== false
     && (rc.mode === "fast" || rc.mode === "aggressive")
     && !rc.focus && !rc.userNote
-    && deterministicExtractionConfidence(extraction) >= 0.85;
+    && deterministicExtractionConfidence(extraction, {
+      conversationTokens: rc.convTokens,
+      toolPercent: rc.toolPercent,
+    }) >= 0.85;
   if (zeroCall) {
     const finalSummary = assembleFallback([], extraction);
     setCachedSynthesis(cacheKey, {
@@ -127,8 +131,17 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   let explorationReport: import("../../types.ts").ExplorationReport | null = null;
   let explorationRounds = 0;
   let chunkCount = 0;
+  let summaryAuth;
+  try {
+    summaryAuth = await resolveStageAuth(rc, "summary");
+  } catch (error) {
+    rc.notify("Summary route unavailable; using deterministic fallback: " + (error instanceof Error ? error.message : String(error)), "warning");
+  }
 
-  if (rc.convTokens < singlePassMaxTokens) {
+  if (!summaryAuth) {
+    finalSummary = assembleFallback([], extraction);
+    method = "heuristic";
+  } else if (rc.convTokens < singlePassMaxTokens) {
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
         phase: 2, phaseName: "Explore",
@@ -139,7 +152,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     try {
       const r = await singlePassCompact(
         convText, extraction, null, rc.prevContext + rc.projectCtx,
-        rc.summaryModel, rc.summaryAuth, pc.summaryBudgetTokens, rc.cancellation.signal, rc.services,
+        rc.summaryModel, summaryAuth, pc.summaryBudgetTokens, rc.cancellation.signal, rc.services,
         rc.config.focusWeighting ? rc.focus : undefined,
       );
       finalSummary = r.summary; method = "single-pass";
@@ -159,8 +172,9 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         });
       }
       try {
+        const segAuth = await resolveStageAuth(rc, "explore");
         const expResult = await exploreConversation(
-          rc.llmMessages, extraction, rc.segModel, rc.segAuth,
+          rc.llmMessages, extraction, rc.segModel, segAuth,
           rc.prevContext || undefined,
           [rc.userNote, rc.config.focusWeighting && rc.focus ? "Focus extra preservation on: " + rc.focus : undefined].filter(Boolean).join("\n") || undefined,
           rc.cancellation.signal,
@@ -246,7 +260,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         } else {
           try {
             summaries.push(...await summarizeBatch(
-              single, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services,
+              single, extraction, rc.summaryModel, summaryAuth, rc.cancellation.signal, rc.services,
               batchOutputLimit(rc.mode, single.length, rc.providerCaps.maxOutputTokens), rc.sessionId,
             ));
           } catch (err) {
@@ -284,7 +298,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
           const idx = wave + i;
           try {
             results[idx] = await summarizeBatch(
-              batch, extraction, rc.summaryModel, rc.summaryAuth, rc.cancellation.signal, rc.services,
+              batch, extraction, rc.summaryModel, summaryAuth, rc.cancellation.signal, rc.services,
               batchOutputLimit(rc.mode, batch.length, rc.providerCaps.maxOutputTokens), rc.sessionId,
             );
           } catch (err) {
@@ -315,7 +329,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     }
     try {
       const r = await assembleLLM(
-        summaries, extraction, explorationReport, rc.summaryModel, rc.summaryAuth,
+        summaries, extraction, explorationReport, rc.summaryModel, summaryAuth,
         pc.summaryBudgetTokens, rc.prevContext, rc.cancellation.signal, rc.services,
         rc.config.focusWeighting ? rc.focus : undefined,
       );

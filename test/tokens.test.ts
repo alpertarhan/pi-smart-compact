@@ -32,12 +32,32 @@ describe("makeTokenEstimator", () => {
     expect(withToolArgs).toBeGreaterThan(textOnly + 500);
   });
 
-  it("applies the run-scoped provider/model calibration", () => {
+  it("applies provider/model calibration", () => {
     const store = new TokenCalibrationStore();
     const before = makeTokenEstimator("openai", "model-a", store).text("x".repeat(1000));
     store.calibrate(before, Math.floor(before / 2), "openai", "model-a");
     const after = makeTokenEstimator("openai", "model-a", store).text("x".repeat(1000));
     expect(after).toBeLessThan(before);
+  });
+
+  it("converges to the observed absolute factor rather than its square root", () => {
+    const store = new TokenCalibrationStore();
+    for (let i = 0; i < 20; i++) {
+      const factor = store.get("p", "m");
+      store.calibrate(100 * factor, 50, "p", "m");
+    }
+    expect(store.get("p", "m")).toBeCloseTo(0.5, 2);
+  });
+
+  it("keeps only the bounded least-recently-used calibration set", () => {
+    const store = new TokenCalibrationStore(2);
+    store.calibrate(100, 50, "p", "a");
+    store.calibrate(100, 60, "p", "b");
+    store.get("p", "a");
+    store.calibrate(100, 70, "p", "c");
+    expect(store.size()).toBe(2);
+    expect(store.get("p", "b")).toBe(1);
+    expect(store.get("p", "a")).not.toBe(1);
   });
 });
 

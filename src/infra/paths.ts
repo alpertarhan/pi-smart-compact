@@ -68,6 +68,16 @@ export function metricsLogFile(): string {
   return path.join(cacheDir(), "compact-metrics.jsonl");
 }
 
+/** Cross-process Smart Compact semaphore/session lease directory. */
+export function runLocksDir(): string {
+  return path.join(smartCompactCacheDir(), "run-locks");
+}
+
+/** One-shot, branch-scoped native-compaction continuity handoffs. */
+export function nativeContinuityDir(): string {
+  return path.join(smartCompactCacheDir(), "native-continuity");
+}
+
 /** Project-scoped persistent context graph (SQLite + FTS5). */
 export function contextGraphFile(): string {
   return path.join(smartCompactCacheDir(), "context-graph.sqlite");

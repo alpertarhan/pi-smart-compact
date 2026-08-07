@@ -18,6 +18,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import type { Cell } from "../types.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 import { acquireRunLock, releaseRunLock } from "./session-run-lock.ts";
@@ -32,7 +33,7 @@ import type {
   Notifier, RcBase, PendingRef, StatedRc,
 } from "./run-context.ts";
 import { markPhase } from "./run-context.ts";
-import { createServices } from "../infra/services.ts";
+import { createProductionServices } from "../infra/services.ts";
 import { prepareRun } from "./steps/prepare.ts";
 import { resolveCompactionWindow } from "./steps/window.ts";
 import { recoverSessionLog } from "./steps/recover.ts";
@@ -42,7 +43,7 @@ import { summarizeConversation } from "./steps/synthesize.ts";
 import { verifyAndPatch } from "./steps/verify.ts";
 import { buildState } from "./steps/state.ts";
 import { runDamageDetection, stagePendingCompaction, applyCompaction } from "./steps/persist.ts";
-import { recordSuccessMetrics, recordFailureMetrics } from "./steps/metrics.ts";
+import { buildSuccessMetrics, recordSuccessMetrics, recordFailureMetrics } from "./steps/metrics.ts";
 
 /**
  * Co-operative cancellation surface that the extension entry point can hand
@@ -102,6 +103,8 @@ export interface SmartCompactOptions {
    * ignore AbortSignal entirely).
    */
   cancellationOut?: Cell<ExternalCancellation | null>;
+  /** Lifecycle callback supplied by the extension's commit store. */
+  onNativeApplyError?: (runId: string, error: Error) => boolean;
 }
 
 /**
@@ -120,13 +123,15 @@ function makeBase(opts: SmartCompactOptions): RcBase {
   const mode = resolveMode(requestedMode, contextPercent);
   const profile = opts.mode ? MODE_POLICIES[mode].profile : (opts.profile ?? MODE_POLICIES[mode].profile);
   return {
+    runId: randomUUID(),
     ctx: opts.ctx,
     notify,
     vlog,
-    services: createServices(),
+    services: createProductionServices(),
     cancellation: { controller: ctrl, signal: ctrl.signal, timedOut: false, timeoutId: null },
     pendingRef: opts.pendingRef,
     isRunning: opts.isRunning,
+    onNativeApplyError: opts.onNativeApplyError,
     flags: {
       verbose: !!opts.verbose,
       dryRun: !!opts.dryRun,
@@ -269,29 +274,12 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // skip every side effect (no pending, no state writes, no apply).
     if (stated.cancellation.timedOut) return;
 
-    stagePendingCompaction(stated);
-
-    // Re-check after staging in case the external timeout fired between
-    // verify and persist. We don't want a late-arriving cancellation to leave
-    // a fresh pendingRef alive after the caller has already given up on us.
-    if (stated.cancellation.timedOut) {
-      stated.pendingRef.clear(stated.sessionId);
-      return;
-    }
-
     // Damage detection runs in best-effort mode against the existing branch's
     // previous compaction. Cheap to run, useful for the metrics dashboard.
     runDamageDetection(stated);
     markPhase(stated, "damage");
 
-    // Metric ordering: for auto/tool runs the pipeline's job ends at staging
-    // (Pi applies via session_before_compact), so "success" is recorded now.
-    // Manual runs go through applyCompaction below, which records success or
-    // error from the native compact's own callbacks — recording here would
-    // claim success for an apply that can still fail.
     const willApply = !stated.flags.skipCompact && !stated.flags.autoTriggered;
-    if (!willApply) recordSuccessMetrics(stated, "success");
-
     if (!stated.flags.autoTriggered) {
       const approvalRequired = willApply && stated.config.requireApproval && stated.ctx.hasUI;
       let decision: "apply" | "cancel" | "closed" = approvalRequired ? "cancel" : "closed";
@@ -324,16 +312,19 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       }
     }
 
-    // One last cancellation gate before we touch Pi's native compact. If the
-    // outer timeout fired during damage detection or metric writes, calling
-    // ctx.compact() now would attempt to apply a payload Pi has already
-    // decided to bypass.
+    // One last cancellation gate before staging anything the host could use.
+    if (stated.cancellation.timedOut) return;
+
+    // Snapshot telemetry now, but append it only after session_compact proves
+    // Pi applied this exact runId. This prevents failed native compactions
+    // from being reported or persisted as successful.
+    stagePendingCompaction(stated, buildSuccessMetrics(stated, "success"));
     if (stated.cancellation.timedOut) {
       stated.pendingRef.clear(stated.sessionId);
       return;
     }
 
-    applyCompaction(stated);
+    if (willApply) applyCompaction(stated);
   } catch (err) {
     // The failure path may run before any step has populated stage data, so
     // we collect the few fields we need into a small bag. recordFailureMetrics

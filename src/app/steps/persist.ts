@@ -9,7 +9,8 @@
  *    `ctx.compact()` error.
  *
  *  - Project fingerprint and compaction state are persisted **after** the
- *    native compact's `onComplete` confirms application. If we wrote state
+ *    host emits the matching `session_compact` entry. `ctx.compact.onComplete`
+ *    is UI feedback only and is not a durable-commit authority. If we wrote state
  *    eagerly and the compact failed, the next run would believe a successful
  *    compaction had happened — corrupting damage detection and the
  *    cross-compaction delta. This addresses P1 #5 in the audit.
@@ -19,40 +20,52 @@
  */
 
 import type { RunContext } from "../run-context.ts";
-import type { PendingCompaction, LlmMessage } from "../../types.ts";
+import type { MetricsSnapshot, PendingCompaction, LlmMessage } from "../../types.ts";
 import { saveProjectFingerprint } from "../../utils/fingerprint.ts";
 import { saveCompactionState } from "../../utils/state.ts";
-import { indexCompactionState } from "../../infra/context-graph.ts";
+import { scheduleCompactionStateIndex } from "../../infra/context-graph.ts";
 import { loadConfig } from "../../utils/helpers.ts";
+import { appendMetricsSnapshot } from "../../utils/cache.ts";
 import { detectDamage, logDamageReport, writeRemediationHints } from "../../utils/damage.ts";
 import { sanitizeSmartCompactDetails } from "../../utils/type-guards.ts";
-import { recordSuccessMetrics, recordFailureMetrics } from "./metrics.ts";
+import { recordFailureMetrics } from "./metrics.ts";
 import type { StatedRc } from "../run-context.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../../infra/ai-messages.ts";
-import { markPhase } from "../run-context.ts";
+
 import * as log from "../../utils/logger.ts";
 
 /**
- * Persist durable state for a *consumed* pending payload.
+ * Persist durable state for an applied payload.
  *
- * Single persist point for every run type. All three paths (manual, auto,
- * tool) apply the summary through `session_before_compact` consuming the
- * slot — the manual path's `ctx.compact()` fires that same event. Persisting
- * at consume therefore covers every path exactly once; persisting anywhere
- * else either misses the auto/tool paths (the old onComplete-only wiring) or
- * double-writes on manual (incrementing the fingerprint sessionCount twice).
- * Best-effort: never throws.
+ * `session_before_compact` only stages a candidate; Pi may still abort. The
+ * extension calls this function exactly once from the correlated
+ * `session_compact` event after the compaction entry exists. Best-effort:
+ * persistence failures are logged without corrupting the host session.
  */
-export function persistConsumedState(pending: PendingCompaction): void {
+export function persistAppliedState(pending: PendingCompaction): void {
   if (!pending.projectId) return;
   try {
     if (pending.extraction) saveProjectFingerprint(pending.projectId, pending.extraction);
     if (pending.compactionState) {
       saveCompactionState(pending.projectId, pending.compactionState);
-      if (loadConfig().contextGraphEnabled) indexCompactionState(pending.projectId, pending.compactionState);
+      if (loadConfig().contextGraphEnabled) scheduleCompactionStateIndex(pending.projectId, pending.compactionState);
     }
-  } catch (e) { log.warn("persistConsumedState failed", e); }
+  } catch (e) { log.warn("persistAppliedState failed", e); }
+}
+
+/** Commit state and telemetry after Pi confirms this exact compaction entry. */
+export function commitAppliedCompaction(pending: PendingCompaction): void {
+  const startedAt = Date.now();
+  persistAppliedState(pending);
+  if (!pending.metricsSnapshot) return;
+  appendMetricsSnapshot(pending.sessionId, {
+    ...pending.metricsSnapshot,
+    phaseTimings: [
+      ...(pending.metricsSnapshot.phaseTimings ?? []),
+      { phase: "persist", durationMs: Date.now() - startedAt },
+    ],
+  });
 }
 
 /** Run post-compaction damage detection. Best-effort — never throws. */
@@ -98,15 +111,17 @@ export function runDamageDetection(rc: RunContext): void {
  * the run should keep running side effects (it does until the timeout/cleanup
  * step decides otherwise).
  */
-export function stagePendingCompaction(rc: RunContext): PendingCompaction {
+export function stagePendingCompaction(rc: RunContext, metricsSnapshot?: MetricsSnapshot): PendingCompaction {
   // All four fields are guaranteed by StatedRc, so the previous `!` casts go
   // away. If a future refactor reorders steps the type system will catch it
   // here instead of failing at runtime with a `Cannot read property` error.
   const pending: PendingCompaction = {
+    runId: rc.runId,
     summary: rc.finalSummary,
     firstKeptEntryId: rc.firstKeptId,
     tokensBefore: rc.totalTokens,
     details: rc.details,
+    metricsSnapshot,
     compactionState: rc.compactionState,
     projectId: rc.projectId,
     extraction: rc.extraction,
@@ -121,31 +136,27 @@ export function stagePendingCompaction(rc: RunContext): PendingCompaction {
  * pendingRef so the next compact event cannot grab a stale summary (audit
  * P1 #4).
  *
- * The run's outcome metric is recorded HERE, not before the apply: a
- * "success" row written pre-apply would inflate dashboard reliability when
- * the native compact then rejects. onComplete → success; onError → error.
+ * `session_compact` owns success metrics and durable commit. onError removes
+ * the correlated staged candidate; direct/test callers retain a safe metrics
+ * fallback when no lifecycle handler is installed.
  */
 export function applyCompaction(rc: StatedRc): void {
   if (rc.flags.skipCompact || rc.flags.autoTriggered) return;
   rc.ctx.compact({
     customInstructions: "Use pre-computed smart summary from /smart-compact",
     onComplete: () => {
-      // Durable state is persisted when `session_before_compact` consumes
-      // the pending slot (see persistConsumedState) — doing it here as well
-      // would double-increment the project fingerprint's sessionCount.
-      markPhase(rc, "persist");
-      recordSuccessMetrics(rc, "success");
       rc.ctx.ui.notify("Applied \u2713", "info");
     },
     onError: e => {
-      // Clear the pending summary so a later `session_before_compact` event
-      // can't apply a half-rotten payload that Pi already refused.
       rc.pendingRef.clear(rc.sessionId);
-      recordFailureMetrics(rc, e, {
-        sessionId: rc.sessionId, tier: rc.tier, contextPercent: rc.contextPercent,
-        toolPercent: rc.toolPercent, totalTokens: rc.totalTokens,
-        methodForMetrics: rc.method, profile: rc.profile, mode: rc.mode,
-      });
+      const handled = rc.onNativeApplyError?.(rc.runId, e) ?? false;
+      if (!handled) {
+        recordFailureMetrics(rc, e, {
+          sessionId: rc.sessionId, tier: rc.tier, contextPercent: rc.contextPercent,
+          toolPercent: rc.toolPercent, totalTokens: rc.totalTokens,
+          methodForMetrics: rc.method, profile: rc.profile, mode: rc.mode,
+        });
+      }
       rc.ctx.ui.notify("Failed: " + e.message, "error");
     },
   });

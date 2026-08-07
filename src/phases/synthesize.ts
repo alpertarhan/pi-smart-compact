@@ -195,6 +195,7 @@ export async function summarizeBatch(
   const cacheKey = cacheScope ? batchCacheKey({
     scope: cacheScope, provider: model.provider, model: model.id, dynamicSuffix,
     maxOutputTokens: maxOutputTokens ?? null,
+    thinkingLevel: services?.thinkingLevels.summaryThinkingLevel ?? null,
   }) : null;
   const cached = cacheKey ? getCachedBatch(cacheKey) : null;
   if (cached) return cached;

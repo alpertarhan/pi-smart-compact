@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { recordFailureMetrics } from "../src/app/steps/metrics.ts";
+import { buildSuccessMetrics, recordFailureMetrics } from "../src/app/steps/metrics.ts";
 import { VERSION } from "../src/constants.ts";
 
 let cache: typeof import("../src/utils/cache.ts");
@@ -36,6 +36,32 @@ describe("metrics reporting", () => {
     expect(report).toContain("Quality drilldown");
     expect(report).toContain("Canary / stable control");
     expect(report).toContain("Stage provider/model comparison");
+  });
+
+  it("attributes pre-repair quality only to one successful synthesis route", () => {
+    const svc = services.createServices();
+    for (const phase of ["explore", "batch", "patch"] as const) {
+      svc.metrics.record({
+        phase, provider: "openai", model: phase, inputTokens: 10, outputTokens: 1,
+        cacheHitTokens: 0, cacheWriteTokens: 0, latencyMs: 10, success: true,
+      });
+    }
+    const snapshot = buildSuccessMetrics({
+      runId: "run-stage-quality", services: svc,
+      flags: { skipCompact: false, autoTriggered: false },
+      verificationProvenance: { initialScore: 73, deterministicPatched: [], llmPatched: true, finalScore: 95, remainingGaps: [] },
+      verificationScore: 95, verificationGaps: [], phaseTimings: [], pipelineStart: Date.now(),
+      summaryModel: { provider: "openai", id: "batch" }, modelLabel: "openai/batch",
+      profile: "balanced", mode: "balanced", tier: "full", contextPercent: 80,
+      toolPercent: 50, totalTokens: 1_000, tokensSaved: 500, chunkCount: 1,
+      methodForMetrics: "eesv", adapted: false,
+    } as any, "success");
+    expect(snapshot.runId).toBe("run-stage-quality");
+    expect(snapshot.providerRoutes?.find(route => route.stage === "synthesize")).toMatchObject({
+      qualityScore: 73, qualityBasis: "pre-repair-verification",
+    });
+    expect(snapshot.providerRoutes?.find(route => route.stage === "explore")?.qualityScore).toBeUndefined();
+    expect(snapshot.providerRoutes?.find(route => route.stage === "verify")?.qualityScore).toBeUndefined();
   });
 
   it("persists schema-v2 failure taxonomy without error text", () => {
@@ -72,15 +98,18 @@ describe("metrics reporting", () => {
     const svc = services.createServices();
     for (let index = 0; index < 40; index++) {
       cache.appendMetricsLog("trust-" + index, {
+        runId: "run-dashboard-" + index,
         metricsSchemaVersion: 2, version: VERSION, releaseChannel: index < 20 ? "stable" : "canary",
         status: "success", provider: "openai", model: "openai/gpt", method: "eesv",
         durationMs: 1_000, avgLatency: 500, verificationScore: 95,
         initialVerificationScore: 90, remainingVerificationGaps: 0,
         totalCalls: 1, totalInput: 1_000, totalOutput: 100,
-        providerRoutes: [{ stage: "synthesize", provider: "openai", model: "gpt", calls: 1, successes: 1, avgLatencyMs: 500, inputTokens: 1_000, outputTokens: 100 }],
+        providerRoutes: [{ stage: "synthesize", provider: "openai", model: "gpt", calls: 1, successes: 1, avgLatencyMs: 500, inputTokens: 1_000, outputTokens: 100, qualityScore: 90, qualityBasis: "pre-repair-verification" }],
       }, svc);
     }
-    const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
+    const entries = cache.readMetricsLog();
+    const damage = entries.map(entry => ({ runId: entry.runId, damageScore: 0 }));
+    const fp = metricsReport.writeMetricsDashboard(entries, damage);
     const html = fs.readFileSync(fp!, "utf8");
     expect(html).toContain("100/100");
     expect(html).toContain("PROMOTE");
@@ -97,13 +126,28 @@ describe("metrics reporting", () => {
       inputTokens: 21,
       outputTokens: 100,
       cacheHitTokens: 120248,
+      cacheWriteTokens: 0,
       latencyMs: 10,
       success: true,
     }, svc);
     const summary = cache.getMetricsSummary(svc);
     expect(summary.cacheHitRate).toBeGreaterThan(0.99);
     expect(summary.cacheHitRate).toBeLessThanOrEqual(1);
-    expect(cache.effectivePromptInputTokens(summary.totalInput, summary.totalCacheHit)).toBe(120269);
+    expect(cache.effectivePromptInputTokens(summary.totalInput, summary.totalCacheHit, summary.totalCacheWrite)).toBe(120269);
+  });
+
+  it("counts cache reads and writes even when uncached input is larger", () => {
+    const svc = services.createServices();
+    cache.recordMetric({
+      phase: "batch", model: "claude", provider: "anthropic",
+      inputTokens: 60_000, outputTokens: 100,
+      cacheHitTokens: 40_000, cacheWriteTokens: 10_000,
+      latencyMs: 10, success: true,
+    }, svc);
+    const summary = cache.getMetricsSummary(svc);
+    expect(summary.totalCacheWrite).toBe(10_000);
+    expect(cache.effectivePromptInputTokens(summary.totalInput, summary.totalCacheHit, summary.totalCacheWrite)).toBe(110_000);
+    expect(summary.cacheHitRate).toBeCloseTo(40_000 / 110_000);
   });
 
   it("skips corrupt jsonl rows instead of dropping all metrics", () => {

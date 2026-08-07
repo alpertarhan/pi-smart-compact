@@ -55,25 +55,6 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc | null> {
   rc.services.budget = new BudgetGuard(callBudget, rc.timeoutMs, rc.services.clock, inputBudget, policy.maxOutputTokens);
   const estimator = makeTokenEstimator(rc.summaryModel.provider, rc.summaryModel.id, rc.services.tokenCalibration);
 
-  const sameModel = (a: typeof rc.summaryModel, b: typeof rc.summaryModel) =>
-    a.provider === b.provider && a.id === b.id;
-  const auth = await rc.ctx.modelRegistry.getApiKeyAndHeaders(rc.summaryModel);
-  // Resolve credentials once per distinct stage route. Defaults point every
-  // stage at the selected model, so the common path still performs one read.
-  const segAuth = sameModel(rc.segModel, rc.summaryModel)
-    ? auth
-    : await rc.ctx.modelRegistry.getApiKeyAndHeaders(rc.segModel);
-  const verifyAuth = sameModel(rc.verifyModel, rc.summaryModel)
-    ? auth
-    : sameModel(rc.verifyModel, rc.segModel)
-      ? segAuth
-      : await rc.ctx.modelRegistry.getApiKeyAndHeaders(rc.verifyModel);
-
-  if ((!auth.ok || !auth.apiKey) || (!segAuth.ok || !segAuth.apiKey) || (!verifyAuth.ok || !verifyAuth.apiKey)) {
-    if (!rc.flags.autoTriggered) rc.ctx.ui.notify("Auth failed", "error");
-    return null;
-  }
-
   if (rc.timeoutMs > 0) {
     rc.cancellation.timeoutId = setTimeout(() => {
       rc.cancellation.timedOut = true;
@@ -96,17 +77,14 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc | null> {
     providerCaps: typeof providerCaps;
     estimator: typeof estimator;
     adapted: boolean;
-    summaryAuth: ResolvedAuth;
-    segAuth: ResolvedAuth;
-    verifyAuth: ResolvedAuth;
+    summaryAuth?: ResolvedAuth;
+    segAuth?: ResolvedAuth;
+    verifyAuth?: ResolvedAuth;
   };
   out.config = config;
   out.profileCfg = profileCfg;
   out.providerCaps = providerCaps;
   out.estimator = estimator;
   out.adapted = adapted;
-  out.summaryAuth = { apiKey: auth.apiKey, headers: auth.headers };
-  out.segAuth = { apiKey: segAuth.apiKey!, headers: segAuth.headers };
-  out.verifyAuth = { apiKey: verifyAuth.apiKey!, headers: verifyAuth.headers };
   return advance<RcBase, PreparedRc>(out, "_prepared");
 }

@@ -22,7 +22,7 @@
  *   - `applyCompaction` lifecycle (persist-lifecycle.test.ts)
  *   - Cancellation surface (persist-lifecycle.test.ts)
  *   - Cache prefix matching (cache.test.ts, id-fingerprint.test.ts)
- *   - Retry behavior (llm-retry.test.ts)
+ *   - Provider replay (deliberately disabled; llm-client.test.ts asserts one attempt)
  *
  * The fake context is built fresh per test so we don't need to drag in
  * the real `ExtensionCommandContext` shape.
@@ -189,6 +189,29 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.llmCalls).toBe(0);
     expect(callCount).toBe(0);
     expect(synthesized.finalSummary).toContain("src/auth.ts");
+  });
+
+  it("does not use zero-call for token-dense tool-heavy context", async () => {
+    const messages = [userMsg("Update src/auth.ts"), assistantMsg("Updated it")];
+    let callCount = 0;
+    setLlmClient({ complete: async () => {
+      callCount++;
+      return makeSummaryResponse("## Goal\nUpdate auth\n## Progress\n### Done\n- none\n### In Progress\n- update auth\n### Blocked\n- none\n## Critical Context\n- preserve context");
+    } });
+    const tiered = makeTieredRc(messages);
+    tiered.mode = "aggressive";
+    tiered.requestedMode = "aggressive";
+    const extracted = extractWithCache(tiered);
+    extracted.extraction.mainGoal = "Update auth";
+    extracted.extraction.lastUserMessages = ["Update src/auth.ts"];
+    extracted.extraction.modifiedFiles = [{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 1 }];
+    extracted.extraction.messageCount = 20;
+    extracted.convTokens = 180_000;
+    extracted.toolPercent = 85;
+
+    const synthesized = await summarizeConversation(extracted);
+    expect(synthesized.methodForMetrics).not.toBe("zero-call");
+    expect(callCount).toBeGreaterThan(0);
   });
 
   it("falls back to heuristic synthesis when every LLM call fails", async () => {

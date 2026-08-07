@@ -70,21 +70,24 @@ export function cacheOpts(
 
 export function recordMetric(m: LLMCallMetric, services: SmartCompactServices): void { services.metrics.record(m); }
 
-export function effectivePromptInputTokens(inputTokens: number, cacheHitTokens: number): number {
-  // Provider usage semantics differ: some providers report `input` as total
-  // prompt tokens, while Anthropic-style cache accounting can report only the
-  // uncached/new input and expose cached prompt tokens separately as cacheRead.
-  // Use the larger plausible denominator so cache hit rate is never >100%.
-  if (cacheHitTokens <= 0) return Math.max(0, inputTokens);
-  return cacheHitTokens > inputTokens ? inputTokens + cacheHitTokens : inputTokens;
+export function effectivePromptInputTokens(
+  inputTokens: number,
+  cacheHitTokens: number,
+  cacheWriteTokens = 0,
+): number {
+  // pi-ai normalizes supported providers so `usage.input` excludes cache
+  // reads and writes. The complete wire prompt is therefore always the sum.
+  return Math.max(0, inputTokens || 0)
+    + Math.max(0, cacheHitTokens || 0)
+    + Math.max(0, cacheWriteTokens || 0);
 }
 
-export function getMetricsSummary(services: SmartCompactServices): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; avgLatency: number; cacheHitRate: number } {
+export function getMetricsSummary(services: SmartCompactServices): { totalCalls: number; totalInput: number; totalOutput: number; totalCacheHit: number; totalCacheWrite: number; avgLatency: number; cacheHitRate: number } {
   const sum = services.metrics.summary();
   // The services container computes a structurally identical summary but
   // uses a slightly different cache-hit denominator. Keep the previously
   // published denominator (capped at <=1) so dashboards don't show >100%.
-  const cacheDenominator = effectivePromptInputTokens(sum.totalInput, sum.totalCacheHit);
+  const cacheDenominator = effectivePromptInputTokens(sum.totalInput, sum.totalCacheHit, sum.totalCacheWrite);
   return {
     ...sum,
     cacheHitRate: cacheDenominator > 0 ? Math.min(1, sum.totalCacheHit / cacheDenominator) : 0,
@@ -108,7 +111,7 @@ export async function trackedComplete(
   const safeRequest = svc.scrubber.scrubValue(reqBody).value;
   const rawRequest = JSON.stringify(safeRequest);
   const estimatedInput = estimateTokens(rawRequest, model.provider, model.id, svc.tokenCalibration);
-  svc.budget.reserveCall(estimatedInput);
+  const outputReservation = svc.budget.reserveCall(estimatedInput, opts.maxTokens ?? 0);
   const start = Date.now();
   try {
     const configuredReasoning = SEGMENTATION_PHASES.has(phase)
@@ -124,18 +127,19 @@ export async function trackedComplete(
     const inputT = usage?.input ?? 0;
     const outputT = usage?.output ?? 0;
     const cacheT = usage?.cacheRead ?? 0;
-    svc.budget.reconcileInput(estimatedInput, effectivePromptInputTokens(inputT, cacheT));
-    svc.budget.recordOutput(outputT);
+    const cacheWriteT = usage?.cacheWrite ?? 0;
+    svc.budget.reconcileInput(estimatedInput, effectivePromptInputTokens(inputT, cacheT, cacheWriteT));
+    svc.budget.reconcileOutput(outputReservation, outputT);
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: inputT, outputTokens: outputT,
-      cacheHitTokens: cacheT, latencyMs: latency, success: true,
+      cacheHitTokens: cacheT, cacheWriteTokens: cacheWriteT, latencyMs: latency, success: true,
     }, svc);
     try {
       if (inputT > 0) {
         const calibration = svc.tokenCalibration;
         calibrateFromResponse(
           estimateTokens(rawRequest, model.provider, model.id, calibration),
-          effectivePromptInputTokens(inputT, cacheT),
+          effectivePromptInputTokens(inputT, cacheT, cacheWriteT),
           model.provider,
           model.id,
           calibration,
@@ -144,9 +148,10 @@ export async function trackedComplete(
     } catch (e) { log.debug("token calibration failed", e); }
     return resp;
   } catch (err) {
+    svc.budget.commitFailedOutput(outputReservation);
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: 0, outputTokens: 0,
-      cacheHitTokens: 0, latencyMs: Date.now() - start, success: false,
+      cacheHitTokens: 0, cacheWriteTokens: 0, latencyMs: Date.now() - start, success: false,
     }, svc);
     throw err;
   }
@@ -353,24 +358,34 @@ export function mergeExtractions(
 
 // ── Metrics log ──
 /** Extended metrics entry including pipeline context for regression detection. */
+function appendMetricsEntry(entry: CompactMetricsEntry): void {
+  const logPath = metricsLogFile();
+  appendLineLocked(logPath, JSON.stringify(entry));
+  scheduleFileTailTrim(logPath, RUNTIME_LOG_MAX_BYTES);
+}
+
+/** Append a fully materialized payload after an external lifecycle commits. */
+export function appendMetricsSnapshot(
+  sessionId: string,
+  snapshot: Omit<CompactMetricsEntry, "ts" | "sessionId">,
+): void {
+  try {
+    appendMetricsEntry({ ts: new Date().toISOString(), sessionId, ...snapshot });
+  } catch (e) { log.warn("appendMetricsSnapshot failed", e); }
+}
+
 export function appendMetricsLog(
   sessionId: string,
-  extra: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "avgLatency" | "cacheHitRate">> | undefined,
+  extra: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "totalCacheWrite" | "avgLatency" | "cacheHitRate">> | undefined,
   services: SmartCompactServices,
 ): void {
   try {
-    const summary = getMetricsSummary(services);
-    const entry: CompactMetricsEntry = {
+    appendMetricsEntry({
       ts: new Date().toISOString(),
       sessionId,
-      ...summary,
+      ...getMetricsSummary(services),
       ...extra,
-    };
-    // appendLineLocked keeps concurrent pi sessions from interleaving partial
-    // JSON inside the metrics log. Each line is either fully written or absent.
-    const logPath = metricsLogFile();
-    appendLineLocked(logPath, JSON.stringify(entry));
-    scheduleFileTailTrim(logPath, RUNTIME_LOG_MAX_BYTES);
+    });
   } catch (e) { log.warn("appendMetricsLog failed", e); }
 }
 

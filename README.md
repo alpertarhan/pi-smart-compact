@@ -120,7 +120,7 @@ Set `contextGraphEnabled` to `false` to disable indexing and both tools.
 | Surface | Behavior |
 | --- | --- |
 | `/smart-compact` | Explicit manual run. Supports picker UI, direct args, dry-run, focus, and budgets. |
-| `session_before_compact` | Auto path. Runs before Pi's native compaction and returns a verification-scored result when context pressure is high. |
+| `session_before_compact` | Auto path. Returns/stages a verification-scored summary under pressure; durable state waits for matching `session_compact`. |
 | `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. |
 | `/smart-compact loops` | Project-level open-loop manager: resolve/reopen, priority, pin/unpin. |
 
@@ -207,8 +207,10 @@ cohort. The report compares schema-v2 canary runs with the stable baseline and
 returns `HOLD`, `ROLLBACK`, or `PROMOTE`. Rollback triggers are: failure rate
 +5pp and ≥10%, verifier quality −5 points, p95 latency +50%, tokens +50%,
 heuristic fallback +10pp, or post-compaction damage +10pp. Promotion requires
-at least 20 canary runs, a stable baseline, and ≥70% quality coverage. The
-extension reports the decision; it never edits config or deploys automatically.
+at least 20 canary runs, a stable baseline, ≥70% verifier-quality coverage,
+≥70% run-correlated damage-observation coverage in both cohorts, ≥85 absolute
+canary quality, and ≥95% success. The extension reports the decision; it never
+edits config or deploys automatically.
 
 The interactive and HTML dashboards make trust evidence explicit: a **Data
 Confidence** score (target ≥85) combines recent sample size (25 points),
@@ -230,7 +232,8 @@ guidance for reaching the target.
 - Mandatory deterministic repair for patchable verification gaps
 - Cross-session guard and five-minute TTL for pending summaries
 - Session-log recovery for older, truncated tool results
-- Retention-pruned backups before compaction
+- Marker-owned retention-pruned backups before compaction; foreign files in a
+  custom directory are untouched
 
 ### Secrets and PII
 
@@ -252,11 +255,14 @@ handling or a dedicated DLP system**. See the
 ### Approval and feedback
 
 - `requireApproval: true` adds a fail-closed manual **Apply / Cancel** decision
-  after the provenance review screen. Auto and tool paths retain their native
-  staged lifecycle.
+  after the provenance review screen. Every path stages first; fingerprint,
+  continuity state, context graph, and success telemetry commit only after the
+  host confirms the matching native `session_compact` event.
 - Online damage monitoring observes the first post-compaction messages and
-  records re-read files or repeated context. Remediation hints feed those files
-  into the next compaction.
+  records re-read files or repeated context. Observations join the originating
+  compaction by a local run id; missing evidence lowers coverage rather than
+  counting as a clean run. Remediation hints feed affected files into the next
+  compaction.
 - `adaptiveDamageFeedback` can opt a project into larger preservation budgets
   after repeated high-damage reports.
 
@@ -386,37 +392,37 @@ The legacy `semanticCompact` root key is still accepted for compatibility.
 
 ```markdown
 ## Goal
-Add retry/backoff to the LLM client without breaking cancellation.
+Tighten aggregate token budgets without breaking cancellation.
 
 ## Constraints & Preferences
 - [requirement] Never compact mid-turn from the tool path.
 
 ## Progress
 ### Done
-- [x] Added `withRetry` in `src/infra/llm-retry.ts`.
+- [x] Reserved concurrent output budgets before provider calls.
 ### In Progress
-- [ ] Wire the retry client into run-scoped services.
+- [ ] Collect canary evidence for the new limits.
 ### Blocked
 - None.
 
 ## Key Decisions
-- **Honor Retry-After verbatim**: provider limits are authoritative.
+- **Charge failed streams conservatively**: an interrupted stream consumes its output reservation.
 
 ## Files Modified
-- src/infra/llm-retry.ts
-- src/infra/llm-client.ts
+- src/infra/services.ts
+- src/utils/cache.ts
 
 ## Open Loops
-- [high] Preserve AbortSignal behavior across providers.
+- [high] Verify provider usage reconciliation across cache-read/write responses.
 
 ## Changes Since Last Compaction
-- New files touched: src/infra/llm-retry.ts
+- Concurrent output accounting now fails closed.
 
 ## Next Steps
-1. Add an outer timeout as a second line of defense.
+1. Run the adversarial release gate.
 
 ## Critical Context
-- Retry 408/425/429/5xx; fail fast on other 4xx responses.
+- Input accounting includes uncached input, cache reads, and cache writes.
 ```
 
 </details>
@@ -441,12 +447,14 @@ All files live under `~/.pi/agent/`.
 | Path | Purpose |
 | --- | --- |
 | `settings.json` | Configuration (read only) |
-| `compact-backups/` | Retention-pruned conversation backups |
+| `compact-backups/` | Marker-owned retention-pruned conversation backups |
 | `.cache/compact-extraction-<session>.json` | Incremental extraction cache |
 | `.cache/compact-metrics.jsonl` | Tail-retained metrics log; 5 MiB cap |
 | `.cache/smart-compact-report.html` | Local HTML dashboard |
 | `.cache/smart-compact/projects/<projectId>.json` | Project fingerprint |
 | `.cache/smart-compact/states/<projectId>/<sessionId>.json` | Scoped compaction state and loop overrides |
+| `.cache/smart-compact/run-locks/` | 0600 cross-process session/global concurrency leases |
+| `.cache/smart-compact/native-continuity/` | 0600 one-shot project/session/branch handoffs |
 | `.cache/smart-compact/context-graph.sqlite` | Project-isolated FTS5 context graph and explicit saved memory |
 | `.cache/smart-compact/damage-reports.jsonl` | Damage reports; 5 MiB cap |
 | `.cache/smart-compact/remediation-<projectId>.json` | Files to preserve after damage |

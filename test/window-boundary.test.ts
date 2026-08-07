@@ -47,7 +47,7 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
 }
 
 describe("resolveCompactionWindow tool-result boundary", () => {
-  it("does not choose a trailing toolResult as firstKeptId when the recent tail is smaller than keepRecentTokens", () => {
+  it("does not compact the only user turn just to retain a trailing tool result", () => {
     const toolCallId = "call_test|fc_test";
     const branch: SessionMessageEntry[] = [
       messageEntry("m1-user", null, {
@@ -83,8 +83,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
 
     const result = resolveCompactionWindow(makePreparedRc(branch));
 
-    expect(result).not.toBeNull();
-    expect(result?.firstKeptId).toBe("m2-assistant-toolcall");
+    expect(result).toBeNull();
   });
 
   it("backs up when the token window naturally starts at a toolResult", () => {
@@ -119,8 +118,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
 
     const result = resolveCompactionWindow(makePreparedRc(branch, 1));
 
-    expect(result).not.toBeNull();
-    expect(result?.firstKeptId).toBe("m2-assistant-toolcall");
+    expect(result).toBeNull();
   });
 
   it("counts large tool-call arguments in the recent-tail budget", () => {
@@ -171,10 +169,12 @@ describe("resolveCompactionWindow tool-result boundary", () => {
 
   it("uses Pi's compaction-aware active entries instead of append-only history", () => {
     const active = [
-      messageEntry("active-1", null, { role: "user", content: [{ type: "text", text: "old active" }] }),
-      messageEntry("active-2", "active-1", { role: "assistant", content: [{ type: "text", text: "active work" }] }),
+      messageEntry("active-1", null, { role: "user", content: [{ type: "text", text: "old " + "x".repeat(140_000) }] }),
+      messageEntry("active-2", "active-1", { role: "assistant", content: [{ type: "text", text: "old answer" }] }),
       messageEntry("active-3", "active-2", { role: "user", content: [{ type: "text", text: "recent request" }] }),
       messageEntry("active-4", "active-3", { role: "assistant", content: [{ type: "text", text: "recent answer" }] }),
+      messageEntry("active-5", "active-4", { role: "user", content: [{ type: "text", text: "latest request" }] }),
+      messageEntry("active-6", "active-5", { role: "assistant", content: [{ type: "text", text: "latest answer" }] }),
     ];
     const rc = makePreparedRc([], 1);
     (rc.ctx.sessionManager as any).getBranch = () => { throw new Error("append-only history must not be read"); };
@@ -183,7 +183,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const result = resolveCompactionWindow(rc);
 
     expect(result?.msgs.map(message => message.id)).toEqual(active.map(message => message.id));
-    expect(result?.toCompact.map(message => message.id)).toEqual(active.slice(0, 3).map(message => message.id));
+    expect(result?.toCompact.map(message => message.id)).toEqual(active.slice(0, 2).map(message => message.id));
   });
 
   it("keeps the two most recent user turns when enough history exists", () => {
@@ -201,6 +201,21 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result?.firstKeptId).toBe("u2");
   });
 
+  it("retains context up to the mode target instead of stopping at the minimum tail", () => {
+    const branch = Array.from({ length: 100 }, (_, index) => messageEntry(
+      "m" + index,
+      index ? "m" + (index - 1) : null,
+      {
+        role: index % 5 === 0 ? "user" : "assistant",
+        content: [{ type: "text", text: "message " + index + " " + "x".repeat(4_000) }],
+      },
+    ));
+    const rc = makePreparedRc(branch, 1);
+    const result = resolveCompactionWindow(rc)!;
+    expect(result.accTokens).toBeGreaterThan(6_000); // 4% adaptive minimum
+    expect(result.accTokens).toBeLessThan(30_000); // bounded near the 40% target
+  });
+
   it("recounts the retained tail after anchor protection expands it", () => {
     const toolCallId = "anchor-call";
     const branch = [
@@ -208,7 +223,9 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       messageEntry("anchor-request", "old", { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "context", arguments: { action: "anchor" } }] }),
       messageEntry("anchor", "anchor-request", { role: "toolResult", toolCallId, toolName: "context", details: { anchor: true }, content: [{ type: "text", text: "checkpoint" }] }),
       messageEntry("kept-1", "anchor", { role: "assistant", content: [{ type: "text", text: "kept " + "y".repeat(500) }] }),
-      messageEntry("kept-2", "kept-1", { role: "user", content: [{ type: "text", text: "tail" }] }),
+      messageEntry("u2", "kept-1", { role: "user", content: [{ type: "text", text: "second turn" }] }),
+      messageEntry("a2", "u2", { role: "assistant", content: [{ type: "text", text: "second answer" }] }),
+      messageEntry("u3", "a2", { role: "user", content: [{ type: "text", text: "tail" }] }),
     ];
     const rc = makePreparedRc(branch, 1);
 
@@ -222,10 +239,13 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const notices: string[] = [];
     const toolCallId = "anchor-call";
     const branch = [
-      messageEntry("old", null, { role: "user", content: [{ type: "text", text: "old context" }] }),
+      messageEntry("very-old", null, { role: "user", content: [{ type: "text", text: "very old" }] }),
+      messageEntry("very-old-answer", "very-old", { role: "assistant", content: [{ type: "text", text: "old answer" }] }),
+      messageEntry("old", "very-old-answer", { role: "user", content: [{ type: "text", text: "old context" }] }),
       messageEntry("anchor-request", "old", { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "context", arguments: { action: "anchor" } }] }),
       messageEntry("anchor", "anchor-request", { role: "toolResult", toolCallId, toolName: "context", details: { anchor: true }, content: [{ type: "text", text: "checkpoint" }] }),
       messageEntry("kept", "anchor", { role: "assistant", content: [{ type: "text", text: "protected " + "y".repeat(2_000) }] }),
+      messageEntry("latest", "kept", { role: "user", content: [{ type: "text", text: "latest request" }] }),
     ];
     const rc = makePreparedRc(branch, 1);
     rc.flags.force = false;

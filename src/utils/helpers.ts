@@ -202,14 +202,27 @@ export function loadConfig(): CompactConfig {
  * hot path. We defer with `setTimeout(0)` so the scan runs on a later
  * event-loop turn after the compaction path yields.
  *
- * Concurrency: we guard with a per-directory in-flight flag so two pi
- * sessions writing to the same backup directory don't double-prune. We don't
- * use a filesystem lock here because pruning is idempotent — the worst case
- * is one extra readdir.
+ * Concurrency: a per-process directory flag coalesces local passes. Separate
+ * processes may overlap, but pruning only unlinks files carrying our exact
+ * backup marker, so duplicate unlink attempts are harmless and foreign files
+ * in a custom backup directory are never retention candidates.
  */
 import { BACKUP_MAX_FILES, BACKUP_MAX_AGE_MS } from "../constants.ts";
 
+const BACKUP_MAGIC = "# Smart Compact Backup\n";
 const _pruneInFlight = new Set<string>();
+
+function isOwnedBackupFile(full: string): boolean {
+  let fd: number | undefined;
+  try {
+    if (!fs.lstatSync(full).isFile()) return false;
+    const prefix = Buffer.alloc(Buffer.byteLength(BACKUP_MAGIC));
+    fd = fs.openSync(full, "r");
+    return fs.readSync(fd, prefix, 0, prefix.length, 0) === prefix.length
+      && prefix.toString("utf8") === BACKUP_MAGIC;
+  } catch { return false; }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* best effort */ } }
+}
 
 function prunePass(dir: string): void {
   try {
@@ -217,7 +230,7 @@ function prunePass(dir: string): void {
       .filter(name => name.endsWith(".md"))
       .map(name => {
         const full = path.join(dir, name);
-        try { return { full, mtimeMs: fs.statSync(full).mtimeMs }; } catch { return null; }
+        try { return isOwnedBackupFile(full) ? { full, mtimeMs: fs.statSync(full).mtimeMs } : null; } catch { return null; }
       })
       .filter((v): v is { full: string; mtimeMs: number } => v !== null);
 
@@ -228,7 +241,8 @@ function prunePass(dir: string): void {
     const overCount = sorted.slice(BACKUP_MAX_FILES);
     const toRemove = new Set([...overAge, ...overCount].map(e => e.full));
     for (const full of toRemove) {
-      try { fs.unlinkSync(full); } catch (e) { log.debug("prunePass unlink failed", e); }
+      try { if (isOwnedBackupFile(full)) fs.unlinkSync(full); }
+      catch (e) { log.debug("prunePass unlink failed", e); }
     }
   } catch (e) { log.debug("prunePass scan failed", e); }
 }
@@ -259,9 +273,11 @@ export function backupConversation(convText: string, sessionId: string): string 
     ensureDir(dir);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const hash = crypto.createHash("sha256").update(convText).digest("hex").slice(0, TRUNC.CONV_HASH);
-    const fp = path.join(dir, sessionId + "-" + ts + "-" + hash + ".md");
+    const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.{2,}/g, "_").slice(0, 80) || "session";
+    const headerSessionId = sessionId.replace(/[\r\n]/g, " ").slice(0, 256);
+    const fp = path.join(dir, safeSessionId + "-" + ts + "-" + hash + ".md");
     // Atomic write so a crash mid-write never leaves a half-readable backup.
-    atomicWriteFileSync(fp, "# Smart Compact Backup\n# Date: " + new Date().toISOString() + "\n# Session: " + sessionId + "\n\n" + convText);
+    atomicWriteFileSync(fp, BACKUP_MAGIC + "# Date: " + new Date().toISOString() + "\n# Session: " + headerSessionId + "\n\n" + convText);
     // Defer pruning so the hot path returns instantly. Worst case we keep one
     // extra backup until the next compaction triggers a prune.
     schedulePruneBackups(dir);
@@ -291,6 +307,7 @@ export function listBackups(limit = 20): BackupEntry[] {
       if (!name.endsWith(".md")) continue;
       const full = path.join(dir, name);
       try {
+        if (!isOwnedBackupFile(full)) continue;
         const stat = fs.statSync(full);
         if (!stat.isFile()) continue;
         const head = fs.readFileSync(full, "utf-8").split("\n").slice(0, TRUNC.BACKUP_PREVIEW_LINES).join("\n");
@@ -316,6 +333,7 @@ export function listBackups(limit = 20): BackupEntry[] {
  */
 export function readBackupContent(fp: string): string | null {
   try {
+    if (!isOwnedBackupFile(fp)) return null;
     const raw = fs.readFileSync(fp, "utf-8");
     const lines = raw.split("\n");
     let i = 0;

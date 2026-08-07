@@ -51,14 +51,16 @@ function makeRC(behaviour: "complete" | "error"): RunContext {
   // happy-path tests can assert that applyCompaction does NOT clear on
   // success (the agent loop consumes via session_before_compact).
   const stagedPayload: PendingCompaction = {
+    runId: "persist-lifecycle-run",
     summary: "x",
     firstKeptEntryId: "id",
     tokensBefore: 0,
-    details: {} as any,
+    details: { runId: "persist-lifecycle-run" } as any,
     sessionId: "test-session",
   };
   slot.set(stagedPayload);
   const rc: Partial<RunContext> = {
+    runId: "persist-lifecycle-run",
     ctx,
     pendingRef: slot,
     flags: { autoTriggered: false, skipCompact: false, verbose: false, dryRun: false, force: false },
@@ -87,8 +89,7 @@ function makeRC(behaviour: "complete" | "error"): RunContext {
     cancellation: { timedOut: false } as any,
     services: undefined as any,
   };
-  // recordSuccessMetrics/recordFailureMetrics read rc.services; give the
-  // fake RC a real bag (lazily imported to keep the test header clean).
+  // Failure metrics read rc.services; give the fake RC a real bag.
   const { createServices } = require("../src/infra/services.ts");
   (rc as any).services = createServices();
   (rc as unknown as { _calls: string[] })._calls = calls;
@@ -111,16 +112,25 @@ describe("applyCompaction onError", () => {
     expect(rc.pendingRef.isPresent()).toBe(true);
   });
 
-  it("leaves pendingRef in place when compaction succeeds (the agent loop consumes it)", () => {
+  it("leaves pendingRef and success telemetry untouched until session_compact", () => {
     const rc = makeRC("complete");
+    const before = readMetricsLog().length;
     applyCompaction(rc);
-    // pendingRef is consumed by session_before_compact, not by applyCompaction.
     expect(rc.pendingRef.isPresent()).toBe(true);
-    const metric = readMetricsLog().at(-1);
-    expect(metric?.metricsSchemaVersion).toBe(2);
-    expect(metric?.version).toBeDefined();
-    expect(metric?.releaseChannel).toBe("stable");
-    expect(metric?.providerRoutes).toEqual([]);
+    expect(readMetricsLog()).toHaveLength(before);
+  });
+
+  it("lets the lifecycle store own apply-error telemetry without duplication", () => {
+    const rc = makeRC("error");
+    const calls: string[] = [];
+    rc.onNativeApplyError = (runId, error) => {
+      calls.push(runId + ":" + error.message);
+      return true;
+    };
+    const before = readMetricsLog().length;
+    applyCompaction(rc);
+    expect(calls).toEqual(["persist-lifecycle-run:native compact rejected"]);
+    expect(readMetricsLog()).toHaveLength(before);
   });
 });
 

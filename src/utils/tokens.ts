@@ -111,50 +111,57 @@ export function getProviderCaps(provider: string): ProviderCapabilities {
 }
 
 /**
- * Per-(provider,model) calibration factors smoothed by EMA.
- *
- * Two reasons this used to be a module-level singleton and now isn't:
- *
- *   1. **Cross-session bleed.** Two pi sessions sharing the Node process
- *      (a sub-agent spawning the parent's extension) would otherwise mix
- *      each other's calibration drift. Per-services scoping confines drift
- *      to the run that observed it.
- *   2. **Per-model accuracy.** A single provider can ship multiple models
- *      with wildly different tokenizers (e.g. Anthropic's claude-3-haiku
- *      vs claude-sonnet-4: same provider, ~15% ratio gap). Keying on
- *      `provider/model` keeps each model's factor honest. Callers that
- *      only have a provider string still work — they share the
- *      `provider/*` bucket.
- *
- * The legacy module-level Map remains as a fallback when no services
- * container is provided (direct callers, tests, REPL). Tests can call
- * `__resetTokenCalibrationForTests` to clear it.
+ * Bounded per-(provider,model) calibration factors smoothed by EMA.
+ * Provider/model tokenization is process-wide knowledge rather than session
+ * content, so production runs share one store while tests can inject isolated
+ * stores. LRU bounding prevents dynamic route names from growing it forever.
  */
 export class TokenCalibrationStore {
   private readonly factors = new Map<string, number>();
+
+  constructor(private readonly maxEntries = 128) {}
 
   clear(): void { this.factors.clear(); }
 
   get(provider?: string, model?: string): number {
     if (!provider) return 1.0;
-    const exact = this.factors.get(calibrationKey(provider, model));
-    if (exact !== undefined) return exact;
+    const exactKey = calibrationKey(provider, model);
+    const exact = this.factors.get(exactKey);
+    if (exact !== undefined) {
+      this.factors.delete(exactKey);
+      this.factors.set(exactKey, exact);
+      return exact;
+    }
     // Fall back to the provider-wide bucket so a fresh model still benefits
     // from sibling calibration until it builds up its own samples.
-    return this.factors.get(calibrationKey(provider)) ?? 1.0;
+    const providerKey = calibrationKey(provider);
+    const fallback = this.factors.get(providerKey);
+    if (fallback !== undefined) {
+      this.factors.delete(providerKey);
+      this.factors.set(providerKey, fallback);
+    }
+    return fallback ?? 1.0;
   }
 
   calibrate(estimated: number, actual: number, provider?: string, model?: string): void {
     if (actual <= 0 || estimated <= 0 || !provider) return;
     const key = calibrationKey(provider, model);
     const prev = this.factors.get(key) ?? 1.0;
-    const sample = actual / estimated;
-    // EMA smoothing: 70% previous, 30% new sample. Clamp the ratio to a
-    // sane range so a one-off outlier response (e.g. a truncated reply)
-    // can't permanently skew estimates.
-    const clamped = Math.max(TUNING.CALIBRATION_CLAMP_MIN, Math.min(TUNING.CALIBRATION_CLAMP_MAX, sample));
+    // `estimated` already includes the previous factor. Convert the observed
+    // actual/estimated correction back into an absolute target factor before
+    // EMA smoothing; otherwise repeated calibration converges to sqrt(target).
+    const target = prev * actual / estimated;
+    const clamped = Math.max(TUNING.CALIBRATION_CLAMP_MIN, Math.min(TUNING.CALIBRATION_CLAMP_MAX, target));
+    this.factors.delete(key);
     this.factors.set(key, prev * TUNING.EMA_PREV + clamped * TUNING.EMA_SAMPLE);
+    while (this.factors.size > Math.max(1, this.maxEntries)) {
+      const oldest = this.factors.keys().next().value;
+      if (oldest === undefined) break;
+      this.factors.delete(oldest);
+    }
   }
+
+  size(): number { return this.factors.size; }
 }
 
 const _fallbackCalibration = new TokenCalibrationStore();

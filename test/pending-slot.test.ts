@@ -17,12 +17,15 @@ import { createPendingSlot, type ConsumeResult } from "../src/app/pending-slot.t
 import type { PendingCompaction } from "../src/types.ts";
 import type { SessionIdentityContext } from "../src/infra/session-identity.ts";
 
+let runCounter = 0;
 function makePayload(sessionId: string, summary = "## Done\n- thing"): PendingCompaction {
+  const runId = "pending-run-" + ++runCounter;
   return {
+    runId,
     summary,
     firstKeptEntryId: "entry_1",
     tokensBefore: 12345,
-    details: {} as PendingCompaction["details"],
+    details: { runId } as PendingCompaction["details"],
     sessionId,
   };
 }
@@ -136,10 +139,11 @@ describe("PendingSlot — cross-session leak guard", () => {
     const { resolveSessionId } = require("../src/infra/session-identity.ts");
     const producerId = resolveSessionId(unresolvedCtx());
     slot.set({
+      runId: "pending-unresolved-run",
       summary: "x",
       firstKeptEntryId: "e",
       tokensBefore: 0,
-      details: {} as PendingCompaction["details"],
+      details: { runId: "pending-unresolved-run" } as PendingCompaction["details"],
       sessionId: producerId,
     });
 

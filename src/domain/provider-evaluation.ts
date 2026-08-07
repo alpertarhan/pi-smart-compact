@@ -65,7 +65,9 @@ export function aggregateProviderRoutes(metrics: readonly LLMCallMetric[]): Prov
     group.calls++;
     if (metric.success) group.successes++;
     group.latency += Math.max(0, metric.latencyMs);
-    group.input += Math.max(0, metric.inputTokens);
+    group.input += Math.max(0, metric.inputTokens)
+      + Math.max(0, metric.cacheHitTokens)
+      + Math.max(0, metric.cacheWriteTokens ?? 0);
     group.output += Math.max(0, metric.outputTokens);
     groups.set(key, group);
   }
@@ -108,7 +110,12 @@ function validPersistedRoutes(value: unknown): ProviderRouteMetric[] {
   return value.filter((route): route is ProviderRouteMetric => {
     if (!route || typeof route !== "object") return false;
     const item = route as Partial<ProviderRouteMetric>;
-    return (item.stage === "explore" || item.stage === "synthesize" || item.stage === "verify")
+    const qualityValid = item.qualityScore === undefined && item.qualityBasis === undefined
+      || typeof item.qualityScore === "number" && Number.isFinite(item.qualityScore)
+        && item.qualityScore >= 0 && item.qualityScore <= 100
+        && item.qualityBasis === "pre-repair-verification";
+    return qualityValid
+      && (item.stage === "explore" || item.stage === "synthesize" || item.stage === "verify")
       && typeof item.provider === "string" && typeof item.model === "string"
       && typeof item.calls === "number" && Number.isFinite(item.calls) && item.calls > 0
       && typeof item.successes === "number" && Number.isFinite(item.successes)
@@ -138,8 +145,9 @@ function legacyRoute(entry: CompactMetricsEntry): ProviderRouteMetric[] {
 
 /**
  * Build an advisory scenario matrix from persisted real-run telemetry.
- * Legacy rows contribute reliability/latency, but only schema-v2 rows
- * contribute verifier quality so old score semantics cannot poison routing.
+ * Legacy rows contribute reliability/latency. Quality is accepted only from
+ * an explicitly stage-attributed route sample, never copied from the run's
+ * final verifier score into every provider stage.
  */
 export function evaluateProviderMetrics(
   entries: readonly CompactMetricsEntry[],
@@ -163,8 +171,8 @@ export function evaluateProviderMetrics(
       group.successes += Math.max(0, Math.min(route.calls, route.successes));
       group.latencyCallMs += Math.max(0, route.avgLatencyMs) * route.calls;
       group.tokens += Math.max(0, route.inputTokens) + Math.max(0, route.outputTokens);
-      if (entry.metricsSchemaVersion === 2 && typeof entry.verificationScore === "number") {
-        group.qualityTotal += Math.max(0, Math.min(100, entry.verificationScore));
+      if (entry.metricsSchemaVersion === 2 && typeof route.qualityScore === "number") {
+        group.qualityTotal += route.qualityScore;
         group.qualityRuns++;
       }
       groups.set(key, group);
@@ -199,7 +207,8 @@ export function evaluateProviderMetrics(
       qualityCoverage: Math.round(qualityCoverage * 1_000) / 1_000,
       score: Math.round(score * 1_000) / 1_000,
       confidence: Math.round(confidence * 1_000) / 1_000,
-      eligible: group.runs >= minSamples && successRate >= 0.8 && qualityCoverage >= 0.5,
+      eligible: group.runs >= minSamples && successRate >= 0.8
+        && qualityCoverage >= 0.5 && avgQuality != null && avgQuality >= 85,
     };
   }).sort((a, b) => a.stage.localeCompare(b.stage) || a.scenario.localeCompare(b.scenario) || b.score - a.score);
 
@@ -228,7 +237,7 @@ export function evaluateProviderMetrics(
       model: null,
       score: 0,
       confidence: 0,
-      reason: "insufficient samples, reliability, or schema-v2 quality coverage; keep the selected model",
+      reason: "insufficient samples, reliability, schema-v2 coverage, or absolute quality; keep the selected model",
     };
   }).sort((a, b) => a.stage.localeCompare(b.stage) || a.scenario.localeCompare(b.scenario));
 

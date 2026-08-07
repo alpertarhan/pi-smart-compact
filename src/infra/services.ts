@@ -15,10 +15,11 @@
  *     test that toggles tool support leaks into the next describe block.
  *   - Hot path metrics writes contend on the same array indices.
  *
- * The `SmartCompactServices` bag fixes this by giving every run its own
- * services instance. The container is intentionally narrow — only things that
- * (a) hold state across calls *within* a run, or (b) are worth swapping out in
- * tests, live here.
+ * The `SmartCompactServices` bag gives every run its own metrics, budget,
+ * scrubber, and prompt namespace. Production runs deliberately share only
+ * bounded provider/model capability and token-calibration knowledge; those
+ * caches contain no conversation/session data and would otherwise be useless
+ * when recreated for each compaction. Tests keep isolated defaults.
  *
  * Services that are stateless or already inject through their own seam
  * (`LlmClient`, `Clock`, file system helpers in `infra/fs.ts`) are exposed via
@@ -36,35 +37,40 @@ import { TokenCalibrationStore } from "../utils/tokens.ts";
 import { SecretScrubber } from "../domain/scrub.ts";
 
 /**
- * In-memory cache for "does this provider support tools?".
- *
- * Used by `explore.ts` to avoid the 1-tool probe call on every compaction.
- * Per-run isolation matters because:
- *   - Tests can spin up a fake provider that toggles support without bleeding
- *     into other tests.
- *   - A provider may temporarily drop tool support during an outage; per-run
- *     scoping bounds how long we cache a stale negative.
- *
- * TTL: 1 hour, matching the previous singleton's behaviour.
+ * Bounded in-memory cache for "does this provider/model support tools?".
+ * Production services share it across runs so explicit unsupported-capability
+ * responses avoid repeated probes; ordinary createServices() calls stay
+ * isolated for tests. Entries expire after one hour.
  */
 export class ToolSupportCache {
   private readonly entries = new Map<string, { result: boolean; timestamp: number }>();
-  private readonly ttlMs: number;
 
-  constructor(ttlMs = ONE_HOUR_MS) { this.ttlMs = ttlMs; }
+  constructor(private readonly ttlMs = ONE_HOUR_MS, private readonly maxEntries = 128) {}
 
   /** Returns the cached value if fresh, or undefined to force a probe. */
   get(key: string, now: number): boolean | undefined {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
-    if (now - entry.timestamp > this.ttlMs) return undefined;
+    if (now - entry.timestamp > this.ttlMs) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    this.entries.delete(key);
+    this.entries.set(key, entry);
     return entry.result;
   }
 
   set(key: string, value: boolean, now: number): void {
+    this.entries.delete(key);
     this.entries.set(key, { result: value, timestamp: now });
+    while (this.entries.size > Math.max(1, this.maxEntries)) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
   }
 
+  clear(): void { this.entries.clear(); }
   /** Snapshot for debug logging; safe to call from anywhere. */
   size(): number { return this.entries.size; }
 }
@@ -96,20 +102,22 @@ export class MetricsSink {
 
   summary(): {
     totalCalls: number; totalInput: number; totalOutput: number;
-    totalCacheHit: number; avgLatency: number; cacheHitRate: number;
+    totalCacheHit: number; totalCacheWrite: number; avgLatency: number; cacheHitRate: number;
   } {
     const n = this.buf.length;
-    if (!n) return { totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0, avgLatency: 0, cacheHitRate: 0 };
-    let totalInput = 0, totalOutput = 0, totalCacheHit = 0, totalLatency = 0;
+    if (!n) return { totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0, totalCacheWrite: 0, avgLatency: 0, cacheHitRate: 0 };
+    let totalInput = 0, totalOutput = 0, totalCacheHit = 0, totalCacheWrite = 0, totalLatency = 0;
     for (const m of this.buf) {
       totalInput += m.inputTokens;
       totalOutput += m.outputTokens;
       totalCacheHit += m.cacheHitTokens;
+      totalCacheWrite += m.cacheWriteTokens ?? 0;
       totalLatency += m.latencyMs;
     }
-    const cacheHitRate = totalInput > 0 ? totalCacheHit / (totalInput + totalCacheHit) : 0;
+    const promptInput = totalInput + totalCacheHit + totalCacheWrite;
+    const cacheHitRate = promptInput > 0 ? totalCacheHit / promptInput : 0;
     return {
-      totalCalls: n, totalInput, totalOutput, totalCacheHit,
+      totalCalls: n, totalInput, totalOutput, totalCacheHit, totalCacheWrite,
       avgLatency: Math.round(totalLatency / n), cacheHitRate,
     };
   }
@@ -133,6 +141,7 @@ export class BudgetGuard {
   private calls = 0;
   private inputTokens = 0;
   private outputTokens = 0;
+  private reservedOutputTokens = 0;
   private startedAt: number;
   private lastReason: "calls" | "latency" | "tokens" | null = null;
 
@@ -146,7 +155,7 @@ export class BudgetGuard {
     this.startedAt = clock.now();
   }
 
-  reserveCall(estimatedInputTokens = 0): void {
+  reserveCall(estimatedInputTokens = 0, expectedOutputTokens = 0): number {
     if (this.maxLatencyMs > 0 && this.clock.now() - this.startedAt >= this.maxLatencyMs) {
       this.lastReason = "latency";
       throw new BudgetExceededError("latency");
@@ -155,13 +164,19 @@ export class BudgetGuard {
       this.lastReason = "calls";
       throw new BudgetExceededError("calls");
     }
+    const outputReservation = Math.max(0, expectedOutputTokens);
     if ((this.maxInputTokens > 0 && this.inputTokens + estimatedInputTokens > this.maxInputTokens) ||
-        (this.maxOutputTokens > 0 && this.outputTokens >= this.maxOutputTokens)) {
+        (this.maxOutputTokens > 0 && (
+          this.outputTokens + this.reservedOutputTokens >= this.maxOutputTokens
+          || this.outputTokens + this.reservedOutputTokens + outputReservation > this.maxOutputTokens
+        ))) {
       this.lastReason = "tokens";
       throw new BudgetExceededError("tokens");
     }
     this.calls++;
     this.inputTokens += estimatedInputTokens;
+    this.reservedOutputTokens += outputReservation;
+    return outputReservation;
   }
 
   reconcileInput(estimated: number, actual: number): void {
@@ -169,10 +184,22 @@ export class BudgetGuard {
     if (this.maxInputTokens > 0 && this.inputTokens >= this.maxInputTokens) this.lastReason = "tokens";
   }
 
-  recordOutput(actual: number): void {
+  reconcileOutput(reserved: number, actual: number): void {
+    this.reservedOutputTokens = Math.max(0, this.reservedOutputTokens - Math.max(0, reserved));
     this.outputTokens += Math.max(0, actual);
+    if (this.maxOutputTokens > 0 && this.outputTokens + this.reservedOutputTokens >= this.maxOutputTokens) this.lastReason = "tokens";
+  }
+
+  /** Failed streams may have emitted unreported output; charge the reservation. */
+  commitFailedOutput(reserved: number): void {
+    const amount = Math.max(0, reserved);
+    this.reservedOutputTokens = Math.max(0, this.reservedOutputTokens - amount);
+    this.outputTokens += amount;
     if (this.maxOutputTokens > 0 && this.outputTokens >= this.maxOutputTokens) this.lastReason = "tokens";
   }
+
+  /** Compatibility path for callers that do not reserve output. */
+  recordOutput(actual: number): void { this.reconcileOutput(0, actual); }
 
   setLimits(maxCalls: number, maxInputTokens: number, maxOutputTokens = 0): void {
     this.maxCalls = maxCalls;
@@ -184,6 +211,11 @@ export class BudgetGuard {
   remainingCalls(): number { return this.maxCalls > 0 ? Math.max(0, this.maxCalls - this.calls) : Number.POSITIVE_INFINITY; }
   inputTokenCount(): number { return this.inputTokens; }
   outputTokenCount(): number { return this.outputTokens; }
+  remainingOutputTokens(): number {
+    return this.maxOutputTokens > 0
+      ? Math.max(0, this.maxOutputTokens - this.outputTokens - this.reservedOutputTokens)
+      : Number.POSITIVE_INFINITY;
+  }
   reason(): "calls" | "latency" | "tokens" | null { return this.lastReason; }
 }
 
@@ -244,6 +276,18 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
     codexWatchdogMs: overrides.codexWatchdogMs ?? DEFAULT_CONFIG.codexMaxCallMs,
     compactSessionId: overrides.compactSessionId ?? makeCompactSessionId(),
   };
+}
+
+const processToolSupport = new ToolSupportCache();
+const processTokenCalibration = new TokenCalibrationStore();
+
+/** Production run services: per-run metrics/budgets, shared bounded provider knowledge. */
+export function createProductionServices(overrides: Partial<SmartCompactServices> = {}): SmartCompactServices {
+  return createServices({
+    toolSupport: processToolSupport,
+    tokenCalibration: processTokenCalibration,
+    ...overrides,
+  });
 }
 
 // ── Process-default registry ─────────────────────────────────────────────────

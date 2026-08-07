@@ -4,6 +4,21 @@
 
 No changes yet.
 
+## [8.0.0-rc.2] - 2026-08-06
+
+### Fixed
+
+- Durable state, fingerprint, context graph, and success telemetry now commit only after a run-id-correlated native `session_compact`; cancellation, failure, shutdown, and stale generations leave no false success state.
+- Semantic verification detects negated/conditional goal, decision, and constraint inversions, inconsistent blocker placeholders, unresolved-error omissions, and fabricated files; deterministic quality-floor replacement is coverage-aware.
+- Canary promotion now requires ≥85 absolute quality, ≥95% success, and ≥70% run-correlated damage-observation coverage in stable and canary cohorts; Data Confidence and Quality Health remain separate.
+- Provider accounting includes uncached input plus cache reads/writes and reserves concurrent/failed-stream output; cross-process 0600 leases enforce the global run limit.
+- Smart Memory requires real interactive host confirmation, treats recall as untrusted evidence, preserves/deduplicates project-scoped manual facts, and bounds structural graph nodes.
+- Zero-call planning rejects token-dense/tool-heavy windows; synthesis caches include every behavior-affecting route/profile/thinking limit; unused route auth resolves lazily; retention protects the two newest user turns.
+- Provider evaluation uses only explicitly stage-local pre-repair synthesis quality instead of copying one final verifier score into every route.
+- Native continuity survives reload/process gaps in a bounded, locked project/session/branch-scoped handoff; apply-confirmed context-graph indexing is deferred and coalesced off the host compaction hook.
+- Backup retention/restoration ignores foreign files in custom directories, filesystem locks fail closed, and atomic-write documentation no longer claims unimplemented fsync durability.
+- Production runs share only bounded provider capability/token-calibration knowledge; transient probe failures cannot poison the capability cache. Removed the unused automatic LLM retry wrapper.
+
 ## [8.0.0-rc.1] - 2026-08-06
 
 ### Added
