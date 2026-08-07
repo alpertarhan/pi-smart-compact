@@ -174,6 +174,30 @@ Build
     expect(result.gaps.some(gap => gap.kind === "missing-constraint" || gap.kind === "inconsistency" || gap.kind === "fabricated-file")).toBe(false);
   });
 
+  it("does not tie a completed file to an unrelated search error that cites it later", () => {
+    const extraction = makeExtraction({
+      modifiedFiles: [{ path: "README.md", operations: ["write"], firstIndex: 1, lastIndex: 1, count: 1 }],
+      errors: [{
+        index: 2, tool: "bash", retryAttempted: false, resolved: false,
+        message: "rg: src/config.ts: No such file or directory\nREADME.md-194-matching search output",
+      }],
+    });
+    const summary = "## Goal\nClean up\n## Progress\n### Done\n- Updated README.md\n### Blocked\n- rg: src/config.ts: No such file or directory README.md-194-matching search output\n## Open Loops\n- investigate command\n## Critical Context\n- none";
+    expect(verifySummary(summary, extraction).gaps.some(gap => gap.kind === "inconsistency" && gap.detail.includes("README.md marked Done"))).toBe(false);
+  });
+
+  it("still rejects Done when the unresolved operation directly targets that file", () => {
+    const extraction = makeExtraction({
+      modifiedFiles: [{ path: "README.md", operations: ["write"], firstIndex: 1, lastIndex: 1, count: 1 }],
+      errors: [{
+        index: 2, tool: "edit", retryAttempted: false, resolved: false,
+        message: "Could not update README.md: exact text was not found",
+      }],
+    });
+    const summary = "## Goal\nClean up\n## Progress\n### Done\n- Updated README.md\n### Blocked\n- Could not update README.md: exact text was not found\n## Open Loops\n- retry README edit\n## Critical Context\n- none";
+    expect(verifySummary(summary, extraction).gaps).toContainEqual({ kind: "inconsistency", detail: "README.md marked Done but has unresolved error" });
+  });
+
   it("detects and deterministically repairs missing carried facts", () => {
     const continuity = makeState({
       goal: "Ship auth",

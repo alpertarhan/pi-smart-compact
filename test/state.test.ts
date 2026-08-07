@@ -278,9 +278,13 @@ describe("continuity state", () => {
         { id: "constraint-1", text: "npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404", category: "prohibition", confidence: 0.8 },
         { id: "constraint-2", text: "Do not publish without approval", category: "prohibition", confidence: 1 },
       ],
+      unresolvedErrors: [{ id: "error-1", message: "src/app.ts:10: const onError = true;\nsrc/index.ts:20: // matched search output", tool: "bash", files: ["src/app.ts"] }],
+      openLoops: [{ id: "loop-1", type: "bugfix", priority: "normal", status: "open", summary: "src/app.ts:10: const onError = true", files: ["src/app.ts"], sourceIndex: 1 }],
     });
     const merged = mergeCompactionStates(previous, makeFullState());
     expect(merged.constraints.map(item => item.text)).toEqual(["Do not publish without approval"]);
+    expect(merged.unresolvedErrors).toEqual([]);
+    expect(merged.openLoops).toEqual([]);
   });
 
   it("renders only continuity facts missing from the visible summary", () => {

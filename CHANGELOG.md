@@ -4,6 +4,13 @@
 
 No changes yet.
 
+## [8.0.2] - 2026-08-07
+
+### Fixed
+
+- Done/error contradiction detection now associates an unresolved error with a completed file only when the error's first line directly identifies that file. Later grep/context output mentioning the filename no longer creates a false contradiction.
+- Legacy source-search output persisted as unresolved errors/open loops by older RCs is filtered on load and before persistence.
+
 ## [8.0.1] - 2026-08-07
 
 ### Fixed
