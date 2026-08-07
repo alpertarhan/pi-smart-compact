@@ -159,6 +159,21 @@ Build
     expect(result.gaps.some(gap => gap.kind === "fabricated-file")).toBe(false);
   });
 
+  it("ignores legacy npm diagnostics stored as continuity constraints", () => {
+    const continuity = makeState({
+      constraints: [{
+        id: "constraint-1",
+        text: "npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404",
+        category: "prohibition",
+        confidence: 0.8,
+      }],
+      unresolvedErrors: [{ id: "error-1", message: "rg: src/config.ts: No such file or directory", tool: "bash", files: [] }],
+    });
+    const summary = "## Goal\nClean up\n## Constraints & Preferences\n- npm notice Publishing to https://registry.npmjs.org/ with tag next and public access\n## Progress\n- complete\n## Open Loops\n- rg: src/config.ts: No such file or directory\n## Critical Context\n- stable";
+    const result = verifySummary(summary, makeExtraction(), continuity);
+    expect(result.gaps.some(gap => gap.kind === "missing-constraint" || gap.kind === "inconsistency" || gap.kind === "fabricated-file")).toBe(false);
+  });
+
   it("detects and deterministically repairs missing carried facts", () => {
     const continuity = makeState({
       goal: "Ship auth",

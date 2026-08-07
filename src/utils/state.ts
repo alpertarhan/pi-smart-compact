@@ -11,6 +11,7 @@ import type {
 } from "../types.ts";
 import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX } from "../constants.ts";
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
+import { isDiagnosticConstraintText } from "./extraction.ts";
 import * as log from "./logger.ts";
 import { compactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
@@ -23,13 +24,18 @@ function getStatePath(projectId: string, state?: CompactionState): string {
     : compactionStateFile(projectId);
 }
 
+export function sanitizeCompactionStateEvidence(state: CompactionState): CompactionState {
+  const constraints = state.constraints.filter(item => !isDiagnosticConstraintText(item.text));
+  return constraints.length === state.constraints.length ? state : { ...state, constraints };
+}
+
 function freshState(fp: string, data: CompactionState | null): CompactionState | null {
   if (!data) return null;
   let updatedAt = data.updatedAt;
   if (!updatedAt) {
     try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
   }
-  return Date.now() - updatedAt > SEVEN_DAYS_MS ? null : data;
+  return Date.now() - updatedAt > SEVEN_DAYS_MS ? null : sanitizeCompactionStateEvidence(data);
 }
 
 /**
@@ -41,7 +47,7 @@ function freshState(fp: string, data: CompactionState | null): CompactionState |
  */
 export function saveCompactionState(projectId: string, state: CompactionState): void {
   try {
-    writeJsonSync(getStatePath(projectId, state), state, true);
+    writeJsonSync(getStatePath(projectId, state), sanitizeCompactionStateEvidence(state), true);
   } catch (e) { log.warn("saveCompactionState failed", e); }
 }
 
@@ -116,13 +122,14 @@ export function applyContinuityOverrides(state: CompactionState, overrides: Cont
   const replacements = overrides
     .filter(item => item.status === "superseded" && item.replacement)
     .map(item => "Superseded " + item.kind + ": " + item.replacement);
+  const cleanState = sanitizeCompactionStateEvidence(state);
   return {
-    ...state,
-    decisions: state.decisions.filter(item => !inactive.has("decision:" + normalizeFactKey(item.summary))),
-    constraints: state.constraints.filter(item => !inactive.has("constraint:" + normalizeFactKey(item.text))),
-    unresolvedErrors: state.unresolvedErrors.filter(item => !inactive.has("error:" + normalizeFactKey(item.message))),
-    openLoops: state.openLoops.filter(item => !inactive.has("loop:" + normalizeFactKey(item.summary))),
-    criticalContext: mergeBy(replacements, state.criticalContext, normalizeFactKey, 20),
+    ...cleanState,
+    decisions: cleanState.decisions.filter(item => !inactive.has("decision:" + normalizeFactKey(item.summary))),
+    constraints: cleanState.constraints.filter(item => !inactive.has("constraint:" + normalizeFactKey(item.text))),
+    unresolvedErrors: cleanState.unresolvedErrors.filter(item => !inactive.has("error:" + normalizeFactKey(item.message))),
+    openLoops: cleanState.openLoops.filter(item => !inactive.has("loop:" + normalizeFactKey(item.summary))),
+    criticalContext: mergeBy(replacements, cleanState.criticalContext, normalizeFactKey, 20),
     factOverrides: overrides,
   };
 }

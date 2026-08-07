@@ -4,6 +4,14 @@
 
 No changes yet.
 
+## [8.0.1] - 2026-08-07
+
+### Fixed
+
+- Legacy rc.2 continuity state now drops diagnostic `npm error`/`npm notice` text that had been persisted as a user prohibition, both when loaded and before future persistence.
+- Remote registry URLs such as `https://registry.npmjs.org/` are no longer interpreted as local file references.
+- File paths present inside trusted error/constraint/decision/goal continuity evidence are grounded during verification, so deterministically preserved legacy errors cannot create fabricated-file gaps.
+
 ## [8.0.0] - 2026-08-07
 
 ### Added

@@ -11,6 +11,7 @@ import { COMPACT_SYSTEM_PREFIX, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import { extractFileRefs } from "../utils/file-ref-detect.ts";
+import { isDiagnosticConstraintText } from "../utils/extraction.ts";
 import { buildUniquePathNeedles, isKnownPathReference } from "../utils/file-needles.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
@@ -164,7 +165,7 @@ export function verifySummary(
   const constraintEvidence = uniqueByText([
     ...extraction.constraints.filter(item => item.confidence >= 0.8).map(item => ({ text: item.text })),
     ...(continuity?.constraints ?? []).filter(item => item.confidence >= 0.8).map(item => ({ text: item.text })),
-  ], item => item.text);
+  ], item => item.text).filter(item => !isDiagnosticConstraintText(item.text));
   const decisionEvidence = uniqueByText([
     ...extraction.decisions.filter(item => item.type === "explicit").map(item => ({ summary: item.summary })),
     ...(continuity?.decisions ?? []).filter(item => item.type === "explicit").map(item => ({ summary: item.summary })),
@@ -227,8 +228,17 @@ export function verifySummary(
     }
   }
 
+  const groundedEvidenceFiles = [
+    ...unresolvedEvidence.map(item => item.message),
+    ...constraintEvidence.map(item => item.text),
+    ...decisionEvidence.map(item => item.summary),
+    ...(goalEvidence ? [goalEvidence] : []),
+    ...(continuity?.openLoops.map(item => item.summary) ?? []),
+    ...(continuity?.criticalContext ?? []),
+  ].flatMap(extractFileRefs);
   const knownFiles = Array.from(new Set([
     ...modifiedPaths, ...extraction.readFiles, ...extraction.deletedFiles, ...(extraction.referencedFiles ?? []),
+    ...groundedEvidenceFiles,
     ...(continuity?.modifiedFiles ?? []), ...(continuity?.readFiles ?? []), ...(continuity?.deletedFiles ?? []),
     ...(continuity?.unresolvedErrors ?? []).flatMap(error => error.files),
     ...(continuity?.openLoops ?? []).flatMap(loop => loop.files),

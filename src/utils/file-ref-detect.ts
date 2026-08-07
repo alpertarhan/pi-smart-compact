@@ -45,7 +45,9 @@ export const FILE_REF_CANDIDATE_RE = /[\w.\/-]+\.[\w]+/g;
  * the classifier without re-running the candidate generator.
  */
 export function isLikelyFileRef(candidate: string): boolean {
-  if (VERSION_RE.test(candidate)) return false;
+  // Candidate generation drops URL schemes at ':', leaving protocol-relative
+  // fragments such as //registry.npmjs.org. They are remote hosts, not files.
+  if (candidate.startsWith("//") || VERSION_RE.test(candidate)) return false;
   if (candidate.includes("/")) {
     // Path-segment match: must contain at least one directory component
     // and the last segment must not be a bare version literal (e.g.
