@@ -26,7 +26,7 @@ import { resolveSessionId } from "../infra/session-identity.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompactionMode, CompressionProfile } from "../types.ts";
 import { MODE_POLICIES, modeFromLegacyProfile, resolveMode } from "./mode-policy.ts";
-import { showResultScreen } from "../ui/overlays.ts";
+import { clearCompactProgress, showProgressOverlay, showResultScreen } from "../ui/overlays.ts";
 import * as log from "../utils/logger.ts";
 
 import type {
@@ -73,6 +73,8 @@ export interface SmartCompactOptions {
    * need?" explicit at the type level.
    */
   ctx: ExtensionContext;
+  /** Reuse a caller-loaded snapshot when preview and execution must agree. */
+  config?: import("../types.ts").CompactConfig;
   summaryModel: Model<Api>;
   segModel: Model<Api>;
   /** Optional explicit verification/repair route; defaults to the summary model. */
@@ -116,6 +118,7 @@ export interface SmartCompactOptions {
 function makeBase(opts: SmartCompactOptions): RcBase {
   const ctrl = new AbortController();
   const notify: Notifier = (msg, type = "info") => {
+    if (opts.autoTriggered && (type === "info" || type === "success")) return;
     opts.ctx.ui.notify(msg, type === "success" ? "info" : type);
   };
   const vlog = (msg: string) => { if (opts.verbose) log.info(msg); };
@@ -127,6 +130,7 @@ function makeBase(opts: SmartCompactOptions): RcBase {
   return {
     runId: randomUUID(),
     ctx: opts.ctx,
+    config: opts.config,
     notify,
     vlog,
     services: createProductionServices(),
@@ -184,6 +188,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   // metrics. We populate it as soon as buildState returns; until then it's
   // null and the failure path uses `base` only.
   let finalRc: StatedRc | null = null;
+  let keepApplyProgress = false;
   let failureSummaryFields: {
     sessionId?: string; tier?: string; contextPercent?: number; toolPercent?: number;
     totalTokens?: number; methodForMetrics?: string; profile: string; mode?: CompactionMode;
@@ -226,8 +231,6 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     markPhase(windowed, "prepare");
 
     if (!windowed.flags.autoTriggered) {
-      // Lazy import to avoid an early UI dependency for headless tests.
-      const { showProgressOverlay } = await import("../ui/overlays.ts");
       showProgressOverlay(windowed.ctx, { phase: 1, phaseName: "Extract", detail: "Preparing...", model: windowed.modelLabel, profile: windowed.profile });
     }
 
@@ -254,11 +257,6 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     const stated = buildState(verified);
     finalRc = stated;
 
-    stated.notify(
-      "Done: " + describePipeline(stated) +
-        " — saved " + stated.tokensSaved.toLocaleString() + "t (" + duration(stated) + ")",
-      "success",
-    );
     stated.vlog(
       "Pipeline complete — method=" + stated.method + " calls=" + stated.llmCalls +
         " chunks=" + stated.chunkCount + " tokensSaved=" + stated.tokensSaved,
@@ -286,31 +284,18 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     markPhase(stated, "damage");
 
     const willApply = !stated.flags.skipCompact && !stated.flags.autoTriggered;
-    if (!stated.flags.autoTriggered) {
-      const approvalRequired = willApply && stated.config.requireApproval && stated.ctx.hasUI;
-      let decision: "apply" | "cancel" | "closed" = approvalRequired ? "cancel" : "closed";
+    if (!stated.flags.autoTriggered && willApply && stated.config.requireApproval) {
+      let decision: "apply" | "cancel" | "closed" = "cancel";
       try {
-        if (approvalRequired) {
-          // Approval is fail-closed and never races an auto-apply timer.
-          decision = await showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services, { approval: true });
-        } else {
-          let resultTimer: ReturnType<typeof setTimeout> | undefined;
-          const timeoutPromise = new Promise<"closed">(resolve => { resultTimer = setTimeout(() => resolve("closed"), 5000); });
-          try {
-            decision = await Promise.race([
-              showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services),
-              timeoutPromise,
-            ]);
-          } finally {
-            if (resultTimer) clearTimeout(resultTimer);
-          }
-        }
+        // Approval is fail-closed and never races an auto-apply timer.
+        decision = stated.ctx.hasUI
+          ? await showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services, { approval: true })
+          : "cancel";
       } catch (err) {
-        log.warn("Result screen error", err);
-        stated.notify(approvalRequired ? "Approval UI failed — compaction cancelled" : "Result screen skipped", approvalRequired ? "warning" : "info");
-        decision = approvalRequired ? "cancel" : "closed";
+        log.warn("Approval UI error", err);
+        stated.notify("Approval UI failed — compaction cancelled", "warning");
       }
-      if (approvalRequired && decision !== "apply") {
+      if (decision !== "apply") {
         stated.pendingRef.clear(stated.sessionId);
         recordSuccessMetrics(stated, "cancelled");
         stated.notify("Compaction cancelled — current conversation unchanged", "info");
@@ -324,13 +309,19 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // Snapshot telemetry now, but append it only after session_compact proves
     // Pi applied this exact runId. This prevents failed native compactions
     // from being reported or persisted as successful.
+    if (willApply) {
+      showProgressOverlay(stated.ctx, { phase: 5, phaseName: "Apply", detail: "Awaiting Pi confirmation..." });
+    }
     stagePendingCompaction(stated, buildSuccessMetrics(stated, "success"));
     if (stated.cancellation.timedOut) {
       stated.pendingRef.clear(stated.sessionId);
       return;
     }
 
-    if (willApply) applyCompaction(stated);
+    if (willApply) {
+      applyCompaction(stated);
+      keepApplyProgress = true;
+    }
   } catch (err) {
     // The failure path may run before any step has populated stage data, so
     // we collect the few fields we need into a small bag. recordFailureMetrics
@@ -341,6 +332,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     opts.abortSignal?.removeEventListener("abort", abortFromHost);
     if (base.cancellation.timeoutId) clearTimeout(base.cancellation.timeoutId);
     releaseRunLock(opts.isRunning, runSessionId);
+    if (!keepApplyProgress) clearCompactProgress(base.ctx);
     // If the timeout fired we always clear the pending summary so a stale
     // payload cannot be picked up by the next session_before_compact event.
     if (base.cancellation.timedOut) {
@@ -364,18 +356,4 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       );
     }
   }
-}
-
-function describePipeline(rc: StatedRc): string {
-  if (rc.method === "eesv") {
-    return "EESV: Extract > Explore (" + rc.explorationRounds + "r) > Synthesize (" +
-      (rc.chunkCount || 1) + " chunks) > Verify (" +
-      (rc.verified ? "pass" : rc.verificationGaps.length + " gaps") + ")";
-  }
-  return rc.method + " (" + (rc.chunkCount || 1) + " chunks, " + rc.llmCalls + " calls)";
-}
-
-function duration(rc: StatedRc): string {
-  const pipelineMs = Date.now() - rc.pipelineStart;
-  return pipelineMs < 1000 ? pipelineMs + "ms" : (pipelineMs / 1000).toFixed(1) + "s";
 }

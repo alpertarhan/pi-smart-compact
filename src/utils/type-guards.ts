@@ -50,6 +50,17 @@ import type { SmartCompactDetails } from "../types.ts";
 const KNOWN_METHODS = new Set(["eesv", "single-pass", "heuristic"]);
 const KNOWN_PROFILES = new Set(["light", "balanced", "aggressive"]);
 const KNOWN_MODES = new Set(["balanced", "aggressive", "fast", "thorough"]);
+const NON_NEGATIVE_DETAIL_FIELDS = [
+  "chunkCount", "totalMessages", "totalTokensSummarized", "llmCalls", "tokensSaved",
+  "explorationRounds", "explorationBoundaries", "tokensBefore", "plannedAfterTokens",
+  "plannedSavedTokens", "estimatedAfterTokens", "estimatedSavedTokens", "retainedTailTokens",
+  "summaryTokens", "summaryBudgetTokens", "targetAfterTokens",
+] as const;
+const YIELD_DETAIL_FIELDS = ["plannedYield", "estimatedYield"] as const;
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every(x => typeof x === "string");
@@ -74,7 +85,7 @@ export function isValidSmartCompactDetails(d: unknown): d is SmartCompactDetails
   // Required numeric fields with a sane lower bound. We coerce silently if
   // they're missing on legacy entries (handled in `sanitizeSmartCompactDetails`).
   if (typeof r.qualityScore !== "number" || !Number.isFinite(r.qualityScore)) return false;
-  if (typeof r.totalMessages !== "number" || !Number.isFinite(r.totalMessages)) return false;
+  if (!isNonNegativeFinite(r.totalMessages)) return false;
 
   // Optional but commonly accessed fields. We don't reject when missing
   // (legacy entries omit them) but we do reject if present-and-wrong-type.
@@ -85,6 +96,12 @@ export function isValidSmartCompactDetails(d: unknown): d is SmartCompactDetails
   if (r.runId !== undefined && (typeof r.runId !== "string" || r.runId.length < 8 || r.runId.length > 100)) return false;
   if (r.version !== undefined && typeof r.version !== "string") return false;
   if (r.releaseChannel !== undefined && r.releaseChannel !== "stable" && r.releaseChannel !== "canary") return false;
+  if (NON_NEGATIVE_DETAIL_FIELDS.some(key => r[key] !== undefined && !isNonNegativeFinite(r[key]))) return false;
+  if (YIELD_DETAIL_FIELDS.some(key => r[key] !== undefined
+    && (!isNonNegativeFinite(r[key]) || (r[key] as number) > 1))) return false;
+  if (r.hardBoundaryAdjusted !== undefined && typeof r.hardBoundaryAdjusted !== "boolean") return false;
+  if (r.relaxedSoftBoundaries !== undefined && (!Array.isArray(r.relaxedSoftBoundaries)
+    || r.relaxedSoftBoundaries.some(kind => !["recent-user-turn", "anchor", "topical"].includes(kind)))) return false;
   if (r.providerRoutes !== undefined) {
     if (!r.providerRoutes || typeof r.providerRoutes !== "object") return false;
     const routes = r.providerRoutes as Record<string, unknown>;
@@ -113,24 +130,34 @@ export function sanitizeSmartCompactDetails(d: unknown): SmartCompactDetails | n
 
   const repaired: SmartCompactDetails = {
     method: KNOWN_METHODS.has(r.method as string) ? (r.method as SmartCompactDetails["method"]) : "heuristic",
-    chunkCount: typeof r.chunkCount === "number" ? r.chunkCount : 0,
+    chunkCount: isNonNegativeFinite(r.chunkCount) ? r.chunkCount : 0,
     topics: r.topics,
     readFiles: r.readFiles,
     modifiedFiles: r.modifiedFiles,
-    totalMessages: typeof r.totalMessages === "number" ? r.totalMessages : 0,
-    totalTokensSummarized: typeof r.totalTokensSummarized === "number" ? r.totalTokensSummarized : 0,
-    llmCalls: typeof r.llmCalls === "number" ? r.llmCalls : 0,
+    totalMessages: isNonNegativeFinite(r.totalMessages) ? r.totalMessages : 0,
+    totalTokensSummarized: isNonNegativeFinite(r.totalTokensSummarized) ? r.totalTokensSummarized : 0,
+    llmCalls: isNonNegativeFinite(r.llmCalls) ? r.llmCalls : 0,
     profile: KNOWN_PROFILES.has(r.profile as string) ? (r.profile as SmartCompactDetails["profile"]) : "balanced",
     ...(KNOWN_MODES.has(r.mode as string) ? { mode: r.mode as SmartCompactDetails["mode"] } : {}),
     backupPath: typeof r.backupPath === "string" ? r.backupPath : null,
-    tokensSaved: typeof r.tokensSaved === "number" ? r.tokensSaved : 0,
+    tokensSaved: isNonNegativeFinite(r.tokensSaved) ? r.tokensSaved : 0,
     verified: typeof r.verified === "boolean" ? r.verified : false,
     gaps: isStringArray(r.gaps) ? r.gaps : [],
-    explorationRounds: typeof r.explorationRounds === "number" ? r.explorationRounds : 0,
-    explorationBoundaries: typeof r.explorationBoundaries === "number" ? r.explorationBoundaries : 0,
+    explorationRounds: isNonNegativeFinite(r.explorationRounds) ? r.explorationRounds : 0,
+    explorationBoundaries: isNonNegativeFinite(r.explorationBoundaries) ? r.explorationBoundaries : 0,
     model: typeof r.model === "string" ? r.model : "unknown",
     qualityScore: typeof r.qualityScore === "number" ? r.qualityScore : 0,
-    tokensBefore: typeof r.tokensBefore === "number" ? r.tokensBefore : 0,
+    tokensBefore: isNonNegativeFinite(r.tokensBefore) ? r.tokensBefore : 0,
+    ...Object.fromEntries(NON_NEGATIVE_DETAIL_FIELDS
+      .filter(key => !["chunkCount", "totalMessages", "totalTokensSummarized", "llmCalls", "tokensSaved", "explorationRounds", "explorationBoundaries", "tokensBefore"].includes(key)
+        && isNonNegativeFinite(r[key]))
+      .map(key => [key, r[key]])),
+    ...Object.fromEntries(YIELD_DETAIL_FIELDS
+      .filter(key => isNonNegativeFinite(r[key]) && (r[key] as number) <= 1)
+      .map(key => [key, r[key]])),
+    ...(Array.isArray(r.relaxedSoftBoundaries) && r.relaxedSoftBoundaries.every(kind => ["recent-user-turn", "anchor", "topical"].includes(kind))
+      ? { relaxedSoftBoundaries: r.relaxedSoftBoundaries as SmartCompactDetails["relaxedSoftBoundaries"] } : {}),
+    ...(typeof r.hardBoundaryAdjusted === "boolean" ? { hardBoundaryAdjusted: r.hardBoundaryAdjusted } : {}),
   };
   return isValidSmartCompactDetails(repaired) ? repaired : null;
 }

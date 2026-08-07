@@ -47,6 +47,7 @@ export function buildSuccessMetrics(
   status: "success" | "dry-run" | "cancelled",
 ): MetricsSnapshot {
   const ecs = getExtractionCacheStats(rc.services);
+  const details = rc.details ?? {} as StatedRc["details"];
   return {
     ...getMetricsSummary(rc.services),
     runId: rc.runId,
@@ -59,6 +60,18 @@ export function buildSuccessMetrics(
     toolPercent: rc.toolPercent,
     tokensBefore: rc.totalTokens,
     tokensSaved: rc.tokensSaved,
+    plannedAfterTokens: details.plannedAfterTokens,
+    plannedSavedTokens: details.plannedSavedTokens,
+    plannedYield: details.plannedYield,
+    estimatedAfterTokens: details.estimatedAfterTokens,
+    estimatedSavedTokens: details.estimatedSavedTokens,
+    estimatedYield: details.estimatedYield,
+    retainedTailTokens: details.retainedTailTokens,
+    summaryTokens: details.summaryTokens,
+    summaryBudgetTokens: details.summaryBudgetTokens,
+    targetAfterTokens: details.targetAfterTokens,
+    relaxedSoftBoundaries: details.relaxedSoftBoundaries,
+    hardBoundaryAdjusted: details.hardBoundaryAdjusted,
     pruneSavedTokens: rc.pruning?.prunedTokenSaving,
     chunkCount: rc.chunkCount || 1,
     verificationScore: rc.verificationScore,
@@ -129,8 +142,19 @@ export function recordFailureMetrics(
     ?? loadConfig().telemetryChannel;
   const failureKind = classifyTelemetryFailure(err, rc.cancellation.timedOut);
   const gate = err && typeof err === "object"
-    ? err as { score?: unknown; initialScore?: unknown; gapCount?: unknown; gapKinds?: unknown }
+    ? err as {
+      score?: unknown; initialScore?: unknown; gapCount?: unknown; gapKinds?: unknown;
+      plannedAfterTokens?: unknown; plannedSavedTokens?: unknown; plannedYield?: unknown;
+      estimatedAfterTokens?: unknown; estimatedSavedTokens?: unknown; estimatedYield?: unknown;
+      retainedTailTokens?: unknown; summaryTokens?: unknown; summaryBudgetTokens?: unknown;
+      targetAfterTokens?: unknown; relaxedSoftBoundaries?: unknown; hardBoundaryAdjusted?: unknown;
+    }
     : null;
+  const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  const softKinds = new Set(["recent-user-turn", "anchor", "topical"]);
+  const relaxedSoftBoundaries = Array.isArray(gate?.relaxedSoftBoundaries)
+    ? gate.relaxedSoftBoundaries.filter((kind): kind is "recent-user-turn" | "anchor" | "topical" => typeof kind === "string" && softKinds.has(kind))
+    : undefined;
   const knownGapKinds = new Set<VerificationGap["kind"]>([
     "missing-section", "missing-file", "missing-error", "missing-constraint", "missing-decision",
     "missing-goal", "fabricated-file", "inconsistency", "missing-open-loops",
@@ -154,6 +178,18 @@ export function recordFailureMetrics(
     contextPercent: fields.contextPercent != null ? Math.round(fields.contextPercent) : undefined,
     toolPercent: fields.toolPercent,
     tokensBefore: fields.totalTokens,
+    plannedAfterTokens: finite(gate?.plannedAfterTokens),
+    plannedSavedTokens: finite(gate?.plannedSavedTokens),
+    plannedYield: finite(gate?.plannedYield),
+    estimatedAfterTokens: finite(gate?.estimatedAfterTokens),
+    estimatedSavedTokens: finite(gate?.estimatedSavedTokens),
+    estimatedYield: finite(gate?.estimatedYield),
+    retainedTailTokens: finite(gate?.retainedTailTokens),
+    summaryTokens: finite(gate?.summaryTokens),
+    summaryBudgetTokens: finite(gate?.summaryBudgetTokens),
+    targetAfterTokens: finite(gate?.targetAfterTokens),
+    relaxedSoftBoundaries,
+    hardBoundaryAdjusted: typeof gate?.hardBoundaryAdjusted === "boolean" ? gate.hardBoundaryAdjusted : undefined,
     method: fields.methodForMetrics,
     model: rc.modelLabel,
     provider: rc.summaryModel.provider,

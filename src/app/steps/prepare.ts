@@ -11,33 +11,25 @@
 import type { RcBase, PreparedRc, ResolvedAuth } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import { effectiveBudget, MODE_POLICIES } from "../mode-policy.ts";
-import { DEFAULT_CONFIG, PROFILES } from "../../constants.ts";
-import { getProviderCaps, makeTokenEstimator } from "../../utils/tokens.ts";
+import { DEFAULT_CONFIG } from "../../constants.ts";
+import { getProviderCaps } from "../../utils/tokens.ts";
 import { loadConfig } from "../../utils/helpers.ts";
+import { preparePreflightProfile } from "../preflight.ts";
 import * as log from "../../utils/logger.ts";
 import { SecretScrubber } from "../../domain/scrub.ts";
 import { BudgetGuard } from "../../infra/services.ts";
-import { deriveProjectIdFromCwd } from "../../utils/fingerprint.ts";
-import { readRecentDamageScores } from "../../utils/damage.ts";
 
 export async function prepareRun(rc: RcBase): Promise<PreparedRc | null> {
-  const config = loadConfig();
-  let profileCfg = { ...PROFILES[rc.profile], ...(config.profiles?.[rc.profile] ?? {}) };
-  let adapted = false;
-  if (config.adaptiveDamageFeedback) {
-    const scores = readRecentDamageScores(deriveProjectIdFromCwd(rc.ctx.cwd), 5);
-    const recent = scores.slice(-3).sort((a, b) => a - b);
-    const median = recent.length ? recent[Math.floor(recent.length / 2)] : 0;
-    if (median >= 25) {
-      const multiplier = median >= 50 ? 1.5 : 1.25;
-      profileCfg = {
-        ...profileCfg,
-        keepRecentTokens: Math.round(profileCfg.keepRecentTokens * multiplier),
-        summaryBudgetTokens: Math.round(profileCfg.summaryBudgetTokens * (median >= 50 ? 1.3 : 1.2)),
-      };
-      adapted = true;
-      rc.notify("Adaptive damage policy: median " + median + "/100 — preserving more recent context", "warning");
-    }
+  const config = rc.config ?? loadConfig();
+  const { profileCfg, estimator, adapted, damageMedian } = preparePreflightProfile({
+    cwd: rc.ctx.cwd,
+    summaryModel: rc.summaryModel,
+    mode: rc.mode,
+    tokenCalibration: rc.services.tokenCalibration,
+    config,
+  });
+  if (adapted) {
+    rc.notify("Adaptive damage policy: median " + damageMedian + "/100 — preserving more recent context", "info");
   }
   const providerCaps = getProviderCaps(rc.summaryModel.provider);
   rc.services.thinkingLevels = {
@@ -53,7 +45,6 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc | null> {
   const callBudget = rc.maxLlmCalls ?? effectiveBudget(config.maxLlmCalls, policy.maxLlmCalls);
   const inputBudget = rc.maxLlmInputTokens ?? effectiveBudget(config.maxLlmInputTokens, policy.maxInputTokens);
   rc.services.budget = new BudgetGuard(callBudget, rc.timeoutMs, rc.services.clock, inputBudget, policy.maxOutputTokens);
-  const estimator = makeTokenEstimator(rc.summaryModel.provider, rc.summaryModel.id, rc.services.tokenCalibration);
 
   if (rc.timeoutMs > 0) {
     rc.cancellation.timeoutId = setTimeout(() => {

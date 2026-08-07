@@ -144,7 +144,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   } else if (rc.convTokens < singlePassMaxTokens) {
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
-        phase: 2, phaseName: "Explore",
+        phase: 3, phaseName: "Synthesize",
         detail: "Single-pass (" + rc.convTokens.toLocaleString() + "t)",
         model: rc.modelLabel, profile: rc.profile, extraction,
       });
@@ -246,7 +246,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
         phase: 3, phaseName: "Synthesize", detail: "0/" + totalBatches + " batches",
-        model: rc.modelLabel, profile: rc.profile, extraction, totalBatches,
+        model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds, totalBatches,
       });
     }
 
@@ -310,7 +310,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
             showProgressOverlay(rc.ctx, {
               phase: 3, phaseName: "Synthesize",
               detail: completed + "/" + totalBatches + " batches",
-              model: rc.modelLabel, profile: rc.profile, extraction,
+              model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds,
               totalBatches, currentBatch: completed,
             });
           }
@@ -324,7 +324,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
         phase: 3, phaseName: "Synthesize", detail: "Assembling...",
-        model: rc.modelLabel, profile: rc.profile, extraction, totalBatches: batches.length,
+        model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds, totalBatches: batches.length,
       });
     }
     try {

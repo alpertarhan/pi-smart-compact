@@ -57,6 +57,7 @@ export function formatRunDetails(entry: CompactMetricsEntry | undefined, title: 
     "Method: " + (entry.method ?? "?") + " | duration: " + metricMs(totalDuration),
     "Quality: " + metricScore(entry) + " | initial: " + metricNum(entry.initialVerificationScore) + " | gaps: " + metricNum(entry.remainingVerificationGaps ?? entry.verificationGaps),
     "Tokens: before " + metricNum(entry.tokensBefore) + "t | saved " + metricNum(entry.tokensSaved) + "t | prune saved " + metricNum(entry.pruneSavedTokens) + "t",
+    "Estimate: planned after " + metricNum(entry.plannedAfterTokens) + "t | applied estimate " + metricNum(entry.estimatedAfterTokens) + "t | yield " + metricPct(entry.estimatedYield),
     "LLM: " + metricNum(entry.totalCalls) + " calls | prompt " + metricNum(entry.totalInput + entry.totalCacheHit + (entry.totalCacheWrite ?? 0)) + "t | output " + metricNum(entry.totalOutput) + "t | provider cache " + metricPct(entry.cacheHitRate),
     "Extraction cache: " + metricNum(entry.extractionCacheHits) + " hit / " + metricNum(entry.extractionCacheMisses) + " miss | rate " + metricPct(entry.extractionCacheHitRate),
     "Context: " + metricNum(entry.contextPercent) + "% | tool share: " + metricNum(entry.toolPercent) + "% | chunks: " + metricNum(entry.chunkCount),

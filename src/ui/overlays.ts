@@ -4,18 +4,19 @@
 
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
-import { PROFILES, TRUNC } from "../constants.ts";
-import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { TRUNC } from "../constants.ts";
+import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
-  CompactMetricsEntry, CompactionMode, ModelOption, ProgressState,
+  CompactConfig, CompactMetricsEntry, CompactionMode, ModelOption, ProgressState,
   SmartCompactDetails, StructuredExtraction, OpenLoop, LoopOverride,
 } from "../types.ts";
 import type { BackupEntry } from "../utils/helpers.ts";
-import type { SmartCompactServices } from "../infra/services.ts";
+import { createProductionServices, type SmartCompactServices } from "../infra/services.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
-import { MODE_POLICIES, resolveMode } from "../app/mode-policy.ts";
+import { planManualPreflight, preflightDamageMedian, type ManualPreflight } from "../app/preflight.ts";
+import type { EffectiveCompactionMode } from "../types.ts";
 import {
   DASHBOARD_PAGE_SIZE,
   formatCurrentSession,
@@ -55,7 +56,7 @@ export function renderTokenBar(theme: Theme, before: number, after: number, labe
 
 export async function selectModel(
   ctx: ExtensionCommandContext,
-  opts: { contextTokens: number; contextPercent: number; currentModel: string; defaultModelIndex: number },
+  opts: { contextTokens: number; contextPercent: number; activeModelLabel: string; defaultModelIndex: number },
 ): Promise<ModelOption | null> {
   const available = ctx.modelRegistry.getAvailable();
   const options: ModelOption[] = available.map(m => {
@@ -73,16 +74,17 @@ export async function selectModel(
   const items: SelectItem[] = options.map((o, i) => ({
     value: "model:" + i,
     label: o.label,
-    description: i === opts.defaultModelIndex ? "\u2190 session model" : undefined,
+    description: i === opts.defaultModelIndex ? "← selected summary route" : o.value === opts.activeModelLabel ? "active context model" : undefined,
   }));
   const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
     const c = new Container();
     c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    c.addChild(new Text(theme.fg("accent", theme.bold("  \uD83D\uDD0D Smart Compact \u2014 Step 1/2")), 1, 0));
+    c.addChild(new Text(theme.fg("accent", theme.bold("  Smart Compact — Advanced model")), 1, 0));
     c.addChild(new Text(theme.fg("dim", "  Architecture: EESV (Extract \u2192 Explore \u2192 Synthesize \u2192 Verify)"), 0, 0));
     c.addChild(new Text("", 0, 0));
     c.addChild(new Text(renderContextBar(theme, opts.contextPercent, opts.contextTokens), 0, 0));
-    c.addChild(new Text(theme.fg("dim", "  Session: " + opts.currentModel), 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  Active context: " + opts.activeModelLabel), 0, 0));
+    c.addChild(new Text(theme.fg("dim", "  Selected summary route: " + (options[opts.defaultModelIndex]?.value ?? "?")), 0, 0));
     c.addChild(new Text("", 0, 0));
     c.addChild(new Text(theme.fg("text", "  Select model for compaction:"), 1, 0));
     c.addChild(new Text("", 0, 0));
@@ -110,71 +112,145 @@ export async function selectModel(
   return options[parseInt(result.slice(6), 10)] ?? null;
 }
 
-export async function selectMode(
-  ctx: ExtensionCommandContext,
-  selectedModel: ModelOption,
-  opts: { contextTokens: number; contextPercent: number },
-): Promise<CompactionMode | null> {
-  const estAfter = (budget: number, keep: number) => budget + Math.min(opts.contextTokens, keep);
-  const modes: Array<{ value: CompactionMode; label: string; desc: string }> = [
-    { value: "auto", label: "Auto", desc: "Adapts from pressure and session risk" },
-    { value: "balanced", label: "Balanced", desc: "Token and continuity balance" },
-    { value: "aggressive", label: "Aggressive", desc: "Maximum context recovery" },
-    { value: "fast", label: "Fast", desc: "Minimum waiting and LLM calls" },
-    { value: "thorough", label: "Thorough (Slow)", desc: "Maximum context fidelity" },
-  ];
-  const items: SelectItem[] = modes.map(item => {
-    const effective = item.value === "auto" ? resolveMode("auto", opts.contextPercent) : item.value;
-    const policy = MODE_POLICIES[effective];
-    const profile = PROFILES[policy.profile];
-    const after = estAfter(profile.summaryBudgetTokens, profile.keepRecentTokens);
-    const pct = opts.contextTokens > 0 ? Math.max(0, Math.round((1 - after / opts.contextTokens) * 100)) : 0;
-    return { value: item.value, label: item.label, description: item.desc + " \u2014 \u2264" + policy.maxLlmCalls + " calls / \u2264" + Math.round(policy.maxInputTokens / 1000) + "K prompt \u00b7 ~" + Math.round(policy.softLatencyMs / 1000) + "s soft target \u00b7 save ~" + pct + "%" };
-  });
-  const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-    const c = new Container();
-    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    c.addChild(new Text(theme.fg("accent", theme.bold("  \uD83D\uDD0D Smart Compact \u2014 Step 2/2")), 1, 0));
-    c.addChild(new Text("", 0, 0));
-    c.addChild(new Text(theme.fg("dim", "  Model: " + selectedModel.label), 0, 0));
-    c.addChild(new Text(renderContextBar(theme, opts.contextPercent, opts.contextTokens), 0, 0));
-    c.addChild(new Text("", 0, 0));
-    c.addChild(new Text(theme.fg("text", "  Select optimization mode:"), 1, 0));
-    c.addChild(new Text("", 0, 0));
-    const sel = new SelectList(items, 5, {
-      selectedPrefix: t => theme.fg("accent", t),
-      selectedText: t => theme.fg("accent", t),
-      description: t => theme.fg("muted", t),
-      scrollInfo: t => theme.fg("dim", t),
-      noMatch: t => theme.fg("warning", t),
-    });
-    sel.setSelectedIndex(0);
-    sel.onSelect = item => done(item.value);
-    sel.onCancel = () => done(null);
-    c.addChild(sel);
-    c.addChild(new Text("", 0, 0));
-    c.addChild(new Text(theme.fg("dim", "  \u2191\u2193 navigate \u2022 enter select \u2022 esc cancel"), 0, 0));
-    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    return {
-      render: (w: number) => c.render(w),
-      invalidate: () => c.invalidate(),
-      handleInput: (d: string) => { sel.handleInput(d); tui.requestRender(); },
-    };
-  });
-  if (!result) return null;
-  return modes.find(mode => mode.value === result)?.value ?? null;
+const PRIMARY_MODES: EffectiveCompactionMode[] = ["thorough", "balanced", "fast"];
+const MODE_LABELS: Record<EffectiveCompactionMode, string> = {
+  thorough: "Thorough", balanced: "Balanced", fast: "Fast", aggressive: "Aggressive",
+};
+const MODE_COPY: Record<EffectiveCompactionMode, string> = {
+  thorough: "richer summary · 30K base recent tail",
+  balanced: "default balance · 20K base recent tail",
+  fast: "faster run · 20K base recent tail · 6K base summary",
+  aggressive: "maximum recovery · 10K base recent tail",
+};
+
+export function explainPreflightReason(reason: ManualPreflight["reason"]): string {
+  switch (reason) {
+    case "viable": return "safe window and useful estimated saving";
+    case "not-enough-messages": return "fewer than 3 active messages";
+    case "no-eligible-prefix": return "no older prefix is available";
+    case "unsafe-tool-boundary": return "no complete tool-call boundary is available";
+    case "retention-target-exceeded": return "a complete tool pair exceeds the tail target";
+    case "mode-target-not-met": return "the estimated result misses this preset's target";
+    case "insufficient-projected-saving": return "estimated saving is below 10%";
+  }
 }
 
-// `ExtensionContext` is the narrower base type used by the pipeline so that
-// both interactive command runs and `session_before_compact` event runs can
-// emit progress without a cast. The function only touches `ctx.ui.notify`,
-// which is part of the shared surface.
+function recommendationEvidence(preflight: ManualPreflight): string {
+  const yieldPercent = Math.round((preflight.plan?.projectedYield ?? 0) * 100);
+  const tail = preflight.plan?.retainedTokens ?? 0;
+  return "~" + Math.round(preflight.contextPercent) + "% window pressure, ~" + yieldPercent + "% projected saving, ~" + tokenCount(tail) + " recent tail" +
+    (preflight.toolPercent >= 70 ? "; tool-heavy shape (~" + preflight.toolPercent + "% tool-result text)" : "");
+}
+
+export function recommendPreflight(plans: ReadonlyMap<EffectiveCompactionMode, ManualPreflight>): {
+  mode: EffectiveCompactionMode; reason: string;
+} {
+  const thorough = plans.get("thorough");
+  const balanced = plans.get("balanced");
+  const fast = plans.get("fast");
+  if (thorough?.adapted && thorough.plan?.viable) {
+    return { mode: "thorough", reason: "recent damage feedback favors richer retention; " + recommendationEvidence(thorough) };
+  }
+  if ((fast?.overflowedContext || (fast?.contextPercent ?? 0) >= 90) && fast?.plan?.viable) {
+    return { mode: "fast", reason: "severe context pressure favors faster recovery; " + recommendationEvidence(fast) };
+  }
+  if (balanced?.plan?.viable) {
+    return { mode: "balanced", reason: "normal pressure favors the default balance; " + recommendationEvidence(balanced) };
+  }
+  const fallback = (["thorough", "fast"] as const).find(mode => plans.get(mode)?.plan?.viable);
+  if (fallback) {
+    const chosen = plans.get(fallback)!;
+    return {
+      mode: fallback,
+      reason: "Balanced is unavailable because " + explainPreflightReason(balanced?.reason ?? "not-enough-messages") + "; " + recommendationEvidence(chosen),
+    };
+  }
+  return { mode: "balanced", reason: "no preset currently has a safe, useful window" };
+}
+
+function tokenCount(value: number): string { return Math.round(value).toLocaleString() + "t"; }
+function percent(value: number): string { return Math.round(value).toLocaleString() + "%"; }
+function windowPercent(tokens: number, window: number): string { return window > 0 ? percent(tokens / window * 100) : "unknown %"; }
+
+const SOFT_BOUNDARY_COPY: Record<string, string> = {
+  "recent-user-turn": "older user turn",
+  anchor: "latest checkpoint",
+  topical: "adjacent topic",
+  "context-anchor": "latest checkpoint",
+  "topical-group": "adjacent topic",
+};
+
+/** Pure copy generation; styling and terminal truncation stay in the component. */
+export function formatPreflightSummary(preflight: ManualPreflight, modelLabel: string, details = false): string[] {
+  const plan = preflight.plan;
+  if (!plan) {
+    const lines = [
+      "Before: ~" + tokenCount(preflight.totalTokens) + " (~" + percent(preflight.contextPercent) + " of active window) · Expected after: unavailable",
+      "This preset cannot run: " + explainPreflightReason(preflight.reason) + ".",
+      "Hard safeguards: complete tool-call/result pairs and zero-gap verification before apply.",
+    ];
+    if (details) lines.push(
+      "Estimator: messages ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " · fixed/scaled normalization unavailable",
+      "Summary route: " + modelLabel + " · viability: " + preflight.reason,
+    );
+    return lines;
+  }
+  const soft = plan.relaxedSoftBoundaries.length
+    ? "Soft boundaries included in summary: " + plan.relaxedSoftBoundaries.map(kind => SOFT_BOUNDARY_COPY[kind] ?? kind).join(", ")
+    : "Soft boundaries kept when they fit: older user turn, latest checkpoint, adjacent topic";
+  const lines = [
+    "Before ~" + tokenCount(preflight.totalTokens) + " (~" + percent(preflight.contextPercent) + " window) → expected after ~" + tokenCount(plan.projectedAfterTokens) + " (~" + windowPercent(plan.projectedAfterTokens, preflight.contextWindowTokens) + " window)",
+    "Projected net saving ~" + tokenCount(plan.projectedSavedTokens) + " (~" + percent(plan.projectedYield * 100) + ", estimator-based)",
+    "Recent raw tail ~" + tokenCount(plan.retainedTokens) + " + summary budget ≤" + tokenCount(plan.summaryBudgetTokens),
+    soft,
+    "Hard safeguards: complete tool-call/result pairs and zero-gap verification before apply; " + (plan.hardBoundaryAdjusted ? "boundary adjusted to keep a pair intact" : "no hard-boundary adjustment needed"),
+  ];
+  if (!plan.viable) lines.push("Cannot run this preset: " + explainPreflightReason(plan.reason) + ". Choose a viable preset.");
+  if (details) lines.push(
+    "Estimator: messages ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " · normalized ×" + preflight.estimatorScale.toFixed(2) + " · fixed ~" + tokenCount(plan.fixedContextTokens),
+    "Target ≤" + tokenCount(plan.targetAfterTokens) + " · tail target ≤" + tokenCount(plan.retentionTargetTokens),
+    "Hard-boundary adjustment: " + (plan.hardBoundaryAdjusted ? "yes" : "no") + " · viability: " + plan.reason,
+    "Internal soft boundaries: " + (plan.relaxedSoftBoundaries.join(", ") || "none"),
+    "Summary route: " + modelLabel + (preflight.adapted ? " · damage feedback " + preflight.damageMedian + "/100 applied" : ""),
+  );
+  return lines;
+}
+
+const PROGRESS_KEY = "smart-compact-progress";
+const PROGRESS_PHASES = ["Extract", "Explore", "Synthesize", "Verify", "Apply"];
+
 export function showProgressOverlay(ctx: ExtensionContext, state: ProgressState): void {
-  const phaseNames = ["Extract", "Explore", "Synthesize", "Verify"];
-  const progress = Math.round((state.phase / 4) * 100);
-  const name = phaseNames[state.phase - 1] ?? "?";
-  const detail = state.detail ? " (" + state.detail + ")" : "";
-  ctx.ui.notify("EESV [" + progress + "%] Phase " + state.phase + "/4: " + name + detail, state.phase >= 4 ? "info" : "info");
+  if (ctx.hasUI === false) return;
+  const name = PROGRESS_PHASES[state.phase - 1] ?? state.phaseName;
+  const story = PROGRESS_PHASES.map((phase, index) => index === 1 && state.phase > 2 && !state.explorationRounds
+    ? "– Explore"
+    : index < state.phase - 1 ? "✓ " + phase : index === state.phase - 1 ? "● " + phase : "○ " + phase).join("  ");
+  const detail = state.detail ? name + " · " + state.detail : name;
+  try {
+    ctx.ui.setStatus?.(PROGRESS_KEY, "Smart Compact · " + detail);
+    ctx.ui.setWidget?.(PROGRESS_KEY, (_tui, theme) => ({
+      render: (width: number) => [truncateToWidth(theme.fg("dim", story), width)],
+      invalidate: () => {},
+    }), { placement: "belowEditor" });
+  } catch { /* non-interactive UI adapters may not implement persistent UI */ }
+}
+
+export function clearCompactProgress(ctx: ExtensionContext): void {
+  try {
+    ctx.ui.setStatus?.(PROGRESS_KEY, undefined);
+    ctx.ui.setWidget?.(PROGRESS_KEY, undefined);
+  } catch { /* non-interactive UI adapter */ }
+}
+
+export function notifyAppliedCompaction(ctx: ExtensionContext, details: SmartCompactDetails, concise: boolean): void {
+  const before = details.tokensBefore ?? 0;
+  const after = details.estimatedAfterTokens ?? Math.max(0, before - details.tokensSaved);
+  const saving = Math.round((details.estimatedYield ?? (before ? details.tokensSaved / before : 0)) * 100);
+  const quality = details.qualityScore ?? 0;
+  const planned = details.plannedAfterTokens ?? after;
+  ctx.ui.notify(concise
+    ? "Smart compact applied ✓ · " + before.toLocaleString() + "t → ~" + after.toLocaleString() + "t estimate (plan ~" + planned.toLocaleString() + "t) · " + saving + "% saved · quality " + quality + " · 0 gaps"
+    : "Smart compact applied ✓ — " + before.toLocaleString() + "t → planned ~" + planned.toLocaleString() + "t / ~" + after.toLocaleString() + "t applied estimate · saved " + saving + "% · quality " + quality + "/100 · 0 gaps", "info");
 }
 
 // Same narrowing rationale as showProgressOverlay: only ctx.ui.custom is
@@ -192,7 +268,7 @@ export async function showResultScreen(
     c.addChild(new Text(theme.fg("accent", theme.bold(opts.approval ? "  \uD83D\uDD0E Smart Compact Review" : "  \u2705 Smart Compact Complete")), 1, 0));
     c.addChild(new Text("", 0, 0));
 
-    const estimatedAfter = (details.tokensBefore ?? 0) - (details.tokensSaved ?? 0);
+    const estimatedAfter = details.estimatedAfterTokens ?? (details.tokensBefore ?? 0) - (details.tokensSaved ?? 0);
     c.addChild(new Text(renderTokenBar(theme, details.tokensBefore, estimatedAfter, "Result  "), 0, 0));
     c.addChild(new Text(theme.fg("dim", "  Before: " + (details.tokensBefore ?? 0).toLocaleString() + "t \u2192 After: ~" + estimatedAfter.toLocaleString() + "t \u2192 Saved: " + (details.tokensSaved ?? 0).toLocaleString() + "t"), 0, 0));
     c.addChild(new Text("", 0, 0));
@@ -480,13 +556,82 @@ export async function showMetricsDashboardUI(
 
 export async function showCompactUI(
   ctx: ExtensionCommandContext,
-  opts: { contextTokens: number; contextPercent: number; currentModel: string; defaultModelIndex: number },
+  opts: { contextTokens: number; contextPercent: number; activeModelLabel: string; defaultModelIndex: number; config: CompactConfig },
 ): Promise<{ model: ModelOption; mode: CompactionMode } | null> {
-  const selectedModel = await selectModel(ctx, opts);
-  if (!selectedModel) return null;
-  const selectedMode = await selectMode(ctx, selectedModel, { contextTokens: opts.contextTokens, contextPercent: opts.contextPercent });
-  if (!selectedMode) return null;
-  return { model: selectedModel, mode: selectedMode };
+  const available = ctx.modelRegistry.getAvailable();
+  const asOption = (model: Model<Api>): ModelOption => ({
+    value: model.provider + "/" + model.id,
+    label: model.provider + "/" + model.id,
+    model,
+    supportsTools: getProviderCaps(model.provider).supportsTools,
+  });
+  const initialModel = available[opts.defaultModelIndex] ?? available[0];
+  if (!initialModel) return null;
+  let selectedModel = asOption(initialModel);
+  const calibration = createProductionServices().tokenCalibration;
+  const damageMedian = preflightDamageMedian(ctx.cwd, opts.config);
+
+  while (true) {
+    const plans = new Map(PRIMARY_MODES.map(mode => [mode, planManualPreflight(ctx, selectedModel.model, mode, calibration, opts.config, damageMedian)]));
+    const recommended = recommendPreflight(plans);
+    const action = await ctx.ui.custom<EffectiveCompactionMode | "model" | null>((tui, theme, keybindings, done) => {
+      let selected = Math.max(0, PRIMARY_MODES.indexOf(recommended.mode));
+      let details = false;
+      return {
+        render: (width: number) => {
+          const out = (text: string, color: import("@earendil-works/pi-coding-agent").ThemeColor = "text") =>
+            truncateToWidth(theme.fg(color, text), Math.max(0, width));
+          const wrapped = (text: string, color: import("@earendil-works/pi-coding-agent").ThemeColor = "text") =>
+            wrapTextWithAnsi(theme.fg(color, text), Math.max(1, width));
+          const lines = [
+            out("Smart Compact preflight", "accent"),
+            ...wrapped("Recommended: " + MODE_LABELS[recommended.mode] + " — " + recommended.reason, "text"),
+            out("Active context: " + opts.activeModelLabel + " · " + tokenCount(plans.get(recommended.mode)?.contextWindowTokens ?? 0) + " window", "dim"),
+            out("Summary model: " + selectedModel.label, "dim"),
+            out("─".repeat(Math.max(0, width)), "borderMuted"),
+          ];
+          for (let index = 0; index < PRIMARY_MODES.length; index++) {
+            const mode = PRIMARY_MODES[index];
+            const preview = plans.get(mode)!;
+            const viable = preview.plan?.viable ?? false;
+            lines.push(out(
+              (index === selected ? "> " : "  ") + MODE_LABELS[mode] +
+                (mode === recommended.mode ? " [recommended]" : "") +
+                (viable ? " [viable]" : " [unavailable: " + explainPreflightReason(preview.reason) + "]"),
+              index === selected ? "accent" : viable ? "text" : "muted",
+            ));
+            lines.push(out("    " + MODE_COPY[mode], "dim"));
+          }
+          lines.push(out("─".repeat(Math.max(0, width)), "borderMuted"));
+          const current = plans.get(PRIMARY_MODES[selected])!;
+          lines.push(...formatPreflightSummary(current, selectedModel.value, details).flatMap(line => wrapped(line, line.startsWith("Cannot") || line.startsWith("This preset") ? "warning" : "text")));
+          lines.push("", out("↑↓ mode · Enter compact · D details · M model · Esc cancel", "dim"));
+          return lines;
+        },
+        invalidate: () => {},
+        handleInput: (data: string) => {
+          if (keybindings.matches(data, "tui.select.cancel")) { done(null); return; }
+          if (keybindings.matches(data, "tui.select.up")) selected = Math.max(0, selected - 1);
+          else if (keybindings.matches(data, "tui.select.down")) selected = Math.min(PRIMARY_MODES.length - 1, selected + 1);
+          else if (keybindings.matches(data, "tui.select.confirm")) {
+            const mode = PRIMARY_MODES[selected];
+            if (plans.get(mode)?.plan?.viable) { done(mode); return; }
+          } else if (data.toLowerCase() === "d") details = !details;
+          else if (data.toLowerCase() === "m") { done("model"); return; }
+          tui.requestRender();
+        },
+      };
+    }, { overlay: true, overlayOptions: { width: "70%", minWidth: 36, anchor: "center", maxHeight: "85%" } });
+
+    if (!action) return null;
+    if (action === "model") {
+      const modelIndex = available.findIndex(model => model.provider === selectedModel.model.provider && model.id === selectedModel.model.id);
+      const next = await selectModel(ctx, { ...opts, defaultModelIndex: Math.max(0, modelIndex) });
+      if (next) selectedModel = next;
+      continue;
+    }
+    return { model: selectedModel, mode: action };
+  }
 }
 
 /** Picker for `/smart-compact restore` — list backups, return the chosen path. */
