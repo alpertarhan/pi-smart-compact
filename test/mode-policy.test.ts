@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { batchOutputLimit, deterministicExtractionConfidence, MODE_POLICIES, resolveMode } from "../src/app/mode-policy.ts";
+import { batchOutputLimit, deterministicExtractionConfidence, modeFromLegacyProfile, MODE_POLICIES, resolveMode } from "../src/app/mode-policy.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 const extraction = (partial: Partial<StructuredExtraction> = {}): StructuredExtraction => ({
@@ -9,7 +9,7 @@ const extraction = (partial: Partial<StructuredExtraction> = {}): StructuredExtr
 
 describe("compaction mode policy", () => {
   it("uses pressure first and deterministic risk second in auto mode", () => {
-    expect(resolveMode("auto", 90, extraction())).toBe("aggressive");
+    expect(resolveMode("auto", 90, extraction())).toBe("fast");
     expect(resolveMode("auto", 65, extraction())).toBe("fast");
     expect(resolveMode("auto", 75, extraction({
       errors: Array.from({ length: 3 }, (_, index) => ({ index, tool: "bash", message: "failed", retryAttempted: false, resolved: false })),
@@ -42,10 +42,16 @@ describe("compaction mode policy", () => {
     }))).toBeLessThan(0.5);
   });
 
-  it("keeps explicit modes stable", () => {
-    for (const mode of ["fast", "balanced", "aggressive", "thorough"] as const) {
+  it("exposes three stable modes and maps legacy aggressive behavior to Fast", () => {
+    for (const mode of ["fast", "balanced", "thorough"] as const) {
       expect(resolveMode(mode, 99, extraction())).toBe(mode);
     }
+    expect(resolveMode("aggressive", 99, extraction())).toBe("fast");
+    expect(modeFromLegacyProfile("aggressive")).toBe("fast");
+    expect(Object.keys(MODE_POLICIES)).toEqual(["fast", "balanced", "thorough"]);
+    expect(MODE_POLICIES.fast.profile).toBe("aggressive");
+    expect(MODE_POLICIES.fast.targetContextPercent).toBeLessThan(MODE_POLICIES.balanced.targetContextPercent);
+    expect(MODE_POLICIES.balanced.targetContextPercent).toBeLessThan(MODE_POLICIES.thorough.targetContextPercent);
   });
 
   it("gives every preset a finite token and call ceiling", () => {

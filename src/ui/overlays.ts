@@ -5,7 +5,7 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
 import { TRUNC } from "../constants.ts";
-import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   CompactConfig, CompactMetricsEntry, CompactionMode, ModelOption, ProgressState,
@@ -112,15 +112,14 @@ export async function selectModel(
   return options[parseInt(result.slice(6), 10)] ?? null;
 }
 
-const PRIMARY_MODES: EffectiveCompactionMode[] = ["thorough", "balanced", "fast"];
+const PRIMARY_MODES: EffectiveCompactionMode[] = ["fast", "balanced", "thorough"];
 const MODE_LABELS: Record<EffectiveCompactionMode, string> = {
-  thorough: "Thorough", balanced: "Balanced", fast: "Fast", aggressive: "Aggressive",
+  fast: "Fast", balanced: "Balanced", thorough: "Thorough",
 };
 const MODE_COPY: Record<EffectiveCompactionMode, string> = {
-  thorough: "richer summary · 30K base recent tail",
-  balanced: "default balance · 20K base recent tail",
-  fast: "faster run · 20K base recent tail · 6K base summary",
-  aggressive: "maximum recovery · 10K base recent tail",
+  fast: "quickest · compact 10K recent tail · 3K summary",
+  balanced: "default quality/speed · 20K recent tail · 6K summary",
+  thorough: "deepest analysis · rich 30K recent tail · 10K summary",
 };
 
 export function explainPreflightReason(reason: ManualPreflight["reason"]): string {
@@ -157,7 +156,7 @@ export function recommendPreflight(plans: ReadonlyMap<EffectiveCompactionMode, M
   if (balanced?.plan?.viable) {
     return { mode: "balanced", reason: "normal pressure favors the default balance; " + recommendationEvidence(balanced) };
   }
-  const fallback = (["thorough", "fast"] as const).find(mode => plans.get(mode)?.plan?.viable);
+  const fallback = (["fast", "thorough"] as const).find(mode => plans.get(mode)?.plan?.viable);
   if (fallback) {
     const chosen = plans.get(fallback)!;
     return {
@@ -169,8 +168,12 @@ export function recommendPreflight(plans: ReadonlyMap<EffectiveCompactionMode, M
 }
 
 function tokenCount(value: number): string { return Math.round(value).toLocaleString() + "t"; }
+function compactTokenCount(value: number): string {
+  if (Math.abs(value) < 1_000) return Math.round(value) + "t";
+  const scaled = value / 1_000;
+  return scaled.toFixed(scaled >= 10 ? 1 : 2).replace(/\.0+$|(\.\d*[1-9])0+$/, "$1") + "K";
+}
 function percent(value: number): string { return Math.round(value).toLocaleString() + "%"; }
-function windowPercent(tokens: number, window: number): string { return window > 0 ? percent(tokens / window * 100) : "unknown %"; }
 
 const SOFT_BOUNDARY_COPY: Record<string, string> = {
   "recent-user-turn": "older user turn",
@@ -180,38 +183,31 @@ const SOFT_BOUNDARY_COPY: Record<string, string> = {
   "topical-group": "adjacent topic",
 };
 
-/** Pure copy generation; styling and terminal truncation stay in the component. */
+/** Compact decision copy; technical planner data stays behind D. */
 export function formatPreflightSummary(preflight: ManualPreflight, modelLabel: string, details = false): string[] {
   const plan = preflight.plan;
   if (!plan) {
     const lines = [
-      "Before: ~" + tokenCount(preflight.totalTokens) + " (~" + percent(preflight.contextPercent) + " of active window) · Expected after: unavailable",
-      "This preset cannot run: " + explainPreflightReason(preflight.reason) + ".",
-      "Hard safeguards: complete tool-call/result pairs and zero-gap verification before apply.",
+      "Plan unavailable · " + explainPreflightReason(preflight.reason),
+      "✓ Complete tool pairs · ✓ zero-gap verification before apply",
     ];
     if (details) lines.push(
-      "Estimator: messages ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " · fixed/scaled normalization unavailable",
-      "Summary route: " + modelLabel + " · viability: " + preflight.reason,
+      "Estimator  messages ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " · normalization unavailable",
+      "Route  " + modelLabel + " · viability " + preflight.reason,
     );
     return lines;
   }
-  const soft = plan.relaxedSoftBoundaries.length
-    ? "Soft boundaries included in summary: " + plan.relaxedSoftBoundaries.map(kind => SOFT_BOUNDARY_COPY[kind] ?? kind).join(", ")
-    : "Soft boundaries kept when they fit: older user turn, latest checkpoint, adjacent topic";
   const lines = [
-    "Before ~" + tokenCount(preflight.totalTokens) + " (~" + percent(preflight.contextPercent) + " window) → expected after ~" + tokenCount(plan.projectedAfterTokens) + " (~" + windowPercent(plan.projectedAfterTokens, preflight.contextWindowTokens) + " window)",
-    "Projected net saving ~" + tokenCount(plan.projectedSavedTokens) + " (~" + percent(plan.projectedYield * 100) + ", estimator-based)",
-    "Recent raw tail ~" + tokenCount(plan.retainedTokens) + " + summary budget ≤" + tokenCount(plan.summaryBudgetTokens),
-    soft,
-    "Hard safeguards: complete tool-call/result pairs and zero-gap verification before apply; " + (plan.hardBoundaryAdjusted ? "boundary adjusted to keep a pair intact" : "no hard-boundary adjustment needed"),
+    "Plan  " + compactTokenCount(preflight.totalTokens) + " → ~" + compactTokenCount(plan.projectedAfterTokens) + " · ~" + compactTokenCount(plan.projectedSavedTokens) + " saved (" + percent(plan.projectedYield * 100) + ")",
+    "Keep  ~" + compactTokenCount(plan.retainedTokens) + " recent · summary up to " + compactTokenCount(plan.summaryBudgetTokens),
+    "✓ Complete tool pairs · ✓ zero-gap verification before apply",
   ];
-  if (!plan.viable) lines.push("Cannot run this preset: " + explainPreflightReason(plan.reason) + ". Choose a viable preset.");
+  if (!plan.viable) lines.unshift("Unavailable · " + explainPreflightReason(plan.reason));
   if (details) lines.push(
-    "Estimator: messages ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " · normalized ×" + preflight.estimatorScale.toFixed(2) + " · fixed ~" + tokenCount(plan.fixedContextTokens),
-    "Target ≤" + tokenCount(plan.targetAfterTokens) + " · tail target ≤" + tokenCount(plan.retentionTargetTokens),
-    "Hard-boundary adjustment: " + (plan.hardBoundaryAdjusted ? "yes" : "no") + " · viability: " + plan.reason,
-    "Internal soft boundaries: " + (plan.relaxedSoftBoundaries.join(", ") || "none"),
-    "Summary route: " + modelLabel + (preflight.adapted ? " · damage feedback " + preflight.damageMedian + "/100 applied" : ""),
+    "Target  ≤" + tokenCount(plan.targetAfterTokens) + " · tail ≤" + tokenCount(plan.retentionTargetTokens) + " · fixed ~" + tokenCount(plan.fixedContextTokens),
+    "Estimator  ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " messages · normalized ×" + preflight.estimatorScale.toFixed(2),
+    "Boundary  " + (plan.hardBoundaryAdjusted ? "tool pair kept intact" : "no hard adjustment") + " · soft summarized: " + (plan.relaxedSoftBoundaries.map(kind => SOFT_BOUNDARY_COPY[kind] ?? kind).join(", ") || "none"),
+    "Route  " + modelLabel + (preflight.adapted ? " · damage feedback " + preflight.damageMedian + "/100" : ""),
   );
   return lines;
 }
@@ -222,14 +218,22 @@ const PROGRESS_PHASES = ["Extract", "Explore", "Synthesize", "Verify", "Apply"];
 export function showProgressOverlay(ctx: ExtensionContext, state: ProgressState): void {
   if (ctx.hasUI === false) return;
   const name = PROGRESS_PHASES[state.phase - 1] ?? state.phaseName;
-  const story = PROGRESS_PHASES.map((phase, index) => index === 1 && state.phase > 2 && !state.explorationRounds
-    ? "– Explore"
-    : index < state.phase - 1 ? "✓ " + phase : index === state.phase - 1 ? "● " + phase : "○ " + phase).join("  ");
-  const detail = state.detail ? name + " · " + state.detail : name;
   try {
-    ctx.ui.setStatus?.(PROGRESS_KEY, "Smart Compact · " + detail);
+    ctx.ui.setStatus?.(PROGRESS_KEY, "Smart Compact " + state.phase + "/5 · " + name);
     ctx.ui.setWidget?.(PROGRESS_KEY, (_tui, theme) => ({
-      render: (width: number) => [truncateToWidth(theme.fg("dim", story), width)],
+      render: (width: number) => {
+        const story = PROGRESS_PHASES.map((phase, index) => {
+          if (index === 1 && state.phase > 2 && !state.explorationRounds) return theme.fg("dim", "– Explore");
+          if (index < state.phase - 1) return theme.fg("success", "✓ " + phase);
+          if (index === state.phase - 1) return theme.fg("accent", theme.bold("● " + phase));
+          return theme.fg("dim", "○ " + phase);
+        }).join(theme.fg("dim", "  "));
+        const safety = state.phase < 5 ? " · conversation unchanged" : "";
+        return [
+          truncateToWidth(story, width),
+          truncateToWidth(theme.fg("muted", "↳ " + state.detail + safety), width),
+        ];
+      },
       invalidate: () => {},
     }), { placement: "belowEditor" });
   } catch { /* non-interactive UI adapters may not implement persistent UI */ }
@@ -579,40 +583,72 @@ export async function showCompactUI(
       let details = false;
       return {
         render: (width: number) => {
-          const out = (text: string, color: import("@earendil-works/pi-coding-agent").ThemeColor = "text") =>
-            truncateToWidth(theme.fg(color, text), Math.max(0, width));
-          const wrapped = (text: string, color: import("@earendil-works/pi-coding-agent").ThemeColor = "text") =>
-            wrapTextWithAnsi(theme.fg(color, text), Math.max(1, width));
+          const inner = Math.max(1, width - 2);
+          const border = (text: string) => theme.fg("borderMuted", text);
+          const fit = (text: string, max = inner) => truncateToWidth(text, Math.max(0, max), "");
+          const fill = (text: string) => {
+            const clipped = fit(text);
+            return clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped)));
+          };
+          const cell = (text = "") => border("│") + fill(text) + border("│");
+          const divider = border("├" + "─".repeat(inner) + "┤");
+          const title = fit(" Smart Compact ", Math.max(0, inner - 1));
+          const top = border("╭─") + theme.fg("accent", theme.bold(title)) +
+            border("─".repeat(Math.max(0, inner - 1 - visibleWidth(title))) + "╮");
+          const bottom = border("╰" + "─".repeat(inner) + "╯");
+          const selectedMode = PRIMARY_MODES[selected];
+          const current = plans.get(selectedMode)!;
+          const contextWindow = current.contextWindowTokens;
+          const contextPct = Math.round(current.contextPercent);
+          const barLength = width >= 72 ? 14 : 8;
+          const barFilled = Math.min(barLength, Math.round(Math.min(100, contextPct) / 100 * barLength));
+          const contextBar = theme.fg(contextPct >= 90 ? "error" : contextPct >= 70 ? "warning" : "success", "█".repeat(barFilled)) +
+            theme.fg("dim", "░".repeat(barLength - barFilled));
+          const modelPrefix = "  Summary model  ";
+          const modelAction = theme.fg("accent", "  [M] Change");
+          const modelWidth = Math.max(1, inner - visibleWidth(modelPrefix) - visibleWidth(modelAction));
           const lines = [
-            out("Smart Compact preflight", "accent"),
-            ...wrapped("Recommended: " + MODE_LABELS[recommended.mode] + " — " + recommended.reason, "text"),
-            out("Active context: " + opts.activeModelLabel + " · " + tokenCount(plans.get(recommended.mode)?.contextWindowTokens ?? 0) + " window", "dim"),
-            out("Summary model: " + selectedModel.label, "dim"),
-            out("─".repeat(Math.max(0, width)), "borderMuted"),
+            top,
+            cell("  Context  " + compactTokenCount(opts.contextTokens) + " / " + compactTokenCount(contextWindow) + "  " + contextBar + "  " + contextPct + "%"),
+            cell(theme.fg("dim", modelPrefix) + fit(selectedModel.label, modelWidth) + modelAction),
+            divider,
           ];
+
           for (let index = 0; index < PRIMARY_MODES.length; index++) {
             const mode = PRIMARY_MODES[index];
             const preview = plans.get(mode)!;
-            const viable = preview.plan?.viable ?? false;
-            lines.push(out(
-              (index === selected ? "> " : "  ") + MODE_LABELS[mode] +
-                (mode === recommended.mode ? " [recommended]" : "") +
-                (viable ? " [viable]" : " [unavailable: " + explainPreflightReason(preview.reason) + "]"),
-              index === selected ? "accent" : viable ? "text" : "muted",
-            ));
-            lines.push(out("    " + MODE_COPY[mode], "dim"));
+            const plan = preview.plan;
+            const viable = plan?.viable ?? false;
+            const marker = index === selected ? "› " : "  ";
+            const recommendedMark = mode === recommended.mode ? "  recommended" : "             ";
+            const trait = mode === "fast" ? "quickest" : mode === "balanced" ? "default" : "deepest";
+            const stats = (viable && plan
+              ? "~" + compactTokenCount(plan.projectedAfterTokens) + " after · " + percent(plan.projectedYield * 100) + " saved"
+              : "unavailable · " + explainPreflightReason(preview.reason)) + " · " + trait;
+            const line = " " + marker + MODE_LABELS[mode].padEnd(9) + recommendedMark + "  " + stats;
+            lines.push(cell(index === selected
+              ? theme.fg("accent", theme.bold(line))
+              : theme.fg(viable ? mode === recommended.mode ? "success" : "text" : "muted", line)));
           }
-          lines.push(out("─".repeat(Math.max(0, width)), "borderMuted"));
-          const current = plans.get(PRIMARY_MODES[selected])!;
-          lines.push(...formatPreflightSummary(current, selectedModel.value, details).flatMap(line => wrapped(line, line.startsWith("Cannot") || line.startsWith("This preset") ? "warning" : "text")));
-          lines.push("", out("↑↓ mode · Enter compact · D details · M model · Esc cancel", "dim"));
+
+          lines.push(divider);
+          for (const line of formatPreflightSummary(current, selectedModel.value, details)) {
+            const color = line.startsWith("Unavailable") || line.startsWith("Plan unavailable") ? "warning" : line.startsWith("✓") ? "success" : "text";
+            lines.push(cell("  " + theme.fg(color, line)));
+          }
+          if (details) lines.push(cell("  " + theme.fg("dim", MODE_LABELS[selectedMode] + " · " + MODE_COPY[selectedMode])));
+          lines.push(
+            divider,
+            cell(theme.fg("dim", "  ↑↓ choose · Enter run · D details · M model · Esc cancel")),
+            bottom,
+          );
           return lines;
         },
         invalidate: () => {},
         handleInput: (data: string) => {
           if (keybindings.matches(data, "tui.select.cancel")) { done(null); return; }
-          if (keybindings.matches(data, "tui.select.up")) selected = Math.max(0, selected - 1);
-          else if (keybindings.matches(data, "tui.select.down")) selected = Math.min(PRIMARY_MODES.length - 1, selected + 1);
+          if (keybindings.matches(data, "tui.select.up")) selected = (selected + PRIMARY_MODES.length - 1) % PRIMARY_MODES.length;
+          else if (keybindings.matches(data, "tui.select.down")) selected = (selected + 1) % PRIMARY_MODES.length;
           else if (keybindings.matches(data, "tui.select.confirm")) {
             const mode = PRIMARY_MODES[selected];
             if (plans.get(mode)?.plan?.viable) { done(mode); return; }
@@ -621,7 +657,7 @@ export async function showCompactUI(
           tui.requestRender();
         },
       };
-    }, { overlay: true, overlayOptions: { width: "70%", minWidth: 36, anchor: "center", maxHeight: "85%" } });
+    }, { overlay: true, overlayOptions: { width: "68%", minWidth: 52, anchor: "center", maxHeight: "85%" } });
 
     if (!action) return null;
     if (action === "model") {

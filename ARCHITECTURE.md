@@ -107,13 +107,15 @@ assertions: the type system proves `buildState` has run.
 `runSmartCompact()`. Before any expensive work, the system checks context size
 against the threshold in `src/constants.ts`. Auto / tool runs are skipped while
 context is small; manual `/smart-compact` uses an absolute adaptive safety tail
-rather than a percentage of large model windows. Its single preflight is built
-from the same config snapshot, calibrated estimator, adaptive profile, active
-branch, and pure window planner as execution. A plan must meet the tail target
-and at least 10% projected net savings before any model call. A pending summary
-for the same session is reused instead of invoking the pipeline again. The
-selected `CompactionMode` resolves to a concrete policy before the first model
-call; `auto` uses context pressure and deterministic extraction risk.
+rather than a percentage of large model windows. Its decision-card preflight
+is built from the same config snapshot, calibrated estimator, adaptive profile,
+active branch, and pure window planner as execution. It compares exactly Fast,
+Balanced, and Thorough; `M` changes the summary route and replans all three,
+while `D` reveals technical estimator/boundary details. A plan must meet the
+tail target and at least 10% projected net savings before any model call. A
+pending summary for the same session is reused instead of invoking the pipeline
+again. `auto` is not a fourth policy: it selects one of the three from context
+pressure and deterministic extraction risk.
 
 Model routes are stage-specific but never inferred from mode. With no explicit
 configuration, Explore, Synthesize, and Verify all use the selected Pi model.
@@ -173,7 +175,7 @@ prefix uses short-lived prompt caching.
 
 Primary: [`src/phases/synthesize.ts`](./src/phases/synthesize.ts). Three paths:
 
-- **Deterministic zero-call** — high-confidence Fast/Aggressive extractions.
+- **Deterministic zero-call** — high-confidence Fast extractions.
 - **Single-pass** — when the compacted conversation fits under the configured threshold.
 - **Hierarchical** — for larger sessions: merge available boundaries → split oversized semantic chunks → batch by token budget → summarize batches → assemble.
 
@@ -195,7 +197,9 @@ open-loop coverage.
 idempotent) → (2) one LLM patch only in `thorough` mode if still insufficient
 → (3) replace lower-scoring output with the deterministic quality floor → (4)
 reject unless final verification has no gaps and meets the verified threshold.
-Final verification runs again after continuity injection.
+Final verification runs again after continuity injection. Unresolved-error
+source snippets and fallback-rendered evidence share `summaryEvidenceLine()`, so
+Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 
 ## EESV hardening and control surfaces
 
@@ -219,6 +223,12 @@ neither, and the UI reports `Applied` only after that correlated commit.
 `ui/error-format.ts` converts verification/yield failures to one bounded,
 content-free diagnostic and collapses unknown multiline errors; full stacks are
 suppressed by default and emitted only under explicit `DEBUG=smart-compact`.
+Manual execution uses a two-line widget: a colored EESV phase chain plus a
+phase-specific action brief. Before Apply it explicitly says the conversation
+is unchanged. Routine info toasts are hidden unless `verbose`; handled provider,
+watchdog, Explore, batch, and assembly failures switch to deterministic fallback
+without printing raw messages. Auto-trigger rejection logs are also debug-only,
+leaving one content-free safe-fallback notice in the UI.
 
 | Concern | Where | Notes |
 | --- | --- | --- |
@@ -392,7 +402,7 @@ The code is organized into six layers, each with a single responsibility.
 | --- | --- |
 | `app/run-smart-compact.ts` | top-level pipeline orchestrator |
 | `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
-| `app/mode-policy.ts` | Auto planner and finite Fast/Balanced/Aggressive/Thorough policies |
+| `app/mode-policy.ts` | Auto selector and finite Fast/Balanced/Thorough policies; legacy Aggressive maps to Fast |
 | `app/pending-slot.ts` | encapsulated pending-compaction state cell |
 | `app/explore-wrap.ts` | thin re-export shim isolating the explore import for headless tests |
 | `app/steps/prepare.ts` | resolve config, auth, provider caps |

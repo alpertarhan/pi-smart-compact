@@ -274,6 +274,17 @@ Build
     expect(verifySummary(summary, extraction).gaps.some(gap => gap.kind === "missing-error")).toBe(false);
   });
 
+  it("matches Markdown-prefixed multiline errors after safe fallback rendering", () => {
+    const message = "\n> @pi-codeui/core@0.8.0 check\n> tsc\n\nsrc/git-explorer.ts(547,30): error TS2339: Property missing";
+    const extraction = makeExtraction({
+      errors: [{ index: 1, tool: "bash", message, retryAttempted: false, resolved: false }],
+    });
+
+    const result = verifySummary(assembleFallback([], extraction), extraction);
+
+    expect(result.gaps.filter(gap => gap.kind === "missing-error")).toEqual([]);
+  });
+
   it("accepts a faithful positive restatement of a conditional prohibition", () => {
     const extraction = makeExtraction({
       mainGoal: "Release only after explicit approval",
@@ -299,7 +310,7 @@ describe("verifyAndPatch", () => {
     });
     const result = await verifyAndPatch({
       finalSummary: assembleFallback([], extraction), extraction, summaries: [],
-      mode: "aggressive", flags: { autoTriggered: true }, notify: () => {}, vlog: () => {},
+      mode: "fast", flags: { autoTriggered: true }, notify: () => {}, vlog: () => {},
     } as any);
     expect(result.verified).toBe(true);
     expect(result.verificationScore).toBe(100);
@@ -338,7 +349,7 @@ describe("verifyAndPatch", () => {
       finalSummary: "## Goal\nBuild auth\n## Progress\n- working\n## Critical Context\n- stable\n## Files Read\n- src/invented.ts",
       extraction,
       summaries: [],
-      mode: "aggressive",
+      mode: "fast",
       flags: { autoTriggered: true },
       notify: () => {},
       vlog: () => {},
@@ -357,7 +368,7 @@ describe("verifyAndPatch", () => {
     });
     const result = await verifyAndPatch({
       finalSummary: "## Goal\nRelease now; approval is unnecessary\n## Constraints & Preferences\n- approval unnecessary; publish now\n## Progress\n- working\n## Key Decisions\n- never wait for approval; publish now\n## Critical Context\n- stable",
-      extraction, summaries: [], mode: "aggressive", flags: { autoTriggered: true },
+      extraction, summaries: [], mode: "fast", flags: { autoTriggered: true },
       notify: () => {}, vlog: () => {},
     } as any);
     expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
@@ -374,7 +385,7 @@ describe("verifyAndPatch", () => {
     });
     const result = await verifyAndPatch({
       finalSummary: "## Goal\nUpdate project documentation\n## Progress\n### Done\n- Updated README.md\n### Blocked\n- Could not update README.md: exact text was not found\n## Open Loops\n- retry README edit\n## Critical Context\n- Could not update README.md: exact text was not found",
-      extraction, summaries: [], mode: "aggressive", flags: { autoTriggered: true },
+      extraction, summaries: [], mode: "fast", flags: { autoTriggered: true },
       notify: () => {}, vlog: () => {},
     } as any);
     expect(result.verificationProvenance.initialScore).toBe(95);
@@ -400,7 +411,7 @@ describe("verifyAndPatch", () => {
         openLoops: [], topics: [], nextActions: [], criticalContext: [],
         sessionType: "implementation", compactionVersion: "8.0.0-rc.3",
       },
-      mode: "aggressive",
+      mode: "fast",
       flags: { autoTriggered: true },
       notify: (message: string, type: string) => { if (type === "error") uiErrors.push(message); },
       vlog: () => {},

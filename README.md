@@ -128,14 +128,14 @@ Set `contextGraphEnabled` to `false` to disable indexing and both tools.
 
 ### Manual preflight
 
-The interactive command uses the configured summary route and the exact
-execution planner before spending LLM tokens. The primary screen shows the
-recommended fidelity preset, why it fits the current pressure/session shape,
-estimated context before and after, projected savings, live-tail and summary
-budgets, soft boundaries that will be summarized, and the hard tool-pair plus
-zero-gap-verification guarantees.
+The interactive command uses the configured summary route and exact execution
+planner before spending LLM tokens. Its compact decision card compares the
+three modes by estimated after-size and saving, highlights the recommendation,
+and keeps only the selected plan plus hard tool-pair/zero-gap guarantees in the
+primary view. Technical estimator, target, route, and boundary data stays under
+`D` instead of crowding the decision.
 
-- `↑` / `↓` changes `Thorough`, `Balanced`, or `Fast` and recalculates the plan.
+- `↑` / `↓` changes `Fast`, `Balanced`, or `Thorough` and recalculates the plan.
 - `Enter` runs only a viable plan; `Esc` cancels without mutation.
 - `D` toggles calibrated estimator, target, boundary, and route details.
 - `M` opens Advanced model selection and replans with that route's calibration.
@@ -149,12 +149,18 @@ working tail stays raw. Tool exchanges are summarized or retained as complete
 call/result pairs, never split. If Verify, yield, provider, or native apply
 fails, the UI shows one bounded actionable line without evidence text or a
 JavaScript stack. Stack diagnostics are opt-in with `DEBUG=smart-compact`.
+During execution a two-line live brief shows the EESV phase chain and the
+meaningful current action; it states that the conversation remains unchanged
+until verified Apply. Routine phase toasts and raw per-batch watchdog/provider
+errors are suppressed by default: handled fallbacks appear as one content-free
+brief. `verbose` restores routine phase notices; full stack diagnostics require
+`DEBUG=smart-compact`.
 
 ### Focus and budgets
 
 ```bash
-/smart-compact auto --focus=authentication
-/smart-compact aggressive --max-input-tokens=120000
+/smart-compact balanced --focus=authentication
+/smart-compact fast --max-input-tokens=120000
 /smart-compact fast --focus=src/auth.ts --max-calls=3
 /smart-compact thorough
 ```
@@ -173,13 +179,17 @@ The tool exposes equivalent `focus`, `max_calls`, `max_input_tokens`, and
 
 | Mode | Calls | Prompt cap | Output cap | Behavior |
 | --- | ---: | ---: | ---: | --- |
-| `auto` | adaptive | adaptive | adaptive | Default; selects from context pressure and deterministic session risk |
-| `balanced` | 6 | 200K | 40K | Token/continuity balance; deterministic boundaries and repair |
-| `aggressive` | 4 | 120K | 25K | Maximum context recovery with a 3K summary and 10K live tail |
-| `fast` | 3 | 100K | 20K | Favors larger single-pass windows and minimum waiting |
-| `thorough` (`slow` alias) | 8 | 300K | 80K | Maximum fidelity; enables Explore and one optional LLM repair |
+| `fast` | 3 | 100K | 20K | Quickest recovery; 3K summary, 10K recent tail, 30% context target |
+| `balanced` | 6 | 200K | 40K | Default quality/speed trade-off; 6K summary, 20K recent tail, 40% target |
+| `thorough` | 8 | 300K | 80K | Deepest analysis; 10K summary, 30K recent tail, 50% target, Explore and optional LLM repair |
 
-Fast and aggressive modes use a zero-call deterministic summary when extraction confidence is high; otherwise they keep the bounded LLM path. Auto planning also raises fidelity when scoped continuity or prior damage indicates risk. The mode token target is binding: recent user turns, pi-toolkit checkpoints, and topical grouping remain raw only when they fit the planned tail; otherwise the verified summary carries them forward.
+These are the only three execution modes. Automatic runs choose among them
+from context pressure and deterministic session risk; `auto` is a selector,
+not a fourth execution policy. Fast can use a zero-call deterministic summary
+when extraction confidence is high; otherwise it keeps the bounded LLM path.
+The mode token target is binding: recent user turns, pi-toolkit checkpoints,
+and topical grouping remain raw only when they fit the planned tail; otherwise
+the verified summary carries them forward.
 
 Output caps stop subsequent calls after observed usage reaches the threshold.
 The ChatGPT Codex subscription endpoint rejects `max_output_tokens`,
@@ -189,8 +199,10 @@ back deterministically on abort. Custom Codex endpoints receive
 `max_output_tokens` through Pi AI's payload hook.
 
 Legacy compression profiles remain as advanced/backwards-compatible policy:
-`light` maps to `thorough`; `balanced` and `aggressive` map to their same-named
-modes. The selected model never changes automatically.
+`light` maps to `thorough`, `balanced` maps to `balanced`, and `aggressive` maps
+to `fast` with a deprecation warning. The selected model never changes
+automatically; `M` changes the summary route inside preflight and recalculates
+all three plans.
 
 ### Stage-aware provider routing
 
@@ -388,7 +400,7 @@ the run fails closed before staging or apply.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `mode` | `auto \| balanced \| aggressive \| fast \| thorough` | `auto` | User-facing execution preset |
+| `mode` | `auto \| fast \| balanced \| thorough` | `auto` | Automatic selector or one of the three execution modes |
 | `profile` | `light \| balanced \| aggressive` | `balanced` | Legacy/advanced compression profile; used when mode is absent |
 | `summaryModel` | `string \| null` | `null` | Uses the active session model when null |
 | `segmentationModel` | `string \| null` | `null` | Optional explicit model for Explore |
@@ -410,7 +422,7 @@ the run fails closed before staging or apply.
 | `codexMaxCallMs` | integer `0` or `5000–300000` | `0` | ChatGPT Codex per-call watchdog; `0` derives 15–90s from requested output tokens |
 | `maxLatencyMs` | `0` or `5000–600000` | `0` | `0` means unlimited |
 | `focusWeighting` | `boolean` | `true` | Weight focused topics/paths higher |
-| `zeroCallEnabled` | `boolean` | `true` | Use deterministic synthesis for high-confidence fast/aggressive runs |
+| `zeroCallEnabled` | `boolean` | `true` | Use deterministic synthesis for high-confidence Fast runs |
 | `contextGraphEnabled` | `boolean` | `true` | Index verified state and enable project-scoped recall/save tools |
 | `telemetryChannel` | `stable \| canary` | `stable` | Tag local schema-v2 metrics for external canary comparison |
 | `onlineDamageMonitor` | `boolean` | `true` | Observe post-compaction regression signals |

@@ -78,7 +78,7 @@ describe("smart compact preflight UI", () => {
 
     plans.set("balanced", preview("balanced", false));
     const fallback = recommendPreflight(plans);
-    expect(fallback.mode).toBe("thorough");
+    expect(fallback.mode).toBe("fast");
     expect(fallback.reason).toContain("estimated saving is below 10%");
   });
 
@@ -108,37 +108,41 @@ describe("smart compact preflight UI", () => {
     expect(recommendation.reason).toContain("recent damage feedback");
   });
 
-  it("formats estimates, boundaries, safeguards, and technical disclosure honestly", () => {
-    const lines = formatPreflightSummary(preview("balanced", true), "openai/summary", true).join("\n");
-    expect(lines).toContain("Before ~90,000t (~64% window)");
-    expect(lines).toContain("expected after ~26,000t (~19% window)");
-    expect(lines).toContain("Projected net saving ~64,000t (~71%, estimator-based)");
-    expect(lines).toContain("summary budget ≤6,000t");
-    expect(lines).toContain("Soft boundaries included in summary: older user turn");
-    expect(lines).toContain("Internal soft boundaries: recent-user-turn");
-    expect(lines).toContain("complete tool-call/result pairs");
-    expect(lines).toContain("zero-gap verification before apply");
-    expect(lines).toContain("normalized ×0.80");
-    expect(lines).toContain("Summary route: openai/summary");
+  it("keeps the decision brief and places planner disclosure behind Details", () => {
+    const brief = formatPreflightSummary(preview("balanced", true), "openai/summary").join("\n");
+    expect(brief).toContain("Plan  90K → ~26K · ~64K saved (71%)");
+    expect(brief).toContain("Keep  ~20K recent · summary up to 6K");
+    expect(brief).toContain("Complete tool pairs · ✓ zero-gap verification before apply");
+    expect(brief).not.toContain("Estimator");
+
+    const details = formatPreflightSummary(preview("balanced", true), "openai/summary", true).join("\n");
+    expect(details).toContain("Estimator  ~100,000t messages · normalized ×0.80");
+    expect(details).toContain("Boundary  no hard adjustment · soft summarized: older user turn");
+    expect(details).toContain("Route  openai/summary");
   });
 
-  it("supports D disclosure and Enter on a viable preset without exceeding narrow width", async () => {
+  it("renders the three-mode decision card, supports D, and never exceeds width", async () => {
     const result = await showCompactUI(context((component, done) => {
       const narrowLines = component.render(36);
-      const narrow = narrowLines.join(" ");
       expect(narrowLines.every((line: string) => visibleWidth(line) <= 36)).toBeTrue();
-      expect(narrow).toContain("severe context pressure");
-      expect(narrow).toContain("Before ~90,000t");
-      expect(narrow).toContain("expected after");
-      expect(narrow).toContain("Projected net saving");
-      expect(narrow).toContain("zero-gap verification before apply");
-      expect(component.render(100).join("\n")).toContain("faster run · 20K base recent tail · 6K base summary");
+      const card = component.render(100).join("\n");
+      expect(card).toContain("Smart Compact");
+      expect(card).toContain("Context  90K / 100K");
+      expect(card).toContain("[M] Change");
+      expect(card).toContain("Fast");
+      expect(card).toContain("Balanced");
+      expect(card).toContain("Thorough");
+      expect(card).toContain("recommended");
+      expect(card).toContain("quickest");
+      expect(card).toContain("deepest");
+      expect(card).not.toContain("Aggressive");
+      expect(card).toContain("Complete tool pairs");
       component.handleInput("d");
-      expect(component.render(80).join("\n")).toContain("Estimator:");
+      expect(component.render(80).join("\n")).toContain("Estimator");
       component.handleInput("enter");
       expect(done.value).toBeDefined();
     }), opts);
-    expect(result?.mode).toBeDefined();
+    expect(result?.mode).toBe("fast");
   });
 
   it("uses the configured summary route as the initial preflight model", async () => {
@@ -148,7 +152,7 @@ describe("smart compact preflight UI", () => {
     ];
     const configured = { ...config, summaryModel: "anthropic/configured-summary" };
     const ctx = context((component) => {
-      expect(component.render(100).join("\n")).toContain("Summary model: anthropic/configured-summary");
+      expect(component.render(100).join("\n")).toContain("Summary model  anthropic/configured-summary");
       component.handleInput("enter");
     }, 90_000, models);
     const initial = resolveModels(ctx, ctx.model, configured).sumModel!;
@@ -172,7 +176,7 @@ describe("smart compact preflight UI", () => {
         component.handleInput("\x1b[B");
         component.handleInput("\r");
       } else {
-        expect(component.render(100).join("\n")).toContain("Summary model: anthropic/advanced-summary");
+        expect(component.render(100).join("\n")).toContain("Summary model  anthropic/advanced-summary");
         component.handleInput("esc");
       }
     }, 90_000, models), opts);

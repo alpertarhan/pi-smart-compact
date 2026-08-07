@@ -488,7 +488,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     ));
     const rc = makePreparedRc(branch, 10_000);
     rc.flags.force = false;
-    rc.mode = "aggressive";
+    rc.mode = "fast";
     rc.profileCfg.summaryBudgetTokens = 3_000;
     rc.ctx.model = { id: "gpt-5.6-sol", provider: "openai-codex", contextWindow: 272_000 } as any;
     rc.ctx.getContextUsage = () => ({ tokens: 372_358, contextWindow: 272_000, percent: 137 } as any);

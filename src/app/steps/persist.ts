@@ -104,7 +104,7 @@ export function runDamageDetection(rc: RunContext): void {
     if (damage.reReadFiles.length > 0) {
       writeRemediationHints(rc.projectId, damage.reReadFiles);
     }
-  } catch (err) { log.warn("Damage detection error", err); }
+  } catch (err) { log.debugError("Damage detection skipped", err); }
 }
 
 /**

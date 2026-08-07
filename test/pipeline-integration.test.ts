@@ -200,8 +200,8 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
       return makeSummaryResponse("## Goal\nUpdate auth\n## Progress\n### Done\n- none\n### In Progress\n- update auth\n### Blocked\n- none\n## Critical Context\n- preserve context");
     } });
     const tiered = makeTieredRc(messages);
-    tiered.mode = "aggressive";
-    tiered.requestedMode = "aggressive";
+    tiered.mode = "fast";
+    tiered.requestedMode = "fast";
     const extracted = extractWithCache(tiered);
     extracted.extraction.mainGoal = "Update auth";
     extracted.extraction.lastUserMessages = ["Update src/auth.ts"];
@@ -228,7 +228,9 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     };
     setLlmClient(fakeClient);
 
+    const notices: string[] = [];
     const tiered = makeTieredRc(messages);
+    tiered.notify = (message: string) => { notices.push(message); };
     const extracted = extractWithCache(tiered);
     const synthesized = await summarizeConversation(extracted);
 
@@ -240,5 +242,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.method).toBe("heuristic");
     expect(synthesized.finalSummary.length).toBeGreaterThan(0);
     expect(synthesized.llmCalls).toBe(1);
+    expect(notices).toContain("Single-pass generation stopped · using deterministic fallback");
+    expect(notices.join("\n")).not.toContain("simulated provider outage");
   });
 });

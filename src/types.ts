@@ -9,8 +9,9 @@ import type { SectionKind } from "./domain/summary-schema.ts";
 export type SessionType = "implementation" | "review" | "debugging" | "discussion";
 
 export type CompressionProfile = "light" | "balanced" | "aggressive";
-export type CompactionMode = "auto" | "balanced" | "aggressive" | "fast" | "thorough";
-export type EffectiveCompactionMode = Exclude<CompactionMode, "auto">;
+export type EffectiveCompactionMode = "fast" | "balanced" | "thorough";
+/** `aggressive` is accepted only as a legacy input and resolves to Fast. */
+export type CompactionMode = "auto" | EffectiveCompactionMode | "aggressive";
 
 export interface ProfileConfig {
   summaryBudgetTokens: number;

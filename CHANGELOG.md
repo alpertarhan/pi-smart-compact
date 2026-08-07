@@ -4,6 +4,16 @@
 
 No changes yet.
 
+## [8.0.6] - 2026-08-07
+
+### Changed
+
+- Replaced the dense flat `/smart-compact` preflight with a bordered decision card: context pressure, prominent `[M] Change` summary-model route, and side-by-side after-size/saving estimates for exactly Fast, Balanced, and Thorough. The selected plan keeps only outcome, retention, and hard safety guarantees visible; `D` reveals estimator, target, boundary, and route internals.
+- Consolidated execution into three monotonic policies: Fast is the quickest/most compact 10K-tail policy, Balanced is the 20K-tail default, and Thorough is the 30K-tail high-fidelity policy with Explore and optional LLM repair. Legacy `aggressive` inputs map to Fast with a deprecation warning rather than appearing as a fourth mode.
+- Manual runs now show a two-line semantic live brief: the colored Extract → Explore → Synthesize → Verify → Apply chain plus meaningful actions such as topic mapping, batch compression, continuity assembly, deterministic repair, and correlated Apply. Before Apply it explicitly states that the conversation is unchanged.
+- Replaced routine phase toasts and per-batch provider/watchdog warnings with the live brief and content-free aggregated fallback status. Expected single-pass, Explore, batch, and assembly fallbacks no longer print raw provider messages or request IDs; auto-trigger verification failures emit one concise safe-fallback notice instead of evidence-bearing stderr lines. Full diagnostics remain opt-in through `DEBUG=smart-compact`.
+- Fixed deterministic verification of Markdown-prefixed multiline errors (`> npm…`, list/heading prefixes): verification now canonicalizes the source snippet with the same safe one-line transform used by fallback rendering. The captured 259,782-token session replay now plans ~26,267 tokens after, repairs the remaining fabricated-file finding, and reaches 100/100 with 0 gaps even when every synthesis batch uses deterministic fallback.
+
 ## [8.0.5] - 2026-08-07
 
 ### Fixed
