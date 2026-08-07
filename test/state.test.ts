@@ -272,6 +272,17 @@ describe("continuity state", () => {
     expect(merged.openLoops.map(item => item.summary)).toContain("fix auth test");
   });
 
+  it("drops diagnostic constraints carried from legacy state", () => {
+    const previous = makeFullState({
+      constraints: [
+        { id: "constraint-1", text: "npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404", category: "prohibition", confidence: 0.8 },
+        { id: "constraint-2", text: "Do not publish without approval", category: "prohibition", confidence: 1 },
+      ],
+    });
+    const merged = mergeCompactionStates(previous, makeFullState());
+    expect(merged.constraints.map(item => item.text)).toEqual(["Do not publish without approval"]);
+  });
+
   it("renders only continuity facts missing from the visible summary", () => {
     const state = makeFullState({
       goal: "Ship auth",
@@ -456,6 +467,17 @@ describe("saveCompactionState / loadCompactionState", () => {
     expect(loaded!.goal).toBe("Round trip test");
     expect(loaded!.decisions.length).toBe(1);
     // Cleanup
+    const fs = require("fs");
+    const p = require("path").join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
+    try { fs.unlinkSync(p); } catch {}
+  });
+
+  it("sanitizes diagnostic constraints before persistence", () => {
+    const testId = "test-sanitize-" + Date.now();
+    saveCompactionState(testId, makeFullState({
+      constraints: [{ id: "constraint-1", text: "npm error You do not have permission", category: "prohibition", confidence: 0.8 }],
+    }));
+    expect(loadCompactionState(testId)?.constraints).toEqual([]);
     const fs = require("fs");
     const p = require("path").join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
     try { fs.unlinkSync(p); } catch {}

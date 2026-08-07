@@ -116,6 +116,12 @@ describe("extractFileRefs — integration", () => {
     expect(refs).not.toContain("1.3.14");
   });
 
+  it("does NOT treat registry URLs as local file paths", () => {
+    const refs = extractFileRefs("Publishing to https://registry.npmjs.org/pi-smart-compact with public access");
+    expect(refs).not.toContain("//registry.npmjs.org/pi-smart-compact");
+    expect(refs).toEqual([]);
+  });
+
   it("returns an empty array when no candidates exist", () => {
     expect(extractFileRefs("plain prose without file references")).toEqual([]);
   });

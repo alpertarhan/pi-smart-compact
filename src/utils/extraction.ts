@@ -275,6 +275,11 @@ const CONSTRAINT_PATTERNS: Array<{ re: RegExp; cat: StructuredExtraction["constr
   { re: /(?<![A-Za-z0-9_])(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)(?![A-Za-z0-9_])/iu, cat: "preference", conf: TUNING.CONFIDENCE_LOW },
 ];
 
+export function isDiagnosticConstraintText(text: string): boolean {
+  const candidate = text.replace(/^\s*[-*]\s+/, "").trim();
+  return /^(?:\[[^\]]+\]\s*)?(?:npm\s+(?:error|warn|notice|audit|verbose|info)\b|(?:rg|grep):|command exited\b)/i.test(candidate);
+}
+
 export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
@@ -287,7 +292,7 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
     // the entire recap (including notices) into one bogus constraint.
     for (const raw of text.split(/\n+/)) {
       const candidate = raw.replace(/^\s*[-*]\s+/, "").trim();
-      if (candidate.length < 10 || /^(?:\[[^\]]+\]\s*)?(?:npm\s+(?:error|warn|notice)|(?:rg|grep):|command exited\b)/i.test(candidate)) continue;
+      if (candidate.length < 10 || isDiagnosticConstraintText(candidate)) continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
         if (!re.test(candidate)) continue;
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
