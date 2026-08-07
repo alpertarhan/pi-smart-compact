@@ -4,6 +4,16 @@
 
 No changes yet.
 
+## [8.0.0] - 2026-08-07
+
+### Added
+
+- Stable v8 release of the EESV compaction pipeline, scoped continuity and context graph, host-approved project memory, explicit provider routing, telemetry cohorts, damage correlation, and local release dashboards.
+
+### Changed
+
+- Promotes the fully validated `8.0.0-rc.4` tree without runtime changes. The maintainer explicitly accepted promotion while the advisory telemetry report remained `HOLD` for missing rc.4 cohort evidence; post-release defects follow the normal rollback/patch process.
+
 ## [8.0.0-rc.4] - 2026-08-07
 
 ### Fixed

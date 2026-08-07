@@ -1,7 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to `8.0.0-rc.4`. The release candidate is prepared but is
-not published or deployed by repository validation.
+This guide applies to the stable `8.0.0` release.
 
 ## Compatibility
 
@@ -11,8 +10,8 @@ not published or deployed by repository validation.
 - Modes never change the selected Pi model.
 - Settings are additive; an existing v7 configuration remains valid.
 
-The RC is validated against the locked Pi 0.84.0 baseline and the latest Pi
-compatibility job. Bun 1.3.14 is the reproducible build baseline.
+The release is validated against the locked Pi 0.84.0 baseline and the latest
+Pi compatibility job. Bun 1.3.14 is the reproducible build baseline.
 
 ## What changes on first run
 
@@ -79,18 +78,15 @@ All defaults preserve the selected model and require no migration edits.
 
 See the README configuration table for budgets and monitoring options.
 
-## Recommended RC rollout
+## Recommended rollout
 
 1. Back up `~/.pi/agent/settings.json` and the Smart Compact cache directory.
-2. Install the RC only after it is explicitly published to an RC tag.
-3. Leave all model routes null for the first cohort.
-4. Set `telemetryChannel: "canary"` only in that cohort.
-5. Collect at least 20 complete schema-v2 runs with ≥70% verifier-quality and
-   ≥70% correlated damage-observation coverage in both stable/canary cohorts.
-6. Run `bun run telemetry-report` from the installed package or open the local
-   dashboard.
-7. Promote only on a `PROMOTE` result, ≥95% canary success, ≥85 absolute
-   quality, no rollback triggers, and Data Confidence ≥85.
+2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.0`.
+3. Leave all model routes null initially.
+4. Keep `telemetryChannel: "stable"` unless intentionally running a separate
+   canary cohort.
+5. Monitor `bun run telemetry-report` or the local dashboard and use the
+   rollback procedure below if a rollback trigger appears.
 
 ## Rollback
 
