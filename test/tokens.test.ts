@@ -40,6 +40,15 @@ describe("makeTokenEstimator", () => {
     expect(after).toBeLessThan(before);
   });
 
+  it("keeps one run's estimator stable while shared calibration changes", () => {
+    const store = new TokenCalibrationStore();
+    const estimator = makeTokenEstimator("openai", "model-a", store);
+    const before = estimator.text("x".repeat(1000));
+    store.calibrate(before, Math.floor(before / 2), "openai", "model-a");
+    expect(estimator.text("x".repeat(1000))).toBe(before);
+    expect(makeTokenEstimator("openai", "model-a", store).text("x".repeat(1000))).toBeLessThan(before);
+  });
+
   it("converges to the observed absolute factor rather than its square root", () => {
     const store = new TokenCalibrationStore();
     for (let i = 0; i < 20; i++) {

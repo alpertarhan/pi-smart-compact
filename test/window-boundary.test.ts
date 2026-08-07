@@ -216,6 +216,20 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result.accTokens).toBeLessThan(30_000); // bounded near the 40% target
   });
 
+  it("normalizes replaced and retained estimates to Pi's measured context", () => {
+    const branch = [
+      messageEntry("u1", null, { role: "user", content: [{ type: "text", text: "first" }] }),
+      messageEntry("a1", "u1", { role: "assistant", content: [{ type: "text", text: "x".repeat(300_000) }] }),
+      messageEntry("u2", "a1", { role: "user", content: [{ type: "text", text: "second" }] }),
+      messageEntry("a2", "u2", { role: "assistant", content: [{ type: "text", text: "y".repeat(300_000) }] }),
+      messageEntry("u3", "a2", { role: "user", content: [{ type: "text", text: "third" }] }),
+      messageEntry("a3", "u3", { role: "assistant", content: [{ type: "text", text: "z".repeat(300_000) }] }),
+    ];
+    const result = resolveCompactionWindow(makePreparedRc(branch, 1))!;
+    expect(result.compactTokens).toBeGreaterThan(20_000);
+    expect(result.compactTokens + result.accTokens).toBeLessThanOrEqual(result.totalTokens + 1);
+  });
+
   it("recounts the retained tail after anchor protection expands it", () => {
     const toolCallId = "anchor-call";
     const branch = [
@@ -232,7 +246,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const result = resolveCompactionWindow(rc);
 
     expect(result?.firstKeptId).toBe("anchor-request");
-    expect(result?.accTokens).toBe(rc.estimator.messages(branch.slice(1).map(item => item.message as any)));
+    expect(result?.accTokens).toBe(branch.slice(1).reduce((sum, item) => sum + rc.estimator.message(item.message as any), 0));
   });
 
   it("falls back before spending tokens when a protected tail cannot drop below the trigger", () => {

@@ -218,12 +218,12 @@ export function verifySummary(
   }
 
   const knownFiles = Array.from(new Set([
-    ...modifiedPaths, ...extraction.readFiles, ...extraction.deletedFiles,
+    ...modifiedPaths, ...extraction.readFiles, ...extraction.deletedFiles, ...(extraction.referencedFiles ?? []),
     ...(continuity?.modifiedFiles ?? []), ...(continuity?.readFiles ?? []), ...(continuity?.deletedFiles ?? []),
     ...(continuity?.unresolvedErrors ?? []).flatMap(error => error.files),
     ...(continuity?.openLoops ?? []).flatMap(loop => loop.files),
   ]));
-  for (const ref of extractFileRefs(summary)) {
+  for (const ref of new Set(extractFileRefs(summary))) {
     if (!isKnownPathReference(ref, knownFiles)) {
       gaps.push({ kind: "fabricated-file", ref });
       score -= 4;

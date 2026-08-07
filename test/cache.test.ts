@@ -187,6 +187,12 @@ describe("mergeExtractions — deduplication", () => {
     expect(merged.modifiedFiles[0].lastModifiedIndex).toBe(7); // 2 + 5
   });
 
+  it("deduplicates prose-grounded file references", () => {
+    const base = makeExtraction({ referencedFiles: ["a.ts", "b.ts"], messageCount: 5 });
+    const delta = makeExtraction({ referencedFiles: ["b.ts", "c.ts"], messageCount: 3 });
+    expect(mergeExtractions(base, delta, 5).referencedFiles).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+
   it("deduplicates readFiles", () => {
     const base = makeExtraction({ readFiles: ["a.ts", "b.ts"], messageCount: 5 });
     const delta = makeExtraction({ readFiles: ["b.ts", "c.ts"], messageCount: 3 });

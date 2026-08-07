@@ -319,6 +319,8 @@ export interface StructuredExtraction {
   modifiedFiles: Array<{ path: string; toolCalls: number; lastModifiedIndex: number }>;
   readFiles: string[];
   deletedFiles: string[];
+  /** File paths grounded in compacted source evidence but not necessarily touched by a tool. */
+  referencedFiles?: string[];
   mediaAttachments?: MediaAttachment[];
   errors: Array<{ index: number; tool: string; message: string; retryAttempted: boolean; resolved: boolean }>;
   decisions: Array<{ index: number; type: "explicit" | "implicit"; summary: string; userResponse?: string }>;

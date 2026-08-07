@@ -74,9 +74,14 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   keepFrom = guardToolCallBoundary(msgs, keepFrom);
 
   // Anchor/tool-call safety can move the boundary far earlier than the token
-  // walk selected. Recount the actual retained tail; keeping the stale ~20k
-  // estimate made metrics claim 100k+ savings while the context stayed full.
-  accTokens = rc.estimator.messages(msgs.slice(keepFrom).map(e => e.message as LlmMessage));
+  // walk selected. Recount both sides from the additive per-message estimates.
+  // Other context hooks may truncate tool payloads before the model sees them,
+  // so normalize an oversized raw estimate to Pi's measured context total.
+  const rawCompactTokens = messageTokens.slice(0, keepFrom).reduce((sum, tokens) => sum + tokens, 0);
+  const rawRetainedTokens = messageTokens.slice(keepFrom).reduce((sum, tokens) => sum + tokens, 0);
+  const messageScale = totalTokens > 0 && allMessageTokens > totalTokens ? totalTokens / allMessageTokens : 1;
+  const compactTokens = Math.round(rawCompactTokens * messageScale);
+  accTokens = Math.round(rawRetainedTokens * messageScale);
 
   if ((msgs[keepFrom]?.message as Record<string, unknown> | undefined)?.role === "toolResult") {
     return null;
@@ -109,7 +114,7 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
     sessionId: string; branch: unknown[]; msgs: SessionMessageEntry[];
     totalTokens: number; contextPercent: number; toolPercent: number;
     keepFrom: number; toCompact: SessionMessageEntry[]; firstKeptId: string;
-    accTokens: number;
+    compactTokens: number; accTokens: number;
   };
   out.sessionId = sessionId;
   out.branch = branch as unknown[];
@@ -120,6 +125,7 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   out.keepFrom = keepFrom;
   out.toCompact = toCompact;
   out.firstKeptId = firstKeptId;
+  out.compactTokens = compactTokens;
   out.accTokens = accTokens;
   return advance<PreparedRc, WindowedRc>(out, "_windowed");
 }

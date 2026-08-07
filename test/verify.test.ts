@@ -142,6 +142,15 @@ Build
     expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(true);
   });
 
+  it("accepts file references grounded in compacted prose and deduplicates gaps", () => {
+    const grounded = makeExtraction({ referencedFiles: ["test/llm-retry.test.ts"] });
+    const groundedSummary = "## Goal\nClean up\n## Progress\n- deleted test/llm-retry.test.ts\n## Critical Context\n- test/llm-retry.test.ts is gone";
+    expect(verifySummary(groundedSummary, grounded).gaps.some(gap => gap.kind === "fabricated-file")).toBe(false);
+
+    const unknownSummary = "## Goal\nClean up\n## Progress\n- src/invented.ts\n## Critical Context\n- src/invented.ts";
+    expect(verifySummary(unknownSummary, makeExtraction()).gaps.filter(gap => gap.kind === "fabricated-file")).toHaveLength(1);
+  });
+
   it("accepts legitimate file references carried from scoped continuity", () => {
     const continuity = makeState({ modifiedFiles: ["src/legacy-auth.ts"] });
     const summary = "## Goal\nContinue auth\n## Progress\n- src/legacy-auth.ts remains relevant\n## Critical Context\n- stable";

@@ -181,7 +181,7 @@ const JSON_DENSITY_THRESHOLD = 0.05;
 /** Cap the density scan so a multi-MB conversation serialization can't pause the pipeline. */
 const JSON_DENSITY_SCAN_CAP = 8192;
 
-export function estimateTokens(text: string, provider?: string, model?: string, calibration = _fallbackCalibration): number {
+function estimateTokensAtFactor(text: string, provider: string | undefined, factor: number): number {
   const baseRatio = provider ? getProviderCaps(provider).tokenRatioEstimate : CHARS_PER_TOKEN;
   // JSON content has denser tokenization. The leading-brace check covers
   // per-message JSON tool results; the density fallback catches concatenations
@@ -205,8 +205,11 @@ export function estimateTokens(text: string, provider?: string, model?: string, 
   // over a multi-MB conversation serialization walks the whole string.
   const langSample = text.length > JSON_DENSITY_SCAN_CAP ? text.slice(0, JSON_DENSITY_SCAN_CAP) : text;
   const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(langSample) ? 0.9 : 1.0;
-  const factor = calibration.get(provider, model);
   return Math.ceil((text.length / baseRatio) * jsonPenalty * langPenalty * factor);
+}
+
+export function estimateTokens(text: string, provider?: string, model?: string, calibration = _fallbackCalibration): number {
+  return estimateTokensAtFactor(text, provider, calibration.get(provider, model));
 }
 
 export function calibrateFromResponse(estimated: number, actual: number, provider?: string, model?: string, calibration = _fallbackCalibration): void {
@@ -229,7 +232,8 @@ export function makeTokenEstimator(
   model?: string,
   calibration: TokenCalibrationStore = _fallbackCalibration,
 ): TokenEstimator {
-  const text = (value: string) => estimateTokens(value, provider, model, calibration);
+  const factor = calibration.get(provider, model);
+  const text = (value: string) => estimateTokensAtFactor(value, provider, factor);
   const serializable = (message: Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">) => ({
     role: message.role,
     content: message.content,

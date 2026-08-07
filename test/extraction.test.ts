@@ -130,6 +130,30 @@ describe("catalogErrors", () => {
     expect(errs[0].tool).toBe("bash");
   });
 
+  it("ignores rg/grep exit 1 when every chained command is a search", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { command: "rg missing src && grep absent README.md" } }] },
+      { role: "toolResult", toolCallId: "1", isError: true, content: "(no output)\n\nCommand exited with code 1" },
+    ];
+    expect(catalogErrors(msgs)).toEqual([]);
+  });
+
+  it("ignores a successful search whose piped output was truncated and marked as an error", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { command: "rg runId src | head -n 120" } }] },
+      { role: "toolResult", toolCallId: "1", isError: true, content: "src/index.ts:1: runId\n... [truncated 4805 chars] ..." },
+    ];
+    expect(catalogErrors(msgs)).toEqual([]);
+  });
+
+  it("does not hide a failing command chained after a search", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { command: "rg present src && bun test" } }] },
+      { role: "toolResult", toolCallId: "1", isError: true, content: "1 test failed\n\nCommand exited with code 1" },
+    ];
+    expect(catalogErrors(msgs)).toHaveLength(1);
+  });
+
   it("detects bash errors in successful results", () => {
     const msgs: LlmMessage[] = [
       { role: "assistant", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { cmd: "npm test" } }] },
@@ -216,6 +240,13 @@ describe("extractStructured", () => {
     expect(ext.modifiedFiles[0].path).toBe("/src/Login.tsx");
     expect(ext.errors.length).toBe(1);
     expect(ext.mainGoal).toBe("Create a login page");
+  });
+
+  it("grounds file paths mentioned in compacted prose", () => {
+    const ext = extractStructured([
+      { role: "user", content: "The removed test/llm-retry.test.ts remains relevant." },
+    ], PC);
+    expect(ext.referencedFiles).toContain("test/llm-retry.test.ts");
   });
 });
 

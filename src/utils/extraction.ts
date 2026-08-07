@@ -9,6 +9,7 @@ import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
+import { extractFileRefs } from "./file-ref-detect.ts";
 
 /** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
 export const TRUNCATE_RE = /…✂\d+$/;
@@ -169,6 +170,18 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
   };
 }
 
+function isBenignSearchResult(tc: { arguments: Record<string, unknown> }, result: string): boolean {
+  const command = typeof tc.arguments.command === "string"
+    ? tc.arguments.command
+    : typeof tc.arguments.cmd === "string" ? tc.arguments.cmd : "";
+  if (/[;\n]|\|\|/.test(command)) return false;
+  const segments = command.split("&&").map(segment => segment.trim()).filter(Boolean);
+  const searchOnly = segments.length > 0 && segments.every(segment => /^(?:rg|grep)\b/.test(segment));
+  if (!searchOnly || /(?:^|\n)(?:rg|grep):/m.test(result)) return false;
+  const exit = result.match(/Command exited with code (\d+)\s*$/i)?.[1];
+  return exit === undefined || exit === "1";
+}
+
 export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["errors"] {
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const errors: StructuredExtraction["errors"] = [];
@@ -178,8 +191,11 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     if (m.role !== "toolResult") continue;
     const tc = tcIdx.get(m.toolCallId ?? "");
 
+    const text = extractText(m.content);
+    if (tc && isBenignSearchResult(tc, text)) continue;
+
     if (m.isError) {
-      errors.push({ index: i, tool: tc?.name ?? "unknown", message: extractText(m.content).slice(0, TRUNC.ERROR_DETAIL), retryAttempted: false, resolved: false });
+      errors.push({ index: i, tool: tc?.name ?? "unknown", message: text.slice(0, TRUNC.ERROR_DETAIL), retryAttempted: false, resolved: false });
       continue;
     }
 
@@ -187,9 +203,8 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     // Gated by argument shape, not by tool name, so it auto-covers shell-like
     // tools this code has never seen. Explicit m.isError is handled above.
     if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute") {
-      const txt = extractText(m.content);
-      if (LIKELY_ERROR_RE.test(txt) && txt.length < ERROR_SCAN_MAX_LEN) {
-        errors.push({ index: i, tool: tc.name, message: txt.slice(0, TRUNC.MESSAGE), retryAttempted: false, resolved: false });
+      if (LIKELY_ERROR_RE.test(text) && text.length < ERROR_SCAN_MAX_LEN) {
+        errors.push({ index: i, tool: tc.name, message: text.slice(0, TRUNC.MESSAGE), retryAttempted: false, resolved: false });
       }
     }
   }
@@ -484,11 +499,13 @@ export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomp
   const topics = segmentTopicsHeuristic(msgs, pc, 20, tcIdx);
   const timeline = buildTimeline(msgs, errors);
   const mediaAttachments = extractMediaAttachments(msgs);
+  const referencedFiles = Array.from(new Set(msgs
+    .flatMap(message => extractFileRefs((JSON.stringify(message.content) ?? "").replace(/\\[nrt]/g, " "))))).slice(0, 200);
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs.filter(m => m.role === "user").slice(-5).map(m => extractText(m.content));
   const lastErrors = errors.slice(-3).map(e => e.message);
   return {
-    modifiedFiles: modified, readFiles: read, deletedFiles: deleted,
+    modifiedFiles: modified, readFiles: read, deletedFiles: deleted, referencedFiles,
     errors, decisions, constraints, topics, timeline, mediaAttachments,
     mainGoal, lastUserMessages, lastErrors, messageCount: msgs.length,
   };
