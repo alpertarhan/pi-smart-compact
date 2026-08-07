@@ -179,7 +179,10 @@ export function appendToSection(
   if (idx >= 0) {
     const sections = summary.sections.slice();
     const existing = sections[idx];
-    const combined = existing.body.trim() ? existing.body.trim() + "\n" + text.trim() : text.trim();
+    const body = /^-\s*(?:none|none recorded|no blockers?|yok)[.!]?$/i.test(existing.body.trim())
+      ? ""
+      : existing.body.trim();
+    const combined = body ? body + "\n" + text.trim() : text.trim();
     sections[idx] = { kind, heading, body: combined };
     return { sections };
   }

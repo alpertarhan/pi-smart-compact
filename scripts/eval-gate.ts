@@ -8,6 +8,7 @@ const suites = [
   "test/continuity-context.test.ts",
   "test/context-graph.test.ts",
   "test/context-tools.test.ts",
+  "test/compaction-commit-store.test.ts",
   "test/mode-policy.test.ts",
   "test/provider-evaluation.test.ts",
   "test/provider-routing.test.ts",

@@ -52,7 +52,7 @@ describe("backupConversation hot path", () => {
     // implementation would unlink all of them on the synchronous call path.
     fs.mkdirSync(backupDir, { recursive: true });
     for (let i = 0; i < 100; i++) {
-      fs.writeFileSync(path.join(backupDir, "stale-" + i + ".md"), "x");
+      fs.writeFileSync(path.join(backupDir, "stale-" + i + ".md"), "# Smart Compact Backup\n# Session: old\n\nx");
     }
     const t0 = Date.now();
     const fp = backupConversation("hello", "sess-test");
@@ -62,17 +62,25 @@ describe("backupConversation hot path", () => {
     // means we ran the prune inline. Generous bound to avoid CI flake.
     expect(elapsed).toBeLessThan(100);
   });
+
+  it("keeps untrusted session ids inside the backup directory", () => {
+    const fp = backupConversation("hello", "../../outside/session");
+    expect(path.dirname(fp!)).toBe(backupDir);
+    expect(path.basename(fp!)).not.toContain("..");
+  });
 });
 
 describe("deferred prune", () => {
-  it("trims files past the count cap after the deferred prune runs", async () => {
+  it("trims owned backups without deleting unrelated markdown", async () => {
     fs.mkdirSync(backupDir, { recursive: true });
+    const unrelated = path.join(backupDir, "user-notes.md");
+    fs.writeFileSync(unrelated, "do not delete");
     // Pre-populate with BACKUP_MAX_FILES + 5 backups so the trim has work to do.
     const total = BACKUP_MAX_FILES + 5;
     const now = Date.now();
     for (let i = 0; i < total; i++) {
       const fp = path.join(backupDir, "f-" + i + ".md");
-      fs.writeFileSync(fp, "x");
+      fs.writeFileSync(fp, "# Smart Compact Backup\n# Session: old\n\nx");
       // Stagger mtimes so the prune has a deterministic newest→oldest order.
       const t = (now - (total - i) * 1000) / 1000;
       fs.utimesSync(fp, t, t);
@@ -81,7 +89,9 @@ describe("deferred prune", () => {
     backupConversation("trigger prune", "trigger");
     await flushDeferred();
     // After the deferred prune runs we should be at the cap (or close to it).
-    const remaining = fs.readdirSync(backupDir).filter(n => n.endsWith(".md")).length;
-    expect(remaining).toBeLessThanOrEqual(BACKUP_MAX_FILES + 1); // +1 for the trigger backup
+    const remainingOwned = fs.readdirSync(backupDir)
+      .filter(name => fs.readFileSync(path.join(backupDir, name), "utf8").startsWith("# Smart Compact Backup\n")).length;
+    expect(remainingOwned).toBeLessThanOrEqual(BACKUP_MAX_FILES);
+    expect(fs.readFileSync(unrelated, "utf8")).toBe("do not delete");
   });
 });

@@ -161,6 +161,42 @@ describe("exploration cost guard", () => {
   });
 });
 
+describe("tool capability caching", () => {
+  const messages = [{ role: "user", content: "inspect a complex session" }] as LlmMessage[];
+  const extraction = {
+    modifiedFiles: [], readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
+    mainGoal: "g", lastUserMessages: [], lastErrors: [], messageCount: 1,
+  } as any;
+  const model = { id: "probe-cache", provider: "openai", api: "openai-responses", contextWindow: 128_000, maxTokens: 128_000 } as any;
+  const run = async (status: number, message: string) => {
+    const services = createServices({
+      llm: {
+        complete: async (_model, body) => {
+          if (Array.isArray((body as any).tools)) {
+            const error = new Error(message) as Error & { status: number };
+            error.status = status;
+            throw error;
+          }
+          return {
+            role: "assistant", content: [{ type: "text", text: '{"boundaries":[{"afterIndex":0,"topic":"done","priority":"normal","confidence":0.8}],"mainGoal":"g","sessionType":"implementation"}' }],
+            usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, stopReason: "stop", timestamp: Date.now(),
+          } as any;
+        },
+      },
+    });
+    await exploreConversation(messages, extraction, model, { apiKey: "k" }, undefined, undefined, undefined, undefined, undefined, services);
+    return services.toolSupport.get(["openai", "openai-responses", "", "probe-cache"].join("\0"), Date.now());
+  };
+
+  it("does not cache transient probe failures as unsupported", async () => {
+    expect(await run(429, "rate limited")).toBeUndefined();
+  });
+
+  it("caches an explicit unsupported-tools response", async () => {
+    expect(await run(400, "tools are not supported by this endpoint")).toBe(false);
+  });
+});
+
 describe("shouldExplore", () => {
   it("skips exploration for simple sessions", () => {
     const extraction: import("../src/types.ts").StructuredExtraction = {

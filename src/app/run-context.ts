@@ -89,6 +89,8 @@ export interface ResolvedAuth {
 // adds to this base via intersection types.
 
 export interface RcBase {
+  /** Unique id for correlating staged and applied compaction lifecycle events. */
+  runId: string;
   // ExtensionContext is the narrower base shared with the event-handler ctx.
   // The pipeline never calls command-only methods (waitForIdle, newSession,
   // fork, navigate), so narrowing here lets both interactive commands and
@@ -101,6 +103,8 @@ export interface RcBase {
   cancellation: CancellationToken;
   pendingRef: PendingRef;
   isRunning: Cell<boolean> | SessionRunLock;
+  /** Removes a staged commit candidate when native apply fails. */
+  onNativeApplyError?: (runId: string, error: Error) => boolean;
   flags: RunFlags;
   userNote?: string;
   focus?: string;
@@ -132,9 +136,10 @@ export interface PreparedExt {
   providerCaps: ProviderCapabilities;
   estimator: TokenEstimator;
   adapted: boolean;
-  summaryAuth: ResolvedAuth;
-  segAuth: ResolvedAuth;
-  verifyAuth: ResolvedAuth;
+  summaryAuth?: ResolvedAuth;
+  /** Optional routes resolve credentials only when the stage actually runs. */
+  segAuth?: ResolvedAuth;
+  verifyAuth?: ResolvedAuth;
 }
 export type PreparedRc = RcBase & PreparedExt;
 

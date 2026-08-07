@@ -15,6 +15,7 @@ function entry(
   const route: ProviderRouteMetric = {
     stage: "synthesize", provider, model, calls: 2, successes: 2,
     avgLatencyMs: latency, inputTokens: 20_000, outputTokens: 2_000,
+    qualityScore: quality, qualityBasis: "pre-repair-verification",
   };
   return {
     ts: new Date().toISOString(), sessionId: Math.random().toString(),
@@ -64,6 +65,18 @@ describe("provider evaluation", () => {
     const report = evaluateProviderMetrics([entry("p", "m", 100, 1_000)], { minSamples: 5 });
     expect(report.recommendations[0]).toMatchObject({ model: null, confidence: 0 });
     expect(report.recommendations[0].reason).toContain("keep the selected model");
+  });
+
+  it("does not copy a run-level final score into unrelated provider stages", () => {
+    const routes: ProviderRouteMetric[] = [
+      { stage: "explore", provider: "p", model: "explorer", calls: 1, successes: 1, avgLatencyMs: 10, inputTokens: 10, outputTokens: 1 },
+      { stage: "synthesize", provider: "p", model: "writer", calls: 1, successes: 1, avgLatencyMs: 10, inputTokens: 10, outputTokens: 1, qualityScore: 72, qualityBasis: "pre-repair-verification" },
+      { stage: "verify", provider: "p", model: "repairer", calls: 1, successes: 1, avgLatencyMs: 10, inputTokens: 10, outputTokens: 1 },
+    ];
+    const report = evaluateProviderMetrics([entry("p", "writer", 100, 10, { providerRoutes: routes })], { minSamples: 2 });
+    expect(report.cells.find(cell => cell.stage === "synthesize")?.avgQuality).toBe(72);
+    expect(report.cells.find(cell => cell.stage === "explore")?.avgQuality).toBeNull();
+    expect(report.cells.find(cell => cell.stage === "verify")?.avgQuality).toBeNull();
   });
 
   it("does not trust legacy verification scores with incompatible semantics", () => {

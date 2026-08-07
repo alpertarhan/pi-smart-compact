@@ -114,7 +114,8 @@ describe("adversarial planning and safety", () => {
         getContextUsage: () => ({ tokens: 100_000 }), model: { contextWindow: 120_000 },
         sessionManager: { getBranch: () => branch, buildContextEntries: () => branch, getSessionId: () => "s" },
       },
-      profileCfg: { keepRecentTokens: 20_000 }, estimator,
+      profileCfg: PROFILES.balanced, estimator,
+      mode: "balanced", profile: "balanced",
       flags: { force: true }, config: { minContextPercent: 60 }, notify: () => {},
     } as any);
     expect(window!.accTokens).toBeGreaterThanOrEqual(20_000);

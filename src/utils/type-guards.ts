@@ -82,6 +82,7 @@ export function isValidSmartCompactDetails(d: unknown): d is SmartCompactDetails
   if (r.verified !== undefined && typeof r.verified !== "boolean") return false;
   if (r.backupPath !== undefined && r.backupPath !== null && typeof r.backupPath !== "string") return false;
   if (r.mode !== undefined && (typeof r.mode !== "string" || !KNOWN_MODES.has(r.mode))) return false;
+  if (r.runId !== undefined && (typeof r.runId !== "string" || r.runId.length < 8 || r.runId.length > 100)) return false;
   if (r.version !== undefined && typeof r.version !== "string") return false;
   if (r.releaseChannel !== undefined && r.releaseChannel !== "stable" && r.releaseChannel !== "canary") return false;
   if (r.providerRoutes !== undefined) {

@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to `8.0.0-rc.1`. The release candidate is prepared but is
+This guide applies to `8.0.0-rc.2`. The release candidate is prepared but is
 not published or deployed by repository validation.
 
 ## Compatibility
@@ -26,8 +26,9 @@ v8 writes continuity state under:
 
 v7's project-wide state file is left in place but is **not automatically
 injected**. Treating it as current could contaminate another session or a
-divergent branch. The first successfully applied v8 compaction seeds scoped
-state. No conversation log is rewritten during migration.
+divergent branch. The first host-confirmed v8 `session_compact` seeds scoped
+state; staging, cancellation, or a failed native apply writes nothing. No conversation log is
+rewritten during migration.
 
 Facts remain conservative: absence from a new window is not deletion. A fact is
 removed only by an explicit resolved/superseded override.
@@ -41,7 +42,9 @@ Applied, verified compactions are indexed into:
 ```
 
 The database is local, project-partitioned, mode `0600` where supported, and
-bounded to 2,000 non-structural fact nodes per project. It enables
+bounded to 2,000 non-structural fact nodes per project. Apply-confirmed state is
+queued for the next event-loop turn so SQLite indexing is not part of the
+native compaction hook's latency. It enables
 `smart_recall` and confirmation-gated `smart_save_memory`. Set
 `contextGraphEnabled` to `false` before first use to disable indexing and both
 tools. Disabling does not delete an existing database.
@@ -49,8 +52,10 @@ tools. Disabling does not delete an existing database.
 ### Metrics schema v2
 
 New metrics add version/channel, stage provider routes, verifier repair
-provenance, and a content-free failure taxonomy. Legacy JSONL rows remain
-readable, but their old verifier scores do not count as schema-v2 quality.
+provenance, run-correlated damage observations, and a content-free failure
+taxonomy. Route quality is only the synthesis stage's explicit pre-repair
+score; the final run score is not copied into Explore/Verify. Legacy JSONL rows
+remain readable, but their old verifier scores do not count as route quality.
 Consequently Data Confidence may start below 85 and rise as complete v8 runs
 replace legacy evidence.
 
@@ -80,11 +85,12 @@ See the README configuration table for budgets and monitoring options.
 2. Install the RC only after it is explicitly published to an RC tag.
 3. Leave all model routes null for the first cohort.
 4. Set `telemetryChannel: "canary"` only in that cohort.
-5. Collect at least 20 complete schema-v2 runs with ≥70% quality coverage.
+5. Collect at least 20 complete schema-v2 runs with ≥70% verifier-quality and
+   ≥70% correlated damage-observation coverage in both stable/canary cohorts.
 6. Run `bun run telemetry-report` from the installed package or open the local
    dashboard.
-7. Promote only on a `PROMOTE` result with no rollback triggers and Data
-   Confidence ≥85.
+7. Promote only on a `PROMOTE` result, ≥95% canary success, ≥85 absolute
+   quality, no rollback triggers, and Data Confidence ≥85.
 
 ## Rollback
 

@@ -6,7 +6,14 @@ import {
 
 const rc = (sessionId: string, entries = ["a"], mode = "balanced") => ({
   sessionId, projectId: "project", currentKeptEntryIds: entries, prevContext: "previous",
-  mode, profile: "balanced", modelLabel: "openai/test", config: { focusWeighting: true },
+  mode, profile: "balanced", modelLabel: "openai/test",
+  segModel: { provider: "openai", id: "segmenter" },
+  profileCfg: { summaryBudgetTokens: 6_000, keepRecentTokens: 20_000, minChunkTokens: 4_000, maxChunkTokens: 20_000, singlePassMaxTokens: 20_000, batchMaxTokens: 60_000 },
+  config: {
+    focusWeighting: true, zeroCallEnabled: true,
+    summaryThinkingLevel: "minimal", segmentationThinkingLevel: "minimal",
+    maxLlmCalls: 0, maxLlmInputTokens: 0, codexMaxCallMs: 0, maxLatencyMs: 0,
+  },
   focus: "auth", userNote: undefined,
 }) as any;
 
@@ -27,6 +34,15 @@ describe("synthesis cache", () => {
     const noZeroCall = rc("s1");
     noZeroCall.config.zeroCallEnabled = false;
     expect(getCachedSynthesis(synthesisCacheKey(noZeroCall), 101)).toBeNull();
+    const differentSegmenter = rc("s1");
+    differentSegmenter.segModel.id = "other";
+    expect(getCachedSynthesis(synthesisCacheKey(differentSegmenter), 101)).toBeNull();
+    const differentThinking = rc("s1");
+    differentThinking.config.summaryThinkingLevel = "high";
+    expect(getCachedSynthesis(synthesisCacheKey(differentThinking), 101)).toBeNull();
+    const differentRetention = rc("s1");
+    differentRetention.profileCfg.keepRecentTokens++;
+    expect(getCachedSynthesis(synthesisCacheKey(differentRetention), 101)).toBeNull();
   });
 
   it("caches chunk summaries by content without sharing mutable arrays", () => {

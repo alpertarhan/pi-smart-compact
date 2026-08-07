@@ -22,7 +22,7 @@ section is about lifecycle.
 | Surface | Lifecycle |
 | --- | --- |
 | `/smart-compact` | Manual command. Interactive picker or direct args. Bypasses the adaptive gate. |
-| `session_before_compact` | Auto hook. Consumes any pending summary, else runs when context pressure is high. |
+| `session_before_compact` | Auto hook. Returns/stages a pending summary or runs under pressure; durable commit waits for matching `session_compact`. |
 | `smart_compact` tool | Agent-callable. Prepares a pending summary; never compacts mid-turn. |
 | `smart_recall` tool | Searches only the current project's bounded context graph; same session/branch ranks first. |
 | `smart_save_memory` tool | Persists one explicit user-confirmed project fact after secret/PII scrubbing. |
@@ -186,7 +186,7 @@ quality floor. Final verification runs again after continuity injection.
 - **Canonical summary IR** accepts recognized H1/H2/H3 headings, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
 - **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Provenance is persisted and shown before optional approval.
 - **Fine tool semantics** separate read/search/list/mutate/delete/execute operations. Pruning deduplicates only identical idempotent access signatures.
-- **Unified token planning** uses one run-scoped provider/model-calibrated estimator, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, and reserves/reconciles every request against the mode's aggregate prompt-token cap.
+- **Unified token planning** uses a run-bound estimator with bounded process-shared provider/model calibration, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, and reserves/reconciles every request against the mode's aggregate prompt/output-token caps.
 - **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in.
 - **Policy controls** include focus weighting, exact call/latency budgets, fail-closed manual approval, online damage monitoring, and persisted open-loop overrides.
 - **Release gate** (`bun run gate`) covers adversarial parser, verification, tool, cache, budget, scrub and damage fixtures.
@@ -194,8 +194,9 @@ quality floor. Final verification runs again after continuity injection.
 ## State, caching & persistence
 
 Post-verification, `app/steps/state.ts` + `src/utils/state.ts` enrich the
-summary, and `app/steps/persist.ts` applies the compaction and persists
-reusable state.
+summary. `session_before_compact` only stages it; after the host emits the
+matching `session_compact`, `app/steps/persist.ts` commits reusable state and
+success telemetry. Aborted/unconfirmed candidates write neither.
 
 | Concern | Where | Notes |
 | --- | --- | --- |
@@ -209,16 +210,21 @@ reusable state.
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 | Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 non-structural nodes per project |
 
-Consumed verified state is indexed into one local SQLite database partitioned by
-project fingerprint. Recall starts from FTS5 lexical matches, expands one hop
+Apply-confirmed verified state is queued and duplicate updates coalesce only
+for the exact project/session/branch head, then indexed on the next event-loop
+turn so SQLite work is not part of the native
+compaction hook's latency. The referenced queue timer survives extension
+shutdown/reload in the process; graph data is derived and a later cumulative
+state safely supersedes a missed update after a hard process kill. Recall starts from FTS5 lexical matches, expands one hop
 through file-reference edges, then applies session, branch, fact-kind,
 confidence, recency, and explicit-memory weights. Exact equivalent facts are
 deduplicated before bounded output. Resolved/superseded state is removed from
 the active FTS index; another project's rows are never eligible.
 
 **Important retention limits:** pending in-memory compaction 5 min · exploration
-tool-support cache 30 min · extraction cache 1 h · compaction state 7 d · context
-graph 2,000 fact nodes per project · remediation hints 7 d · metrics and damage
+tool-support cache 1 h / 128 routes · token calibration 128 routes · extraction
+cache 1 h · compaction state 7 d · context graph 2,000 non-structural fact nodes
+per project · remediation hints 7 d · metrics and damage
 JSONL logs 5 MiB each.
 
 ## Concurrency & safety model
@@ -255,11 +261,13 @@ mid-`applyCompaction`.
 
 ### Filesystem & concurrency
 
-All disk writes go through [`src/infra/fs.ts`](./src/infra/fs.ts): atomic
-temp-file + rename so a crash never leaves a half-truncated JSON, and a
-`mkdir`-based advisory lock around the append-only metrics log so concurrent
-sessions cannot interleave bytes. Per-run state lives on the
-[`services` container](#dependency-injection), not module singletons.
+JSON/text cache writes use [`src/infra/fs.ts`](./src/infra/fs.ts): atomic
+temp-file + rename prevents half-truncated readers but intentionally does not
+claim fsync/power-loss durability. Append/trim operations use a `mkdir`-based
+cross-process lock and fail closed if ownership cannot be acquired, so sessions
+cannot interleave bytes. SQLite supplies its own WAL durability. Native
+continuity handoffs are 0600, one-shot, bounded, and keyed by project + session
++ branch head.
 
 ## Provider awareness
 
@@ -289,9 +297,12 @@ phase's deterministic fallback.
 [`src/domain/provider-evaluation.ts`](./src/domain/provider-evaluation.ts)
 collapses call telemetry into Explore/Synthesize/Verify routes and compares
 provider/models across a deterministic context-pressure × tool-density matrix.
-Only schema-v2 rows contribute verifier quality; legacy rows contribute latency
-and reliability. Recommendations require minimum samples, ≥80% call reliability, and ≥50%
-schema-v2 quality coverage, shrink toward neutral under low confidence, and are advisory only.
+Only an explicitly attributed pre-repair synthesis score contributes route
+quality; a run's final verifier score is never copied into Explore/Verify.
+Legacy or operational-only routes still contribute latency and reliability.
+Recommendations require minimum samples, ≥80% call reliability, and ≥50%
+stage-local quality coverage, shrink toward neutral under low confidence, and
+are advisory only.
 They never mutate config or replace the selected model. The opt-in live harness
 runs three identical bounded continuity scenarios across explicitly named
 models.
@@ -303,7 +314,9 @@ content-free failure taxonomy, aggregates schema-v2 run quality without IDs or
 conversation data, and compares an explicitly tagged `canary` cohort against
 `stable` history. A deterministic gate returns Hold, Rollback, or Promote from
 sample/quality coverage plus failure, verifier quality, p95 latency, token,
-heuristic-fallback, and post-compaction-damage thresholds. It is deliberately
+heuristic-fallback, and post-compaction-damage thresholds. Damage observations
+join their originating compaction by local run id, dedupe per run, and require
+≥70% stable/canary coverage before promotion. It is deliberately
 advisory: rollout selection, configuration changes, and rollback remain
 external operations.
 
@@ -319,18 +332,19 @@ produces remediation guidance instead of being imputed.
 ## Dependency injection
 
 [`src/infra/services.ts`](./src/infra/services.ts) is a per-`runSmartCompact`
-service bag. The previous module-level singletons (metrics array, tool-support
-cache, token calibration, compact-session id) leaked state across sessions and
-across tests. Each run gets its own container:
+service bag. Metrics, budgets, scrubbers, and prompt namespaces are isolated per
+run. Production shares only bounded provider/model capability and calibration
+knowledge, which contains no conversation/session data; tests use isolated
+stores by default:
 
 | Service | Role |
 | --- | --- |
 | `clock` | injectable wall clock (deterministic tests) |
 | `llm` | LLM client seam (production does not replay failed requests) |
-| `toolSupport` | provider tool-support cache (1 h TTL) |
+| `toolSupport` | process-shared in production; explicit unsupported capability, 1 h TTL / 128 routes |
 | `metrics` | bounded metrics sink |
 | `extractionCacheStats` | hit / miss counters |
-| `tokenCalibration` | per-(provider,model) EMA factors |
+| `tokenCalibration` | process-shared bounded per-(provider,model) EMA factors |
 | `compactSessionId` | per-run prompt-cache namespace |
 
 ## Layer responsibilities
@@ -397,7 +411,6 @@ All external-world interaction.
 | `infra/git.ts` | cached git-root discovery |
 | `infra/clock.ts` | injectable wall clock |
 | `infra/llm-client.ts` | LLM seam, custom-Codex wire cap, and ChatGPT Codex stream watchdog |
-| `infra/llm-retry.ts` | opt-in/tested 429/5xx backoff utility (not on the default cost path) |
 | `infra/services.ts` | per-run services container |
 | `infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
 | `infra/ai-messages.ts` | boundary adapters between `LlmMessage` and pi-ai `Message` |

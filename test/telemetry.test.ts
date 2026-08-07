@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
 import {
   assessCanary, buildPrivacySafeTelemetry, classifyTelemetryFailure, formatPrivacySafeTelemetry,
 } from "../src/domain/telemetry.ts";
@@ -9,13 +10,19 @@ function metric(
   patch: Partial<CompactMetricsEntry> = {},
 ): CompactMetricsEntry {
   return {
-    ts: new Date().toISOString(), sessionId: "private-session", metricsSchemaVersion: 2,
+    ts: new Date().toISOString(), runId: "run-" + randomUUID(), sessionId: "private-session", metricsSchemaVersion: 2,
     version: "8.0.0", releaseChannel: channel,
     totalCalls: 1, totalInput: 2_000, totalOutput: 500, totalCacheHit: 0,
     avgLatency: 1_000, cacheHitRate: 0, status: "success",
     verificationScore: 95, method: "eesv", provider: "p", model: "p/m",
     ...patch,
   };
+}
+
+function observed(entries: readonly CompactMetricsEntry[], damageScore = 0) {
+  return entries
+    .filter(entry => entry.status === "success" && entry.runId)
+    .map(entry => ({ runId: entry.runId, damageScore }));
 }
 
 describe("privacy-safe canary telemetry", () => {
@@ -39,14 +46,43 @@ describe("privacy-safe canary telemetry", () => {
     expect(report.reasons[0]).toContain("more canary runs");
   });
 
-  it("promotes only when baseline, sample, and quality gates pass", () => {
-    const report = assessCanary([
+  it("promotes only when baseline, sample, quality, and damage-observation gates pass", () => {
+    const entries = [
       ...Array.from({ length: 20 }, () => metric("stable")),
       ...Array.from({ length: 20 }, () => metric("canary")),
-    ], [], { version: "8.0.0", minCanaryRuns: 20 });
+    ];
+    const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.decision).toBe("promote");
     expect(report.triggers).toEqual([]);
     expect(report.dataConfidence).toBe(100);
+  });
+
+  it("never promotes an absolutely low-quality canary even when baseline is equally bad", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable", { verificationScore: 0 })),
+      ...Array.from({ length: 20 }, () => metric("canary", { verificationScore: 0 })),
+    ];
+    const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.decision).toBe("rollback");
+    expect(report.triggers).toContainEqual(expect.objectContaining({ metric: "quality", threshold: "<85 absolute" }));
+  });
+
+  it("accepts the exact 95% success boundary", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index === 0 ? "failure" : "success" })),
+      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index === 0 ? "failure" : "success" })),
+    ];
+    expect(assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 }).decision).toBe("promote");
+  });
+
+  it("never promotes a canary below the absolute 95% success floor", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index < 2 ? "failure" : "success" })),
+      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index < 2 ? "failure" : "success" })),
+    ];
+    const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.decision).toBe("rollback");
+    expect(report.triggers).toContainEqual(expect.objectContaining({ metric: "failure-rate", threshold: ">5% absolute" }));
   });
 
   it("rolls back early on measurable regressions", () => {
@@ -60,12 +96,52 @@ describe("privacy-safe canary telemetry", () => {
       method: "heuristic",
       failureKind: index < 10 ? "provider" : undefined,
     }));
-    const damage = Array.from({ length: 5 }, () => ({ version: "8.0.0", releaseChannel: "canary" as const, damageScore: 25 }));
+    const applied = [...baseline, ...canary].filter(entry => entry.status === "success");
+    const damage = applied.map((entry, index) => ({
+      runId: entry.runId,
+      damageScore: entry.releaseChannel === "canary" && index >= baseline.length && index < baseline.length + 5 ? 25 : 0,
+    }));
     const report = assessCanary([...baseline, ...canary], damage, { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.decision).toBe("rollback");
     expect(report.triggers.map(trigger => trigger.metric)).toEqual(expect.arrayContaining([
       "failure-rate", "quality", "latency", "tokens", "fallback", "damage",
     ]));
+  });
+
+  it("holds when post-compaction damage observations are not sufficiently covered", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      ...Array.from({ length: 20 }, () => metric("canary")),
+    ];
+    const halfObserved = [
+      ...observed(entries.filter(entry => entry.releaseChannel === "stable")).slice(0, 10),
+      ...observed(entries.filter(entry => entry.releaseChannel === "canary")).slice(0, 10),
+    ];
+    const report = assessCanary(entries, halfObserved, { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.decision).toBe("hold");
+    expect(report.canary.damageCoverage).toBe(0.5);
+    expect(report.reasons.join(" ")).toContain("damage-observation coverage");
+
+    const missingIds = entries.map((entry, index) => index % 2 ? entry : { ...entry, runId: undefined });
+    const uncorrelatable = assessCanary(missingIds, observed(missingIds), { version: "8.0.0", minCanaryRuns: 20 });
+    expect(uncorrelatable.canary.damageCoverage).toBe(0.5);
+    expect(uncorrelatable.decision).toBe("hold");
+  });
+
+  it("joins damage by runId and deduplicates multiple observations", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      ...Array.from({ length: 20 }, () => metric("canary")),
+    ];
+    const observations = observed(entries);
+    const canaryRun = entries.find(entry => entry.releaseChannel === "canary")!.runId!;
+    observations.push({ runId: canaryRun, damageScore: 10 });
+    observations.push({ runId: canaryRun, damageScore: 25 });
+    observations.push({ runId: "run-unrelated", damageScore: 100 });
+    const report = assessCanary(entries, observations, { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.canary.damageCoverage).toBe(1);
+    expect(report.canary.damageRate).toBe(0.05);
+    expect(report.decision).toBe("promote");
   });
 
   it("exports aggregates without session, project, prompt, path, or error text", () => {
@@ -75,6 +151,7 @@ describe("privacy-safe canary telemetry", () => {
     ], [], { version: "8.0.0", minCanaryRuns: 5 });
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("private-session");
+    expect(serialized).not.toContain("run-");
     expect(serialized).not.toContain("projectId");
     expect(report.aggregates[0].model).toBe("m");
     expect(report.failures.authentication).toBe(1);

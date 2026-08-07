@@ -79,6 +79,7 @@ export interface LLMCallMetric {
   inputTokens: number;
   outputTokens: number;
   cacheHitTokens: number;
+  cacheWriteTokens: number;
   latencyMs: number;
   success: boolean;
 }
@@ -94,6 +95,9 @@ export interface ProviderRouteMetric {
   avgLatencyMs: number;
   inputTokens: number;
   outputTokens: number;
+  /** Stage-local summary quality before deterministic/LLM repair. */
+  qualityScore?: number;
+  qualityBasis?: "pre-repair-verification";
 }
 
 export interface PipelinePhaseTiming {
@@ -108,6 +112,8 @@ export type TelemetryFailureKind =
 
 export interface CompactMetricsEntry {
   ts: string;
+  /** Local-only lifecycle id used to join post-compaction observations. */
+  runId?: string;
   metricsSchemaVersion?: 2;
   version?: string;
   releaseChannel?: "stable" | "canary";
@@ -117,6 +123,7 @@ export interface CompactMetricsEntry {
   totalInput: number;
   totalOutput: number;
   totalCacheHit: number;
+  totalCacheWrite?: number;
   avgLatency: number;
   cacheHitRate: number;
   /** Deterministic extraction-cache stats, distinct from provider prompt-cache. */
@@ -172,6 +179,8 @@ export interface ChunkSummary {
 }
 
 export interface SmartCompactDetails {
+  /** Correlates session_before_compact staging with session_compact commit. */
+  runId?: string;
   method: "eesv" | "single-pass" | "heuristic";
   chunkCount: number;
   topics: string[];
@@ -215,20 +224,22 @@ export interface Cell<T> {
   value: T;
 }
 
+export type MetricsSnapshot = Omit<CompactMetricsEntry, "ts" | "sessionId">;
+
 export interface PendingCompaction {
+  /** Unique lifecycle correlation id persisted in compaction details. */
+  runId: string;
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
   details: SmartCompactDetails;
+  /** Complete metrics payload, appended only after Pi emits session_compact. */
+  metricsSnapshot?: MetricsSnapshot;
   compactionState?: CompactionState;
   /**
-   * Project id + extraction snapshot for durable-state persistence at
-   * consume time. The auto-trigger and tool paths never reach
-   * `applyCompaction` (they return early), so the only moment we *know*
-   * the payload is being applied is when `session_before_compact`
-   * consumes it. Carrying these fields lets `persistConsumedState` write
-   * the project fingerprint + compaction state exactly once, on every
-   * path, at that moment.
+   * Project id + extraction snapshot for durable-state persistence after
+   * Pi confirms the entry via `session_compact`. Consuming in
+   * `session_before_compact` only stages the candidate; it is not a commit.
    */
   projectId?: string;
   extraction?: StructuredExtraction;
@@ -435,6 +446,8 @@ export interface ContinuityScope {
   projectId: string;
   sessionId: string;
   branchHeadId?: string;
+  /** Bounded active ancestry used to resolve facts without touching siblings. */
+  branchAncestryIds?: string[];
 }
 
 /** Structured machine-readable compaction state */

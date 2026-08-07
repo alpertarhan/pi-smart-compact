@@ -234,7 +234,7 @@ export async function showResultScreen(
     if (ms.totalCalls > 0) {
       const providerCachePct = Math.round(ms.cacheHitRate * 100);
       const extractionCachePct = Math.round(ecs.hitRate * 100);
-      const promptInput = effectivePromptInputTokens(ms.totalInput, ms.totalCacheHit);
+      const promptInput = effectivePromptInputTokens(ms.totalInput, ms.totalCacheHit, ms.totalCacheWrite);
       const inputLabel = ms.totalCacheHit > 0
         ? promptInput.toLocaleString() + "t prompt (" + ms.totalInput.toLocaleString() + "t new, " + ms.totalCacheHit.toLocaleString() + "t cached)"
         : ms.totalInput.toLocaleString() + "t in";
@@ -413,7 +413,7 @@ export async function showMetricsDashboardUI(
 
     const renderHeader = (width: number): string[] => [
       truncateToWidth(theme.fg("accent", theme.bold("  📊 Smart Compact Dashboard")) + theme.fg("dim", "  " + entries.length + " recorded run(s)"), width),
-      truncateToWidth(theme.fg("dim", "  session: " + (opts.currentSessionId ?? "unknown")) + theme.fg("dim", latest ? " • latest score " + metricScore(latest) : "") + theme.fg(insights.confidence.targetMet ? "success" : "warning", " • Data Confidence " + insights.confidence.score + "/100"), width),
+      truncateToWidth(theme.fg("dim", "  session: " + (opts.currentSessionId ?? "unknown")) + theme.fg("dim", latest ? " • latest score " + metricScore(latest) : "") + theme.fg(insights.confidence.targetMet ? "success" : "warning", " • Data Confidence " + insights.confidence.score + "/100") + theme.fg(insights.quality.targetMet ? "success" : "warning", " • Quality " + insights.quality.healthScore + "/100"), width),
       truncateToWidth(theme.fg("borderMuted", "─".repeat(Math.max(0, width))), width),
     ];
 

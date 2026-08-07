@@ -85,7 +85,8 @@ function summarizeDashboard(entries: CompactMetricsEntry[]): MetricsDashboardSum
     avgDuration: Math.round(average(durations)),
     p95Duration: percentile(durations, 95),
     totalCalls: entries.reduce((sum, e) => sum + (e.totalCalls ?? 0), 0),
-    totalInput: entries.reduce((sum, e) => sum + (e.totalInput ?? 0), 0),
+    totalInput: entries.reduce((sum, e) =>
+      sum + (e.totalInput ?? 0) + (e.totalCacheHit ?? 0) + (e.totalCacheWrite ?? 0), 0),
     totalOutput: entries.reduce((sum, e) => sum + (e.totalOutput ?? 0), 0),
     totalSaved: entries.reduce((sum, e) => sum + (e.tokensSaved ?? 0), 0),
     avgScore: Math.round(average(scored)),
@@ -180,6 +181,7 @@ function canaryRows(insights: DashboardInsights): string {
     ["Avg tokens", metricNum(baseline.avgTokens), metricNum(canary.avgTokens)],
     ["Fallback", metricPct(baseline.fallbackRate), metricPct(canary.fallbackRate)],
     ["Damage", metricPct(baseline.damageRate), metricPct(canary.damageRate)],
+    ["Damage observed", metricPct(baseline.damageCoverage), metricPct(canary.damageCoverage)],
   ];
   return rows.map(row => `<tr><td>${escapeHtml(row[0])}</td><td class="num">${escapeHtml(row[1])}</td><td class="num">${escapeHtml(row[2])}</td></tr>`).join("\n");
 }
@@ -187,6 +189,7 @@ function canaryRows(insights: DashboardInsights): string {
 function qualityRows(insights: DashboardInsights): string {
   const quality = insights.quality;
   const values: Array<[string, string]> = [
+    ["Quality Health", quality.healthScore + "/100 (" + quality.healthLabel + ")"],
     ["Measured / missing", quality.measuredRuns + " / " + quality.missingRuns],
     ["Average / median / minimum", (quality.average?.toFixed(1) ?? "—") + " / " + (quality.median?.toFixed(1) ?? "—") + " / " + (quality.minimum?.toFixed(1) ?? "—")],
     ["Excellent ≥90 / pass 75–89 / low <75", quality.excellent + " / " + quality.passing + " / " + quality.low],
@@ -276,7 +279,8 @@ export function buildMetricsReport(
     "LLM calls: " + summary.totalCalls + ", input " + summary.totalInput + "t, output " + summary.totalOutput + "t",
     "Extraction cache: avg " + (extractionCacheRuns.length ? metricPct(extractionCacheAvg) : "—") + " across " + extractionCacheRuns.length + " measured run(s)",
     "Tokens saved: " + summary.totalSaved + "t, average verification score: " + summary.avgScore,
-    "Data Confidence: " + confidence.score + "/100 (" + confidence.label + "; target ≥85 " + (confidence.targetMet ? "met" : "not met") + ")",
+    "Data Confidence: " + confidence.score + "/100 (telemetry completeness; target ≥85 " + (confidence.targetMet ? "met" : "not met") + ")",
+    "Quality Health: " + quality.healthScore + "/100 (" + quality.healthLabel + "; target ≥85 " + (quality.targetMet ? "met" : "not met") + ")",
     "Evidence: sample " + confidence.sampleScore + "/25 · schema-v2 " + confidence.schemaScore + "/25 · quality " + confidence.qualityScore + "/20 · completeness " + confidence.completenessScore + "/20 · freshness " + confidence.freshnessScore + "/10",
     ...confidence.guidance.map(item => "- " + item),
     "",
@@ -322,6 +326,7 @@ export function writeMetricsDashboard(
     const providerGroups = groupMetrics(entries, e => e.provider ?? e.model?.split("/")[0]);
     const healthTone = summary.error + summary.timeout > 0 ? "warn" : "good";
     const confidenceTone = insights.confidence.targetMet ? "good" : insights.confidence.score >= 60 ? "warn" : "bad";
+    const qualityTone = insights.quality.targetMet ? "good" : insights.quality.healthScore >= 60 ? "warn" : "bad";
     const canaryTone = insights.canary.decision === "promote" ? "good" : insights.canary.decision === "rollback" ? "bad" : "warn";
     const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Smart Compact Metrics</title><style>${dashboardCss()}</style></head><body><main>
       <header><div><div class="eyebrow">pi-smart-compact</div><h1>Operational Metrics</h1><div class="muted">Generated ${escapeHtml(new Date().toISOString())} · ${metricNum(entries.length)} recent runs · local file dashboard</div></div><div>${badge(latest?.status)} ${latest ? `<span class="muted">latest ${escapeHtml(latest.mode ?? latest.profile ?? "unknown")}</span>` : ""}</div></header>
@@ -330,7 +335,8 @@ export function writeMetricsDashboard(
         ${metricCard("Avg duration", metricMs(summary.avgDuration), `p95 ${metricMs(summary.p95Duration)}`)}
         ${metricCard("LLM calls", compactNumber(summary.totalCalls), `${compactNumber(summary.totalInput)} input · ${compactNumber(summary.totalOutput)} output`)}
         ${metricCard("Tokens saved", compactNumber(summary.totalSaved), `avg score ${summary.avgScore || "—"}`)}
-        ${metricCard("Data Confidence", insights.confidence.score + "/100", `target ≥85 ${insights.confidence.targetMet ? "met" : "not met"}`, confidenceTone)}
+        ${metricCard("Data Confidence", insights.confidence.score + "/100", `telemetry completeness · target ≥85 ${insights.confidence.targetMet ? "met" : "not met"}`, confidenceTone)}
+        ${metricCard("Quality Health", insights.quality.healthScore + "/100", `actual outcomes · target ≥85 ${insights.quality.targetMet ? "met" : "not met"}`, qualityTone)}
         ${metricCard("Canary gate", insights.canary.decision.toUpperCase(), `${insights.canary.canary.runs} canary · ${insights.canary.dataConfidence}% confidence`, canaryTone)}
       </section>
       <section class="layout">

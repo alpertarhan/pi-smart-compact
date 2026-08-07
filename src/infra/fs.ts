@@ -24,9 +24,8 @@
  *    `atomicWriteFileSync` for the existing call sites (kept simple) and
  *    `atomicWriteFile` for new async-friendly callers (background metrics).
  *
- * Lock files are best-effort; they prevent the common case (two pi sessions
- * appending at once) without introducing a hard dependency. If a stale lock
- * sticks around for >5s we ignore it.
+ * Lock acquisition is fail-closed: callers never continue an append/trim
+ * without ownership. Locks older than 5s are reclaimed with an atomic rename.
  */
 
 import fs from "node:fs";
@@ -65,8 +64,10 @@ function tempPath(target: string): string {
 }
 
 /**
- * Atomically write a file: write to a sibling temp file, fsync (best effort),
- * then rename. If anything fails mid-write the original file is preserved.
+ * Atomically write a file: write to a sibling temp file, then rename. This
+ * prevents partial readers and preserves the previous file on process failure;
+ * it does not claim power-loss durability because it deliberately avoids fsync
+ * on latency-sensitive cache/backup writes.
  */
 export function atomicWriteFileSync(target: string, data: string | Uint8Array): void {
   ensureDir(path.dirname(target));
@@ -98,9 +99,9 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
  * `mkdir` is atomic on every reasonable filesystem, which is exactly what we
  * need for a multi-process advisory lock without depending on `flock`.
  *
- * The lock is best-effort: if it stays held for longer than LOCK_STALE_MS we
- * assume the owning process crashed and reclaim it. Callers should always
- * release through the returned function.
+ * If it stays held for longer than LOCK_STALE_MS we assume the owning process
+ * crashed and reclaim it. Acquisition errors/timeouts throw, so callers never
+ * proceed unlocked. Callers should always release through the returned function.
  */
 export function acquireLockSync(target: string): () => void {
   const lockDir = target + ".lock";
@@ -110,8 +111,7 @@ export function acquireLockSync(target: string): () => void {
       return () => { try { fs.rmdirSync(lockDir); } catch { /* ignore */ } };
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") {
-        log.warn("acquireLockSync failed for " + target, e);
-        return () => { /* no-op */ };
+        throw new Error("Failed to acquire lock for " + target, { cause: e });
       }
       try {
         const stat = fs.statSync(lockDir);
@@ -140,27 +140,17 @@ export function acquireLockSync(target: string): () => void {
           continue;
         }
       } catch { /* lock vanished between EEXIST and stat */ }
-      // Yield the CPU between retries instead of spinning. `Atomics.wait`
-      // on a tiny SharedArrayBuffer parks the thread without burning a core.
-      // Node and Bun both allow this on the main thread (only browsers
-      // forbid it), so the catch branch fires only in exotic sandboxes
-      // where SharedArrayBuffer itself is unavailable.
-      // ponytail: the spin fallback burns a core for up to 2s under
-      // contention; acceptable because it's unreachable on our supported
-      // runtimes — revisit if a SAB-less host becomes a target.
+      // Park instead of burning the main thread. Supported Node/Bun runtimes
+      // allow Atomics.wait here; exotic runtimes fail closed rather than spin.
       try {
         const sab = new SharedArrayBuffer(4);
-        const view = new Int32Array(sab);
-        // We never notify, so this always times out after LOCK_RETRY_MS.
-        Atomics.wait(view, 0, 0, LOCK_RETRY_MS);
-      } catch {
-        const until = Date.now() + LOCK_RETRY_MS;
-        while (Date.now() < until) { /* spin */ }
+        Atomics.wait(new Int32Array(sab), 0, 0, LOCK_RETRY_MS);
+      } catch (error) {
+        throw new Error("Synchronous lock waiting is unavailable", { cause: error });
       }
     }
   }
-  log.warn("acquireLockSync gave up waiting for " + target);
-  return () => { /* no-op fallback */ };
+  throw new Error("Timed out acquiring lock for " + target);
 }
 
 /**

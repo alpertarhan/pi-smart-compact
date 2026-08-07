@@ -36,6 +36,7 @@ function assistantText(text: string): LlmMessage {
 
 function makeDetails(over: Partial<SmartCompactDetails> = {}): SmartCompactDetails {
   return {
+    runId: "run-damage-test",
     method: "eesv",
     chunkCount: 3,
     topics: ["Refactor authentication module"],
@@ -66,6 +67,7 @@ describe("OnlineDamageMonitor", () => {
     const observation = monitor.observe("session-1", assistantToolCall("read", { path: "src/auth.ts" }));
     expect(observation?.report.damageScore).toBeGreaterThan(0);
     expect(observation?.projectId).toBe("project-1");
+    expect(observation?.details.runId).toBe("run-damage-test");
     expect(monitor.size()).toBe(0);
   });
 

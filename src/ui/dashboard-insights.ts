@@ -16,6 +16,10 @@ export interface DashboardDataConfidence {
 }
 
 export interface DashboardQualityInsight {
+  /** Actual outcome health; separate from telemetry completeness confidence. */
+  healthScore: number;
+  healthLabel: "healthy" | "degraded" | "critical";
+  targetMet: boolean;
   measuredRuns: number;
   missingRuns: number;
   average: number | null;
@@ -122,10 +126,20 @@ function qualityInsights(entries: readonly CompactMetricsEntry[]): DashboardQual
   const gains = v2.flatMap(entry => finite(entry.verificationScore) && finite(entry.initialVerificationScore)
     ? [entry.verificationScore - entry.initialVerificationScore] : []);
   const average = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const averageScore = average(scores);
+  const passingRate = scores.length ? scores.filter(score => score >= 85).length / scores.length : 0;
+  const gapFreeRate = v2.length ? v2.filter(entry => (entry.remainingVerificationGaps ?? entry.verificationGaps ?? 0) === 0).length / v2.length : 0;
+  const successRate = v2.length ? v2.filter(entry => entry.status === "success" || entry.status === "dry-run").length / v2.length : 0;
+  const healthScore = scores.length
+    ? Math.round((averageScore! / 100) * 60 + passingRate * 20 + gapFreeRate * 10 + successRate * 10)
+    : 0;
   return {
+    healthScore,
+    healthLabel: healthScore >= 85 ? "healthy" : healthScore >= 60 ? "degraded" : "critical",
+    targetMet: healthScore >= 85,
     measuredRuns: scores.length,
     missingRuns: v2.length - scores.length,
-    average: average(scores),
+    average: averageScore,
     median: median(scores),
     minimum: scores.length ? Math.min(...scores) : null,
     excellent: scores.filter(score => score >= 90).length,
@@ -172,8 +186,10 @@ function providerInsights(entries: readonly CompactMetricsEntry[]): DashboardPro
       group.successes += Math.max(0, Math.min(route.calls, route.successes));
       group.latency += Math.max(0, route.avgLatencyMs) * route.calls;
       group.tokens += Math.max(0, route.inputTokens) + Math.max(0, route.outputTokens);
-      if (entry.metricsSchemaVersion === 2 && finite(entry.verificationScore)) {
-        group.quality += entry.verificationScore;
+      if (entry.metricsSchemaVersion === 2
+        && route.qualityBasis === "pre-repair-verification" && finite(route.qualityScore)
+        && route.qualityScore >= 0 && route.qualityScore <= 100) {
+        group.quality += route.qualityScore;
         group.qualityRuns++;
       }
       groups.set(key, group);
@@ -198,7 +214,8 @@ export function formatDashboardQuality(insights: DashboardInsights): string[] {
   return [
     "Quality drilldown",
     "",
-    "Data Confidence: " + insights.confidence.score + "/100 (" + insights.confidence.label + "; target ≥85 " + (insights.confidence.targetMet ? "met" : "not met") + ")",
+    "Data Confidence: " + insights.confidence.score + "/100 (telemetry completeness; target ≥85 " + (insights.confidence.targetMet ? "met" : "not met") + ")",
+    "Quality Health: " + q.healthScore + "/100 (" + q.healthLabel + "; target ≥85 " + (q.targetMet ? "met" : "not met") + ")",
     "Measured/missing schema-v2 runs: " + q.measuredRuns + "/" + q.missingRuns,
     "Average: " + (q.average?.toFixed(1) ?? "—") + " | median: " + (q.median?.toFixed(1) ?? "—") + " | minimum: " + (q.minimum?.toFixed(1) ?? "—"),
     "Bands: excellent ≥90 " + q.excellent + " | pass 75–89 " + q.passing + " | low <75 " + q.low,
@@ -233,6 +250,7 @@ export function formatDashboardCanary(insights: DashboardInsights): string[] {
     "Tokens: stable " + c.baseline.avgTokens + " | canary " + c.canary.avgTokens,
     "Fallback: stable " + Math.round(c.baseline.fallbackRate * 100) + "% | canary " + Math.round(c.canary.fallbackRate * 100) + "%",
     "Damage: stable " + Math.round(c.baseline.damageRate * 100) + "% | canary " + Math.round(c.canary.damageRate * 100) + "%",
+    "Damage observed: stable " + Math.round(c.baseline.damageCoverage * 100) + "% | canary " + Math.round(c.canary.damageCoverage * 100) + "%",
     "",
     ...c.reasons.map(item => "- " + item),
     ...c.triggers.map(item => "- Trigger " + item.metric + ": " + item.baseline + " → " + item.canary + " (" + item.threshold + ")"),

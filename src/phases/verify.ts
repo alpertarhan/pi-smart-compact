@@ -15,7 +15,6 @@ import { buildUniquePathNeedles, isKnownPathReference } from "../utils/file-need
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
-import { extractCheckKeywords } from "../domain/keywords.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 
@@ -33,8 +32,101 @@ export function formatVerificationGap(gap: VerificationGap): string {
   }
 }
 
+const NEGATION_MARKERS = new Set([
+  "no", "not", "never", "without", "avoid", "forbidden", "prohibit",
+  "değil", "asla", "olmadan", "yasak", "hayır",
+]);
+const CONDITION_MARKERS = new Set([
+  "only", "after", "before", "with", "requir", "until",
+  "sadece", "sonra", "önce", "gerekli", "gerektirir",
+]);
+const SEMANTIC_STOP = new Set([
+  "the", "and", "that", "this", "with", "from", "into", "must", "should",
+  "only", "after", "before", "without", "never", "not", "does", "have",
+  "için", "ile", "sonra", "önce", "sadece", "asla", "değil", "olmadan",
+]);
+
+function stemToken(token: string): string {
+  const lower = token.toLocaleLowerCase();
+  if (lower.length > 6 && lower.endsWith("ing")) return lower.slice(0, -3);
+  if (lower.length > 5 && lower.endsWith("ed")) return lower.slice(0, -2);
+  if (lower.length > 5 && lower.endsWith("es")) return lower.slice(0, -2);
+  if (lower.length > 4 && lower.endsWith("s")) return lower.slice(0, -1);
+  return lower;
+}
+
+function semanticTokens(text: string): string[] {
+  return (text.normalize("NFKC").match(/[\p{L}\p{N}_-]+/gu) ?? [])
+    .map(stemToken)
+    .filter(token => token.length > 2);
+}
+
+function evidenceFragments(text: string): string[] {
+  return text.split(/(?:\r?\n|[.;])/).map(part => part.replace(/^\s*[-*\d.)]+\s*/, "").trim()).filter(Boolean);
+}
+
+function hasNearbyMarker(tokens: string[], anchor: string, markers: Set<string>): boolean {
+  return tokens.some((token, index) => token === anchor
+    && tokens.slice(Math.max(0, index - 2), index + 3).some(near => markers.has(near)));
+}
+
+/** Conservative deterministic semantic evidence for goals/constraints/decisions. */
+function semanticShape(source: string): {
+  sourceTokens: string[]; concepts: string[]; anchor: string; negative: boolean; conditional: boolean;
+} {
+  const sourceTokens = semanticTokens(source);
+  const concepts = Array.from(new Set(sourceTokens.filter(token =>
+    !SEMANTIC_STOP.has(token) && !NEGATION_MARKERS.has(token) && !CONDITION_MARKERS.has(token),
+  )));
+  const negative = sourceTokens.some(token => NEGATION_MARKERS.has(token));
+  const conditional = sourceTokens.some(token => CONDITION_MARKERS.has(token));
+  const anchor = concepts.find(concept => hasNearbyMarker(sourceTokens, concept, NEGATION_MARKERS)) ?? concepts[0] ?? "";
+  return { sourceTokens, concepts, anchor, negative, conditional };
+}
+
+function hasSemanticEvidence(source: string, target: string): boolean {
+  const { sourceTokens, concepts, anchor, negative, conditional } = semanticShape(source);
+  if (!concepts.length) return true;
+  const required = Math.min(concepts.length, Math.max(1, Math.ceil(concepts.length * 0.6)));
+  return evidenceFragments(target).some(fragment => {
+    const tokens = semanticTokens(fragment);
+    const overlap = concepts.filter(concept => tokens.includes(concept)).length;
+    if (overlap < required) return false;
+    if (negative && !hasNearbyMarker(tokens, anchor, NEGATION_MARKERS)) {
+      // A conditional prohibition ("do not X without Y") may be faithfully
+      // restated positively as "X only after/with Y".
+      const conditionalRestatement = sourceTokens.includes("without")
+        && tokens.some(token => CONDITION_MARKERS.has(token))
+        && overlap >= Math.min(2, concepts.length);
+      if (!conditionalRestatement) return false;
+    }
+    if (conditional && !negative
+      && !tokens.some(token => CONDITION_MARKERS.has(token))) return false;
+    return true;
+  });
+}
+
+function hasSemanticContradiction(source: string, target: string): boolean {
+  const { sourceTokens, concepts, anchor, negative, conditional } = semanticShape(source);
+  if (!anchor) return false;
+  return evidenceFragments(target).some(fragment => {
+    const tokens = semanticTokens(fragment);
+    if (!tokens.includes(anchor)) return false;
+    if (negative && !hasNearbyMarker(tokens, anchor, NEGATION_MARKERS)) {
+      const overlap = concepts.filter(concept => tokens.includes(concept)).length;
+      const validConditional = sourceTokens.includes("without")
+        && tokens.some(token => CONDITION_MARKERS.has(token))
+        && overlap >= Math.min(2, concepts.length);
+      return !validConditional;
+    }
+    return conditional && !negative && !tokens.some(token => CONDITION_MARKERS.has(token));
+  });
+}
+
 export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
-  return gap.kind !== "fabricated-file" && gap.kind !== "inconsistency";
+  if (gap.kind === "fabricated-file") return true;
+  if (gap.kind === "inconsistency") return gap.detail.startsWith("blocked-none:");
+  return true;
 }
 
 export function verifySummary(
@@ -98,19 +190,30 @@ export function verifySummary(
     }
   }
 
+  const constraintTarget = [
+    findSection(parsed, "constraints")?.body ?? "",
+    findSection(parsed, "critical-context")?.body ?? "",
+  ].join("\n");
   for (const constraint of constraintEvidence) {
-    const keywords = extractCheckKeywords(constraint.text, 3);
-    if (keywords.length > 0 && !keywords.some(keyword => lower.includes(keyword.toLowerCase()))) {
+    if (!hasSemanticEvidence(constraint.text, constraintTarget)) {
       gaps.push({ kind: "missing-constraint", text: constraint.text });
-      score -= 3;
+      score -= 8;
+    }
+    if (hasSemanticContradiction(constraint.text, constraintTarget)) {
+      gaps.push({ kind: "inconsistency", detail: "semantic-contradiction: constraint contradicts " + constraint.text.slice(0, TRUNC.SNIPPET) });
+      score -= 20;
     }
   }
 
   if (goalEvidence) {
-    const keywords = extractCheckKeywords(goalEvidence, 4);
-    if (keywords.length > 0 && !keywords.some(keyword => lower.includes(keyword.toLowerCase()))) {
+    const goalTarget = findSection(parsed, "goal")?.body ?? "";
+    if (!hasSemanticEvidence(goalEvidence, goalTarget)) {
       gaps.push({ kind: "missing-goal", goal: goalEvidence });
-      score -= 10;
+      score -= 12;
+    }
+    if (hasSemanticContradiction(goalEvidence, goalTarget)) {
+      gaps.push({ kind: "inconsistency", detail: "semantic-contradiction: goal polarity or condition changed" });
+      score -= 20;
     }
   }
 
@@ -130,6 +233,11 @@ export function verifySummary(
   const progressSection = findSection(parsed, "progress");
   if (progressSection) {
     const doneSection = progressSection.body.match(/###\s*Done[\s\S]*?(?=###|$)/i)?.[0] ?? "";
+    const blockedSection = progressSection.body.match(/###\s*Blocked[\s\S]*?(?=###|$)/i)?.[0] ?? "";
+    if (unresolvedEvidence.length > 0 && /(?:none|no blockers?|yok)\s*(?:recorded|known)?[.!]?\s*$/im.test(blockedSection)) {
+      gaps.push({ kind: "inconsistency", detail: "blocked-none: Blocked says none despite unresolved errors" });
+      score -= 12;
+    }
     for (const file of extraction.modifiedFiles) {
       const basename = file.path.split("/").pop() ?? "";
       if (!doneSection.toLowerCase().includes(basename.toLowerCase())) continue;
@@ -141,12 +249,15 @@ export function verifySummary(
     }
   }
 
-  const decisionBody = findSection(parsed, "decisions")?.body.toLowerCase() ?? "";
+  const decisionBody = findSection(parsed, "decisions")?.body ?? "";
   for (const decision of decisionEvidence) {
-    const keywords = extractCheckKeywords(decision.summary, 3);
-    if (keywords.length > 0 && !keywords.some(keyword => decisionBody.includes(keyword.toLowerCase()))) {
+    if (!hasSemanticEvidence(decision.summary, decisionBody)) {
       gaps.push({ kind: "missing-decision", summary: decision.summary });
-      score -= 3;
+      score -= 8;
+    }
+    if (hasSemanticContradiction(decision.summary, decisionBody)) {
+      gaps.push({ kind: "inconsistency", detail: "semantic-contradiction: decision contradicts " + decision.summary.slice(0, TRUNC.SNIPPET) });
+      score -= 20;
     }
   }
 
@@ -169,6 +280,24 @@ export function patchDeterministic(
 ): string {
   let canonical: CanonicalSummary = parseSummary(summary);
   const verificationNotes: string[] = [];
+  const unresolvedMessages = Array.from(new Set([
+    ...extraction.errors.filter(error => !error.resolved).map(error => error.message),
+    ...(continuity?.unresolvedErrors ?? []).map(error => error.message),
+  ]));
+  const unresolvedLoops = (continuity?.openLoops ?? []).filter(loop => loop.status !== "resolved");
+  const blockedItems = [
+    ...unresolvedMessages.map(message => "- " + message.slice(0, TRUNC.MESSAGE)),
+    ...unresolvedLoops.map(loop => "- " + loop.summary.slice(0, TRUNC.MESSAGE)),
+  ];
+  const patchBlockedNone = (): void => {
+    const progress = findSection(canonical, "progress");
+    if (!progress || !blockedItems.length) return;
+    const body = progress.body.replace(
+      /(###\s*Blocked\s*\n)(?:-\s*(?:none|none recorded|no blockers?|yok)[.!]?\s*)/i,
+      "$1" + blockedItems.join("\n"),
+    );
+    canonical = upsertSection(canonical, "progress", body);
+  };
 
   for (const gap of gaps) {
     switch (gap.kind) {
@@ -176,18 +305,24 @@ export function patchDeterministic(
         if (gap.section === "goal") {
           canonical = upsertSection(canonical, "goal", extraction.mainGoal ?? "Continue the current coding task.");
         } else if (gap.section === "progress") {
-          canonical = upsertSection(canonical, "progress", "### Done\n- See preceding summary.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n- None recorded.");
+          canonical = upsertSection(canonical, "progress", "### Done\n- No explicit completion recorded.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n" + (blockedItems.join("\n") || "- None recorded."));
         } else if (gap.section === "critical-context") {
-          canonical = upsertSection(canonical, "critical-context", "- None recorded.");
+          const critical = unresolvedMessages.map(message => "- Unresolved error: " + message.slice(0, TRUNC.MESSAGE));
+          canonical = upsertSection(canonical, "critical-context", critical.join("\n") || "- None recorded.");
         }
         break;
       }
       case "missing-file":
         canonical = appendToSection(canonical, "files-modified", "- " + gap.path);
         break;
-      case "missing-error":
-        canonical = appendToSection(canonical, "critical-context", "- Unresolved error: " + gap.message.slice(0, TRUNC.MESSAGE));
+      case "missing-error": {
+        const existing = findSection(canonical, "critical-context")?.body.toLowerCase() ?? "";
+        const message = gap.message.slice(0, TRUNC.MESSAGE);
+        if (!existing.includes(message.toLowerCase())) {
+          canonical = appendToSection(canonical, "critical-context", "- Unresolved error: " + message);
+        }
         break;
+      }
       case "missing-constraint":
         canonical = appendToSection(canonical, "constraints", "- " + gap.text.slice(0, TRUNC.CONSTRAINT_TEXT));
         break;
@@ -208,9 +343,26 @@ export function patchDeterministic(
         canonical = upsertSection(canonical, "open-loops", body || "- Review unresolved errors.", "next-steps");
         break;
       }
-      case "fabricated-file":
+      case "fabricated-file": {
+        const normalizedRef = gap.ref.replace(/\\/g, "/").toLowerCase();
+        let removed = false;
+        canonical = {
+          sections: canonical.sections.map(section => ({
+            ...section,
+            body: section.body.split("\n").filter(line => {
+              if (!/^\s*[-*]\s+/.test(line)) return true;
+              const matches = extractFileRefs(line).some(ref => ref.replace(/\\/g, "/").toLowerCase() === normalizedRef);
+              if (matches) removed = true;
+              return !matches;
+            }).join("\n").trim(),
+          })),
+        };
+        if (!removed) verificationNotes.push(formatVerificationGap(gap));
+        break;
+      }
       case "inconsistency":
-        verificationNotes.push(formatVerificationGap(gap));
+        if (gap.detail.startsWith("blocked-none:")) patchBlockedNone();
+        else verificationNotes.push(formatVerificationGap(gap));
         break;
     }
   }

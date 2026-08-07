@@ -16,6 +16,13 @@ import { showProgressOverlay } from "../../ui/overlays.ts";
 import * as log from "../../utils/logger.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { assembleFallback } from "../../phases/synthesize.ts";
+import { resolveStageAuth } from "../stage-auth.ts";
+
+function informationTokenCount(summary: string): number {
+  const ignored = new Set(["none", "recorded", "continue", "current", "work", "explicit", "completion"]);
+  return new Set((summary.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_-]{4,}/gu) ?? [])
+    .filter(token => !ignored.has(token))).size;
+}
 
 export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
   const extraction = rc.extraction;
@@ -50,7 +57,8 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
     rc.notify("Phase 4 Verify: deterministic repair insufficient (score=" + verification.score + "), requesting LLM patch", "warning");
     const beforePatch = summary;
     try {
-      summary = await patchSummary(summary, verification.gaps, rc.verifyModel ?? rc.summaryModel, rc.verifyAuth ?? rc.summaryAuth, rc.cancellation.signal, rc.services);
+      const verifyAuth = await resolveStageAuth(rc, "verify");
+      summary = await patchSummary(summary, verification.gaps, rc.verifyModel ?? rc.summaryModel, verifyAuth, rc.cancellation.signal, rc.services);
     } catch (error) { log.warn("LLM patch failed", error); }
     if (summary !== beforePatch) {
       llmPatched = true;
@@ -66,12 +74,20 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
       deterministic = patchDeterministic(deterministic, deterministicVerification.gaps, extraction, rc.previousState);
       deterministicVerification = verifySummary(deterministic, extraction, rc.previousState);
     }
-    if (deterministicVerification.score > verification.score) {
+    const gain = deterministicVerification.score - verification.score;
+    const currentInformation = Math.max(1, informationTokenCount(summary));
+    const fallbackCoverage = informationTokenCount(deterministic) / currentInformation;
+    const semanticSafetyFailure = verification.gaps.some(gap =>
+      gap.kind === "inconsistency" && gap.detail.startsWith("semantic-contradiction:"),
+    );
+    const catastrophic = verification.score < 50;
+    const materiallyBetter = gain >= 15 && fallbackCoverage >= 0.65;
+    if (deterministicVerification.ok && (semanticSafetyFailure || catastrophic || materiallyBetter)) {
       summary = deterministic;
       verification = deterministicVerification;
       deterministicPatched.push(...patchable);
       qualityFloorUsed = true;
-      rc.notify("Quality floor replaced a lower-scoring model summary", "warning");
+      rc.notify("Quality floor replaced unsafe or materially lower-coverage model output", "warning");
     }
   }
 

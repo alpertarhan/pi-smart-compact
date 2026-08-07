@@ -152,12 +152,15 @@ export function logDamageReport(
   report: DamageReport,
   details: SmartCompactDetails,
   projectId?: string,
+  observationSource: "online-window" | "next-compaction" = "next-compaction",
 ): void {
   try {
     const entry = {
       ts: new Date().toISOString(),
+      runId: details.runId,
       sessionId,
       projectId,
+      observationSource,
       method: details.method,
       profile: details.profile,
       mode: details.mode,

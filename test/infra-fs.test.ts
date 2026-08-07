@@ -48,7 +48,7 @@ describe("appendLineLocked", () => {
     expect(lines.map(l => JSON.parse(l).i)).toEqual([0, 1, 2, 3, 4]);
   });
 
-  it("does not crash if the lock cannot be acquired immediately", () => {
+  it("returns a release function after acquiring a lock", () => {
     const target = path.join(tmp, "log2.jsonl");
     const release = acquireLockSync(target);
     try {
@@ -60,6 +60,11 @@ describe("appendLineLocked", () => {
     }
     appendLineLocked(target, "{\"ok\":1}");
     expect(fs.readFileSync(target, "utf8")).toContain("\"ok\":1");
+  });
+
+  it("fails closed instead of appending without a lock", () => {
+    expect(() => appendLineLocked(path.join("/dev/null", "log.jsonl"), "unsafe"))
+      .toThrow("Failed to acquire lock");
   });
 });
 

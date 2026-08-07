@@ -65,13 +65,20 @@ export function resolveMode(
   return "balanced";
 }
 
-export function deterministicExtractionConfidence(extraction: StructuredExtraction): number {
+export function deterministicExtractionConfidence(
+  extraction: StructuredExtraction,
+  context: { conversationTokens?: number; toolPercent?: number } = {},
+): number {
   let score = 0.45;
   if (extraction.mainGoal) score += 0.15;
   if (extraction.messageCount > 0) score += 0.05;
   if (extraction.lastUserMessages.length > 0) score += 0.1;
   if (extraction.modifiedFiles.length + extraction.deletedFiles.length + extraction.decisions.length + extraction.constraints.length > 0) score += 0.15;
   if (extraction.messageCount > 80) score -= 0.2;
+  if ((context.conversationTokens ?? 0) > 40_000) score -= 0.4;
+  if (extraction.messageCount > 0
+    && (context.conversationTokens ?? 0) / extraction.messageCount > 2_000) score -= 0.35;
+  if ((context.toolPercent ?? 0) > 60) score -= 0.25;
   if (extraction.topics.length > 6) score -= 0.15;
   if (extraction.errors.filter(error => !error.resolved).length > 2) score -= 0.2;
   if ((extraction.mediaAttachments?.length ?? 0) > 0) score -= 0.15;

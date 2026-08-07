@@ -127,6 +127,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
   const tokensSaved = Math.max(0, rc.totalTokens - estimatedAfter);
 
   const details: SmartCompactDetails = {
+    runId: rc.runId,
     method: rc.method,
     chunkCount: rc.chunkCount || 1,
     topics: rc.summaries.length ? rc.summaries.map(s => s.topic) : [rc.method],
