@@ -16,7 +16,7 @@
  */
 
 import type { RcBase, StatedRc } from "../run-context.ts";
-import type { MetricsSnapshot } from "../../types.ts";
+import type { MetricsSnapshot, VerificationGap } from "../../types.ts";
 import { aggregateProviderRoutes } from "../../domain/provider-evaluation.ts";
 import { classifyTelemetryFailure } from "../../domain/telemetry.ts";
 import { VERSION } from "../../constants.ts";
@@ -128,6 +128,19 @@ export function recordFailureMetrics(
   const releaseChannel = (rc as RcBase & { config?: { telemetryChannel?: "stable" | "canary" } }).config?.telemetryChannel
     ?? loadConfig().telemetryChannel;
   const failureKind = classifyTelemetryFailure(err, rc.cancellation.timedOut);
+  const gate = err && typeof err === "object"
+    ? err as { score?: unknown; initialScore?: unknown; gapCount?: unknown; gapKinds?: unknown }
+    : null;
+  const knownGapKinds = new Set<VerificationGap["kind"]>([
+    "missing-section", "missing-file", "missing-error", "missing-constraint", "missing-decision",
+    "missing-goal", "fabricated-file", "inconsistency", "missing-open-loops",
+  ]);
+  const gapKinds = Array.isArray(gate?.gapKinds)
+    ? gate.gapKinds.filter((kind): kind is VerificationGap["kind"] => typeof kind === "string" && knownGapKinds.has(kind as VerificationGap["kind"]))
+    : undefined;
+  const verificationScore = typeof gate?.score === "number" && Number.isFinite(gate.score) ? gate.score : undefined;
+  const initialVerificationScore = typeof gate?.initialScore === "number" && Number.isFinite(gate.initialScore) ? gate.initialScore : undefined;
+  const verificationGaps = typeof gate?.gapCount === "number" && Number.isInteger(gate.gapCount) && gate.gapCount >= 0 ? gate.gapCount : undefined;
   appendMetricsLog(fields.sessionId ?? "unknown", {
     runId: rc.runId,
     metricsSchemaVersion: 2,
@@ -147,6 +160,11 @@ export function recordFailureMetrics(
     runType: runType(rc),
     status: rc.cancellation.timedOut ? "timeout" : "error",
     fallbackReason: "failure:" + failureKind,
+    verificationScore,
+    initialVerificationScore,
+    verificationGaps,
+    remainingVerificationGaps: verificationGaps,
+    verificationGapKinds: gapKinds,
     phaseTimings: rc.phaseTimings,
     durationMs: Date.now() - rc.pipelineStart,
   }, rc.services);

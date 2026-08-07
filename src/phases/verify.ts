@@ -14,7 +14,7 @@ import { extractFileRefs } from "../utils/file-ref-detect.ts";
 import { isDiagnosticConstraintText } from "../utils/extraction.ts";
 import { buildUniquePathNeedles, isKnownPathReference } from "../utils/file-needles.ts";
 import * as log from "../utils/logger.ts";
-import { parseSummary, findSection, appendToSection, renderSummary, upsertSection } from "../domain/summary-parse.ts";
+import { parseSummary, findSection, appendToSection, renderSummary, summaryEvidenceLine, upsertSection } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
@@ -40,6 +40,23 @@ export function verificationFailureMessage(result: VerificationResult): string |
     .join("; ");
   return "Verification gate rejected summary (" + result.score + "/100, " +
     result.gaps.length + " unresolved gap(s))" + (findings ? ": " + findings : "");
+}
+
+/** Content-free diagnostics survive the throw without leaking evidence to telemetry. */
+export class VerificationGateError extends Error {
+  readonly score: number;
+  readonly initialScore: number;
+  readonly gapKinds: VerificationGap["kind"][];
+  readonly gapCount: number;
+
+  constructor(result: VerificationResult, initialScore: number) {
+    super(verificationFailureMessage(result) ?? "Verification gate rejected summary");
+    this.name = "VerificationGateError";
+    this.score = result.score;
+    this.initialScore = initialScore;
+    this.gapKinds = Array.from(new Set(result.gaps.map(gap => gap.kind)));
+    this.gapCount = result.gaps.length;
+  }
 }
 
 const NEGATION_MARKERS = new Set([
@@ -72,7 +89,9 @@ function semanticTokens(text: string): string[] {
 }
 
 function evidenceFragments(text: string): string[] {
-  return text.split(/(?:\r?\n|[.;])/).map(part => part.replace(/^\s*[-*\d.)]+\s*/, "").trim()).filter(Boolean);
+  const fragments = text.split(/\r?\n/).flatMap(line => [line, ...line.split(/[.;]/)])
+    .map(part => part.replace(/^\s*[-*\d.)]+\s*/, "").trim()).filter(Boolean);
+  return Array.from(new Set(fragments));
 }
 
 function hasNearbyMarker(tokens: string[], anchor: string, markers: Set<string>): boolean {
@@ -86,7 +105,8 @@ function semanticShape(source: string): {
 } {
   const sourceTokens = semanticTokens(source);
   const concepts = Array.from(new Set(sourceTokens.filter(token =>
-    !SEMANTIC_STOP.has(token) && !NEGATION_MARKERS.has(token) && !CONDITION_MARKERS.has(token),
+    !/^\d+$/.test(token)
+    && !SEMANTIC_STOP.has(token) && !NEGATION_MARKERS.has(token) && !CONDITION_MARKERS.has(token),
   )));
   const negative = sourceTokens.some(token => NEGATION_MARKERS.has(token));
   const conditional = sourceTokens.some(token => CONDITION_MARKERS.has(token));
@@ -119,11 +139,15 @@ function hasSemanticEvidence(source: string, target: string): boolean {
 function hasSemanticContradiction(source: string, target: string): boolean {
   const { sourceTokens, concepts, anchor, negative, conditional } = semanticShape(source);
   if (!anchor) return false;
+  const required = Math.min(concepts.length, Math.max(1, Math.ceil(concepts.length * 0.6)));
   return evidenceFragments(target).some(fragment => {
     const tokens = semanticTokens(fragment);
     if (!tokens.includes(anchor)) return false;
+    const overlap = concepts.filter(concept => tokens.includes(concept)).length;
+    // Sharing a generic anchor such as "release" or "file" is not enough:
+    // another constraint in the same section must overlap the actual concepts.
+    if (overlap < required) return false;
     if (negative && !hasNearbyMarker(tokens, anchor, NEGATION_MARKERS)) {
-      const overlap = concepts.filter(concept => tokens.includes(concept)).length;
       const validConditional = sourceTokens.includes("without")
         && tokens.some(token => CONDITION_MARKERS.has(token))
         && overlap >= Math.min(2, concepts.length);
@@ -137,6 +161,31 @@ export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
   if (gap.kind === "fabricated-file") return true;
   if (gap.kind === "inconsistency") return gap.detail.startsWith("blocked-none:");
   return true;
+}
+
+/** Apply safe repairs to a fixed point; newly introduced patchable gaps get another bounded pass. */
+export function repairSummaryDeterministically(
+  summary: string,
+  result: VerificationResult,
+  extraction: StructuredExtraction,
+  continuity: CompactionState | null = null,
+  maxRounds = 3,
+): { summary: string; result: VerificationResult; patched: VerificationGap[] } {
+  const patched: VerificationGap[] = [];
+  const seen = new Set<string>();
+  for (let round = 0; round < maxRounds; round++) {
+    const patchable = result.gaps.filter(isDeterministicallyPatchable);
+    if (!patchable.length) break;
+    const next = patchDeterministic(summary, patchable, extraction, continuity);
+    if (next === summary) break;
+    for (const gap of patchable) {
+      const key = formatVerificationGap(gap);
+      if (!seen.has(key)) { seen.add(key); patched.push(gap); }
+    }
+    summary = next;
+    result = verifySummary(summary, extraction, continuity);
+  }
+  return { summary, result, patched };
 }
 
 export function verifySummary(
@@ -302,15 +351,15 @@ export function patchDeterministic(
   continuity: CompactionState | null = null,
 ): string {
   let canonical: CanonicalSummary = parseSummary(summary);
-  const verificationNotes: string[] = [];
+  const safe = (value: string, max: number = TRUNC.MESSAGE) => summaryEvidenceLine(value, max);
   const unresolvedMessages = Array.from(new Set([
     ...extraction.errors.filter(error => !error.resolved).map(error => error.message),
     ...(continuity?.unresolvedErrors ?? []).map(error => error.message),
   ]));
   const unresolvedLoops = (continuity?.openLoops ?? []).filter(loop => loop.status !== "resolved");
   const blockedItems = [
-    ...unresolvedMessages.map(message => "- " + message.slice(0, TRUNC.MESSAGE)),
-    ...unresolvedLoops.map(loop => "- " + loop.summary.slice(0, TRUNC.MESSAGE)),
+    ...unresolvedMessages.map(message => safe(message)).filter(Boolean).map(message => "- " + message),
+    ...unresolvedLoops.map(loop => safe(loop.summary)).filter(Boolean).map(summary => "- " + summary),
   ];
   const patchBlockedNone = (): void => {
     const progress = findSection(canonical, "progress");
@@ -326,73 +375,67 @@ export function patchDeterministic(
     switch (gap.kind) {
       case "missing-section": {
         if (gap.section === "goal") {
-          canonical = upsertSection(canonical, "goal", extraction.mainGoal ?? "Continue the current coding task.");
+          canonical = upsertSection(canonical, "goal", safe(extraction.mainGoal ?? "", TRUNC.DETAIL) || "Continue the current coding task.");
         } else if (gap.section === "progress") {
           canonical = upsertSection(canonical, "progress", "### Done\n- No explicit completion recorded.\n### In Progress\n- Continue from the latest user request.\n### Blocked\n" + (blockedItems.join("\n") || "- None recorded."));
         } else if (gap.section === "critical-context") {
-          const critical = unresolvedMessages.map(message => "- Unresolved error: " + message.slice(0, TRUNC.MESSAGE));
+          const critical = unresolvedMessages.map(message => safe(message)).filter(Boolean).map(message => "- Unresolved error: " + message);
           canonical = upsertSection(canonical, "critical-context", critical.join("\n") || "- None recorded.");
         }
         break;
       }
       case "missing-file":
-        canonical = appendToSection(canonical, "files-modified", "- " + gap.path);
+        canonical = appendToSection(canonical, "files-modified", "- " + safe(gap.path));
         break;
       case "missing-error": {
         const existing = findSection(canonical, "critical-context")?.body.toLowerCase() ?? "";
-        const message = gap.message.slice(0, TRUNC.MESSAGE);
+        const message = safe(gap.message);
         if (!existing.includes(message.toLowerCase())) {
           canonical = appendToSection(canonical, "critical-context", "- Unresolved error: " + message);
         }
         break;
       }
       case "missing-constraint":
-        canonical = appendToSection(canonical, "constraints", "- " + gap.text.slice(0, TRUNC.CONSTRAINT_TEXT));
+        canonical = appendToSection(canonical, "constraints", "- " + safe(gap.text, TRUNC.CONSTRAINT_TEXT));
         break;
       case "missing-decision":
-        canonical = appendToSection(canonical, "decisions", "- **" + gap.summary.slice(0, TRUNC.DECISION_DETAIL) + "**");
+        canonical = appendToSection(canonical, "decisions", "- **" + safe(gap.summary, TRUNC.DECISION_SUMMARY) + "**");
         break;
       case "missing-goal":
-        canonical = upsertSection(canonical, "goal", gap.goal);
+        canonical = upsertSection(canonical, "goal", safe(gap.goal, TRUNC.DETAIL) || "Continue the current task.");
         break;
       case "missing-open-loops": {
         const current = extraction.errors.filter(error => !error.resolved)
-          .map(error => "- [high] Resolve " + error.message.slice(0, TRUNC.SNIPPET));
+          .map(error => safe(error.message, TRUNC.SNIPPET)).filter(Boolean).map(message => "- [high] Resolve " + message);
         const carriedErrors = (continuity?.unresolvedErrors ?? [])
-          .map(error => "- [high] Resolve " + error.message.slice(0, TRUNC.SNIPPET));
+          .map(error => safe(error.message, TRUNC.SNIPPET)).filter(Boolean).map(message => "- [high] Resolve " + message);
         const carriedLoops = (continuity?.openLoops ?? []).filter(loop => loop.status !== "resolved")
-          .map(loop => "- [" + loop.priority + "] " + loop.summary.slice(0, TRUNC.SNIPPET));
+          .map(loop => ({ priority: loop.priority, summary: safe(loop.summary, TRUNC.SNIPPET) }))
+          .filter(item => item.summary).map(item => "- [" + item.priority + "] " + item.summary);
         const body = Array.from(new Set([...current, ...carriedErrors, ...carriedLoops])).slice(0, gap.unresolvedCount).join("\n");
         canonical = upsertSection(canonical, "open-loops", body || "- Review unresolved errors.", "next-steps");
         break;
       }
       case "fabricated-file": {
         const normalizedRef = gap.ref.replace(/\\/g, "/").toLowerCase();
-        let removed = false;
         canonical = {
           sections: canonical.sections.map(section => ({
             ...section,
             body: section.body.split("\n").filter(line => {
               if (!/^\s*[-*]\s+/.test(line)) return true;
               const matches = extractFileRefs(line).some(ref => ref.replace(/\\/g, "/").toLowerCase() === normalizedRef);
-              if (matches) removed = true;
               return !matches;
             }).join("\n").trim(),
           })),
         };
-        if (!removed) verificationNotes.push(formatVerificationGap(gap));
         break;
       }
       case "inconsistency":
         if (gap.detail.startsWith("blocked-none:")) patchBlockedNone();
-        else verificationNotes.push(formatVerificationGap(gap));
         break;
     }
   }
 
-  if (verificationNotes.length > 0) {
-    canonical = upsertSection(canonical, "verification-note", verificationNotes.map(note => "- " + note).join("\n"));
-  }
   return renderSummary(canonical, { canonicalHeadings: true });
 }
 
@@ -401,10 +444,10 @@ export async function patchSummary(
   model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders }, signal?: AbortSignal,
   services?: SmartCompactServices,
 ): Promise<string> {
-  const patchPrompt = "The summary below is missing some critical information. Add the missing items WITHOUT restructuring the summary.\n\nMissing items:\n" +
+  const patchPrompt = "Correct every verification finding below WITHOUT restructuring the summary. Add missing evidence, remove fabricated references, and rewrite contradictory claims so they preserve the source constraint/decision polarity. Do not add a Verification Note.\n\nFindings:\n" +
     gaps.map((gap, index) => (index + 1) + ". " + formatVerificationGap(gap)).join("\n") +
     "\n\nCurrent summary:\n" + summary +
-    "\n\nReturn the COMPLETE updated summary with missing items integrated. Keep the same format.";
+    "\n\nReturn the COMPLETE corrected summary in the same format.";
 
   try {
     const maxTokens = Math.min(8192, getProviderCaps(model.provider).maxOutputTokens);

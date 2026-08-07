@@ -86,6 +86,20 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result).toBeNull();
   });
 
+  it("warns instead of silently blocking an immediate repeated manual compaction", () => {
+    const notices: string[] = [];
+    const branch = [
+      messageEntry("u1", null, { role: "user", content: [{ type: "text", text: "recent request" }] }),
+      messageEntry("a1", "u1", { role: "assistant", content: [{ type: "text", text: "recent response" }] }),
+      messageEntry("u2", "a1", { role: "user", content: [{ type: "text", text: "latest request" }] }),
+    ];
+    const rc = makePreparedRc(branch);
+    rc.notify = message => { notices.push(message); };
+
+    expect(resolveCompactionWindow(rc)).toBeNull();
+    expect(notices.join(" ")).toContain("run again too soon");
+  });
+
   it("backs up when the token window naturally starts at a toolResult", () => {
     const toolCallId = "call_cut|fc_cut";
     const branch: SessionMessageEntry[] = [
@@ -201,6 +215,33 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result?.firstKeptId).toBe("u2");
   });
 
+  it("manually compacts a 219K session on a 1M window without requiring aggressive mode", () => {
+    const notices: string[] = [];
+    const branch = Array.from({ length: 100 }, (_, index) => messageEntry(
+      "large-" + index,
+      index ? "large-" + (index - 1) : null,
+      {
+        role: index % 5 === 0 ? "user" : "assistant",
+        content: [{ type: "text", text: "message " + index + " " + "x".repeat(8_000) }],
+      },
+    ));
+    const rc = makePreparedRc(branch, 30_000);
+    rc.mode = "thorough";
+    rc.profile = "light";
+    rc.profileCfg.summaryBudgetTokens = 10_000;
+    rc.ctx.model = { id: "million", provider: "test", contextWindow: 1_000_000 } as any;
+    rc.ctx.getContextUsage = () => ({ tokens: 219_000, contextWindow: 1_000_000, percent: 21.9 } as any);
+    rc.notify = message => { notices.push(message); };
+
+    const result = resolveCompactionWindow(rc);
+
+    expect(result).not.toBeNull();
+    expect(result!.compactTokens).toBeGreaterThan(100_000);
+    expect(result!.accTokens).toBeGreaterThanOrEqual(30_000);
+    expect(notices.join(" ")).toContain("Manual compaction override at 22%");
+    expect(notices.join(" ")).toContain("verification remains fail-closed");
+  });
+
   it("retains context up to the mode target instead of stopping at the minimum tail", () => {
     const branch = Array.from({ length: 100 }, (_, index) => messageEntry(
       "m" + index,
@@ -247,6 +288,32 @@ describe("resolveCompactionWindow tool-result boundary", () => {
 
     expect(result?.firstKeptId).toBe("anchor-request");
     expect(result?.accTokens).toBe(branch.slice(1).reduce((sum, item) => sum + rc.estimator.message(item.message as any), 0));
+  });
+
+  it("recovers with EESV when reported usage exceeds the active model window", () => {
+    const notices: string[] = [];
+    const branch = Array.from({ length: 16 }, (_, index) => messageEntry(
+      "overflow-" + index,
+      index ? "overflow-" + (index - 1) : null,
+      {
+        role: index === 2 ? "user" : "assistant",
+        content: [{ type: "text", text: "message " + index + " " + "x".repeat(10_000) }],
+      },
+    ));
+    const rc = makePreparedRc(branch, 10_000);
+    rc.flags.force = false;
+    rc.mode = "aggressive";
+    rc.profileCfg.summaryBudgetTokens = 3_000;
+    rc.ctx.model = { id: "gpt-5.6-sol", provider: "openai-codex", contextWindow: 272_000 } as any;
+    rc.ctx.getContextUsage = () => ({ tokens: 372_358, contextWindow: 272_000, percent: 137 } as any);
+    rc.notify = message => { notices.push(message); };
+
+    const result = resolveCompactionWindow(rc);
+
+    expect(result).not.toBeNull();
+    expect(result!.compactTokens).toBeGreaterThan(200_000);
+    expect(result!.accTokens + rc.profileCfg.summaryBudgetTokens).toBeLessThan(rc.ctx.model!.contextWindow);
+    expect(notices.join(" ")).toContain("native fallback would resend the oversized context");
   });
 
   it("falls back before spending tokens when a protected tail cannot drop below the trigger", () => {

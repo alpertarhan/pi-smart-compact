@@ -154,6 +154,14 @@ describe("catalogErrors", () => {
     expect(catalogErrors(msgs)).toHaveLength(1);
   });
 
+  it("does not treat source text mentioning ERROR as a failed command", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { command: "cat src/status.ts" } }] },
+      { role: "toolResult", toolCallId: "1", content: "export const STATUS = {\n  label: 'ERROR: shown when validation fails'\n};" },
+    ];
+    expect(catalogErrors(msgs)).toEqual([]);
+  });
+
   it("detects bash errors in successful results", () => {
     const msgs: LlmMessage[] = [
       { role: "assistant", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { cmd: "npm test" } }] },

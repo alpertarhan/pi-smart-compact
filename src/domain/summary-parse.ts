@@ -23,6 +23,17 @@ import { CanonicalSummary, Section, SectionKind, classifyHeading, canonicalHeadi
 /** H1/H2 always start sections; H3 starts one only when its kind is recognized. */
 const HEADING_RE = /^(#{1,3})\s+(.+?)\s*$/;
 
+/** Collapse untrusted extracted evidence to one Markdown-safe line. */
+export function summaryEvidenceLine(value: string, maxLength: number): string {
+  return value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(?:(?:#{1,6}|[-*+]|>)\s+)+/, "")
+    .slice(0, maxLength)
+    .trim();
+}
+
 function mergeBodies(first: string, second: string): string {
   const seen = new Set<string>();
   return [first, second]

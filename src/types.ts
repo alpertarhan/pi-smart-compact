@@ -108,7 +108,7 @@ export interface PipelinePhaseTiming {
 export type TelemetryFailureKind =
   | "cancelled" | "timeout" | "rate-limit" | "authentication"
   | "budget" | "output-limit" | "provider" | "persistence"
-  | "validation" | "internal";
+  | "validation" | "verification" | "internal";
 
 export interface CompactMetricsEntry {
   ts: string;
@@ -153,6 +153,8 @@ export interface CompactMetricsEntry {
   llmPatched?: boolean;
   qualityFloorUsed?: boolean;
   remainingVerificationGaps?: number;
+  /** Content-free kinds retained when verification fails before state commit. */
+  verificationGapKinds?: VerificationGap["kind"][];
   phaseTimings?: PipelinePhaseTiming[];
   durationMs?: number;
   redactions?: number;

@@ -265,7 +265,7 @@ export function buildDashboardInsights(
   const failures: Partial<Record<TelemetryFailureKind, number>> = {};
   const knownFailures = new Set<TelemetryFailureKind>([
     "cancelled", "timeout", "rate-limit", "authentication", "budget",
-    "output-limit", "provider", "persistence", "validation", "internal",
+    "output-limit", "provider", "persistence", "validation", "verification", "internal",
   ]);
   for (const entry of entries) {
     if (entry.failureKind && knownFailures.has(entry.failureKind)) {

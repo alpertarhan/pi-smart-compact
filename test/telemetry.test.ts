@@ -34,6 +34,7 @@ describe("privacy-safe canary telemetry", () => {
     expect(classifyTelemetryFailure(new Error("maximum output length limit"))).toBe("output-limit");
     expect(classifyTelemetryFailure(new Error("native compaction write failed"))).toBe("persistence");
     expect(classifyTelemetryFailure(new Error("provider stream failed"))).toBe("provider");
+    expect(classifyTelemetryFailure(Object.assign(new Error("Verification gate rejected summary"), { name: "VerificationGateError" }))).toBe("verification");
     expect(classifyTelemetryFailure(new Error("unexpected invariant"))).toBe("internal");
   });
 

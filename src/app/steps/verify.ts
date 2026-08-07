@@ -2,27 +2,21 @@
  * Step 7: verify and repair the synthesized summary.
  *
  * Every safe deterministic repair is applied regardless of scalar score. The
- * score controls only whether unresolved findings justify an additional LLM
- * call; it never suppresses known, zero-cost repairs.
+ * mode policy controls whether unresolved findings get an additional LLM call;
+ * score remains diagnostic and never suppresses known, zero-cost repairs.
  */
 
 import type { SynthesizedRc, VerifiedRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import {
-  verifySummary, patchDeterministic, patchSummary,
-  formatVerificationGap, isDeterministicallyPatchable, verificationFailureMessage,
+  verifySummary, patchSummary, repairSummaryDeterministically,
+  formatVerificationGap, isDeterministicallyPatchable, verificationFailureMessage, VerificationGateError,
 } from "../../phases/verify.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import * as log from "../../utils/logger.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { assembleFallback } from "../../phases/synthesize.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
-
-function informationTokenCount(summary: string): number {
-  const ignored = new Set(["none", "recorded", "continue", "current", "work", "explicit", "completion"]);
-  return new Set((summary.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_-]{4,}/gu) ?? [])
-    .filter(token => !ignored.has(token))).size;
-}
 
 export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
   const extraction = rc.extraction;
@@ -38,22 +32,25 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 
   let verification = verifySummary(summary, extraction, rc.previousState);
   const initialScore = verification.score;
-  const deterministicPatched = verification.gaps.filter(isDeterministicallyPatchable);
+  const deterministicPatched: typeof verification.gaps = [];
   let llmPatched = false;
   let qualityFloorUsed = false;
   rc.vlog("Verification score=" + verification.score + " ok=" + verification.ok + " gaps=" + verification.gaps.length);
 
-  if (deterministicPatched.length > 0) {
+  const initialPatchable = verification.gaps.filter(isDeterministicallyPatchable);
+  if (initialPatchable.length > 0) {
     rc.notify(
-      "Phase 4 Verify: " + deterministicPatched.length + " deterministic gap(s), score=" + verification.score + ", applying repair",
+      "Phase 4 Verify: " + initialPatchable.length + " deterministic gap(s), score=" + verification.score + ", applying repair",
       "warning",
     );
-    summary = patchDeterministic(summary, verification.gaps, extraction, rc.previousState);
-    verification = verifySummary(summary, extraction, rc.previousState);
+    const repaired = repairSummaryDeterministically(summary, verification, extraction, rc.previousState);
+    summary = repaired.summary;
+    verification = repaired.result;
+    deterministicPatched.push(...repaired.patched);
   }
 
   const mode = rc.mode ?? (rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced");
-  if (MODE_POLICIES[mode].allowLlmPatch && !verification.ok && verification.score < 75) {
+  if (MODE_POLICIES[mode].allowLlmPatch && !verification.ok) {
     rc.notify("Phase 4 Verify: deterministic repair insufficient (score=" + verification.score + "), requesting LLM patch", "warning");
     const beforePatch = summary;
     try {
@@ -63,38 +60,35 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
     if (summary !== beforePatch) {
       llmPatched = true;
       verification = verifySummary(summary, extraction, rc.previousState);
+      const repaired = repairSummaryDeterministically(summary, verification, extraction, rc.previousState);
+      summary = repaired.summary;
+      verification = repaired.result;
+      deterministicPatched.push(...repaired.patched);
     }
   }
 
   if (!verification.ok) {
     let deterministic = assembleFallback(rc.summaries, extraction);
     let deterministicVerification = verifySummary(deterministic, extraction, rc.previousState);
-    const patchable = deterministicVerification.gaps.filter(isDeterministicallyPatchable);
-    if (patchable.length > 0) {
-      deterministic = patchDeterministic(deterministic, deterministicVerification.gaps, extraction, rc.previousState);
-      deterministicVerification = verifySummary(deterministic, extraction, rc.previousState);
-    }
-    const gain = deterministicVerification.score - verification.score;
-    const currentInformation = Math.max(1, informationTokenCount(summary));
-    const fallbackCoverage = informationTokenCount(deterministic) / currentInformation;
-    const semanticSafetyFailure = verification.gaps.some(gap =>
-      gap.kind === "inconsistency" && gap.detail.startsWith("semantic-contradiction:"),
-    );
-    const catastrophic = verification.score < 50;
-    const materiallyBetter = gain >= 15 && fallbackCoverage >= 0.65;
-    if (deterministicVerification.ok && (semanticSafetyFailure || catastrophic || materiallyBetter)) {
+    const repaired = repairSummaryDeterministically(deterministic, deterministicVerification, extraction, rc.previousState);
+    deterministic = repaired.summary;
+    deterministicVerification = repaired.result;
+    // This fallback is assembled from the extracted source/chunk evidence and
+    // then passes the same zero-gap gate. Prefer it over rejecting a safe run;
+    // fail closed only when the deterministic candidate also cannot verify.
+    if (deterministicVerification.ok) {
       summary = deterministic;
       verification = deterministicVerification;
-      deterministicPatched.push(...patchable);
+      deterministicPatched.push(...repaired.patched);
       qualityFloorUsed = true;
-      rc.notify("Quality floor replaced unsafe or materially lower-coverage model output", "warning");
+      rc.notify("Quality floor replaced unsafe or unverifiable model output", "warning");
     }
   }
 
   const failure = verificationFailureMessage(verification);
   if (failure) {
     rc.notify(failure + " — current conversation left unchanged", "error");
-    throw new Error(failure);
+    throw new VerificationGateError(verification, initialScore);
   }
 
   const out = rc as SynthesizedRc & {

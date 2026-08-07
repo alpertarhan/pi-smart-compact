@@ -20,6 +20,7 @@ import type { LlmMessage, SessionMessageEntry } from "../../types.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { smartKeepBoundary, guardToolCallBoundary } from "../../utils/helpers.ts";
 import { resolveSessionId } from "../../infra/session-identity.ts";
+import { MIN_TOKEN_THRESHOLD } from "../../constants.ts";
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   const usage = rc.ctx.getContextUsage();
@@ -36,7 +37,10 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   const msgs = branch.filter(
     (e: { type: string; id?: string; message?: unknown }) => e.type === "message" && e.message != null,
   ) as SessionMessageEntry[];
-  if (msgs.length < 3) return null;
+  if (msgs.length < 3) {
+    if (rc.flags.force) rc.notify("Manual compaction skipped: fewer than 3 active messages are available.", "warning");
+    return null;
+  }
 
   const adaptiveKeepTokens = rc.ctx.model
     ? Math.min(rc.profileCfg.keepRecentTokens * 2, Math.max(rc.profileCfg.keepRecentTokens, rc.ctx.model.contextWindow * 0.04))
@@ -45,24 +49,46 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   const targetPercent = MODE_POLICIES[mode].targetContextPercent;
   const messageTokens = msgs.map(entry => rc.estimator.message(entry.message as LlmMessage));
   const allMessageTokens = messageTokens.reduce((sum, tokens) => sum + tokens, 0);
-  const fixedContextTokens = Math.max(0, totalTokens - allMessageTokens);
+  const overflowedContext = !!rc.flags.overflowRecovery || (!!rc.ctx.model && totalTokens > rc.ctx.model.contextWindow);
+  // A model switch or a stale provider usage sample can report more context
+  // than the active model accepts while the locally visible messages estimate
+  // much lower. In that recovery state, treating the entire delta as an
+  // uncompactable system prompt makes every EESV window look non-viable and
+  // delegates the already-oversized request to native's single LLM call. Map
+  // measured usage back across active messages instead; over-compacting is the
+  // only fail-safe direction when the current model cannot accept the context.
+  const messageScale = totalTokens > 0 && allMessageTokens > 0 && (allMessageTokens > totalTokens || overflowedContext)
+    ? totalTokens / allMessageTokens
+    : 1;
+  const fixedContextTokens = overflowedContext ? 0 : Math.max(0, totalTokens - allMessageTokens);
   const targetRetainedTokens = rc.ctx.model
     ? Math.max(0, rc.ctx.model.contextWindow * targetPercent / 100 - fixedContextTokens - rc.profileCfg.summaryBudgetTokens)
     : adaptiveKeepTokens;
-  // Keep as much recent context as the mode's post-compaction target allows,
-  // never less than the profile safety floor.
-  const retentionBudget = Math.max(adaptiveKeepTokens, targetRetainedTokens);
+  // Automatic/tool runs retain up to the model-relative target. An explicit
+  // manual command is the user's decision to compact now, so preserve the
+  // absolute adaptive safety tail instead of letting a 1M window turn 40–50%
+  // into a 400–500K no-op budget.
+  const retentionBudget = rc.flags.force
+    ? adaptiveKeepTokens
+    : Math.max(adaptiveKeepTokens, targetRetainedTokens);
+  // Selection uses raw per-message estimates, while both budgets above are in
+  // Pi-measured tokens. Scale the thresholds into the estimator's units before
+  // walking so an overestimating provider calibration cannot halve the safety
+  // tail or make only aggressive mode cross the boundary.
+  const rawAdaptiveKeepTokens = adaptiveKeepTokens / messageScale;
+  const rawRetentionBudget = retentionBudget / messageScale;
   let accTokens = 0;
   let keepFrom = msgs.length - 1;
   for (let i = msgs.length - 1; i >= 0; i--) {
     const next = messageTokens[i];
-    if (accTokens >= adaptiveKeepTokens && accTokens + next > retentionBudget) {
+    if (accTokens >= rawAdaptiveKeepTokens && accTokens + next > rawRetentionBudget) {
       keepFrom = i + 1;
       break;
     }
     accTokens += next;
     keepFrom = i;
   }
+  const plannedKeepFrom = keepFrom;
   const recentUsers = msgs
     .map((entry, index) => ({ index, role: (entry.message as { role?: string })?.role }))
     .filter(entry => entry.role === "user");
@@ -73,25 +99,68 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   keepFrom = smartKeepBoundary(msgs, keepFrom, branch);
   keepFrom = guardToolCallBoundary(msgs, keepFrom);
 
-  // Anchor/tool-call safety can move the boundary far earlier than the token
-  // walk selected. Recount both sides from the additive per-message estimates.
-  // Other context hooks may truncate tool payloads before the model sees them,
-  // so normalize an oversized raw estimate to Pi's measured context total.
-  const rawCompactTokens = messageTokens.slice(0, keepFrom).reduce((sum, tokens) => sum + tokens, 0);
-  const rawRetainedTokens = messageTokens.slice(keepFrom).reduce((sum, tokens) => sum + tokens, 0);
-  const messageScale = totalTokens > 0 && allMessageTokens > totalTokens ? totalTokens / allMessageTokens : 1;
-  const compactTokens = Math.round(rawCompactTokens * messageScale);
-  accTokens = Math.round(rawRetainedTokens * messageScale);
+  // Anchor/recent-turn protection is a fidelity preference; intact tool-call
+  // pairs are the hard boundary. If the soft protections retain far more than
+  // the selected budget, summarize through them with EESV rather than handing
+  // an oversized one-shot prompt to native compaction.
+  const recount = (from: number) => ({
+    compact: Math.round(messageTokens.slice(0, from).reduce((sum, tokens) => sum + tokens, 0) * messageScale),
+    retained: Math.round(messageTokens.slice(from).reduce((sum, tokens) => sum + tokens, 0) * messageScale),
+  });
+  let counts = recount(keepFrom);
+  const softProtectionBudget = rc.flags.force
+    ? Math.max(retentionBudget, adaptiveKeepTokens * 2)
+    : retentionBudget;
+  const protectionCeiling = fixedContextTokens + softProtectionBudget + rc.profileCfg.summaryBudgetTokens;
+  if (overflowedContext && keepFrom < plannedKeepFrom && fixedContextTokens + counts.retained + rc.profileCfg.summaryBudgetTokens > protectionCeiling) {
+    keepFrom = guardToolCallBoundary(msgs, plannedKeepFrom);
+    counts = recount(keepFrom);
+    rc.notify(
+      "Context exceeds the active model window. EESV will summarize through soft recent-turn/checkpoint protections while preserving complete tool-call pairs; native fallback would resend the oversized context.",
+      "warning",
+    );
+  }
+  const compactTokens = counts.compact;
+  accTokens = counts.retained;
 
   if ((msgs[keepFrom]?.message as Record<string, unknown> | undefined)?.role === "toolResult") {
+    if (rc.flags.force) rc.notify("Manual compaction skipped: no safe boundary can separate the retained tool result from its tool call.", "warning");
     return null;
   }
 
   const toCompact = msgs.slice(0, keepFrom);
-  if (!toCompact.length) return null;
+  if (!toCompact.length) {
+    if (rc.flags.force) {
+      rc.notify(
+        "Manual compaction skipped: no eligible prefix remains after protecting recent user turns and tool-call boundaries. It may have been run again too soon.",
+        "warning",
+      );
+    }
+    return null;
+  }
 
   const contextPercent = rc.ctx.model && totalTokens ? (totalTokens / rc.ctx.model.contextWindow) * 100 : 0;
-  if (!rc.flags.force && rc.ctx.model && totalTokens > 0 && rc.config.minContextPercent > 0) {
+  if (rc.flags.force) {
+    const lowYield = compactTokens <= rc.profileCfg.summaryBudgetTokens + MIN_TOKEN_THRESHOLD
+      || (totalTokens > 0 && compactTokens / totalTokens < 0.1);
+    if (lowYield) {
+      rc.notify(
+        "Low-yield manual compaction: only " + compactTokens.toLocaleString() +
+          "t are eligible after preserving " + accTokens.toLocaleString() +
+          "t of recent context. Continuing because you requested it; repeated compaction may lose nuance.",
+        "warning",
+      );
+    } else if (rc.config.minContextPercent > 0 && contextPercent < rc.config.minContextPercent) {
+      rc.notify(
+        "Manual compaction override at " + Math.round(contextPercent) + "% (" +
+          totalTokens.toLocaleString() + "t): compacting about " + compactTokens.toLocaleString() +
+          "t while preserving " + accTokens.toLocaleString() +
+          "t of recent context. Early compaction is lossy; verification remains fail-closed.",
+        "warning",
+      );
+    }
+  }
+  if (!rc.flags.force && !overflowedContext && rc.ctx.model && totalTokens > 0 && rc.config.minContextPercent > 0) {
     const projectedTokens = fixedContextTokens + accTokens + rc.profileCfg.summaryBudgetTokens;
     const targetTokens = rc.ctx.model.contextWindow * targetPercent / 100;
     if (projectedTokens > targetTokens) {

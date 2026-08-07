@@ -15,6 +15,7 @@ import { filterToolCalls } from "../utils/type-guards.ts";
 import { buildExtractionContext, buildExplorationContext, createBatches, preProcessSummaries, inferSessionType } from "../utils/helpers.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import { batchCacheKey, getCachedBatch, setCachedBatch } from "../infra/synthesis-cache.ts";
+import { summaryEvidenceLine } from "../domain/summary-parse.ts";
 
 function boundedToolArgs(value: unknown, depth = 0): unknown {
   if (typeof value === "string") return value.length > TRUNC.DETAIL ? value.slice(0, TRUNC.DETAIL) + "…" : value;
@@ -271,30 +272,43 @@ export async function assembleLLM(
 }
 
 export function assembleFallback(summaries: ChunkSummary[], extraction: StructuredExtraction): string {
-  const detModified = extraction.modifiedFiles.map(f => f.path);
-  const detRead = extraction.readFiles;
-  const unresolved = extraction.errors.filter(error => !error.resolved);
+  const safe = (value: string, max: number = TRUNC.PREVIEW_MID) => summaryEvidenceLine(value, max);
+  const detModified = extraction.modifiedFiles.map(f => safe(f.path)).filter(Boolean);
+  const detRead = extraction.readFiles.map(file => safe(file)).filter(Boolean);
+  const unresolved = extraction.errors.filter(error => !error.resolved)
+    .map(error => safe(error.message, TRUNC.PREVIEW)).filter(Boolean);
+  const constraints = extraction.constraints
+    .map(item => "- [" + item.category + "] " + safe(item.text)).filter(line => !line.endsWith("] "));
+  const decisions = extraction.decisions.map(item => {
+    const summary = safe(item.summary, TRUNC.DECISION_SUMMARY);
+    const response = item.userResponse ? safe(item.userResponse, TRUNC.USER_RESPONSE) : "";
+    return summary ? "- **" + summary + "**" + (response ? " → " + response : "") : "";
+  }).filter(Boolean);
   const inProgress = summaries.filter(item => item.priority === "critical" || item.priority === "high")
-    .map(item => "- [ ] " + item.summary.slice(0, TRUNC.PREVIEW));
+    .map(item => safe(item.summary, TRUNC.PREVIEW)).filter(Boolean).map(item => "- [ ] " + item);
   if (!inProgress.length) {
-    inProgress.push(...extraction.lastUserMessages.slice(-3).map(message => "- [ ] " + message.slice(0, TRUNC.PREVIEW)));
+    inProgress.push(...extraction.lastUserMessages.slice(-3)
+      .map(message => safe(message, TRUNC.PREVIEW)).filter(Boolean).map(message => "- [ ] " + message));
   }
   inProgress.push(...detModified.map(file => "- [ ] Continue work in " + file));
-  const next = extraction.lastUserMessages.at(-1)?.slice(0, TRUNC.PREVIEW)
-    ?? extraction.timeline.at(-1)?.summary.slice(0, TRUNC.PREVIEW)
-    ?? "Continue from the latest preserved context.";
+  const next = safe(extraction.lastUserMessages.at(-1) ?? extraction.timeline.at(-1)?.summary ?? "", TRUNC.PREVIEW)
+    || "Continue from the latest preserved context.";
+  const goal = safe(extraction.mainGoal ?? "", TRUNC.DETAIL) || "Continue the current task.";
   return [
-    "## Goal", extraction.mainGoal ?? "Continue the current task.", "",
-    "## Constraints & Preferences", ...(extraction.constraints.length ? extraction.constraints.map(c => "- [" + c.category + "] " + c.text.slice(0, TRUNC.PREVIEW_MID)) : ["- None recorded."]), "",
+    "## Goal", goal, "",
+    "## Constraints & Preferences", ...(constraints.length ? constraints : ["- None recorded."]), "",
     "## Progress", "### Done", "- No explicit completion recorded.",
     "### In Progress", ...(inProgress.length ? inProgress : ["- Continue current work."]),
-    "### Blocked", ...(unresolved.length ? unresolved.map(error => "- " + error.message.slice(0, TRUNC.PREVIEW)) : ["- None recorded."]), "",
-    "## Key Decisions", ...(extraction.decisions.length ? extraction.decisions.map(d => "- **" + d.summary.slice(0, TRUNC.TOPIC_LABEL) + "**" + (d.userResponse ? " → " + d.userResponse : "")) : ["- None recorded."]), "",
-    "## Files Modified", ...(detModified.length ? detModified.map(f => "- " + f) : ["- None recorded."]), "",
-    "## Files Read", ...(detRead.length ? detRead.map(f => "- " + f) : ["- None recorded."]), "",
+    "### Blocked", ...(unresolved.length ? unresolved.map(error => "- " + error) : ["- None recorded."]), "",
+    "## Key Decisions", ...(decisions.length ? decisions : ["- None recorded."]), "",
+    "## Files Modified", ...(detModified.length ? detModified.map(file => "- " + file) : ["- None recorded."]), "",
+    "## Files Read", ...(detRead.length ? detRead.map(file => "- " + file) : ["- None recorded."]), "",
     "## Next Steps", "1. " + next, "",
-    "## Critical Context", ...(unresolved.length ? unresolved.map(e => "- Unresolved error: " + e.message.slice(0, TRUNC.TOPIC_LABEL)) : ["- None recorded."]), "",
-    "## Topics Covered", ...(summaries.length ? summaries.map(s => "- **" + s.topic + "** [" + s.priority + "]: " + s.summary.slice(0, TRUNC.PREVIEW_MID)) : extraction.topics.map((topic, index) => "- Topic " + (index + 1) + ": " + (topic.primaryFile ?? topic.type))),
+    "## Critical Context", ...(unresolved.length ? unresolved.map(error => "- Unresolved error: " + safe(error, TRUNC.TOPIC_LABEL)) : ["- None recorded."]), "",
+    "## Topics Covered", ...(summaries.length ? summaries.map(item => {
+      const topic = safe(item.topic, TRUNC.TOPIC_LABEL) || "Segment";
+      return "- **" + topic + "** [" + item.priority + "]: " + safe(item.summary);
+    }) : extraction.topics.map((topic, index) => "- Topic " + (index + 1) + ": " + safe(topic.primaryFile ?? topic.type))),
   ].join("\n");
 }
 
@@ -307,7 +321,7 @@ export function assembleFallback(summaries: ChunkSummary[], extraction: Structur
 export function failedChunkSummary(ch: LlmChunk): ChunkSummary {
   return {
     topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
-    summary: "[Failed] " + ch.messages.map(m => extractText(m.content)).join("\n").slice(0, TRUNC.DETAIL),
+    summary: "[Failed] " + summaryEvidenceLine(ch.messages.map(m => extractText(m.content)).join("\n"), TRUNC.DETAIL),
     keyDecisions: [], filesModified: [], filesRead: [], priority: ch.priority,
   };
 }

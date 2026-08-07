@@ -73,6 +73,12 @@ interface SqliteDatabase {
   close(): void;
 }
 
+interface NodeSqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
 interface GraphNode {
   id: string;
   projectId: string;
@@ -109,11 +115,36 @@ interface NodeRow {
 
 interface EdgeRow { from_id: string; to_id: string; weight: number; }
 
+function nodeSqliteAdapter(db: NodeSqliteDatabase): SqliteDatabase {
+  return {
+    exec: sql => db.exec(sql),
+    query: sql => db.prepare(sql),
+    transaction: fn => ((...args: never[]) => {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const result = fn(...args);
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* preserve the original failure */ }
+        throw error;
+      }
+    }) as typeof fn,
+    close: () => db.close(),
+  };
+}
+
 function openDatabase(): SqliteDatabase {
   const fp = contextGraphFile();
   fs.mkdirSync(path.dirname(fp), { recursive: true });
-  const { Database } = require("bun:sqlite") as { Database: new (filename: string) => SqliteDatabase };
-  const db = new Database(fp);
+  let db: SqliteDatabase;
+  if ("bun" in process.versions) {
+    const { Database } = require("bun:sqlite") as { Database: new (filename: string) => SqliteDatabase };
+    db = new Database(fp);
+  } else {
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (filename: string) => NodeSqliteDatabase };
+    db = nodeSqliteAdapter(new DatabaseSync(fp));
+  }
   try { fs.chmodSync(fp, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
   db.exec("PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
   db.exec(`

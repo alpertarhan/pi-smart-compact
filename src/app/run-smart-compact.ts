@@ -92,6 +92,8 @@ export interface SmartCompactOptions {
   skipCompact?: boolean;
   /** Explicit user command may bypass adaptive context-pressure tier gate. */
   force?: boolean;
+  /** Native hook reason is overflow; EESV must not resend the rejected window to native summarization. */
+  overflowRecovery?: boolean;
   /** Optional hard budget for native auto-trigger only. Manual/tool runs do not time out by default. */
   timeoutMs?: number;
   /** Host cancellation for tool/manual callers. Linked to the pipeline controller. */
@@ -138,6 +140,7 @@ function makeBase(opts: SmartCompactOptions): RcBase {
       autoTriggered: !!opts.autoTriggered,
       skipCompact: !!opts.skipCompact,
       force: !!opts.force,
+      overflowRecovery: !!opts.overflowRecovery,
     },
     userNote: opts.userNote,
     focus: opts.focus,
@@ -163,7 +166,10 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     return;
   }
   const runSessionId = resolveSessionId(opts.ctx);
-  if (!acquireRunLock(opts.isRunning, runSessionId)) return;
+  if (!acquireRunLock(opts.isRunning, runSessionId)) {
+    if (!opts.autoTriggered) opts.ctx.ui.notify("Smart compact is already running for this session.", "warning");
+    return;
+  }
 
   const base = makeBase(opts);
   const abortFromHost = () => {

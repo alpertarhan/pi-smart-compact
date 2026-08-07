@@ -104,7 +104,9 @@ assertions: the type system proves `buildState` has run.
 `src/index.ts` resolves models, parses command arguments, and routes work into
 `runSmartCompact()`. Before any expensive work, the system checks context size
 against the threshold in `src/constants.ts`. Auto / tool runs are skipped while
-context is small; manual `/smart-compact` bypasses the gate. A pending summary
+context is small; manual `/smart-compact` bypasses the gate with an advisory
+warning and uses an absolute adaptive safety tail rather than a percentage of
+large model windows. A pending summary
 for the same session is reused instead of invoking the pipeline again. The
 selected `CompactionMode` resolves to a concrete policy before the first model
 call; `auto` uses context pressure and deterministic extraction risk.
@@ -121,12 +123,19 @@ provider/model route; call metrics preserve the actual route.
 `buildContextEntries()` view, never the append-only session history, then keeps
 a recent tail untouched so very recent context stays live, anchored by:
 
-- **pi-toolkit anchor protection** — never compact past the latest on-branch anchor
-- **`toolCall` / `toolResult` boundary guard** — never orphan a result from its call
+- **pi-toolkit anchor protection** — normally retain the latest on-branch anchor as a soft fidelity boundary
+- **`toolCall` / `toolResult` boundary guard** — never orphan a result from its call; this boundary remains hard
 
 Boundary expansion is re-counted after both guards. If the protected tail plus
 the summary budget cannot fall below the configured context trigger, automatic
-and tool runs return control to Pi's native compactor before any LLM call.
+and tool runs normally return control to Pi's native compactor before any LLM
+call. An already-overflowed context is the safety exception: measured usage is
+mapped across active messages, soft anchor/recent-turn expansion is removed,
+and EESV summarizes to the mode target while the tool boundary remains intact.
+This avoids sending a context larger than the active model window to native's
+single summarization call. Manual runs instead compact every eligible prefix
+outside the adaptive tail; empty/repeated/low-yield attempts are reported
+rather than silently ignored.
 
 Before summarization the pipeline also prunes redundant messages, serializes the
 compacted portion, creates a backup, loads the previous verified summary plus
@@ -214,7 +223,10 @@ success telemetry. Aborted/unconfirmed candidates write neither.
 Apply-confirmed verified state is queued and duplicate updates coalesce only
 for the exact project/session/branch head, then indexed on the next event-loop
 turn so SQLite work is not part of the native
-compaction hook's latency. The referenced queue timer survives extension
+compaction hook's latency. `infra/context-graph.ts` adapts the same synchronous
+query/transaction contract to `bun:sqlite` in Bun tests and `node:sqlite`
+`DatabaseSync` in Pi's Node runtime; the packed release audit exercises both.
+The referenced queue timer survives extension
 shutdown/reload in the process; graph data is derived and a later cumulative
 state safely supersedes a missed update after a hard process kill. Recall starts from FTS5 lexical matches, expands one hop
 through file-reference edges, then applies session, branch, fact-kind,

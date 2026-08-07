@@ -393,7 +393,12 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           const usage = ctx.getContextUsage();
           const totalTokens = usage?.tokens ?? 0;
           const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
-          if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) { ctx.ui.notify("Context OK or unknown", "info"); return; }
+          if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
+            ctx.ui.notify(
+              "Context usage is low or unknown (" + totalTokens.toLocaleString() + "t). Manual compaction may save little and can lose nuance; continuing because you requested it.",
+              "warning",
+            );
+          }
           const cur = ctx.model;
           const avail = ctx.modelRegistry.getAvailable();
           const opts = avail.map(m => ({ value: m.provider + "/" + m.id, label: m.provider + "/" + m.id + (m.contextWindow >= 200000 ? " (" + Math.round(m.contextWindow / 1000) + "K)" : ""), model: m }));
@@ -440,9 +445,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const usage = ctx.getContextUsage();
       const totalTokens = usage?.tokens ?? 0;
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) return;
-      // Guard: don't auto-compact if context is below threshold — tool=97% doesn't mean context is full
+      // Threshold is advisory during overflow recovery: Pi already has a
+      // rejected provider turn to rescue, even if model metadata understates
+      // the backend's effective limit.
       const pct = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
-      if (pct < config.minContextPercent) return;
+      if (event.reason !== "overflow" && pct < config.minContextPercent) return;
       const cur = ctx.model;
       if (!cur) return;
       const { segModel, sumModel, verifyModel } = resolveModels(ctx, cur, config);
@@ -483,6 +490,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
             mode: config.mode,
             pendingRef, isRunning, onNativeApplyError,
             autoTriggered: true,
+            overflowRecovery: event.reason === "overflow",
             timeoutMs: effectiveTimeoutMs,
             cancellationOut,
           });
