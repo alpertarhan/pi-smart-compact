@@ -119,6 +119,7 @@ function makeBase(opts: SmartCompactOptions): RcBase {
   const ctrl = new AbortController();
   const notify: Notifier = (msg, type = "info") => {
     if (opts.autoTriggered && (type === "info" || type === "success")) return;
+    if (type === "info" && !opts.verbose) return; // live brief replaces routine toast spam
     opts.ctx.ui.notify(msg, type === "success" ? "info" : type);
   };
   const vlog = (msg: string) => { if (opts.verbose) log.info(msg); };
@@ -189,6 +190,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   // null and the failure path uses `base` only.
   let finalRc: StatedRc | null = null;
   let keepApplyProgress = false;
+  let runFailed = false;
   let failureSummaryFields: {
     sessionId?: string; tier?: string; contextPercent?: number; toolPercent?: number;
     totalTokens?: number; methodForMetrics?: string; profile: string; mode?: CompactionMode;
@@ -215,7 +217,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     if (!prepared) return;
 
     base.notify(
-      "EESV Compact (" + base.modelLabel + ", " + base.profile + ") — " +
+      "EESV Compact (" + base.modelLabel + ", " + base.mode + ") — " +
         ((base.ctx.getContextUsage()?.tokens ?? 0)).toLocaleString() + "t",
       "info",
     );
@@ -231,7 +233,11 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     markPhase(windowed, "prepare");
 
     if (!windowed.flags.autoTriggered) {
-      showProgressOverlay(windowed.ctx, { phase: 1, phaseName: "Extract", detail: "Preparing...", model: windowed.modelLabel, profile: windowed.profile });
+      showProgressOverlay(windowed.ctx, {
+        phase: 1, phaseName: "Extract",
+        detail: "Indexing goals, files, decisions, errors, and open loops",
+        model: windowed.modelLabel, profile: windowed.profile,
+      });
     }
 
     const recovered = recoverSessionLog(windowed);
@@ -265,8 +271,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
 
     if (stated.flags.dryRun) {
       recordSuccessMetrics(stated, "dry-run");
-      stated.notify(
-        "DRY RUN (" + stated.method + ", " + stated.profile + ") — " +
+      stated.ctx.ui.notify(
+        "DRY RUN (" + stated.method + ", " + stated.mode + ") — " +
           stated.toCompact.length + " msgs, " + stated.llmCalls + " calls",
         "info",
       );
@@ -292,13 +298,13 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
           ? await showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services, { approval: true })
           : "cancel";
       } catch (err) {
-        log.warn("Approval UI error", err);
+        log.debugError("Approval UI stopped", err);
         stated.notify("Approval UI failed — compaction cancelled", "warning");
       }
       if (decision !== "apply") {
         stated.pendingRef.clear(stated.sessionId);
         recordSuccessMetrics(stated, "cancelled");
-        stated.notify("Compaction cancelled — current conversation unchanged", "info");
+        stated.ctx.ui.notify("Compaction cancelled — current conversation unchanged", "info");
         return;
       }
     }
@@ -310,7 +316,10 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     // Pi applied this exact runId. This prevents failed native compactions
     // from being reported or persisted as successful.
     if (willApply) {
-      showProgressOverlay(stated.ctx, { phase: 5, phaseName: "Apply", detail: "Awaiting Pi confirmation..." });
+      showProgressOverlay(stated.ctx, {
+        phase: 5, phaseName: "Apply",
+        detail: "Verified " + stated.verificationScore + "/100 · staging this run · awaiting Pi confirmation",
+      });
     }
     stagePendingCompaction(stated, buildSuccessMetrics(stated, "success"));
     if (stated.cancellation.timedOut) {
@@ -323,6 +332,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       keepApplyProgress = true;
     }
   } catch (err) {
+    runFailed = true;
     // The failure path may run before any step has populated stage data, so
     // we collect the few fields we need into a small bag. recordFailureMetrics
     // takes either a StatedRc (best case) or the partial bag.
@@ -348,11 +358,13 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       // when Pi confirms the compact).
       const dur = pipelineMs < 1000 ? pipelineMs + "ms" : (pipelineMs / 1000).toFixed(1) + "s";
       const hasPending = base.pendingRef.isPresent(runSessionId);
-      base.ctx.ui.notify(
+      if (hasPending || runFailed || finalRc) base.ctx.ui.notify(
         hasPending
           ? "Smart compact prepared in " + dur + " — awaiting native /compact"
-          : "Smart compact run finished in " + dur,
-        "info",
+          : runFailed
+            ? "Smart compact stopped safely in " + dur + " · no summary applied · Pi fallback continues"
+            : "Smart compact run finished in " + dur,
+        runFailed ? "warning" : "info",
       );
     }
   }

@@ -10,7 +10,8 @@ describe("smart_compact tool cancellation", () => {
       on: () => {},
     } as any);
 
-    expect(tool.parameters.properties.mode.description).toContain("auto");
+    expect(tool.parameters.properties.mode.description).toContain("fast, balanced, thorough");
+    expect(tool.parameters.properties.mode.description).not.toContain("aggressive");
     expect(tool.parameters.properties.max_input_tokens).toBeDefined();
   });
 

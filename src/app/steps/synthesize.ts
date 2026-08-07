@@ -70,6 +70,9 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   const cached = getCachedSynthesis(cacheKey);
   if (cached) {
     rc.notify("Synthesis cache hit — no LLM calls", "info");
+    if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+      phase: 3, phaseName: "Synthesize", detail: "Reusing the cached continuation summary · no LLM call",
+    });
     const hit = rc as ExtractedRc & {
       _synthesized: true; finalSummary: string; method: "eesv" | "single-pass" | "heuristic";
       methodForMetrics: string; llmCalls: number; summaries: ChunkSummary[];
@@ -88,13 +91,16 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     return advance<ExtractedRc, SynthesizedRc>(hit, "_synthesized");
   }
   const zeroCall = rc.config.zeroCallEnabled !== false
-    && (rc.mode === "fast" || rc.mode === "aggressive")
+    && rc.mode === "fast"
     && !rc.focus && !rc.userNote
     && deterministicExtractionConfidence(extraction, {
       conversationTokens: rc.convTokens,
       toolPercent: rc.toolPercent,
     }) >= 0.85;
   if (zeroCall) {
+    if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+      phase: 3, phaseName: "Synthesize", detail: "Building a deterministic continuation summary · no LLM call",
+    });
     const finalSummary = assembleFallback([], extraction);
     setCachedSynthesis(cacheKey, {
       finalSummary, method: "heuristic", summaries: [], explorationReport: null,
@@ -135,17 +141,21 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
   try {
     summaryAuth = await resolveStageAuth(rc, "summary");
   } catch (error) {
-    rc.notify("Summary route unavailable; using deterministic fallback: " + (error instanceof Error ? error.message : String(error)), "warning");
+    log.debugError("Summary route unavailable", error);
+    rc.notify("Summary route unavailable · using deterministic fallback", "info");
   }
 
   if (!summaryAuth) {
+    if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+      phase: 3, phaseName: "Synthesize", detail: "Summary route unavailable · building a deterministic summary",
+    });
     finalSummary = assembleFallback([], extraction);
     method = "heuristic";
   } else if (rc.convTokens < singlePassMaxTokens) {
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
         phase: 3, phaseName: "Synthesize",
-        detail: "Single-pass (" + rc.convTokens.toLocaleString() + "t)",
+        detail: "Writing one continuation summary from " + rc.convTokens.toLocaleString() + " tokens",
         model: rc.modelLabel, profile: rc.profile, extraction,
       });
     }
@@ -157,7 +167,8 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       );
       finalSummary = r.summary; method = "single-pass";
     } catch (err) {
-      rc.notify("Single-pass failed: " + (err instanceof Error ? err.message : String(err)), "warning");
+      log.debugError("Single-pass synthesis used deterministic fallback", err);
+      rc.notify("Single-pass generation stopped · using deterministic fallback", "info");
       finalSummary = assembleFallback([], extraction);
       method = "heuristic";
     }
@@ -167,7 +178,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       const exploreStart = Date.now();
       if (!rc.flags.autoTriggered) {
         showProgressOverlay(rc.ctx, {
-          phase: 2, phaseName: "Explore", detail: "Exploring...",
+          phase: 2, phaseName: "Explore", detail: "Mapping topic shifts and continuity risks",
           model: rc.modelLabel, profile: rc.profile, extraction,
         });
       }
@@ -191,7 +202,8 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         rc.vlog("Explore boundaries: " + explorationReport.boundaries
           .map(b => b.afterIndex + "(" + b.confidence.toFixed(2) + ")").join(", "));
       } catch (err) {
-        rc.notify("Phase 2 Explore: failed - " + (err instanceof Error ? err.message : String(err)), "warning");
+        log.debugError("Explore used deterministic topic boundaries", err);
+        rc.notify("Explore unavailable · using deterministic topic boundaries", "info");
       } finally {
         const exploreEnd = Date.now();
         markMeasuredPhase(rc, "explore", exploreStart, exploreEnd);
@@ -245,7 +257,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     const totalBatches = batches.length;
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
-        phase: 3, phaseName: "Synthesize", detail: "0/" + totalBatches + " batches",
+        phase: 3, phaseName: "Synthesize", detail: "Compressing older history · batch 0/" + totalBatches,
         model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds, totalBatches,
       });
     }
@@ -290,7 +302,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
           for (let index = wave; index < totalBatches; index++) {
             results[index] = batches[index].map(chunk => failedChunkSummary(chunk));
           }
-          rc.notify("Synthesis budget exhausted — remaining batches use deterministic fallback", "warning");
+          rc.notify("Synthesis budget reached · remaining batches use deterministic fallback", "info");
           break;
         }
         const waveBatches = batches.slice(wave, Math.min(wave + concurrency, batchCallLimit));
@@ -309,7 +321,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
           if (!rc.flags.autoTriggered) {
             showProgressOverlay(rc.ctx, {
               phase: 3, phaseName: "Synthesize",
-              detail: completed + "/" + totalBatches + " batches",
+              detail: "Compressing older history · batch " + completed + "/" + totalBatches,
               model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds,
               totalBatches, currentBatch: completed,
             });
@@ -318,12 +330,24 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         await Promise.all(wavePromises);
       }
       for (const r of results) if (r) summaries.push(...r);
-      for (let i = 0; i < errors.length; i++) if (errors[i]) rc.notify("Batch " + (i + 1) + " failed: " + errors[i]!.message, "warning");
+      const failedBatches = errors.filter(Boolean);
+      for (const error of failedBatches) log.debugError("Synthesis batch used deterministic fallback", error);
+      if (failedBatches.length) {
+        rc.notify(
+          failedBatches.length + " synthesis batch(es) stopped · deterministic evidence fallback preserved coverage",
+          "info",
+        );
+        if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+          phase: 3, phaseName: "Synthesize",
+          detail: failedBatches.length + " batch fallback(s) · preserving coverage from deterministic evidence",
+          explorationRounds,
+        });
+      }
     }
 
     if (!rc.flags.autoTriggered) {
       showProgressOverlay(rc.ctx, {
-        phase: 3, phaseName: "Synthesize", detail: "Assembling...",
+        phase: 3, phaseName: "Synthesize", detail: "Merging summaries with project continuity",
         model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds, totalBatches: batches.length,
       });
     }
@@ -335,7 +359,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       );
       if (r?.startsWith("##")) finalSummary = r; else throw new Error("bad");
     } catch (err) {
-      log.warn("Assembly failed", err);
+      log.debugError("Assembly used deterministic fallback", err);
       finalSummary = assembleFallback(summaries, extraction);
     }
     method = "eesv";

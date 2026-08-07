@@ -17,19 +17,14 @@ export interface ModePolicy {
 
 export const MODE_POLICIES: Readonly<Record<EffectiveCompactionMode, ModePolicy>> = {
   fast: {
-    profile: "balanced", maxLlmCalls: 3, maxInputTokens: 100_000, maxOutputTokens: 20_000,
+    profile: "aggressive", maxLlmCalls: 3, maxInputTokens: 100_000, maxOutputTokens: 20_000,
     explore: false, allowLlmPatch: false, singlePassMultiplier: 2,
-    batchOutput: { min: 800, perChunk: 160, max: 2_400 }, softLatencyMs: 30_000, targetContextPercent: 45,
+    batchOutput: { min: 800, perChunk: 160, max: 2_400 }, softLatencyMs: 30_000, targetContextPercent: 30,
   },
   balanced: {
     profile: "balanced", maxLlmCalls: 6, maxInputTokens: 200_000, maxOutputTokens: 40_000,
     explore: false, allowLlmPatch: false, singlePassMultiplier: 1.5,
     batchOutput: { min: 1_000, perChunk: 250, max: 4_096 }, softLatencyMs: 60_000, targetContextPercent: 40,
-  },
-  aggressive: {
-    profile: "aggressive", maxLlmCalls: 4, maxInputTokens: 120_000, maxOutputTokens: 25_000,
-    explore: false, allowLlmPatch: false, singlePassMultiplier: 2,
-    batchOutput: { min: 800, perChunk: 180, max: 2_400 }, softLatencyMs: 45_000, targetContextPercent: 30,
   },
   thorough: {
     profile: "light", maxLlmCalls: 8, maxInputTokens: 300_000, maxOutputTokens: 80_000,
@@ -39,7 +34,7 @@ export const MODE_POLICIES: Readonly<Record<EffectiveCompactionMode, ModePolicy>
 };
 
 export function modeFromLegacyProfile(profile: CompressionProfile): EffectiveCompactionMode {
-  return profile === "light" ? "thorough" : profile;
+  return profile === "light" ? "thorough" : profile === "aggressive" ? "fast" : "balanced";
 }
 
 /** Cheap preflight choice used before deterministic extraction is available. */
@@ -49,8 +44,8 @@ export function resolveMode(
   extraction?: StructuredExtraction,
   additionalRisk = 0,
 ): EffectiveCompactionMode {
-  if (requested !== "auto") return requested;
-  if (contextPercent >= 85) return "aggressive";
+  if (requested !== "auto") return requested === "aggressive" ? "fast" : requested;
+  if (contextPercent >= 85) return "fast";
   if (!extraction) return contextPercent < 70 ? "fast" : "balanced";
 
   const unresolved = extraction.errors.filter(error => !error.resolved).length;

@@ -243,7 +243,7 @@ export function verifySummary(
   }
 
   for (const error of unresolvedEvidence) {
-    const snippet = error.message.trim().replace(/\s+/g, " ").slice(0, TRUNC.ERROR_SNIPPET).toLowerCase();
+    const snippet = summaryEvidenceLine(error.message, TRUNC.ERROR_SNIPPET).toLowerCase();
     if (snippet.length > 5 && !normalizedSummary.includes(snippet)) {
       gaps.push({ kind: "missing-error", message: error.message });
       score -= 5;

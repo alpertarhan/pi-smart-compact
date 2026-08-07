@@ -16,10 +16,15 @@ describe("validateSmartCompactConfig", () => {
     expect(sc.profile).toBe("light");
   });
 
-  it("validates the optimization mode", () => {
-    const valid: Record<string, unknown> = { mode: "thorough" };
-    validateSmartCompactConfig(valid);
-    expect(valid.mode).toBe("thorough");
+  it("validates the three optimization modes and migrates legacy aggressive to Fast", () => {
+    for (const mode of ["fast", "balanced", "thorough"]) {
+      const valid: Record<string, unknown> = { mode };
+      validateSmartCompactConfig(valid);
+      expect(valid.mode).toBe(mode);
+    }
+    const legacy: Record<string, unknown> = { mode: "aggressive" };
+    validateSmartCompactConfig(legacy);
+    expect(legacy.mode).toBe("fast");
     const invalid: Record<string, unknown> = { mode: "turbo" };
     validateSmartCompactConfig(invalid);
     expect(invalid.mode).toBeUndefined();

@@ -379,7 +379,7 @@ export async function exploreConversation(
             tools: EXPLORATION_TOOLS,
           }, { apiKey: auth.apiKey, headers: auth.headers, signal, maxTokens: Math.min(4096, model.maxTokens || 4096) }, svc);
         } catch (err) {
-          log.warn("Explore loop error", err);
+          log.debugError("Explore loop stopped", err);
           break;
         }
 

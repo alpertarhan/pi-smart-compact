@@ -254,7 +254,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   pi.registerCommand("smart-compact", {
     description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [note]",
     getArgumentCompletions: (prefix: string) => {
-      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "restore", "loops", "auto", "balanced", "aggressive", "fast", "thorough", "slow", "light", "--focus=", "--max-calls=", "--max-input-tokens=", "--max-latency="].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
+      const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "restore", "loops", "fast", "balanced", "thorough", "--focus=", "--max-calls=", "--max-input-tokens=", "--max-latency="].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
       return m.length ? m : null;
     },
     handler: async (args, ctx) => {
@@ -385,8 +385,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(t) &&
           (findModelById(ctx, t) || knownProviders.has(t.split("/")[0])));
         const config = loadConfig();
-        const rawMode = tokens.find(t => ["auto", "balanced", "aggressive", "fast", "thorough", "slow"].includes(t));
-        const modeArg = (rawMode === "slow" ? "thorough" : rawMode) as CompactionMode | undefined;
+        const rawMode = tokens.find(t => ["auto", "fast", "balanced", "thorough", "aggressive", "slow"].includes(t));
+        const modeArg = (rawMode === "slow" ? "thorough" : rawMode === "aggressive" ? "fast" : rawMode) as CompactionMode | undefined;
+        if (rawMode === "aggressive") ctx.ui.notify("Aggressive mode is now Fast; using Fast.", "warning");
         const profileArg = tokens.includes("light") ? "light" as CompressionProfile : undefined;
         const mode = modeArg ?? (profileArg ? modeFromLegacyProfile(profileArg) : config.mode);
 
@@ -497,7 +498,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
             cancellationOut,
           });
         } catch (err) {
-          log.warn("Smart compact auto-trigger threw", err);
+          log.debugError("Smart compact auto-trigger stopped", err);
         } finally {
           clearTimeout(timeoutId);
         }
@@ -510,7 +511,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           return { compaction: { summary: fresh.summary, firstKeptEntryId: fresh.firstKeptEntryId, tokensBefore: fresh.tokensBefore, details: fresh.details } };
         }
       }
-    } catch (e) { log.warn("session_before_compact error", e); }
+    } catch (e) { log.debugError("session_before_compact stopped", e); }
   });
 
   pi.on("session_compact", async (event, ctx) => {
@@ -605,7 +606,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     parameters: {
       type: "object",
       properties: {
-        mode: { type: "string", description: "auto, balanced, aggressive, fast, or thorough (slow alias). Default: auto." },
+        mode: { type: "string", description: "fast, balanced, thorough, or auto. Default: auto." },
         profile: { type: "string", description: "Deprecated alias: light, balanced, or aggressive." },
         verbose: { type: "boolean", description: "Show detailed pipeline output." },
         dry_run: { type: "boolean", description: "Run the pipeline but skip applying the compaction." },
@@ -621,7 +622,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const profile = (params.profile === "light" || params.profile === "balanced" || params.profile === "aggressive") ? params.profile : undefined;
       const mode = params.mode === "slow"
         ? "thorough"
-        : (["auto", "balanced", "aggressive", "fast", "thorough"] as const).find(value => value === params.mode);
+        : params.mode === "aggressive"
+          ? "fast"
+          : (["auto", "fast", "balanced", "thorough"] as const).find(value => value === params.mode);
       const verbose = !!params.verbose;
       const dryRun = !!params.dry_run;
       const focus = typeof params.focus === "string" ? params.focus.trim() || undefined : undefined;

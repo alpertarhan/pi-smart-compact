@@ -21,11 +21,12 @@ function context() {
 describe("semantic compact progress", () => {
   it("renders completed/current/future phases and marks optional Explore skipped", () => {
     const { ctx, calls, widget } = context();
-    showProgressOverlay(ctx, { phase: 3, phaseName: "Synthesize", detail: "2/4 batches" });
-    expect(calls).toEqual(["status:Smart Compact · Synthesize · 2/4 batches", "widget:set"]);
-    const component = widget()!({}, { fg: (_color: string, text: string) => text });
+    showProgressOverlay(ctx, { phase: 3, phaseName: "Synthesize", detail: "Compressing older history · batch 2/4" });
+    expect(calls).toEqual(["status:Smart Compact 3/5 · Synthesize", "widget:set"]);
+    const component = widget()!({}, { fg: (_color: string, text: string) => text, bold: (text: string) => text });
     expect(component.render(120)).toEqual([
       "✓ Extract  – Explore  ● Synthesize  ○ Verify  ○ Apply",
+      "↳ Compressing older history · batch 2/4 · conversation unchanged",
     ]);
     clearCompactProgress(ctx);
     expect(calls.slice(-2)).toEqual(["status:undefined", "widget:clear"]);
@@ -34,9 +35,12 @@ describe("semantic compact progress", () => {
 
   it("renders Explore completed when the optional phase ran", () => {
     const { ctx, widget } = context();
-    showProgressOverlay(ctx, { phase: 4, phaseName: "Verify", detail: "Checking", explorationRounds: 2 });
-    const component = widget()!({}, { fg: (_color: string, text: string) => text });
-    expect(component.render(120)[0]).toBe("✓ Extract  ✓ Explore  ✓ Synthesize  ● Verify  ○ Apply");
+    showProgressOverlay(ctx, { phase: 4, phaseName: "Verify", detail: "Checking facts and constraints", explorationRounds: 2 });
+    const component = widget()!({}, { fg: (_color: string, text: string) => text, bold: (text: string) => text });
+    expect(component.render(120)).toEqual([
+      "✓ Extract  ✓ Explore  ✓ Synthesize  ● Verify  ○ Apply",
+      "↳ Checking facts and constraints · conversation unchanged",
+    ]);
   });
 
   it("reports only applied estimates, never actual context", () => {

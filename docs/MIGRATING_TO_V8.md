@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to the stable `8.0.5` release.
+This guide applies to the stable `8.0.6` release.
 
 ## Compatibility
 
@@ -33,7 +33,8 @@ source-search output persisted as unresolved work; the next confirmed save persi
 the sanitized state. v8.0.3 keeps the same graph file and transparently opens it
 with `node:sqlite` under Pi or `bun:sqlite` in Bun tooling. v8.0.4 changes only
 compaction planning, UX, and privacy-safe operational metrics; v8.0.5 bounds
-user-facing failure diagnostics. Neither requires a state or database migration.
+user-facing failure diagnostics; v8.0.6 streamlines the three-mode decision card
+and live progress brief. None requires a state or database migration.
 
 Facts remain conservative: absence from a new window is not deletion. A fact is
 removed only by an explicit resolved/superseded override.
@@ -75,7 +76,7 @@ All defaults preserve the selected model and require no migration edits.
 | Key | Default | Purpose |
 |---|---|---|
 | `mode` | `auto` | Pressure/risk-aware execution policy |
-| `zeroCallEnabled` | `true` | Deterministic Fast/Aggressive synthesis when confidence is high |
+| `zeroCallEnabled` | `true` | Deterministic Fast synthesis when confidence is high |
 | `contextGraphEnabled` | `true` | Local scoped graph and memory tools |
 | `telemetryChannel` | `stable` | Stable/canary metric tag |
 | `segmentationModel` | `null` | Explicit Explore route; selected model when null |
@@ -87,7 +88,7 @@ See the README configuration table for budgets and monitoring options.
 ## Recommended rollout
 
 1. Back up `~/.pi/agent/settings.json` and the Smart Compact cache directory.
-2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.5`.
+2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.6`.
 3. Leave all model routes null initially.
 4. Keep `telemetryChannel: "stable"` unless intentionally running a separate
    canary cohort.

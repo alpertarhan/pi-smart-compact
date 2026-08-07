@@ -24,7 +24,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 
   if (!rc.flags.autoTriggered) {
     showProgressOverlay(rc.ctx, {
-      phase: 4, phaseName: "Verify", detail: "Checking...",
+      phase: 4, phaseName: "Verify", detail: "Checking facts, files, constraints, errors, and open loops",
       model: rc.modelLabel, profile: rc.profile, extraction,
       explorationRounds: rc.explorationRounds,
     });
@@ -41,8 +41,12 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
   if (initialPatchable.length > 0) {
     rc.notify(
       "Phase 4 Verify: " + initialPatchable.length + " deterministic gap(s), score=" + verification.score + ", applying repair",
-      "warning",
+      "info",
     );
+    if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+      phase: 4, phaseName: "Verify", detail: "Repairing " + initialPatchable.length + " deterministic finding(s)",
+      explorationRounds: rc.explorationRounds,
+    });
     const repaired = repairSummaryDeterministically(summary, verification, extraction, rc.previousState);
     summary = repaired.summary;
     verification = repaired.result;
@@ -51,12 +55,16 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 
   const mode = rc.mode ?? (rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced");
   if (MODE_POLICIES[mode].allowLlmPatch && !verification.ok) {
-    rc.notify("Phase 4 Verify: deterministic repair insufficient (score=" + verification.score + "), requesting LLM patch", "warning");
+    rc.notify("Phase 4 Verify: deterministic repair insufficient (score=" + verification.score + "), requesting LLM patch", "info");
+    if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+      phase: 4, phaseName: "Verify", detail: "Requesting a semantic repair for unresolved findings",
+      explorationRounds: rc.explorationRounds,
+    });
     const beforePatch = summary;
     try {
       const verifyAuth = await resolveStageAuth(rc, "verify");
       summary = await patchSummary(summary, verification.gaps, rc.verifyModel ?? rc.summaryModel, verifyAuth, rc.cancellation.signal, rc.services);
-    } catch (error) { log.warn("LLM patch failed", error); }
+    } catch (error) { log.debugError("LLM verification patch used deterministic fallback", error); }
     if (summary !== beforePatch) {
       llmPatched = true;
       verification = verifySummary(summary, extraction, rc.previousState);
@@ -68,6 +76,10 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
   }
 
   if (!verification.ok) {
+    if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+      phase: 4, phaseName: "Verify", detail: "Trying the deterministic safety summary",
+      explorationRounds: rc.explorationRounds,
+    });
     let deterministic = assembleFallback(rc.summaries, extraction);
     let deterministicVerification = verifySummary(deterministic, extraction, rc.previousState);
     const repaired = repairSummaryDeterministically(deterministic, deterministicVerification, extraction, rc.previousState);
@@ -81,12 +93,16 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
       verification = deterministicVerification;
       deterministicPatched.push(...repaired.patched);
       qualityFloorUsed = true;
-      rc.notify("Quality floor replaced unsafe or unverifiable model output", "warning");
+      rc.notify("Quality floor replaced unsafe or unverifiable model output", "info");
     }
   }
 
   const failure = verificationFailureMessage(verification);
   if (failure) throw new VerificationGateError(verification, initialScore);
+  if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
+    phase: 4, phaseName: "Verify", detail: "Passed " + verification.score + "/100 · 0 unresolved gaps",
+    explorationRounds: rc.explorationRounds,
+  });
 
   const out = rc as SynthesizedRc & {
     _verified: true;

@@ -14,7 +14,7 @@ import { flattenToolCallBlock } from "./extraction.ts";
 import { extractToolPath } from "../domain/tool-semantics.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
-const VALID_MODES = ["auto", "balanced", "aggressive", "fast", "thorough"] as const;
+const VALID_MODES = ["auto", "fast", "balanced", "thorough"] as const;
 const VALID_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
 
@@ -26,8 +26,12 @@ const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChu
  * This prevents silent misconfiguration (e.g. profile: "super").
  */
 export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
+  if (sc.mode === "aggressive") {
+    log.warn("smart-compact config: mode 'aggressive' is deprecated; using 'fast'.");
+    sc.mode = "fast";
+  }
   if ("mode" in sc && !(VALID_MODES as readonly string[]).includes(sc.mode as string)) {
-    log.warn("smart-compact config: invalid mode '" + sc.mode + "', expected auto|balanced|aggressive|fast|thorough. Using default 'auto'.");
+    log.warn("smart-compact config: invalid mode '" + sc.mode + "', expected auto|fast|balanced|thorough. Using default 'auto'.");
     delete sc.mode;
   }
   if ("telemetryChannel" in sc && sc.telemetryChannel !== "stable" && sc.telemetryChannel !== "canary") {
