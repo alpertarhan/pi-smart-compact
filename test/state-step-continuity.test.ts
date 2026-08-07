@@ -27,7 +27,7 @@ describe("buildState continuity integration", () => {
       llmMessages: [], explorationReport: null, config: { pinPaths: [] }, services,
       estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
       profile: "balanced", mode: "balanced", method: "eesv", chunkCount: 1, summaries: [],
-      toCompact: [{}, {}], convTokens: 1_000, totalTokens: 50_000, accTokens: 10_000,
+      toCompact: [{}, {}], convTokens: 1_000, totalTokens: 50_000, compactTokens: 20_000, accTokens: 10_000,
       backupPath: null, verified: true, verificationGaps: [], verificationScore: 100,
       verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
       explorationRounds: 0, modelLabel: "openai/test", notify: () => {},
@@ -40,5 +40,7 @@ describe("buildState continuity integration", () => {
     expect(result.finalSummary).toContain("auth test still fails");
     expect(result.finalSummary).toContain("fix auth test");
     expect(result.details.mode).toBe("balanced");
+    expect(result.tokensSaved).toBeGreaterThan(10_000);
+    expect(result.tokensSaved).toBeLessThan(20_000);
   });
 });

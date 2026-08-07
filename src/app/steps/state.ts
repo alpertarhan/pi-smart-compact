@@ -123,8 +123,10 @@ export function buildState(rc: VerifiedRc): StatedRc {
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
-  const estimatedAfter = rc.estimator.text(summary) + rc.accTokens;
-  const tokensSaved = Math.max(0, rc.totalTokens - estimatedAfter);
+  // Compare the replaced prefix with its replacement summary. Subtracting an
+  // estimated retained tail from Pi's measured total mixes token scales when
+  // another context hook truncates tool output, producing false 0% savings.
+  const tokensSaved = Math.max(0, Math.min(rc.totalTokens, rc.compactTokens - rc.estimator.text(summary)));
 
   const details: SmartCompactDetails = {
     runId: rc.runId,

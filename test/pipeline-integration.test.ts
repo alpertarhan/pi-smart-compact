@@ -76,6 +76,7 @@ function makeTieredRc(messages: LlmMessage[]): TieredRc {
     keepFrom: 0,
     toCompact: messages.map((m, i) => ({ id: "m-" + i, type: "message", message: m })),
     firstKeptId: "m-0",
+    compactTokens: 500,
     accTokens: 500,
     llmMessages: messages,
     tier: "balanced",

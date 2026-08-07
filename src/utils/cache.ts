@@ -339,6 +339,7 @@ export function mergeExtractions(
     modifiedFiles: [...modified.values()],
     readFiles: [...new Set([...base.readFiles, ...delta.readFiles])],
     deletedFiles: [...new Set([...base.deletedFiles, ...delta.deletedFiles])],
+    referencedFiles: [...new Set([...(base.referencedFiles ?? []), ...(delta.referencedFiles ?? [])])].slice(0, 200),
     mediaAttachments: [...(base.mediaAttachments ?? []), ...offsetMedia],
     errors: mergedErrors,
     decisions: [...base.decisions, ...offsetDecisions],

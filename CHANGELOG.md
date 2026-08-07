@@ -4,6 +4,13 @@
 
 No changes yet.
 
+## [8.0.0-rc.3] - 2026-08-07
+
+### Fixed
+
+- Token savings now compare the normalized prefix actually replaced with its replacement summary instead of subtracting a differently scaled raw tail from Pi's measured context. Real tool-heavy sessions no longer report false `0%` savings, and one run's estimator stays stable while shared calibration learns for later runs.
+- Verification grounds file references already present in compacted prose/tool evidence, deduplicates repeated fabricated-file findings, and ignores successful or expected-exit `rg`/`grep` output instead of persisting it as an unresolved error.
+
 ## [8.0.0-rc.2] - 2026-08-06
 
 ### Fixed

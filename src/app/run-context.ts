@@ -160,6 +160,9 @@ export interface WindowedExt extends PreparedExt {
   keepFrom: number;
   toCompact: SessionMessageEntry[];
   firstKeptId: string;
+  /** Estimated tokens replaced by the summary, normalized to Pi's measured context. */
+  compactTokens: number;
+  /** Estimated retained-tail tokens, normalized to Pi's measured context. */
   accTokens: number;
 }
 export type WindowedRc = RcBase & WindowedExt;
