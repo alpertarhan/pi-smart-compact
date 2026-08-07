@@ -16,6 +16,7 @@ import { appendMetricsSnapshot, readMetricsLog } from "./utils/cache.ts";
 import { buildLocalDashboardInsights, buildMetricsReport, writeMetricsDashboard } from "./ui/metrics-report.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { clearCompactProgress, notifyAppliedCompaction, showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction, showOpenLoopsUI } from "./ui/overlays.ts";
+import { formatCompactErrorForUi } from "./ui/error-format.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import { createSessionRunLock } from "./app/session-run-lock.ts";
@@ -429,8 +430,8 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           timeoutMs: maxLatencyMs, force: true,
         });
       } catch (error) {
-        const msg = error instanceof Error ? error.message + "\n" + error.stack : String(error);
-        ctx.ui.notify("smart-compact error: " + msg, "error");
+        log.debugError("Manual smart compact failed", error);
+        ctx.ui.notify(formatCompactErrorForUi(error), "error");
       }
     },
   });
@@ -683,8 +684,8 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         }
         return { content: [{ type: "text", text: "Compaction finished (" + resolvedMode + ") but no summary was generated." }], details: undefined };
       } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { content: [{ type: "text", text: "Compaction error: " + msg }], details: undefined };
+        log.debugError("Smart compact tool failed", error);
+        return { content: [{ type: "text", text: formatCompactErrorForUi(error) }], details: undefined };
       }
     },
   });

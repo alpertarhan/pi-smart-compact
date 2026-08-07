@@ -86,10 +86,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
   }
 
   const failure = verificationFailureMessage(verification);
-  if (failure) {
-    rc.notify(failure + " — current conversation left unchanged", "error");
-    throw new VerificationGateError(verification, initialScore);
-  }
+  if (failure) throw new VerificationGateError(verification, initialScore);
 
   const out = rc as SynthesizedRc & {
     _verified: true;

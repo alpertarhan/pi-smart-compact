@@ -33,6 +33,7 @@ import type { StatedRc } from "../run-context.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../../infra/ai-messages.ts";
 import { clearCompactProgress } from "../../ui/overlays.ts";
+import { formatCompactErrorForUi } from "../../ui/error-format.ts";
 
 import * as log from "../../utils/logger.ts";
 
@@ -157,7 +158,8 @@ export function applyCompaction(rc: StatedRc): void {
           methodForMetrics: rc.method, profile: rc.profile, mode: rc.mode,
         });
       }
-      rc.ctx.ui.notify("Failed: " + e.message, "error");
+      log.debugError("Native compaction apply failed", e);
+      rc.ctx.ui.notify(formatCompactErrorForUi(e), "error");
     },
   });
 }

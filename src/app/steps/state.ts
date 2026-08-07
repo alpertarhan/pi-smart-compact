@@ -121,10 +121,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
     remainingGaps: postVerification.gaps,
   };
   const failure = verificationFailureMessage(postVerification);
-  if (failure) {
-    rc.notify(failure + " after continuity injection — current conversation left unchanged", "error");
-    throw new VerificationGateError(postVerification, postInitialScore);
-  }
+  if (failure) throw new VerificationGateError(postVerification, postInitialScore);
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;

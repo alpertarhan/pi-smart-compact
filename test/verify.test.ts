@@ -383,7 +383,8 @@ describe("verifyAndPatch", () => {
     expect(result.finalSummary).toContain("Continue work in README.md");
   });
 
-  it("fails closed when contradictory evidence cannot pass verification", async () => {
+  it("fails closed without emitting evidence text from the verification step", async () => {
+    const uiErrors: string[] = [];
     const extraction = makeExtraction({
       constraints: [{ index: 1, text: "Must publish stable now", category: "requirement", confidence: 1 }],
     });
@@ -401,9 +402,10 @@ describe("verifyAndPatch", () => {
       },
       mode: "aggressive",
       flags: { autoTriggered: true },
-      notify: () => {},
+      notify: (message: string, type: string) => { if (type === "error") uiErrors.push(message); },
       vlog: () => {},
     } as any)).rejects.toThrow("Verification gate rejected summary");
+    expect(uiErrors).toEqual([]);
   });
 
   it("repairs a patchable high-score gap instead of skipping it", async () => {

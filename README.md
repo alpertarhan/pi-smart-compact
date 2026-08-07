@@ -146,7 +146,9 @@ before staging, and reports final success only after Pi confirms the matching
 `session_compact` run ID. A single long user turn may be split at a safe message
 boundary: its older prefix is verified into the summary while the budgeted
 working tail stays raw. Tool exchanges are summarized or retained as complete
-call/result pairs, never split.
+call/result pairs, never split. If Verify, yield, provider, or native apply
+fails, the UI shows one bounded actionable line without evidence text or a
+JavaScript stack. Stack diagnostics are opt-in with `DEBUG=smart-compact`.
 
 ### Focus and budgets
 
