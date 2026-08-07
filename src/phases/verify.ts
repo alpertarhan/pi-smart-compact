@@ -261,7 +261,10 @@ export function verifySummary(
     for (const file of extraction.modifiedFiles) {
       const basename = file.path.split("/").pop() ?? "";
       if (!doneSection.toLowerCase().includes(basename.toLowerCase())) continue;
-      const unresolved = unresolvedEvidence.find(error => error.message.toLowerCase().includes(basename.toLowerCase()));
+      const unresolved = unresolvedEvidence.find(error => {
+        const firstLine = error.message.split(/\r?\n/, 1)[0] ?? "";
+        return extractFileRefs(firstLine).some(ref => isKnownPathReference(ref, [file.path]));
+      });
       if (unresolved) {
         gaps.push({ kind: "inconsistency", detail: basename + " marked Done but has unresolved error" });
         score -= 5;

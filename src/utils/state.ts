@@ -24,9 +24,19 @@ function getStatePath(projectId: string, state?: CompactionState): string {
     : compactionStateFile(projectId);
 }
 
+function isLegacySearchOutput(text: string): boolean {
+  const firstLine = text.trim().split(/\r?\n/, 1)[0] ?? "";
+  return /^[^\s:][^:]*:\d+(?::\d+)?:/.test(firstLine);
+}
+
 export function sanitizeCompactionStateEvidence(state: CompactionState): CompactionState {
   const constraints = state.constraints.filter(item => !isDiagnosticConstraintText(item.text));
-  return constraints.length === state.constraints.length ? state : { ...state, constraints };
+  const unresolvedErrors = state.unresolvedErrors.filter(item => !isLegacySearchOutput(item.message));
+  const openLoops = state.openLoops.filter(item => !isLegacySearchOutput(item.summary));
+  if (constraints.length === state.constraints.length &&
+      unresolvedErrors.length === state.unresolvedErrors.length &&
+      openLoops.length === state.openLoops.length) return state;
+  return { ...state, constraints, unresolvedErrors, openLoops };
 }
 
 function freshState(fp: string, data: CompactionState | null): CompactionState | null {

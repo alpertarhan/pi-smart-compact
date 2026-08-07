@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to the stable `8.0.1` release.
+This guide applies to the stable `8.0.2` release.
 
 ## Compatibility
 
@@ -27,8 +27,9 @@ v7's project-wide state file is left in place but is **not automatically
 injected**. Treating it as current could contaminate another session or a
 divergent branch. The first host-confirmed v8 `session_compact` seeds scoped
 state; staging, cancellation, or a failed native apply writes nothing. No conversation log is
-rewritten during migration. v8.0.1 also filters legacy RC state that misclassified
-`npm error`/`npm notice` diagnostics as constraints; the next confirmed save persists
+rewritten during migration. v8.0.1+ filters legacy RC state that misclassified
+`npm error`/`npm notice` diagnostics as constraints, and v8.0.2 also removes legacy
+source-search output persisted as unresolved work; the next confirmed save persists
 the sanitized state.
 
 Facts remain conservative: absence from a new window is not deletion. A fact is
@@ -83,7 +84,7 @@ See the README configuration table for budgets and monitoring options.
 ## Recommended rollout
 
 1. Back up `~/.pi/agent/settings.json` and the Smart Compact cache directory.
-2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.1`.
+2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.2`.
 3. Leave all model routes null initially.
 4. Keep `telemetryChannel: "stable"` unless intentionally running a separate
    canary cohort.
