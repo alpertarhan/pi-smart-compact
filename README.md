@@ -63,6 +63,8 @@ The design principle is simple:
 
 > **Facts first. Synthesis second. Verification before apply.**
 
+Any unresolved verification gap rejects the custom summary before staging or apply. Automatic runs then leave Pi free to use its native compactor; manual runs leave the conversation unchanged.
+
 ## EESV pipeline
 
 ```text

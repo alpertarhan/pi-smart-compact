@@ -176,10 +176,11 @@ coverage, missing structure sections, suspicious fabricated file references,
 done/unresolved inconsistencies, missing explicit decisions, and missing
 open-loop coverage.
 
-**Repair order is intentional:** (1) accept if good enough → (2) deterministic
-patch first (free, idempotent) → (3) one LLM patch only in `thorough` mode if
-still insufficient → (4) replace lower-scoring output with the deterministic
-quality floor. Final verification runs again after continuity injection.
+**Repair order is intentional:** (1) deterministic patch first (free,
+idempotent) → (2) one LLM patch only in `thorough` mode if still insufficient
+→ (3) replace lower-scoring output with the deterministic quality floor → (4)
+reject unless final verification has no gaps and meets the verified threshold.
+Final verification runs again after continuity injection.
 
 ## EESV hardening and control surfaces
 

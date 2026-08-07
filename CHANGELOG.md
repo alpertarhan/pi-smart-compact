@@ -4,6 +4,14 @@
 
 No changes yet.
 
+## [8.0.0-rc.4] - 2026-08-07
+
+### Fixed
+
+- Verification now fails closed: a summary with any unresolved verification gap or a score below the verified threshold cannot be staged or applied. Manual runs leave the conversation unchanged; automatic runs fall through to Pi's native compactor.
+- Multiline recap constraints are mined per bullet/line and diagnostic `npm error`/`rg`/`grep` output is excluded, preventing command failures from becoming contradictory release constraints.
+- Unresolved-error coverage now compares normalized whitespace, so wrapped terminal evidence is recognized instead of repeatedly patched and re-reported.
+
 ## [8.0.0-rc.3] - 2026-08-07
 
 ### Fixed

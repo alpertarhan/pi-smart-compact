@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to `8.0.0-rc.3`. The release candidate is prepared but is
+This guide applies to `8.0.0-rc.4`. The release candidate is prepared but is
 not published or deployed by repository validation.
 
 ## Compatibility

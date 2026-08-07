@@ -32,6 +32,15 @@ export function formatVerificationGap(gap: VerificationGap): string {
   }
 }
 
+export function verificationFailureMessage(result: VerificationResult): string | null {
+  if (result.ok) return null;
+  const findings = result.gaps.slice(0, 3)
+    .map(gap => formatVerificationGap(gap).replace(/\s+/g, " ").slice(0, 160))
+    .join("; ");
+  return "Verification gate rejected summary (" + result.score + "/100, " +
+    result.gaps.length + " unresolved gap(s))" + (findings ? ": " + findings : "");
+}
+
 const NEGATION_MARKERS = new Set([
   "no", "not", "never", "without", "avoid", "forbidden", "prohibit",
   "değil", "asla", "olmadan", "yasak", "hayır",
@@ -137,6 +146,7 @@ export function verifySummary(
   const parsed = parseSummary(summary);
   const gaps: VerificationGap[] = [];
   const lower = summary.toLowerCase().replace(/\\/g, "/");
+  const normalizedSummary = lower.replace(/\s+/g, " ");
   let score = 100;
   const uniqueByText = <T>(items: T[], text: (item: T) => string): T[] => {
     const seen = new Set<string>();
@@ -184,7 +194,7 @@ export function verifySummary(
 
   for (const error of unresolvedEvidence) {
     const snippet = error.message.trim().replace(/\s+/g, " ").slice(0, TRUNC.ERROR_SNIPPET).toLowerCase();
-    if (snippet.length > 5 && !lower.includes(snippet)) {
+    if (snippet.length > 5 && !normalizedSummary.includes(snippet)) {
       gaps.push({ kind: "missing-error", message: error.message });
       score -= 5;
     }

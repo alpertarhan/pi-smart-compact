@@ -43,4 +43,32 @@ describe("buildState continuity integration", () => {
     expect(result.tokensSaved).toBeGreaterThan(10_000);
     expect(result.tokensSaved).toBeLessThan(20_000);
   });
+
+  it("rejects gaps introduced by merged continuity before state can be applied", () => {
+    const projectId = "continuity-conflict-" + Math.random().toString(36).slice(2);
+    const previous: CompactionState = {
+      goal: "Release", decisions: [],
+      constraints: [{ id: "old", text: "Do not publish stable", category: "prohibition", confidence: 1 }],
+      modifiedFiles: [], readFiles: [], deletedFiles: [], unresolvedErrors: [], resolvedErrors: [], openLoops: [],
+      topics: [], nextActions: [], criticalContext: [], sessionType: "implementation", compactionVersion: "8.0.0-rc.3",
+    };
+    const extraction: StructuredExtraction = {
+      modifiedFiles: [], readFiles: [], deletedFiles: [], errors: [], decisions: [],
+      constraints: [{ index: 1, text: "Must publish stable now", category: "requirement", confidence: 1 }],
+      topics: [], timeline: [], mainGoal: "Release", lastUserMessages: [], lastErrors: [], messageCount: 2,
+    };
+    const services = createServices();
+    expect(() => buildState({
+      extraction,
+      finalSummary: "## Goal\nRelease\n## Constraints & Preferences\n- Must publish stable now\n## Progress\n- working\n## Critical Context\n- none",
+      projectId, continuityScope: { schemaVersion: 2, projectId, sessionId: "s", branchHeadId: "b" }, previousState: previous,
+      llmMessages: [], explorationReport: null, config: { pinPaths: [] }, services,
+      estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
+      profile: "balanced", mode: "balanced", method: "eesv", chunkCount: 1, summaries: [],
+      toCompact: [{}, {}], convTokens: 1_000, totalTokens: 50_000, compactTokens: 20_000, accTokens: 10_000,
+      backupPath: null, verified: true, verificationGaps: [], verificationScore: 100,
+      verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
+      explorationRounds: 0, modelLabel: "openai/test", notify: () => {},
+    } as any)).toThrow("Verification gate rejected summary");
+  });
 });

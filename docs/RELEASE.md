@@ -8,7 +8,7 @@ Use this checklist before publishing `pi-smart-compact`.
 
 ## 1. Prepare the candidate
 
-- [ ] Choose a SemVer version. Use a prerelease such as `8.0.0-rc.3` until the
+- [ ] Choose a SemVer version. Use a prerelease such as `8.0.0-rc.4` until the
       stable/canary gates pass.
 - [ ] Update `package.json`; run `bun run sync-version` for `src/constants.ts`.
 - [ ] Move shipped notes from `[Unreleased]` into the dated version in
