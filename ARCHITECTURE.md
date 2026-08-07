@@ -216,6 +216,9 @@ staging/apply. `session_before_compact` only stages a passing candidate; after
 the host emits the matching `session_compact`, `app/steps/persist.ts` commits
 reusable state and success telemetry. Aborted/unconfirmed candidates write
 neither, and the UI reports `Applied` only after that correlated commit.
+`ui/error-format.ts` converts verification/yield failures to one bounded,
+content-free diagnostic and collapses unknown multiline errors; full stacks are
+suppressed by default and emitted only under explicit `DEBUG=smart-compact`.
 
 | Concern | Where | Notes |
 | --- | --- | --- |

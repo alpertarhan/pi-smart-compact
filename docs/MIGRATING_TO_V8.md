@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to the stable `8.0.4` release.
+This guide applies to the stable `8.0.5` release.
 
 ## Compatibility
 
@@ -32,8 +32,8 @@ rewritten during migration. v8.0.1+ filters legacy RC state that misclassified
 source-search output persisted as unresolved work; the next confirmed save persists
 the sanitized state. v8.0.3 keeps the same graph file and transparently opens it
 with `node:sqlite` under Pi or `bun:sqlite` in Bun tooling. v8.0.4 changes only
-compaction planning, UX, and privacy-safe operational metrics; it requires no
-state or database migration.
+compaction planning, UX, and privacy-safe operational metrics; v8.0.5 bounds
+user-facing failure diagnostics. Neither requires a state or database migration.
 
 Facts remain conservative: absence from a new window is not deletion. A fact is
 removed only by an explicit resolved/superseded override.
@@ -87,7 +87,7 @@ See the README configuration table for budgets and monitoring options.
 ## Recommended rollout
 
 1. Back up `~/.pi/agent/settings.json` and the Smart Compact cache directory.
-2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.4`.
+2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.5`.
 3. Leave all model routes null initially.
 4. Keep `telemetryChannel: "stable"` unless intentionally running a separate
    canary cohort.

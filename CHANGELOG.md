@@ -4,6 +4,13 @@
 
 No changes yet.
 
+## [8.0.5] - 2026-08-07
+
+### Fixed
+
+- Verify/continuity rejection no longer emits evidence-bearing findings and then repeats the exception with a full JavaScript stack in the manual UI. Verification and yield failures now render one bounded, content-free line with score/count/kinds or target estimates; full stacks are emitted only when `DEBUG=smart-compact` is explicitly enabled.
+- Unknown provider/native-apply errors collapse multiline text and cap the visible message, preventing the `EESV Verify: Checking` phase from being followed by pages of diagnostic output. Conversation-unchanged guidance remains explicit.
+
 ## [8.0.4] - 2026-08-07
 
 ### Added

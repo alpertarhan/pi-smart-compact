@@ -24,3 +24,7 @@ export function info(msg: string, ...args: unknown[]): void {
 export function debug(msg: string, ...args: unknown[]): void {
   if (DEBUG) console.error(LOG_PREFIX + " [debug] " + msg, ...args);
 }
+
+export function debugError(msg: string, err?: unknown): void {
+  if (DEBUG) error(msg, err);
+}
