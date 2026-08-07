@@ -15,9 +15,11 @@ import { computeToolCharPercentage, selectCompactionTier } from "../../utils/hel
 
 export function selectTier(rc: RecoveredRc): TieredRc | null {
   const toolPercent = computeToolCharPercentage(rc.branch);
-  const tier: ActiveTier | "none" = rc.flags.force
-    ? (rc.contextPercent >= 80 ? "full" : "light")
-    : selectCompactionTier(rc.contextPercent, toolPercent, rc.totalTokens, MIN_TOKEN_THRESHOLD, rc.config.minContextPercent);
+  const tier: ActiveTier | "none" = rc.flags.overflowRecovery
+    ? "full"
+    : rc.flags.force
+      ? (rc.contextPercent >= 80 ? "full" : "light")
+      : selectCompactionTier(rc.contextPercent, toolPercent, rc.totalTokens, MIN_TOKEN_THRESHOLD, rc.config.minContextPercent);
 
   if (tier === "none") {
     if (!rc.flags.autoTriggered) {

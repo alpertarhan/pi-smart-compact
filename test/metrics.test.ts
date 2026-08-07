@@ -82,6 +82,29 @@ describe("metrics reporting", () => {
     expect(JSON.stringify(entry)).not.toContain("secret provider body");
   });
 
+  it("persists content-free verification diagnostics for pre-state failures", () => {
+    const svc = services.createServices();
+    const error = Object.assign(new Error("Verification gate rejected summary: secret evidence"), {
+      name: "VerificationGateError", score: 92, initialScore: 64, gapCount: 2,
+      gapKinds: ["inconsistency", "fabricated-file"],
+    });
+    recordFailureMetrics({
+      services: svc,
+      cancellation: { timedOut: false },
+      flags: { autoTriggered: false },
+      summaryModel: { provider: "openai", id: "gpt" },
+      profile: "balanced", mode: "balanced", modelLabel: "openai/gpt",
+      pipelineStart: Date.now(),
+    } as any, error, { sessionId: "verify-failure", contextPercent: 40 });
+    const entry = cache.readMetricsLog().at(-1);
+    expect(entry).toMatchObject({
+      failureKind: "verification", verificationScore: 92, initialVerificationScore: 64,
+      verificationGaps: 2, remainingVerificationGaps: 2,
+      verificationGapKinds: ["inconsistency", "fabricated-file"],
+    });
+    expect(JSON.stringify(entry)).not.toContain("secret evidence");
+  });
+
   it("writes a local html dashboard", () => {
     cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success", durationMs: 1000 }, services.createServices());
     const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());

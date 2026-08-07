@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -83,6 +83,47 @@ for (const name of ["smart_compact", "smart_recall", "smart_save_memory"]) {
 console.log("installed extension smoke passed");
 `);
   run(["bun", "run", "smoke.ts"]);
+
+  // Pi executes extensions under Node, even though this repository builds and
+  // tests with Bun. Exercise a real SQLite write/read from an independently
+  // extracted artifact; Bun's local file-peer layout can create nested
+  // placeholders that Node resolves before the valid root peer links.
+  const nodeWorkspace = join(workspace, "node-smoke");
+  mkdirSync(join(nodeWorkspace, "node_modules", "@earendil-works"), { recursive: true });
+  run(["tar", "-xzf", tarball, "-C", nodeWorkspace]);
+  for (const peer of Object.keys(sourceManifest.peerDependencies)) {
+    const target = join(root, "node_modules", peer);
+    const link = join(nodeWorkspace, "node_modules", peer);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(target, link, "dir");
+  }
+  writeFileSync(join(nodeWorkspace, "smoke-node.mjs"), `
+import extension from "./package/dist/index.js";
+const tools = new Map();
+extension({ registerTool: tool => tools.set(tool.name, tool), registerCommand() {}, on() {} });
+const ctx = {
+  cwd: process.cwd(),
+  hasUI: true,
+  ui: { confirm: async () => true },
+  sessionManager: {
+    getSessionId: () => "node-runtime-smoke",
+    getSessionFile: () => process.cwd() + "/node-runtime-smoke.jsonl",
+    getBranch: () => [{ id: "branch-head" }],
+  },
+};
+const signal = new AbortController().signal;
+await tools.get("smart_save_memory").execute("save", {
+  kind: "procedure", title: "Node smoke", content: "Node SQLite packed-artifact smoke",
+}, signal, undefined, ctx);
+const recalled = await tools.get("smart_recall").execute("recall", {
+  query: "Node SQLite packed-artifact smoke",
+}, signal, undefined, ctx);
+if (!recalled.content[0].text.includes("Node SQLite packed-artifact smoke")) {
+  throw new Error("Node SQLite context graph smoke failed");
+}
+console.log("installed Node SQLite smoke passed");
+`);
+  run(["node", "smoke-node.mjs"], nodeWorkspace);
   run(["bun", "node_modules/pi-smart-compact/dist/provider-eval.js", "--min-samples=5"]);
   run(["bun", "node_modules/pi-smart-compact/dist/telemetry-report.js", "--min-canary-runs=5"]);
 

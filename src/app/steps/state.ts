@@ -22,7 +22,7 @@ import { readRemediationHints } from "../../utils/damage.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
 import { VERSION } from "../../constants.ts";
 import {
-  verifySummary, patchDeterministic, formatVerificationGap, isDeterministicallyPatchable, verificationFailureMessage,
+  verifySummary, repairSummaryDeterministically, formatVerificationGap, verificationFailureMessage, VerificationGateError,
 } from "../../phases/verify.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
@@ -106,24 +106,23 @@ export function buildState(rc: VerifiedRc): StatedRc {
   // final deterministic verification against the merged state so its score
   // reflects cross-generation fidelity, not only the current extraction.
   let postVerification = verifySummary(summary, extraction, compactionState);
-  const postPatchable = postVerification.gaps.filter(isDeterministicallyPatchable);
-  if (postPatchable.length > 0) {
-    summary = patchDeterministic(summary, postVerification.gaps, extraction, compactionState);
-    postVerification = verifySummary(summary, extraction, compactionState);
-  }
+  const postInitialScore = postVerification.score;
+  const postRepair = repairSummaryDeterministically(summary, postVerification, extraction, compactionState);
+  summary = postRepair.summary;
+  postVerification = postRepair.result;
   rc.verified = postVerification.ok;
   rc.verificationScore = postVerification.score;
   rc.verificationGaps = postVerification.gaps.map(formatVerificationGap);
   rc.verificationProvenance = {
     ...rc.verificationProvenance,
-    deterministicPatched: [...rc.verificationProvenance.deterministicPatched, ...postPatchable],
+    deterministicPatched: [...rc.verificationProvenance.deterministicPatched, ...postRepair.patched],
     finalScore: postVerification.score,
     remainingGaps: postVerification.gaps,
   };
   const failure = verificationFailureMessage(postVerification);
   if (failure) {
     rc.notify(failure + " after continuity injection — current conversation left unchanged", "error");
-    throw new Error(failure);
+    throw new VerificationGateError(postVerification, postInitialScore);
   }
 
   const detModified = extraction.modifiedFiles.map(f => f.path);

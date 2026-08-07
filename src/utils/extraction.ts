@@ -182,6 +182,12 @@ function isBenignSearchResult(tc: { arguments: Record<string, unknown> }, result
   return exit === undefined || exit === "1";
 }
 
+function hasCommandFailureSignal(text: string): boolean {
+  if (/Command exited with code [1-9]\d*\s*$/i.test(text)) return true;
+  const firstLine = text.split(/\r?\n/).find(line => line.trim())?.trim() ?? "";
+  return LIKELY_ERROR_RE.test(firstLine) || /^(?:npm\s+error|fatal:|traceback\b)/i.test(firstLine);
+}
+
 export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["errors"] {
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const errors: StructuredExtraction["errors"] = [];
@@ -203,7 +209,7 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     // Gated by argument shape, not by tool name, so it auto-covers shell-like
     // tools this code has never seen. Explicit m.isError is handled above.
     if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute") {
-      if (LIKELY_ERROR_RE.test(text) && text.length < ERROR_SCAN_MAX_LEN) {
+      if (hasCommandFailureSignal(text) && text.length < ERROR_SCAN_MAX_LEN) {
         errors.push({ index: i, tool: tc.name, message: text.slice(0, TRUNC.MESSAGE), retryAttempted: false, resolved: false });
       }
     }

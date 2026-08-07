@@ -75,6 +75,8 @@ export interface RunFlags {
   autoTriggered: boolean;
   skipCompact: boolean;
   force: boolean;
+  /** Pi is retrying a provider turn that exceeded the active model window. */
+  overflowRecovery?: boolean;
 }
 
 export interface ResolvedAuth {

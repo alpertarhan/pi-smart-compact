@@ -15,7 +15,7 @@ import { isDiagnosticConstraintText } from "./extraction.ts";
 import * as log from "./logger.ts";
 import { compactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
-import { parseSummary, findSection, upsertSection, renderSummary, appendToSection } from "../domain/summary-parse.ts";
+import { parseSummary, findSection, upsertSection, renderSummary, appendToSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 
 function getStatePath(projectId: string, state?: CompactionState): string {
@@ -277,7 +277,7 @@ export function renderContinuityCapsule(state: CompactionState, maxChars = TRUNC
   const haystack = normalizeFactKey(existing);
   const lines: string[] = ["## Continuity Ledger"];
   const add = (label: string, value: string) => {
-    const text = value.trim();
+    const text = summaryEvidenceLine(value, TRUNC.MESSAGE);
     if (!text || haystack.includes(normalizeFactKey(text))) return;
     const line = "- " + label + ": " + text;
     if (lines.join("\n").length + line.length + 1 <= maxChars) lines.push(line);
@@ -304,8 +304,9 @@ export function injectOpenLoopsSection(summary: string, openLoops: OpenLoop[]): 
 
   const body = openLoops.map(l => {
     const prio = l.priority === "critical" || l.priority === "high" ? "[" + l.priority + "] " : "";
-    const files = l.files.length ? " — " + l.files.join(", ") : "";
-    return "- " + prio + l.summary + files;
+    const files = l.files.map(file => summaryEvidenceLine(file, TRUNC.MESSAGE)).filter(Boolean);
+    const suffix = files.length ? " — " + files.join(", ") : "";
+    return "- " + prio + summaryEvidenceLine(l.summary, TRUNC.OPEN_LOOP_SUMMARY) + suffix;
   }).join("\n");
 
   const parsed = parseSummary(summary);
@@ -412,34 +413,35 @@ export function hasDeltaChanges(delta: CompactionDelta): boolean {
  */
 export function formatDeltaSection(delta: CompactionDelta): string {
   const lines: string[] = ["## Changes Since Last Compaction", ""];
+  const safe = (value: string, max: number) => summaryEvidenceLine(value, max);
 
   if (delta.goalChanged) {
-    lines.push("- **Goal shifted**: " + (delta.previousGoal ?? "?") + " → see current goal above");
+    lines.push("- **Goal shifted**: " + safe(delta.previousGoal ?? "?", TRUNC.MESSAGE) + " → see current goal above");
   }
 
   if (delta.resolvedLoops.length) {
-    lines.push("- **Resolved loops**: " + delta.resolvedLoops.map(s => "~~" + s.slice(0, TRUNC.DECISION_DETAIL) + "~~").join(", "));
+    lines.push("- **Resolved loops**: " + delta.resolvedLoops.map(s => "~~" + safe(s, TRUNC.DECISION_DETAIL) + "~~").join(", "));
   }
   if (delta.persistentLoops.length) {
-    lines.push("- **Still open**: " + delta.persistentLoops.map(s => s.slice(0, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push("- **Still open**: " + delta.persistentLoops.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
   }
   if (delta.newLoops.length) {
-    lines.push("- **New loops**: " + delta.newLoops.map(s => s.slice(0, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push("- **New loops**: " + delta.newLoops.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
   }
   if (delta.newDecisions.length) {
-    lines.push("- **New decisions**: " + delta.newDecisions.map(s => s.slice(0, TRUNC.SNIPPET)).join("; "));
+    lines.push("- **New decisions**: " + delta.newDecisions.map(s => safe(s, TRUNC.SNIPPET)).join("; "));
   }
   if (delta.removedDecisions.length) {
-    lines.push("- **Removed decisions**: " + delta.removedDecisions.map(s => "~~" + s.slice(0, TRUNC.SNIPPET) + "~~").join("; "));
+    lines.push("- **Removed decisions**: " + delta.removedDecisions.map(s => "~~" + safe(s, TRUNC.SNIPPET) + "~~").join("; "));
   }
   if (delta.resolvedErrors.length) {
-    lines.push("- **Resolved errors**: " + delta.resolvedErrors.map(s => s.slice(0, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push("- **Resolved errors**: " + delta.resolvedErrors.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
   }
   if (delta.newErrors.length) {
-    lines.push("- **New errors**: " + delta.newErrors.map(s => s.slice(0, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push("- **New errors**: " + delta.newErrors.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
   }
   if (delta.newModifiedFiles.length) {
-    lines.push("- **New files touched**: " + delta.newModifiedFiles.join(", "));
+    lines.push("- **New files touched**: " + delta.newModifiedFiles.map(file => safe(file, TRUNC.MESSAGE)).join(", "));
   }
 
   lines.push("");
@@ -490,7 +492,8 @@ export function injectDeltaSection(summary: string, delta: CompactionDelta): str
 export function ensurePinnedPaths(summary: string, pinned: readonly string[]): string {
   if (!pinned.length) return summary;
   const lower = summary.toLowerCase();
-  const missing = pinned.filter(p => p && p.trim().length > 0 && !lower.includes(p.toLowerCase()));
+  const missing = pinned.map(path => summaryEvidenceLine(path, TRUNC.MESSAGE))
+    .filter(path => path && !lower.includes(path.toLowerCase()));
   if (!missing.length) return summary;
   const parsed = parseSummary(summary);
   const updated = appendToSection(

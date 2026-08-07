@@ -4,6 +4,21 @@
 
 No changes yet.
 
+## [8.0.3] - 2026-08-07
+
+### Fixed
+
+- Explicit manual `/smart-compact` now uses the absolute adaptive safety tail instead of a context-window percentage target. A 219K-token session on a 1M-token model therefore compacts in `thorough`, `balanced`, or `fast` mode instead of silently doing nothing unless `aggressive` happens to cross the estimator-dependent boundary.
+- Overflow recovery no longer delegates an already-oversized context to native's one-shot summarizer. When reported usage exceeds the active model window (for example 372K tokens after switching to a 272K model), EESV maps measured usage across active messages, summarizes through soft recent-turn/checkpoint protections, and still preserves complete tool-call/result pairs.
+- Low-yield, below-threshold, repeated, too-small, unsafe-boundary, and concurrent manual attempts now warn rather than disappearing silently; protected recent user turns, tool-call/result integrity, and fail-closed verification remain mandatory.
+- Phase 4 deterministic repair now converges through bounded passes and passes only patchable findings. Any zero-gap deterministic fallback replaces unverifiable model output; rejection occurs only when that fallback also cannot verify.
+- Fallback, repair, continuity-ledger, open-loop, delta, and failed-chunk rendering flatten extracted multiline evidence before inserting it into Markdown, preventing diagnostic text from creating forged sections.
+- Semantic contradiction detection now requires concept overlap and ignores shared numeric identifiers, preventing unrelated constraints with anchors such as `release`, `build`, or `2026` from contradicting each other.
+- Long explicit decisions retain their full bounded semantic evidence during repair, and successful shell output that merely contains source-code error words is no longer cataloged as an unresolved command failure.
+- `thorough` mode may use its configured LLM repair for any remaining finding, including a high-score single gap; the repair prompt can remove fabrications and correct polarity instead of only appending text.
+- Verification failures now emit a dedicated privacy-safe telemetry kind with score/count/gap kinds, rather than being collapsed into `internal` without diagnostics.
+- Context graph storage now uses `bun:sqlite` only under Bun and a `node:sqlite` `DatabaseSync` adapter under Pi's Node runtime. The packed-artifact audit executes a real save/recall transaction under Node so this runtime mismatch cannot recur.
+
 ## [8.0.2] - 2026-08-07
 
 ### Fixed

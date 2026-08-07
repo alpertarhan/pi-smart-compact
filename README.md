@@ -63,7 +63,7 @@ The design principle is simple:
 
 > **Facts first. Synthesis second. Verification before apply.**
 
-Any unresolved verification gap rejects the custom summary before staging or apply. Automatic runs then leave Pi free to use its native compactor; manual runs leave the conversation unchanged.
+Any unresolved verification gap rejects the custom summary before staging or apply. A zero-gap deterministic fallback is preferred over unverifiable model output; only failure of that fallback rejects the run. Automatic failures leave Pi free to use its native compactor, while manual failures leave the conversation unchanged.
 
 ## EESV pipeline
 
@@ -86,7 +86,7 @@ Pi conversation
 | **Extract** | Deterministically catalogs files, errors, decisions, constraints, topics, media metadata, and open loops. This is the verification ground truth. |
 | **Explore** | Runs only in `thorough` mode (or when `auto` selects it); cheaper modes use deterministic boundaries. |
 | **Synthesize** | Uses adaptive single-pass or bounded hierarchical synthesis with per-mode call, prompt-token, chunk, and output budgets. |
-| **Verify** | Always applies deterministic repairs. Only `thorough` may spend one additional LLM call on unresolved gaps. |
+| **Verify** | Applies deterministic repairs to a bounded fixed point, then uses a verified deterministic quality floor. Only `thorough` may spend one additional LLM repair call before that fallback. |
 
 ### What survives compaction
 
@@ -202,7 +202,8 @@ Raw local JSONL remains available to the interactive dashboard, while
 `bun run telemetry-report` emits aggregate-only telemetry: no session/project
 IDs, prompts, summaries, paths, or error text. Failures use a stable taxonomy
 (cancelled, timeout, rate limit, authentication, budget, output limit,
-provider, persistence, validation, internal).
+provider, persistence, validation, verification, internal). Verification failures
+retain only content-free score/count/gap-kind diagnostics.
 
 Set `telemetryChannel` to `canary` only on the externally selected canary
 cohort. The report compares schema-v2 canary runs with the stable baseline and
@@ -231,7 +232,7 @@ guidance for reaching the target.
 - Exact access-call pruning—different reads, searches, offsets, and patterns do not collapse
 - Tool-call/tool-result pair integrity at the compaction boundary
 - Collision-safe modified-file verification for monorepos
-- Mandatory deterministic repair for patchable verification gaps
+- Bounded fixed-point repair for patchable verification gaps, followed by a zero-gap deterministic quality floor
 - Cross-session guard and five-minute TTL for pending summaries
 - Session-log recovery for older, truncated tool results
 - Marker-owned retention-pruned backups before compaction; foreign files in a
@@ -345,10 +346,16 @@ Automatic and tool-triggered runs operate on Pi's current active context, not
 the append-only session history. A same-session staged summary is reused, the
 exploration loop is limited to three rounds, provider and outer retries are
 disabled, and every mode has finite call plus aggregate prompt-token budgets.
-If anchor/tool-call
-protection leaves too much live context to get below the configured trigger,
-Smart Compact spends no LLM tokens and lets Pi's native compactor handle it.
-Manual `/smart-compact` remains an explicit force path.
+If anchor/tool-call protection leaves too much live context to get below the
+configured trigger, automatic/tool runs normally spend no LLM tokens and let
+Pi's native compactor handle it. Overflow is the safety exception: if reported
+usage already exceeds the active model window, EESV summarizes through soft
+anchor/recent-turn protection while retaining complete tool-call pairs rather
+than resending an oversized one-shot prompt to native compaction. Manual
+`/smart-compact` is an explicit force path: it keeps the absolute adaptive
+safety tail rather than a percentage of the model window. Below-threshold,
+low-yield, or repeated manual runs warn but continue whenever a safe prefix
+exists. This makes 100K–200K sessions compactable even on 1M-token models.
 
 <details>
 <summary><strong>All configuration keys</strong></summary>
@@ -364,7 +371,7 @@ Manual `/smart-compact` remains an explicit force path.
 | `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for exploration; provider default when null |
 | `autoTrigger` | `boolean` | `true` | Participate in Pi's native compact hook |
 | `autoTriggerTimeoutMs` | `number` | `120000` | Hard timeout for automatic runs |
-| `minContextPercent` | `number` | `60` | Actual context usage gate |
+| `minContextPercent` | `number` | `60` | Auto/tool context gate; manual `/smart-compact` warns and bypasses it |
 | `backupEnabled` | `boolean` | `true` | Write a pre-compaction backup |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` | Empty config value uses this path |
 | `profiles` | object | built-ins | Per-profile numeric overrides |

@@ -81,12 +81,14 @@ export function classifyTelemetryFailure(error: unknown, timedOut = false): Tele
   const fields = errorFields(error);
   const text = (fields.name + " " + fields.code + " " + fields.message).toLowerCase();
   if (timedOut || /timeout|timed out|watchdog|deadline/.test(text)) return "timeout";
+  if (fields.name.toLowerCase() === "verificationgateerror") return "verification";
   if (/budgetexceeded|token budget|call budget|latency budget/.test(text)) return "budget";
   if (fields.status === 429 || /rate.?limit|too many requests|quota/.test(text)) return "rate-limit";
   if (fields.status === 401 || fields.status === 403 || /unauthori[sz]ed|authentication|api.?key|credential/.test(text)) return "authentication";
   if (/max(?:imum)? output|output.?limit|visible output|length limit/.test(text)) return "output-limit";
   if (/abort|cancel/.test(text)) return "cancelled";
   if (/native compaction|persist|write|rename|filesystem|sqlite|database/.test(text)) return "persistence";
+  if (/verificationgateerror|verification gate|verification.*(?:gap|summary)/.test(text)) return "verification";
   if (/invalid|validation|schema|malformed|required/.test(text)) return "validation";
   if ((fields.status != null && fields.status >= 500) || /provider|api error|stream|network|fetch failed|socket/.test(text)) return "provider";
   return "internal";
@@ -241,7 +243,7 @@ function safeMetricLabel(value: unknown, fallback: string): string {
 
 const FAILURE_KINDS = new Set<TelemetryFailureKind>([
   "cancelled", "timeout", "rate-limit", "authentication", "budget",
-  "output-limit", "provider", "persistence", "validation", "internal",
+  "output-limit", "provider", "persistence", "validation", "verification", "internal",
 ]);
 
 export function buildPrivacySafeTelemetry(
