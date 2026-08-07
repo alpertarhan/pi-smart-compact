@@ -193,6 +193,15 @@ Build
     expect(result.score).toBeLessThan(50);
   });
 
+  it("matches unresolved error evidence across summary line wrapping", () => {
+    const message = "Unknown JSON field: url\nAvailable fields:\ncreatedAt\nisDraft\nisImmutable";
+    const extraction = makeExtraction({
+      errors: [{ index: 1, tool: "bash", message, retryAttempted: false, resolved: false }],
+    });
+    const summary = "## Goal\nInvestigate release\n## Progress\n### Blocked\n- Unknown JSON field: url Available fields: createdAt isDraft isImmutable\n## Critical Context\n- unresolved";
+    expect(verifySummary(summary, extraction).gaps.some(gap => gap.kind === "missing-error")).toBe(false);
+  });
+
   it("accepts a faithful positive restatement of a conditional prohibition", () => {
     const extraction = makeExtraction({
       mainGoal: "Release only after explicit approval",
@@ -260,6 +269,29 @@ describe("verifyAndPatch", () => {
     expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
     expect(result.finalSummary).toContain("Do not publish without explicit approval");
     expect(result.verificationScore).toBeGreaterThanOrEqual(85);
+  });
+
+  it("fails closed when contradictory evidence cannot pass verification", async () => {
+    const extraction = makeExtraction({
+      constraints: [{ index: 1, text: "Must publish stable now", category: "requirement", confidence: 1 }],
+    });
+    await expect(verifyAndPatch({
+      finalSummary: "## Goal\nRelease\n## Constraints & Preferences\n- undecided\n## Progress\n- working\n## Critical Context\n- none",
+      extraction,
+      summaries: [],
+      previousState: {
+        goal: null,
+        decisions: [],
+        constraints: [{ id: "c1", text: "Do not publish stable", category: "prohibition", confidence: 1 }],
+        modifiedFiles: [], readFiles: [], deletedFiles: [], unresolvedErrors: [], resolvedErrors: [],
+        openLoops: [], topics: [], nextActions: [], criticalContext: [],
+        sessionType: "implementation", compactionVersion: "8.0.0-rc.3",
+      },
+      mode: "aggressive",
+      flags: { autoTriggered: true },
+      notify: () => {},
+      vlog: () => {},
+    } as any)).rejects.toThrow("Verification gate rejected summary");
   });
 
   it("repairs a patchable high-score gap instead of skipping it", async () => {

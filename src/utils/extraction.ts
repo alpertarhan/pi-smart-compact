@@ -277,13 +277,24 @@ const CONSTRAINT_PATTERNS: Array<{ re: RegExp; cat: StructuredExtraction["constr
 
 export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
+  const seen = new Set<string>();
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
-    const txt = extractText(msgs[i].content);
-    if (txt.length < 10 || txt.startsWith("/")) continue;
-    for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
-      if (re.test(txt)) {
-        constraints.push({ index: i, text: txt.slice(0, TRUNC.CONSTRAINT_TEXT), category: cat, confidence: conf });
+    const text = extractText(msgs[i].content);
+    if (text.length < 10 || text.startsWith("/")) continue;
+    // A prior compaction is represented as one multiline user message. Match
+    // individual bullets/lines so an npm error later in that recap cannot turn
+    // the entire recap (including notices) into one bogus constraint.
+    for (const raw of text.split(/\n+/)) {
+      const candidate = raw.replace(/^\s*[-*]\s+/, "").trim();
+      if (candidate.length < 10 || /^(?:\[[^\]]+\]\s*)?(?:npm\s+(?:error|warn|notice)|(?:rg|grep):|command exited\b)/i.test(candidate)) continue;
+      for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
+        if (!re.test(candidate)) continue;
+        const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          constraints.push({ index: i, text: candidate.slice(0, TRUNC.CONSTRAINT_TEXT), category: cat, confidence: conf });
+        }
         break;
       }
     }

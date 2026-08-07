@@ -197,6 +197,15 @@ describe("mineConstraints", () => {
     expect(cons[0].category).toBe("requirement");
   });
 
+  it("mines multiline recap bullets without absorbing later command errors", () => {
+    const msgs: LlmMessage[] = [{
+      role: "user",
+      content: "## Constraints\n- Do not publish stable before approval\n\nnpm audit This command requires an existing lockfile\nnpm error The package could not be found or you do not have permission\nnpm notice Publishing with public access",
+    }];
+    const cons = mineConstraints(msgs);
+    expect(cons.map(item => item.text)).toEqual(["Do not publish stable before approval"]);
+  });
+
   it("ignores short messages and commands", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "/help" },

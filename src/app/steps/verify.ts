@@ -10,7 +10,7 @@ import type { SynthesizedRc, VerifiedRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import {
   verifySummary, patchDeterministic, patchSummary,
-  formatVerificationGap, isDeterministicallyPatchable,
+  formatVerificationGap, isDeterministicallyPatchable, verificationFailureMessage,
 } from "../../phases/verify.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import * as log from "../../utils/logger.ts";
@@ -89,6 +89,12 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
       qualityFloorUsed = true;
       rc.notify("Quality floor replaced unsafe or materially lower-coverage model output", "warning");
     }
+  }
+
+  const failure = verificationFailureMessage(verification);
+  if (failure) {
+    rc.notify(failure + " — current conversation left unchanged", "error");
+    throw new Error(failure);
   }
 
   const out = rc as SynthesizedRc & {

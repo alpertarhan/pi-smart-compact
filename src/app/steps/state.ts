@@ -22,7 +22,7 @@ import { readRemediationHints } from "../../utils/damage.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
 import { VERSION } from "../../constants.ts";
 import {
-  verifySummary, patchDeterministic, formatVerificationGap, isDeterministicallyPatchable,
+  verifySummary, patchDeterministic, formatVerificationGap, isDeterministicallyPatchable, verificationFailureMessage,
 } from "../../phases/verify.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
@@ -120,6 +120,11 @@ export function buildState(rc: VerifiedRc): StatedRc {
     finalScore: postVerification.score,
     remainingGaps: postVerification.gaps,
   };
+  const failure = verificationFailureMessage(postVerification);
+  if (failure) {
+    rc.notify(failure + " after continuity injection — current conversation left unchanged", "error");
+    throw new Error(failure);
+  }
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
