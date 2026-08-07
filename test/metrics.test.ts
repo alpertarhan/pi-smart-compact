@@ -55,8 +55,18 @@ describe("metrics reporting", () => {
       profile: "balanced", mode: "balanced", tier: "full", contextPercent: 80,
       toolPercent: 50, totalTokens: 1_000, tokensSaved: 500, chunkCount: 1,
       methodForMetrics: "eesv", adapted: false,
+      details: {
+        plannedAfterTokens: 600, plannedSavedTokens: 400, plannedYield: 0.4,
+        estimatedAfterTokens: 500, estimatedSavedTokens: 500, estimatedYield: 0.5,
+        retainedTailTokens: 300, summaryTokens: 200, summaryBudgetTokens: 300,
+        targetAfterTokens: 600, relaxedSoftBoundaries: ["anchor"], hardBoundaryAdjusted: true,
+      },
     } as any, "success");
     expect(snapshot.runId).toBe("run-stage-quality");
+    expect(snapshot).toMatchObject({
+      tokensSaved: 500, estimatedSavedTokens: 500, estimatedAfterTokens: 500,
+      plannedAfterTokens: 600, retainedTailTokens: 300, relaxedSoftBoundaries: ["anchor"], hardBoundaryAdjusted: true,
+    });
     expect(snapshot.providerRoutes?.find(route => route.stage === "synthesize")).toMatchObject({
       qualityScore: 73, qualityBasis: "pre-repair-verification",
     });
@@ -103,6 +113,27 @@ describe("metrics reporting", () => {
       verificationGapKinds: ["inconsistency", "fabricated-file"],
     });
     expect(JSON.stringify(entry)).not.toContain("secret evidence");
+  });
+
+  it("persists content-free yield-gate diagnostics without summary text", () => {
+    const svc = services.createServices();
+    const error = Object.assign(new Error("Final summary estimate misses target"), {
+      name: "YieldGateError", plannedAfterTokens: 500, plannedSavedTokens: 500, plannedYield: 0.5,
+      estimatedAfterTokens: 700, estimatedSavedTokens: 300, estimatedYield: 0.3,
+      retainedTailTokens: 400, summaryTokens: 300, summaryBudgetTokens: 100,
+      targetAfterTokens: 600, relaxedSoftBoundaries: ["anchor"], hardBoundaryAdjusted: true,
+    });
+    recordFailureMetrics({
+      services: svc, cancellation: { timedOut: false }, flags: { autoTriggered: false },
+      summaryModel: { provider: "openai", id: "gpt" }, profile: "balanced", mode: "balanced",
+      modelLabel: "openai/gpt", pipelineStart: Date.now(),
+    } as any, error, { sessionId: "yield-failure", totalTokens: 1_000, profile: "balanced" });
+    const entry = cache.readMetricsLog().at(-1);
+    expect(entry).toMatchObject({
+      failureKind: "yield", estimatedAfterTokens: 700, estimatedSavedTokens: 300,
+      targetAfterTokens: 600, relaxedSoftBoundaries: ["anchor"], hardBoundaryAdjusted: true,
+    });
+    expect(JSON.stringify(entry)).not.toContain("Final summary estimate");
   });
 
   it("writes a local html dashboard", () => {

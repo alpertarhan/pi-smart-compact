@@ -70,9 +70,9 @@ function makeRC(behaviour: "complete" | "error"): RunContext {
     pipelineStart: Date.now(),
     extraction: undefined,
     compactionState: undefined,
-    // applyCompaction now records the run outcome from the native compact's
-    // callbacks (success on onComplete, error on onError), so the fake RC
-    // needs the metric fields those paths read.
+    // applyCompaction records only native apply errors. Correlated
+    // session_compact exclusively owns success metrics and feedback, while
+    // the error fallback still reads these metric fields.
     sessionId: "test-session",
     profile: "balanced",
     tier: "full",
@@ -118,6 +118,7 @@ describe("applyCompaction onError", () => {
     applyCompaction(rc);
     expect(rc.pendingRef.isPresent()).toBe(true);
     expect(readMetricsLog()).toHaveLength(before);
+    expect((rc as unknown as { _calls: string[] })._calls).not.toContain("notify:Applied ✓");
   });
 
   it("lets the lifecycle store own apply-error telemetry without duplication", () => {

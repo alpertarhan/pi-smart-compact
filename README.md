@@ -31,7 +31,7 @@ pi install git:github.com/alpertarhan/pi-smart-compact
 ## Quick start
 
 ```bash
-/smart-compact                                         # interactive model + mode picker
+/smart-compact                                         # explainable single-screen preflight
 /smart-compact auto                                    # adaptive default
 /smart-compact anthropic/claude-sonnet-4 fast         # direct model + mode
 /smart-compact balanced --focus=auth                   # preserve extra auth detail
@@ -63,7 +63,7 @@ The design principle is simple:
 
 > **Facts first. Synthesis second. Verification before apply.**
 
-Any unresolved verification gap rejects the custom summary before staging or apply. A zero-gap deterministic fallback is preferred over unverifiable model output; only failure of that fallback rejects the run. Automatic failures leave Pi free to use its native compactor, while manual failures leave the conversation unchanged.
+Any unresolved verification gap rejects the custom summary before staging or apply. A zero-gap deterministic fallback is preferred over unverifiable model output; only failure of that fallback rejects the run. A successful compaction must also meet its mode target and at least 10% estimated net savings both before synthesis and after the final summary is measured. Automatic failures leave Pi free to use its native compactor, while manual failures leave the conversation unchanged.
 
 ## EESV pipeline
 
@@ -121,10 +121,32 @@ Set `contextGraphEnabled` to `false` to disable indexing and both tools.
 
 | Surface | Behavior |
 | --- | --- |
-| `/smart-compact` | Explicit manual run. Supports picker UI, direct args, dry-run, focus, and budgets. |
+| `/smart-compact` | Explicit manual run. Opens a target-first preflight or accepts direct args, dry-run, focus, and budgets. |
 | `session_before_compact` | Auto path. Returns/stages a verification-scored summary under pressure; durable state waits for matching `session_compact`. |
 | `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. |
 | `/smart-compact loops` | Project-level open-loop manager: resolve/reopen, priority, pin/unpin. |
+
+### Manual preflight
+
+The interactive command uses the configured summary route and the exact
+execution planner before spending LLM tokens. The primary screen shows the
+recommended fidelity preset, why it fits the current pressure/session shape,
+estimated context before and after, projected savings, live-tail and summary
+budgets, soft boundaries that will be summarized, and the hard tool-pair plus
+zero-gap-verification guarantees.
+
+- `↑` / `↓` changes `Thorough`, `Balanced`, or `Fast` and recalculates the plan.
+- `Enter` runs only a viable plan; `Esc` cancels without mutation.
+- `D` toggles calibrated estimator, target, boundary, and route details.
+- `M` opens Advanced model selection and replans with that route's calibration.
+
+Values remain estimates until the next provider turn reports usage. Smart
+Compact therefore uses `~`/`≤` language, measures the completed summary again
+before staging, and reports final success only after Pi confirms the matching
+`session_compact` run ID. A single long user turn may be split at a safe message
+boundary: its older prefix is verified into the summary while the budgeted
+working tail stays raw. Tool exchanges are summarized or retained as complete
+call/result pairs, never split.
 
 ### Focus and budgets
 
@@ -155,7 +177,7 @@ The tool exposes equivalent `focus`, `max_calls`, `max_input_tokens`, and
 | `fast` | 3 | 100K | 20K | Favors larger single-pass windows and minimum waiting |
 | `thorough` (`slow` alias) | 8 | 300K | 80K | Maximum fidelity; enables Explore and one optional LLM repair |
 
-Fast and aggressive modes use a zero-call deterministic summary when extraction confidence is high; otherwise they keep the bounded LLM path. Auto planning also raises fidelity when scoped continuity or prior damage indicates risk. Recent-tail retention scales with model context while preserving the two newest user turns when enough history exists.
+Fast and aggressive modes use a zero-call deterministic summary when extraction confidence is high; otherwise they keep the bounded LLM path. Auto planning also raises fidelity when scoped continuity or prior damage indicates risk. The mode token target is binding: recent user turns, pi-toolkit checkpoints, and topical grouping remain raw only when they fit the planned tail; otherwise the verified summary carries them forward.
 
 Output caps stop subsequent calls after observed usage reaches the threshold.
 The ChatGPT Codex subscription endpoint rejects `max_output_tokens`,
@@ -257,10 +279,12 @@ handling or a dedicated DLP system**. See the
 
 ### Approval and feedback
 
-- `requireApproval: true` adds a fail-closed manual **Apply / Cancel** decision
-  after the provenance review screen. Every path stages first; fingerprint,
-  continuity state, context graph, and success telemetry commit only after the
-  host confirms the matching native `session_compact` event.
+- The manual preflight is the default decision point. `requireApproval: true`
+  additionally shows a fail-closed verified-summary **Apply / Cancel** review;
+  `false` avoids a redundant second modal. Fingerprint, continuity state,
+  context graph, and success telemetry commit only after the host confirms the
+  matching native `session_compact` event, and only then does the UI report
+  `Applied`.
 - Online damage monitoring observes the first post-compaction messages and
   records re-read files or repeated context. Observations join the originating
   compaction by a local run id; missing evidence lowers coverage rather than
@@ -346,16 +370,16 @@ Automatic and tool-triggered runs operate on Pi's current active context, not
 the append-only session history. A same-session staged summary is reused, the
 exploration loop is limited to three rounds, provider and outer retries are
 disabled, and every mode has finite call plus aggregate prompt-token budgets.
-If anchor/tool-call protection leaves too much live context to get below the
-configured trigger, automatic/tool runs normally spend no LLM tokens and let
-Pi's native compactor handle it. Overflow is the safety exception: if reported
-usage already exceeds the active model window, EESV summarizes through soft
-anchor/recent-turn protection while retaining complete tool-call pairs rather
-than resending an oversized one-shot prompt to native compaction. Manual
-`/smart-compact` is an explicit force path: it keeps the absolute adaptive
-safety tail rather than a percentage of the model window. Below-threshold,
-low-yield, or repeated manual runs warn but continue whenever a safe prefix
-exists. This makes 100K–200K sessions compactable even on 1M-token models.
+Complete tool-call/result pairs are the hard window boundary. Recent user
+turns, pi-toolkit checkpoints, and topical grouping are soft and may expand the
+raw tail only while remaining inside the selected budget. Automatic/tool runs
+normally return to Pi's native compactor without an LLM call when a hard
+boundary cannot meet the target. Overflow is the safety exception: EESV keeps
+chunked recovery rather than resending an oversized one-shot prompt to native
+compaction. Manual `/smart-compact` uses an absolute adaptive tail rather than
+a percentage of a large model window. A plan below 10% projected savings never
+starts; if the measured final summary misses the same yield/target contract,
+the run fails closed before staging or apply.
 
 <details>
 <summary><strong>All configuration keys</strong></summary>

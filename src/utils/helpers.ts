@@ -414,30 +414,26 @@ function branchIndexToMsgIndex(branchEntries: unknown[], branchIdx: number, msgs
   return Math.max(0, Math.min(msgCount - 1, msgs.length - 1));
 }
 
-export function smartKeepBoundary(
+export type SmartBoundaryKind = "anchor" | "topical";
+
+/** Return soft boundary candidates in application order. */
+export function smartKeepBoundaryCandidates(
   msgs: SessionMessageEntry[],
   keepFromIndex: number,
   branchEntries?: unknown[],
-): number {
-  let adjusted = keepFromIndex;
+): Array<{ kind: SmartBoundaryKind; keepFrom: number }> {
+  const candidates: Array<{ kind: SmartBoundaryKind; keepFrom: number }> = [];
 
-  // ── pi-toolkit anchor protection: never compact past the last on-branch anchor ──
-  if (branchEntries && branchEntries.length > 0) {
+  if (branchEntries?.length) {
     const lastAnchorBranchIdx = findLastAnchorIndex(branchEntries);
     if (lastAnchorBranchIdx >= 0) {
-      const lastAnchorMsgIdx = branchIndexToMsgIndex(branchEntries, lastAnchorBranchIdx, msgs);
-      if (adjusted > lastAnchorMsgIdx && lastAnchorMsgIdx >= 0) {
-        adjusted = lastAnchorMsgIdx;
-      }
+      const anchor = branchIndexToMsgIndex(branchEntries, lastAnchorBranchIdx, msgs);
+      if (keepFromIndex > anchor && anchor >= 0) candidates.push({ kind: "anchor", keepFrom: anchor });
     }
   }
 
-  if (adjusted <= 0 || adjusted >= msgs.length) return adjusted;
+  if (keepFromIndex <= 0 || keepFromIndex >= msgs.length) return candidates;
 
-  // Topical grouping: if the last compacted message and the first kept message
-  // touch the same file, pull the boundary back one so a file's work isn't split
-  // across the compaction seam. Files come from tool-call arguments — the earlier
-  // prose regex `path="..."` never matched real agent output, so this was a no-op.
   const touchedFiles = (msg: unknown): Set<string> => {
     const m = msg as Record<string, unknown>;
     const blocks = Array.isArray(m?.content) ? m.content : [];
@@ -450,12 +446,24 @@ export function smartKeepBoundary(
     }
     return files;
   };
-  const lastFiles = touchedFiles(msgs[adjusted - 1].message);
+  const lastFiles = touchedFiles(msgs[keepFromIndex - 1].message);
   if (lastFiles.size > 0) {
-    const keptFiles = touchedFiles(msgs[adjusted].message);
-    if ([...lastFiles].some(f => keptFiles.has(f))) return adjusted - 1;
+    const keptFiles = touchedFiles(msgs[keepFromIndex].message);
+    if ([...lastFiles].some(f => keptFiles.has(f))) {
+      candidates.push({ kind: "topical", keepFrom: keepFromIndex - 1 });
+    }
   }
-  return adjusted;
+  return candidates;
+}
+
+export function smartKeepBoundary(
+  msgs: SessionMessageEntry[],
+  keepFromIndex: number,
+  branchEntries?: unknown[],
+): number {
+  const anchor = smartKeepBoundaryCandidates(msgs, keepFromIndex, branchEntries).find(candidate => candidate.kind === "anchor");
+  const adjusted = anchor?.keepFrom ?? keepFromIndex;
+  return smartKeepBoundaryCandidates(msgs, adjusted).find(candidate => candidate.kind === "topical")?.keepFrom ?? adjusted;
 }
 
 /**
@@ -493,18 +501,21 @@ function collectToolCallIds(blocks: unknown[], msgIndex: number, out: Map<string
  * Also handles multi_tool_use.parallel wrappers where the actual tool call IDs are nested
  * inside arguments.tool_uses rather than on the wrapper block itself.
  */
-export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
-  if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
-
-  // Map toolCallId -> assistant message index (including nested multi_tool_use.parallel)
-  const tcMap = new Map<string, number>();
+function toolCallIndexMap(msgs: SessionMessageEntry[]): Map<string, number> {
+  const map = new Map<string, number>();
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i].message as Record<string, unknown>;
     if (m?.role !== "assistant") continue;
     const blocks = Array.isArray(m?.content) ? m.content : [];
-    collectToolCallIds(blocks, i, tcMap);
+    collectToolCallIds(blocks, i, map);
   }
+  return map;
+}
 
+export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
+  if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
+
+  const tcMap = toolCallIndexMap(msgs);
   let adjusted = keepFrom;
   let changed = true;
   // Bound the transitive walk. Each iteration MUST shrink `adjusted` (we
@@ -537,6 +548,34 @@ export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: num
   }
 
   return Math.max(0, Math.min(adjusted, msgs.length));
+}
+
+/**
+ * Prefer summarizing a complete tool exchange when pulling its call backward
+ * would exceed the retention target. Returns msgs.length when no later kept
+ * message exists; callers can then retain the pair or reject the plan.
+ */
+export function advancePastToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
+  if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
+
+  const tcMap = toolCallIndexMap(msgs);
+  let adjusted = keepFrom;
+  for (let iter = 0; iter <= msgs.length; iter++) {
+    let next = adjusted;
+    for (let i = adjusted; i < msgs.length; i++) {
+      const m = msgs[i].message as Record<string, unknown>;
+      if (m?.role !== "toolResult") continue;
+      const tcIdx = typeof m.toolCallId === "string" ? tcMap.get(m.toolCallId) : undefined;
+      if ((i === adjusted && tcIdx === undefined) || (tcIdx !== undefined && tcIdx < adjusted)) {
+        next = i + 1;
+        break;
+      }
+    }
+    if (next === adjusted) return adjusted;
+    adjusted = next;
+    if (adjusted >= msgs.length) return msgs.length;
+  }
+  return msgs.length;
 }
 
 export function extractUserNote(args: string): string | undefined {

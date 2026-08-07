@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { prepareRun } from "../src/app/steps/prepare.ts";
 import { createServices } from "../src/infra/services.ts";
 import { resolveStageAuth } from "../src/app/stage-auth.ts";
+import { DEFAULT_CONFIG } from "../src/constants.ts";
 
 describe("stage-aware provider routing", () => {
   it("resolves auth once per distinct route and keeps equivalent models deduplicated", async () => {
@@ -10,6 +11,10 @@ describe("stage-aware provider routing", () => {
     const equivalentSegmenter = { ...summary };
     const verifier = { provider: "anthropic", id: "verifier", contextWindow: 200_000 } as any;
     const controller = new AbortController();
+    const config = {
+      ...DEFAULT_CONFIG,
+      profiles: { ...DEFAULT_CONFIG.profiles, balanced: { ...DEFAULT_CONFIG.profiles.balanced, summaryBudgetTokens: 1_234 } },
+    };
     const prepared = await prepareRun({
       ctx: {
         cwd: process.cwd(),
@@ -19,6 +24,7 @@ describe("stage-aware provider routing", () => {
         } },
         ui: { notify: () => {} },
       },
+      config,
       summaryModel: summary,
       segModel: equivalentSegmenter,
       verifyModel: verifier,
@@ -34,6 +40,8 @@ describe("stage-aware provider routing", () => {
     } as any);
 
     expect(requested).toEqual([]);
+    expect(prepared?.config).toBe(config);
+    expect(prepared?.profileCfg.summaryBudgetTokens).toBe(1_234);
     expect(prepared?.summaryAuth).toBeUndefined();
     expect((await resolveStageAuth(prepared!, "summary")).apiKey).toBe("openai-key");
     expect((await resolveStageAuth(prepared!, "explore")).apiKey).toBe("openai-key");

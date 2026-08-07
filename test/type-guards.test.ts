@@ -165,9 +165,21 @@ describe("isValidSmartCompactDetails", () => {
     expect(isValidSmartCompactDetails(validDetails({ qualityScore: Infinity }))).toBe(false);
     expect(isValidSmartCompactDetails(validDetails({ qualityScore: "90" }))).toBe(false);
   });
-  it("rejects missing / non-finite totalMessages", () => {
+  it("rejects missing, non-finite, or negative token/count fields", () => {
     expect(isValidSmartCompactDetails(validDetails({ totalMessages: undefined }))).toBe(false);
     expect(isValidSmartCompactDetails(validDetails({ totalMessages: NaN }))).toBe(false);
+    for (const field of [
+      "chunkCount", "totalMessages", "totalTokensSummarized", "llmCalls", "tokensSaved",
+      "explorationRounds", "explorationBoundaries", "tokensBefore", "plannedAfterTokens",
+      "plannedSavedTokens", "estimatedAfterTokens", "estimatedSavedTokens", "retainedTailTokens",
+      "summaryTokens", "summaryBudgetTokens", "targetAfterTokens",
+    ]) expect(isValidSmartCompactDetails(validDetails({ [field]: -1 }))).toBe(false);
+  });
+  it("rejects yields outside [0,1]", () => {
+    expect(isValidSmartCompactDetails(validDetails({ plannedYield: -0.01 }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ plannedYield: 1.01 }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ estimatedYield: Infinity }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ estimatedYield: 1 }))).toBe(true);
   });
 
   // Optional-but-typed fields: present-and-wrong-type must reject
@@ -267,6 +279,17 @@ describe("sanitizeSmartCompactDetails", () => {
     expect(repaired!.model).toBe("openai/gpt-x");
     expect(repaired!.verified).toBe(true);
     expect(repaired!.backupPath).toBe("/x.md");
+  });
+
+  it("drops malformed estimates and clamps malformed required counts to safe defaults", () => {
+    const repaired = sanitizeSmartCompactDetails(validDetails({
+      tokensSaved: -10, plannedAfterTokens: -1, estimatedYield: 1.5, chunkCount: -2,
+    }))!;
+    expect(repaired.tokensSaved).toBe(0);
+    expect(repaired.chunkCount).toBe(0);
+    expect(repaired.plannedAfterTokens).toBeUndefined();
+    expect(repaired.estimatedYield).toBeUndefined();
+    expect(isValidSmartCompactDetails(repaired)).toBe(true);
   });
 
   it("the repaired result always passes isValidSmartCompactDetails", () => {

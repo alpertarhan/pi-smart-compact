@@ -82,6 +82,7 @@ export function classifyTelemetryFailure(error: unknown, timedOut = false): Tele
   const text = (fields.name + " " + fields.code + " " + fields.message).toLowerCase();
   if (timedOut || /timeout|timed out|watchdog|deadline/.test(text)) return "timeout";
   if (fields.name.toLowerCase() === "verificationgateerror") return "verification";
+  if (fields.name.toLowerCase() === "yieldgateerror") return "yield";
   if (/budgetexceeded|token budget|call budget|latency budget/.test(text)) return "budget";
   if (fields.status === 429 || /rate.?limit|too many requests|quota/.test(text)) return "rate-limit";
   if (fields.status === 401 || fields.status === 403 || /unauthori[sz]ed|authentication|api.?key|credential/.test(text)) return "authentication";
@@ -243,7 +244,7 @@ function safeMetricLabel(value: unknown, fallback: string): string {
 
 const FAILURE_KINDS = new Set<TelemetryFailureKind>([
   "cancelled", "timeout", "rate-limit", "authentication", "budget",
-  "output-limit", "provider", "persistence", "validation", "verification", "internal",
+  "output-limit", "provider", "persistence", "validation", "verification", "yield", "internal",
 ]);
 
 export function buildPrivacySafeTelemetry(

@@ -108,7 +108,7 @@ export interface PipelinePhaseTiming {
 export type TelemetryFailureKind =
   | "cancelled" | "timeout" | "rate-limit" | "authentication"
   | "budget" | "output-limit" | "provider" | "persistence"
-  | "validation" | "verification" | "internal";
+  | "validation" | "verification" | "yield" | "internal";
 
 export interface CompactMetricsEntry {
   ts: string;
@@ -143,6 +143,18 @@ export interface CompactMetricsEntry {
   toolPercent?: number;
   tokensBefore?: number;
   tokensSaved?: number;
+  plannedAfterTokens?: number;
+  plannedSavedTokens?: number;
+  plannedYield?: number;
+  estimatedAfterTokens?: number;
+  estimatedSavedTokens?: number;
+  estimatedYield?: number;
+  retainedTailTokens?: number;
+  summaryTokens?: number;
+  summaryBudgetTokens?: number;
+  targetAfterTokens?: number;
+  relaxedSoftBoundaries?: Array<"recent-user-turn" | "anchor" | "topical">;
+  hardBoundaryAdjusted?: boolean;
   pruneSavedTokens?: number;
   chunkCount?: number;
   fallbackReason?: string;
@@ -205,6 +217,19 @@ export interface SmartCompactDetails {
   releaseChannel?: "stable" | "canary";
   qualityScore: number;
   tokensBefore: number;
+  /** Content-free planner versus verified-summary estimator evidence. */
+  plannedAfterTokens?: number;
+  plannedSavedTokens?: number;
+  plannedYield?: number;
+  estimatedAfterTokens?: number;
+  estimatedSavedTokens?: number;
+  estimatedYield?: number;
+  retainedTailTokens?: number;
+  summaryTokens?: number;
+  summaryBudgetTokens?: number;
+  targetAfterTokens?: number;
+  relaxedSoftBoundaries?: Array<"recent-user-turn" | "anchor" | "topical">;
+  hardBoundaryAdjusted?: boolean;
   provenance?: VerificationProvenance;
   redactions?: number;
   compactionState?: CompactionState;

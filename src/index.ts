@@ -15,7 +15,7 @@ import { getProviderCaps } from "./utils/tokens.ts";
 import { appendMetricsSnapshot, readMetricsLog } from "./utils/cache.ts";
 import { buildLocalDashboardInsights, buildMetricsReport, writeMetricsDashboard } from "./ui/metrics-report.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
-import { showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction, showOpenLoopsUI } from "./ui/overlays.ts";
+import { clearCompactProgress, notifyAppliedCompaction, showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction, showOpenLoopsUI } from "./ui/overlays.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import { createSessionRunLock } from "./app/session-run-lock.ts";
@@ -393,21 +393,22 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           const usage = ctx.getContextUsage();
           const totalTokens = usage?.tokens ?? 0;
           const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
-          if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
-            ctx.ui.notify(
-              "Context usage is low or unknown (" + totalTokens.toLocaleString() + "t). Manual compaction may save little and can lose nuance; continuing because you requested it.",
-              "warning",
-            );
-          }
           const cur = ctx.model;
-          const avail = ctx.modelRegistry.getAvailable();
-          const opts = avail.map(m => ({ value: m.provider + "/" + m.id, label: m.provider + "/" + m.id + (m.contextWindow >= 200000 ? " (" + Math.round(m.contextWindow / 1000) + "K)" : ""), model: m }));
-          const defIdx = cur ? opts.findIndex(o => o.value === cur.provider + "/" + cur.id) : 0;
-          const selected = await showCompactUI(ctx, { contextTokens: totalTokens, contextPercent: pct, currentModel: cur ? cur.provider + "/" + cur.id : "?", defaultModelIndex: defIdx >= 0 ? defIdx : 0 });
+          const initialRoutes = resolveModels(ctx, cur, config);
+          if (!initialRoutes.sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
+          const available = ctx.modelRegistry.getAvailable();
+          const defIdx = available.findIndex(model => model.provider === initialRoutes.sumModel!.provider && model.id === initialRoutes.sumModel!.id);
+          const selected = await showCompactUI(ctx, {
+            contextTokens: totalTokens,
+            contextPercent: pct,
+            activeModelLabel: cur ? cur.provider + "/" + cur.id : "?",
+            defaultModelIndex: defIdx >= 0 ? defIdx : 0,
+            config,
+          });
           if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
-          const { segModel, sumModel, verifyModel } = resolveModels(ctx, selected.model.model, loadConfig(), true);
+          const { segModel, sumModel, verifyModel } = resolveModels(ctx, selected.model.model, config, true);
           if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
-          await runSmartCompact({ ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, verifyModel: verifyModel ?? sumModel, mode: selected.mode, pendingRef, isRunning, onNativeApplyError, force: true });
+          await runSmartCompact({ ctx, config, summaryModel: sumModel, segModel: segModel ?? sumModel, verifyModel: verifyModel ?? sumModel, mode: selected.mode, pendingRef, isRunning, onNativeApplyError, force: true });
           return;
         }
 
@@ -519,11 +520,19 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       if (!runId) return; // another compaction extension
       const candidate = commitCandidates.take(runId, sessionId);
       if (!candidate) {
+        clearCompactProgress(ctx);
         log.warn("Applied smart compaction had no matching staged candidate: " + runId);
         return;
       }
-      commitAppliedCompaction(candidate);
-      activateOnlineDamage(candidate);
+      try {
+        commitAppliedCompaction(candidate);
+        clearCompactProgress(ctx);
+        notifyAppliedCompaction(ctx, candidate.details, candidate.metricsSnapshot?.runType !== "manual");
+        activateOnlineDamage(candidate);
+      } catch (error) {
+        clearCompactProgress(ctx);
+        log.warn("Failed to commit applied smart compaction", error);
+      }
       return;
     }
     if (isUnresolvedSessionId(sessionId)) return;

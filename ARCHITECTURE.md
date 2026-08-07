@@ -21,7 +21,7 @@ section is about lifecycle.
 
 | Surface | Lifecycle |
 | --- | --- |
-| `/smart-compact` | Manual command. Interactive picker or direct args. Bypasses the adaptive gate. |
+| `/smart-compact` | Manual command. Explainable target-first preflight or direct args. Bypasses the adaptive pressure gate, not yield/verification gates. |
 | `session_before_compact` | Auto hook. Returns/stages a pending summary or runs under pressure; durable commit waits for matching `session_compact`. |
 | `smart_compact` tool | Agent-callable. Prepares a pending summary; never compacts mid-turn. |
 | `smart_recall` tool | Searches only the current project's bounded context graph; same session/branch ranks first. |
@@ -50,7 +50,9 @@ flowchart LR
     E --> H[Verify + repair]
     G --> H
     H --> I[Open loops + delta + state]
-    I --> J[Pending compaction returned to Pi]
+    I --> Y{Target + ≥10% yield?}
+    Y -- No --> X[Reject; conversation unchanged]
+    Y -- Yes --> J[Pending compaction returned to Pi]
 ```
 
 The orchestrator ([`src/app/run-smart-compact.ts`](./src/app/run-smart-compact.ts))
@@ -65,7 +67,7 @@ threads a typed context through ten stages:
 | 5 | extract | `app/steps/extract.ts` | prune + deterministic extraction + cache |
 | 6 | synthesize | `app/steps/synthesize.ts` | single-pass or EESV |
 | 7 | verify | `app/steps/verify.ts` | structural verify + repair |
-| 8 | state | `app/steps/state.ts` | state machine + open loops + delta |
+| 8 | state | `app/steps/state.ts` + `domain/yield-gate.ts` | state/open loops/delta + final yield proof |
 | 9 | persist | `app/steps/persist.ts` | stage pending, apply compaction |
 | 10 | metrics | `app/steps/metrics.ts` | success / failure record |
 
@@ -104,9 +106,11 @@ assertions: the type system proves `buildState` has run.
 `src/index.ts` resolves models, parses command arguments, and routes work into
 `runSmartCompact()`. Before any expensive work, the system checks context size
 against the threshold in `src/constants.ts`. Auto / tool runs are skipped while
-context is small; manual `/smart-compact` bypasses the gate with an advisory
-warning and uses an absolute adaptive safety tail rather than a percentage of
-large model windows. A pending summary
+context is small; manual `/smart-compact` uses an absolute adaptive safety tail
+rather than a percentage of large model windows. Its single preflight is built
+from the same config snapshot, calibrated estimator, adaptive profile, active
+branch, and pure window planner as execution. A plan must meet the tail target
+and at least 10% projected net savings before any model call. A pending summary
 for the same session is reused instead of invoking the pipeline again. The
 selected `CompactionMode` resolves to a concrete policy before the first model
 call; `auto` uses context pressure and deterministic extraction risk.
@@ -120,22 +124,24 @@ provider/model route; call metrics preserve the actual route.
 ### Keep window and preprocessing
 
 `app/steps/window.ts` starts from Pi's compaction-aware
-`buildContextEntries()` view, never the append-only session history, then keeps
-a recent tail untouched so very recent context stays live, anchored by:
+`buildContextEntries()` view, never the append-only session history, and builds
+a content-free `CompactionWindowPlan` from the selected mode budget:
 
-- **pi-toolkit anchor protection** — normally retain the latest on-branch anchor as a soft fidelity boundary
-- **`toolCall` / `toolResult` boundary guard** — never orphan a result from its call; this boundary remains hard
+- **hard `toolCall` / `toolResult` guard** — never orphan a result from its call
+- **soft recent-user/checkpoint/topical preferences** — retain raw only when the resulting suffix still fits the planned budget
+- **yield contract** — projected replacement must meet its target and save at least 10% after reserving the summary budget
 
-Boundary expansion is re-counted after both guards. If the protected tail plus
-the summary budget cannot fall below the configured context trigger, automatic
-and tool runs normally return control to Pi's native compactor before any LLM
-call. An already-overflowed context is the safety exception: measured usage is
-mapped across active messages, soft anchor/recent-turn expansion is removed,
-and EESV summarizes to the mode target while the tool boundary remains intact.
-This avoids sending a context larger than the active model window to native's
-single summarization call. Manual runs instead compact every eligible prefix
-outside the adaptive tail; empty/repeated/low-yield attempts are reported
-rather than silently ignored.
+The same pure planner powers manual preflight and execution. A soft boundary is
+recorded as relaxed rather than silently overriding the target. Long turns may
+be summarized through their older prefix; if the nominal cut lands inside a
+tool exchange, the planner either retains the complete pair within budget or
+advances past it so the complete exchange is summarized. If no safe hard
+boundary can meet the target, automatic/tool runs normally return control to
+Pi's native compactor before any LLM call. An already-overflowed context is
+the safety exception: measured usage is mapped across active messages and EESV
+keeps chunked recovery instead of sending an oversized one-shot prompt to
+native summarization. Manual runs use the profile's absolute adaptive tail, so
+model-window size cannot turn an explicit command into a full-context no-op.
 
 Before summarization the pipeline also prunes redundant messages, serializes the
 compacted portion, creates a backup, loads the previous verified summary plus
@@ -204,9 +210,12 @@ Final verification runs again after continuity injection.
 ## State, caching & persistence
 
 Post-verification, `app/steps/state.ts` + `src/utils/state.ts` enrich the
-summary. `session_before_compact` only stages it; after the host emits the
-matching `session_compact`, `app/steps/persist.ts` commits reusable state and
-success telemetry. Aborted/unconfirmed candidates write neither.
+summary, then `domain/yield-gate.ts` measures the final replacement. Missing
+the planned target or 10% net-saving floor throws before a `StatedRc` can reach
+staging/apply. `session_before_compact` only stages a passing candidate; after
+the host emits the matching `session_compact`, `app/steps/persist.ts` commits
+reusable state and success telemetry. Aborted/unconfirmed candidates write
+neither, and the UI reports `Applied` only after that correlated commit.
 
 | Concern | Where | Notes |
 | --- | --- | --- |
@@ -452,7 +461,7 @@ All external-world interaction.
 
 | File | Responsibility |
 | --- | --- |
-| `ui/overlays.ts` | model/mode pickers, progress, result, dashboard screens |
+| `ui/overlays.ts` | progressive preflight, semantic phase progress, approval review, and dashboard screens |
 | `ui/dashboard-format.ts` | shared pure formatters for metrics surfaces |
 | `ui/dashboard-insights.ts` | Data Confidence, quality/provider drilldowns, and canary trust views |
 | `ui/metrics-report.ts` | text report + local HTML metrics dashboard |

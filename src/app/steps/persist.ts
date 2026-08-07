@@ -32,6 +32,7 @@ import { recordFailureMetrics } from "./metrics.ts";
 import type { StatedRc } from "../run-context.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../../infra/ai-messages.ts";
+import { clearCompactProgress } from "../../ui/overlays.ts";
 
 import * as log from "../../utils/logger.ts";
 
@@ -144,10 +145,9 @@ export function applyCompaction(rc: StatedRc): void {
   if (rc.flags.skipCompact || rc.flags.autoTriggered) return;
   rc.ctx.compact({
     customInstructions: "Use pre-computed smart summary from /smart-compact",
-    onComplete: () => {
-      rc.ctx.ui.notify("Applied \u2713", "info");
-    },
+    onComplete: () => { /* session_compact owns correlated success feedback */ },
     onError: e => {
+      clearCompactProgress(rc.ctx);
       rc.pendingRef.clear(rc.sessionId);
       const handled = rc.onNativeApplyError?.(rc.runId, e) ?? false;
       if (!handled) {

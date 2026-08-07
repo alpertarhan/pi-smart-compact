@@ -24,6 +24,7 @@ import { VERSION } from "../../constants.ts";
 import {
   verifySummary, repairSummaryDeterministically, formatVerificationGap, verificationFailureMessage, VerificationGateError,
 } from "../../phases/verify.ts";
+import { verifyCompactionYield } from "../../domain/yield-gate.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
   const extraction = rc.extraction;
@@ -127,10 +128,8 @@ export function buildState(rc: VerifiedRc): StatedRc {
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
-  // Compare the replaced prefix with its replacement summary. Subtracting an
-  // estimated retained tail from Pi's measured total mixes token scales when
-  // another context hook truncates tool output, producing false 0% savings.
-  const tokensSaved = Math.max(0, Math.min(rc.totalTokens, rc.compactTokens - rc.estimator.text(summary)));
+  const yieldEstimate = verifyCompactionYield(rc.totalTokens, rc.estimator.text(summary), rc.compactionPlan);
+  const tokensSaved = yieldEstimate.estimatedSavedTokens;
 
   const details: SmartCompactDetails = {
     runId: rc.runId,
@@ -152,6 +151,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
     releaseChannel: rc.config?.telemetryChannel ?? "stable",
     qualityScore: rc.verificationScore,
     tokensBefore: rc.totalTokens,
+    ...yieldEstimate,
     provenance: rc.verificationProvenance,
     compactionState, openLoops,
     redactions: rc.services.scrubber.count(),

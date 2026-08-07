@@ -99,6 +99,8 @@ export interface RcBase {
   // `session_before_compact` events feed this same orchestrator without a
   // cast — the type system enforces the "shared surface" invariant.
   ctx: ExtensionContext;
+  /** Optional caller snapshot; prepareRun loads config only when absent. */
+  config?: CompactConfig;
   notify: Notifier;
   vlog: (msg: string) => void;
   services: SmartCompactServices;
@@ -151,6 +153,32 @@ export type PreparedRc = RcBase & PreparedExt;
 // summarize. Returning null from that step means "conversation too short" —
 // callers must handle the null before treating an Rc as Windowed.
 
+export type RelaxedSoftBoundary = "recent-user-turn" | "anchor" | "topical";
+export type CompactionPlanReason =
+  | "viable"
+  | "no-eligible-prefix"
+  | "unsafe-tool-boundary"
+  | "retention-target-exceeded"
+  | "mode-target-not-met"
+  | "insufficient-projected-saving";
+
+export interface CompactionWindowPlan {
+  keepFrom: number;
+  compactTokens: number;
+  retainedTokens: number;
+  projectedAfterTokens: number;
+  projectedSavedTokens: number;
+  projectedYield: number;
+  fixedContextTokens: number;
+  retentionTargetTokens: number;
+  summaryBudgetTokens: number;
+  targetAfterTokens: number;
+  hardBoundaryAdjusted: boolean;
+  viable: boolean;
+  reason: CompactionPlanReason;
+  relaxedSoftBoundaries: RelaxedSoftBoundary[];
+}
+
 export interface WindowedExt extends PreparedExt {
   readonly _windowed: true;
   sessionId: string;
@@ -166,6 +194,8 @@ export interface WindowedExt extends PreparedExt {
   compactTokens: number;
   /** Estimated retained-tail tokens, normalized to Pi's measured context. */
   accTokens: number;
+  /** Content-free plan used to gate execution and, later, preview it in the UI. */
+  compactionPlan: CompactionWindowPlan;
 }
 export type WindowedRc = RcBase & WindowedExt;
 

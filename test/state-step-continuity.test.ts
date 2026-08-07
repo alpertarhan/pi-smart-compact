@@ -28,6 +28,12 @@ describe("buildState continuity integration", () => {
       estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
       profile: "balanced", mode: "balanced", method: "eesv", chunkCount: 1, summaries: [],
       toCompact: [{}, {}], convTokens: 1_000, totalTokens: 50_000, compactTokens: 20_000, accTokens: 10_000,
+      compactionPlan: {
+        keepFrom: 2, compactTokens: 20_000, retainedTokens: 10_000, projectedAfterTokens: 40_000,
+        projectedSavedTokens: 10_000, projectedYield: 0.2, fixedContextTokens: 20_000,
+        retentionTargetTokens: 10_000, summaryBudgetTokens: 10_000, targetAfterTokens: 40_000,
+        hardBoundaryAdjusted: false, viable: true, reason: "viable", relaxedSoftBoundaries: [],
+      },
       backupPath: null, verified: true, verificationGaps: [], verificationScore: 100,
       verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
       explorationRounds: 0, modelLabel: "openai/test", notify: () => {},
@@ -66,9 +72,57 @@ describe("buildState continuity integration", () => {
       estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
       profile: "balanced", mode: "balanced", method: "eesv", chunkCount: 1, summaries: [],
       toCompact: [{}, {}], convTokens: 1_000, totalTokens: 50_000, compactTokens: 20_000, accTokens: 10_000,
+      compactionPlan: {
+        keepFrom: 2, compactTokens: 20_000, retainedTokens: 10_000, projectedAfterTokens: 40_000,
+        projectedSavedTokens: 10_000, projectedYield: 0.2, fixedContextTokens: 20_000,
+        retentionTargetTokens: 10_000, summaryBudgetTokens: 10_000, targetAfterTokens: 40_000,
+        hardBoundaryAdjusted: false, viable: true, reason: "viable", relaxedSoftBoundaries: [],
+      },
       backupPath: null, verified: true, verificationGaps: [], verificationScore: 100,
       verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
       explorationRounds: 0, modelLabel: "openai/test", notify: () => {},
     } as any)).toThrow("Verification gate rejected summary");
+  });
+
+  it("rejects an oversized verified final state before details can exist", () => {
+    const services = createServices();
+    const extraction: StructuredExtraction = {
+      modifiedFiles: [], readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
+      mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 2,
+    };
+    const rc: any = {
+      extraction,
+      finalSummary: "## Goal\nContinue safely\n\n## Progress\n" + "oversized-safe-text ".repeat(1_000),
+      projectId: "yield-state", continuityScope: { schemaVersion: 2, projectId: "yield-state", sessionId: "s" }, previousState: null,
+      llmMessages: [], explorationReport: null, config: { pinPaths: [] }, services,
+      estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
+      profile: "balanced", mode: "balanced", method: "eesv", chunkCount: 1, summaries: [],
+      toCompact: [{}, {}], convTokens: 1_000, totalTokens: 1_000, compactTokens: 900, accTokens: 100,
+      compactionPlan: {
+        keepFrom: 2, compactTokens: 900, retainedTokens: 100, projectedAfterTokens: 200,
+        projectedSavedTokens: 800, projectedYield: 0.8, fixedContextTokens: 0,
+        retentionTargetTokens: 100, summaryBudgetTokens: 100, targetAfterTokens: 200,
+        hardBoundaryAdjusted: true, viable: true, reason: "viable", relaxedSoftBoundaries: ["anchor"],
+      },
+      backupPath: null, verified: true, verificationGaps: [], verificationScore: 100,
+      verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
+      explorationRounds: 0, modelLabel: "openai/test", notify: () => {},
+    };
+
+    try {
+      buildState(rc);
+      throw new Error("expected YieldGateError");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "YieldGateError", reason: "target-miss", plannedAfterTokens: 200,
+        retainedTailTokens: 100, summaryBudgetTokens: 100, targetAfterTokens: 200,
+        relaxedSoftBoundaries: ["anchor"], hardBoundaryAdjusted: true,
+      });
+      expect((error as { estimatedAfterTokens: number }).estimatedAfterTokens).toBeGreaterThan(200);
+      expect(JSON.stringify(error)).not.toContain("oversized-safe-text");
+      expect(rc.details).toBeUndefined();
+      expect(rc.compactionState).toBeUndefined();
+      expect(rc.openLoops).toBeUndefined();
+    }
   });
 });

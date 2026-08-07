@@ -4,6 +4,26 @@
 
 No changes yet.
 
+## [8.0.4] - 2026-08-07
+
+### Added
+
+- Manual `/smart-compact` now opens one keyboard-first preflight screen driven by the same calibrated planner used for execution. It shows estimated before/after window pressure, projected net savings, live-tail and summary budgets, soft boundaries that will be summarized, hard safeguards, and an explainable mode recommendation. `D` progressively reveals estimator and boundary details; `M` changes the summary route and recalculates the plan.
+- Semantic progress feedback reports Extract, optional Explore, Synthesize, Verify, and Apply without per-batch toast noise. Final feedback compares the plan with the applied estimate and appears only after Pi confirms the matching `session_compact` run ID.
+- Privacy-safe metrics/details now distinguish projected and applied estimates, yield, retention target, summary budget, relaxed soft-boundary kinds, and hard-boundary adjustment. Post-summary yield rejection has its own content-free failure kind.
+
+### Changed
+
+- Context reduction is now the binding success contract. Recent user turns, pi-toolkit checkpoints, and topical grouping are soft fidelity preferences retained only when they fit the mode budget; complete tool-call/result pairs and zero-gap verification remain hard.
+- Every plan must project at least 10% net savings before any LLM call. After synthesis and continuity repair, the measured summary must still meet the planned target and 10% floor or the run fails closed before staging/apply.
+- `requireApproval: false` no longer shows a redundant second result modal after the user approves the preflight. `requireApproval: true` retains the final verified-summary Apply/Cancel review.
+
+### Fixed
+
+- A long pair of user turns can no longer override an explicit manual tail target and turn a high-yield plan into a misleading low-yield success. The captured 174,797-token production replay now plans 144,588 tokens for compaction and about 30,209 for the live tail instead of retaining 167,352 tokens and saving only 5,764.
+- The configured summary route, not the active context model, is the default hidden-behind-Advanced model in manual preflight. Preview and execution share the same config snapshot, adaptive profile, calibration, and active branch.
+- Mode descriptions, narrow-terminal wrapping, active-versus-summary labels, and success timing now match actual behavior; `Applied` is never reported from an unconfirmed native callback.
+
 ## [8.0.3] - 2026-08-07
 
 ### Fixed

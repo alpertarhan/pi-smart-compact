@@ -35,6 +35,7 @@ describe("privacy-safe canary telemetry", () => {
     expect(classifyTelemetryFailure(new Error("native compaction write failed"))).toBe("persistence");
     expect(classifyTelemetryFailure(new Error("provider stream failed"))).toBe("provider");
     expect(classifyTelemetryFailure(Object.assign(new Error("Verification gate rejected summary"), { name: "VerificationGateError" }))).toBe("verification");
+    expect(classifyTelemetryFailure(Object.assign(new Error("estimate miss"), { name: "YieldGateError" }))).toBe("yield");
     expect(classifyTelemetryFailure(new Error("unexpected invariant"))).toBe("internal");
   });
 
@@ -148,12 +149,14 @@ describe("privacy-safe canary telemetry", () => {
   it("exports aggregates without session, project, prompt, path, or error text", () => {
     const report = buildPrivacySafeTelemetry([
       metric("stable", { failureKind: "authentication", status: "failure" }),
-      metric("canary"),
+      metric("canary", { estimatedAfterTokens: 600, estimatedSavedTokens: 400, relaxedSoftBoundaries: ["anchor"] }),
     ], [], { version: "8.0.0", minCanaryRuns: 5 });
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("private-session");
     expect(serialized).not.toContain("run-");
     expect(serialized).not.toContain("projectId");
+    expect(serialized).not.toContain("estimatedAfterTokens");
+    expect(serialized).not.toContain("relaxedSoftBoundaries");
     expect(report.aggregates[0].model).toBe("m");
     expect(report.failures.authentication).toBe(1);
     expect(report.privacy).toContain("aggregate-only");
