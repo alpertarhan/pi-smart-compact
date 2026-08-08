@@ -67,6 +67,9 @@ const CONDITION_MARKERS = new Set([
   "only", "after", "before", "with", "requir", "until",
   "sadece", "sonra", "önce", "gerekli", "gerektirir",
 ]);
+const POLARITY_INVERTING_GUARDS = new Set([
+  "skip", "skipp", "forget", "forgett", "omit", "omitt", "neglect", "fail", "avoid",
+]);
 const SEMANTIC_STOP = new Set([
   "the", "and", "that", "this", "with", "from", "into", "must", "should",
   "only", "after", "before", "without", "never", "not", "does", "have",
@@ -99,6 +102,32 @@ function hasNearbyMarker(tokens: string[], anchor: string, markers: Set<string>)
     && tokens.slice(Math.max(0, index - 2), index + 3).some(near => markers.has(near)));
 }
 
+function hasEffectiveTargetNegation(tokens: string[], anchor: string): boolean {
+  return tokens.some((token, anchorIndex) => {
+    if (token !== anchor) return false;
+    const nearbyStart = Math.max(0, anchorIndex - 2);
+    const nearbyNegations = tokens.slice(nearbyStart, anchorIndex + 3)
+      .map((near, offset) => NEGATION_MARKERS.has(near) ? nearbyStart + offset : -1)
+      .filter(index => index >= 0);
+    const governingStart = Math.max(0, anchorIndex - 3);
+    const preceding = tokens.slice(governingStart, anchorIndex);
+    const nearbyGuards = preceding
+      .map((near, offset) => POLARITY_INVERTING_GUARDS.has(near) ? governingStart + offset : -1)
+      .filter(index => index >= 0);
+    const governingIndex = preceding.findIndex((near, offset) => NEGATION_MARKERS.has(near)
+      && POLARITY_INVERTING_GUARDS.has(preceding[offset + 1] ?? ""));
+    if (governingIndex < 0) return nearbyNegations.length > 0 || nearbyGuards.length > 0;
+
+    const absoluteGoverningIndex = governingStart + governingIndex;
+    const guardIndex = absoluteGoverningIndex + 1;
+    const nested = tokens.slice(guardIndex + 1, anchorIndex)
+      .some(inner => NEGATION_MARKERS.has(inner) || POLARITY_INVERTING_GUARDS.has(inner));
+    return nested
+      || nearbyNegations.some(index => index !== absoluteGoverningIndex && index !== guardIndex)
+      || nearbyGuards.some(index => index !== guardIndex);
+  });
+}
+
 /** Conservative deterministic semantic evidence for goals/constraints/decisions. */
 function semanticShape(source: string): {
   sourceTokens: string[]; concepts: string[]; anchor: string; negative: boolean; conditional: boolean;
@@ -122,7 +151,8 @@ function hasSemanticEvidence(source: string, target: string): boolean {
     const tokens = semanticTokens(fragment);
     const overlap = concepts.filter(concept => tokens.includes(concept)).length;
     if (overlap < required) return false;
-    if (negative && !hasNearbyMarker(tokens, anchor, NEGATION_MARKERS)) {
+    const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
+    if (negative && !targetNegative) {
       // A conditional prohibition ("do not X without Y") may be faithfully
       // restated positively as "X only after/with Y".
       const conditionalRestatement = sourceTokens.includes("without")
@@ -130,6 +160,7 @@ function hasSemanticEvidence(source: string, target: string): boolean {
         && overlap >= Math.min(2, concepts.length);
       if (!conditionalRestatement) return false;
     }
+    if (!negative && targetNegative) return false;
     if (conditional && !negative
       && !tokens.some(token => CONDITION_MARKERS.has(token))) return false;
     return true;
@@ -147,12 +178,14 @@ function hasSemanticContradiction(source: string, target: string): boolean {
     // Sharing a generic anchor such as "release" or "file" is not enough:
     // another constraint in the same section must overlap the actual concepts.
     if (overlap < required) return false;
-    if (negative && !hasNearbyMarker(tokens, anchor, NEGATION_MARKERS)) {
+    const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
+    if (negative && !targetNegative) {
       const validConditional = sourceTokens.includes("without")
         && tokens.some(token => CONDITION_MARKERS.has(token))
         && overlap >= Math.min(2, concepts.length);
       return !validConditional;
     }
+    if (!negative && targetNegative) return true;
     return conditional && !negative && !tokens.some(token => CONDITION_MARKERS.has(token));
   });
 }

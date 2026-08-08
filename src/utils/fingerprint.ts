@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import type { StructuredExtraction } from "../types.ts";
 import * as log from "./logger.ts";
 import { projectFingerprintFile } from "../infra/paths.ts";
-import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { acquireLockSync, ensureDir, writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { findGitRoot as findGitRootCached } from "../infra/git.ts";
 import { THIRTY_DAYS_MS, ID_PREFIX, TRUNC } from "../constants.ts";
 
@@ -159,8 +159,12 @@ function deriveFromRelativePaths(paths: string[]): string {
  * Using cwd/git-root as primary prevents cross-project fingerprint contamination
  * when a session has no file operations (review, discussion, debugging).
  */
-export function deriveProjectIdFromCwd(cwd: string): string {
-  return hashProjectId(findGitRoot(cwd) ?? cwd);
+export function deriveProjectIdFromCwd(cwd: string): string | null {
+  if (!cwd) return null;
+  const resolved = path.resolve(cwd);
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
+  if (resolved === path.parse(resolved).root || resolved === home) return null;
+  return hashProjectId(findGitRoot(resolved) ?? resolved);
 }
 
 export function deriveProjectId(cwd: string, extraction: StructuredExtraction, sessionId?: string): string {
@@ -268,26 +272,37 @@ export function saveProjectFingerprint(
   extraction: StructuredExtraction,
 ): void {
   try {
-    const existing = loadProjectFingerprint(projectId);
-    const newKnownFiles = [...new Set([
-      ...(existing?.knownFiles ?? []),
-      ...extraction.modifiedFiles.map(f => f.path),
-      ...extraction.readFiles,
-    ])].slice(-50); // Keep last 50 unique files
+    const fingerprintPath = getFingerprintPath(projectId);
+    ensureDir(path.dirname(fingerprintPath));
+    const release = acquireLockSync(fingerprintPath);
+    try {
+      const existing = loadProjectFingerprint(projectId);
+      const newKnownFiles = [...new Set([
+        ...(existing?.knownFiles ?? []),
+        ...extraction.modifiedFiles.map(f => f.path),
+        ...extraction.readFiles,
+      ])].slice(-50); // Keep last 50 unique files
 
-    const detectedLanguage = detectLanguage(extraction);
-    const detectedFramework = detectFramework(extraction);
-    const fingerprint: ProjectFingerprint = {
-      id: projectId,
-      language: existing?.language && existing.language !== "unknown" ? existing.language : detectedLanguage,
-      framework: existing?.framework ?? detectedFramework,
-      keyDirectories: extractKeyDirs(extraction),
-      knownFiles: newKnownFiles,
-      sessionCount: (existing?.sessionCount ?? 0) + 1,
-      updatedAt: Date.now(),
-    };
+      const detectedLanguage = detectLanguage(extraction);
+      const detectedFramework = detectFramework(extraction);
+      const keyDirectories = [...new Set([
+        ...(existing?.keyDirectories ?? []),
+        ...extractKeyDirs(extraction),
+      ])].slice(-20);
+      const fingerprint: ProjectFingerprint = {
+        id: projectId,
+        language: existing?.language && existing.language !== "unknown" ? existing.language : detectedLanguage,
+        framework: existing?.framework ?? detectedFramework,
+        keyDirectories,
+        knownFiles: newKnownFiles,
+        sessionCount: (existing?.sessionCount ?? 0) + 1,
+        updatedAt: Date.now(),
+      };
 
-    writeJsonSync(getFingerprintPath(projectId), fingerprint, true);
+      writeJsonSync(fingerprintPath, fingerprint, true);
+    } finally {
+      release();
+    }
   } catch (e) { log.warn("saveProjectFingerprint failed", e); }
 }
 

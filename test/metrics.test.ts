@@ -169,6 +169,9 @@ describe("metrics reporting", () => {
     expect(html).toContain("PROMOTE");
     expect(html).toContain("Stage provider/model comparison");
     expect(html).toContain("openai/gpt");
+    expect(html).toContain("Runs (total/applied)");
+    expect(html).toContain("20/20");
+    expect(metricsReport.buildMetricsReport(entries, damage)).toContain("stable total/applied=20/20 · canary total/applied=20/20");
   });
 
   it("caps provider cache hit rate when cacheRead exceeds uncached input", () => {

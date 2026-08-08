@@ -9,6 +9,8 @@
  * never write stale state when the native compact ultimately fails to apply.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import type { VerifiedRc, StatedRc } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import {
@@ -20,11 +22,12 @@ import {
 import { extractOpenLoops } from "../../utils/extraction.ts";
 import { readRemediationHints } from "../../utils/damage.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
-import { VERSION } from "../../constants.ts";
+import { TRUNC, VERSION } from "../../constants.ts";
 import {
   verifySummary, repairSummaryDeterministically, formatVerificationGap, verificationFailureMessage, VerificationGateError,
 } from "../../phases/verify.ts";
 import { verifyCompactionYield } from "../../domain/yield-gate.ts";
+import { findSection, summaryEvidenceLine } from "../../domain/summary-parse.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
   const extraction = rc.extraction;
@@ -71,9 +74,16 @@ export function buildState(rc: VerifiedRc): StatedRc {
   const currentState = buildCompactionState(
     extraction, managedLoops, rc.explorationReport, nextActions, criticalContextItems, loopOverrides,
   );
+  const summarizedGoal = summaryEvidenceLine(findSection(summary, "goal")?.body ?? "", TRUNC.MESSAGE);
   currentState.scope = rc.continuityScope;
   currentState.factOverrides = prevState?.factOverrides ?? [];
   let compactionState = mergeCompactionStates(prevState, currentState);
+  // Positive filesystem evidence resolves legacy/cache false deletions. Missing
+  // or unresolvable paths remain conservative and continue to be preserved.
+  compactionState.deletedFiles = compactionState.deletedFiles.filter(file => {
+    const candidate = path.isAbsolute(file) ? file : path.resolve(rc.ctx.cwd, file);
+    return !fs.existsSync(candidate);
+  });
   if (preserve.length > 0) {
     compactionState.readFiles = Array.from(new Set([...preserve, ...compactionState.readFiles])).slice(0, 100);
   }
@@ -94,6 +104,11 @@ export function buildState(rc: VerifiedRc): StatedRc {
       );
     }
   }
+
+  // Goal text in the verified summary may be an LLM paraphrase. Persist it so
+  // the next host-compacted Goal matches, but never use it as resolution proof
+  // or delta evidence for task-scoped facts.
+  if (summarizedGoal && currentState.goal) compactionState.goal = summarizedGoal;
 
   const continuity = renderContinuityCapsule(compactionState, undefined, summary);
   if (continuity) summary = summary.trimEnd() + "\n\n" + continuity;

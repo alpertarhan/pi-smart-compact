@@ -174,7 +174,7 @@ function canaryRows(insights: DashboardInsights): string {
   const baseline = insights.canary.baseline;
   const canary = insights.canary.canary;
   const rows: Array<[string, string, string]> = [
-    ["Runs", metricNum(baseline.runs), metricNum(canary.runs)],
+    ["Runs (total/applied)", metricNum(baseline.runs) + "/" + metricNum(baseline.appliedRuns), metricNum(canary.runs) + "/" + metricNum(canary.appliedRuns)],
     ["Success", metricPct(baseline.successRate), metricPct(canary.successRate)],
     ["Verify quality", baseline.avgQuality?.toFixed(1) ?? "—", canary.avgQuality?.toFixed(1) ?? "—"],
     ["p95 duration", metricMs(baseline.p95LatencyMs), metricMs(canary.p95LatencyMs)],
@@ -290,7 +290,7 @@ export function buildMetricsReport(
     "- Repair: initial average " + (quality.averageInitial?.toFixed(1) ?? "—") + " · average gain " + (quality.averageRepairGain?.toFixed(1) ?? "—") + " · deterministic " + quality.deterministicPatchedRuns + " · LLM " + quality.llmPatchedRuns + " · quality floor " + quality.qualityFloorRuns + " · remaining gaps " + quality.remainingGaps,
     "",
     "## Canary / stable control",
-    "Decision: " + canary.decision.toUpperCase() + " · confidence " + canary.dataConfidence + "% · stable n=" + canary.baseline.runs + " · canary n=" + canary.canary.runs,
+    "Decision: " + canary.decision.toUpperCase() + " · confidence " + canary.dataConfidence + "% · stable total/applied=" + canary.baseline.runs + "/" + canary.baseline.appliedRuns + " · canary total/applied=" + canary.canary.runs + "/" + canary.canary.appliedRuns,
     ...canary.reasons.map(item => "- " + item),
     ...canary.triggers.map(item => "- Trigger " + item.metric + ": stable " + item.baseline + " → canary " + item.canary + " (" + item.threshold + ")"),
     "",
@@ -337,7 +337,7 @@ export function writeMetricsDashboard(
         ${metricCard("Tokens saved", compactNumber(summary.totalSaved), `avg score ${summary.avgScore || "—"}`)}
         ${metricCard("Data Confidence", insights.confidence.score + "/100", `telemetry completeness · target ≥85 ${insights.confidence.targetMet ? "met" : "not met"}`, confidenceTone)}
         ${metricCard("Quality Health", insights.quality.healthScore + "/100", `actual outcomes · target ≥85 ${insights.quality.targetMet ? "met" : "not met"}`, qualityTone)}
-        ${metricCard("Canary gate", insights.canary.decision.toUpperCase(), `${insights.canary.canary.runs} canary · ${insights.canary.dataConfidence}% confidence`, canaryTone)}
+        ${metricCard("Canary gate", insights.canary.decision.toUpperCase(), `${insights.canary.canary.runs}/${insights.canary.canary.appliedRuns} canary total/applied · ${insights.canary.dataConfidence}% confidence`, canaryTone)}
       </section>
       <section class="layout">
         <div class="panel"><h2>Duration trend <span class="muted">last ${Math.min(entries.length, 80)} runs</span></h2>${sparkline(entries.slice(-80).map(metricDuration))}</div>

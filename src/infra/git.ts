@@ -22,7 +22,9 @@ export function findGitRoot(cwd: string): string | null {
   if (ROOT_CACHE.has(cwd)) return ROOT_CACHE.get(cwd) ?? null;
   let root: string | null = null;
   try {
-    const out = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf-8", timeout: 2000 });
+    const out = execSync("git rev-parse --show-toplevel", {
+      cwd, encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"],
+    });
     root = out.trim() || null;
   } catch (e) {
     log.debug("git rev-parse failed for " + cwd, e);

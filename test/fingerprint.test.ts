@@ -1,5 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { deriveProjectId, findGitRoot, buildProjectContext } from "../src/utils/fingerprint.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { acquireLockSync, ensureDir } from "../src/infra/fs.ts";
+import { deriveProjectId, deriveProjectIdFromCwd, findGitRoot, buildProjectContext } from "../src/utils/fingerprint.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 const TEST_CWD = ""; // empty cwd forces path-based derivation in tests
@@ -198,6 +203,18 @@ describe("deriveProjectId — absolute path resolution", () => {
 // ── Git-root based projectId ──
 
 describe("deriveProjectId — cwd/git-root priority", () => {
+  it("fails closed for HOME and filesystem root", () => {
+    expect(deriveProjectIdFromCwd(process.env.HOME!)).toBeNull();
+    expect(deriveProjectIdFromCwd(path.parse(process.cwd()).root)).toBeNull();
+  });
+
+  it("preserves repository cwd parity", () => {
+    const rootId = deriveProjectIdFromCwd(process.cwd());
+    expect(rootId).not.toBeNull();
+    expect(deriveProjectIdFromCwd(path.join(process.cwd(), "src"))).toBe(rootId);
+    expect(rootId).toBe(deriveProjectId(process.cwd(), makeExtraction()));
+  });
+
   it("finds the real git root for the current directory", () => {
     const root = findGitRoot(process.cwd());
     expect(root).not.toBeNull();
@@ -218,6 +235,54 @@ describe("deriveProjectId — cwd/git-root priority", () => {
     const id2 = deriveProjectId(process.cwd(), makeExtraction({ readFiles: ["b.ts", "c.ts"] }));
     // Same cwd → same projectId (git-root or cwd hash)
     expect(id1).toBe(id2);
+  });
+});
+
+describe("saveProjectFingerprint", () => {
+  it("merges independent process updates under one project lock", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-fingerprint-race-"));
+    const projectId = "proj-concurrent";
+    const target = path.join(home, ".pi", "agent", ".cache", "smart-compact", "projects", projectId + ".json");
+    ensureDir(path.dirname(target));
+    const release = acquireLockSync(target);
+    const moduleUrl = pathToFileURL(path.resolve("src/utils/fingerprint.ts")).href;
+    const workers = Array.from({ length: 4 }, (_, index) => {
+      const marker = path.join(home, "ready-" + index);
+      const source = `
+        import fs from "node:fs";
+        import { saveProjectFingerprint } from ${JSON.stringify(moduleUrl)};
+        fs.writeFileSync(process.env.MARKER, "ready");
+        saveProjectFingerprint(${JSON.stringify(projectId)}, {
+          modifiedFiles: [{ path: "src/area-${index}/file.ts", toolCalls: 1, lastModifiedIndex: 1 }],
+          readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
+          mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 1
+        });
+      `;
+      return { marker, process: Bun.spawn([process.execPath, "-e", source], { env: { ...process.env, HOME: home, MARKER: marker } }) };
+    });
+
+    let released = false;
+    const releaseLock = () => {
+      if (!released) { release(); released = true; }
+    };
+    try {
+      const deadline = Date.now() + 5_000;
+      while (workers.some(worker => !fs.existsSync(worker.marker)) && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+      expect(workers.every(worker => fs.existsSync(worker.marker))).toBe(true);
+      releaseLock();
+
+      expect(await Promise.all(workers.map(worker => worker.process.exited))).toEqual([0, 0, 0, 0]);
+      const fingerprint = JSON.parse(fs.readFileSync(target, "utf8"));
+      expect(fingerprint.sessionCount).toBe(4);
+      expect(fingerprint.knownFiles.sort()).toEqual(Array.from({ length: 4 }, (_, index) => "src/area-" + index + "/file.ts"));
+      expect(fingerprint.keyDirectories.sort()).toEqual(Array.from({ length: 4 }, (_, index) => "src/area-" + index));
+    } finally {
+      releaseLock();
+      await Promise.allSettled(workers.map(worker => worker.process.exited));
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

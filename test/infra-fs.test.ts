@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
-  atomicWriteFileSync, appendLineLocked, readJsonSync, writeJsonSync,
+  atomicWriteFile, atomicWriteFileSync, appendLineLocked, readJsonSync, writeJsonSync,
   ensureDir, acquireLockSync, trimFileTailLocked,
 } from "../src/infra/fs.ts";
 
@@ -27,6 +27,27 @@ describe("atomicWriteFileSync", () => {
     expect(fs.readFileSync(target, "utf8")).toBe("hello");
     const orphans = fs.readdirSync(tmp).filter(name => name.includes(".tmp."));
     expect(orphans).toEqual([]);
+  });
+
+  it("creates and normalizes private files and directories under umask 000", async () => {
+    const dir = path.join(tmp, "private");
+    const target = path.join(dir, "state.json");
+    fs.mkdirSync(dir, { mode: 0o777 });
+    fs.writeFileSync(target, "old", { mode: 0o666 });
+    fs.chmodSync(dir, 0o777);
+    fs.chmodSync(target, 0o666);
+    const previousUmask = process.umask(0);
+    try {
+      atomicWriteFileSync(target, "sync");
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+
+      const asyncTarget = path.join(dir, "async.json");
+      await atomicWriteFile(asyncTarget, "async");
+      expect(fs.statSync(asyncTarget).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
   });
 
   it("preserves the previous file when the writer never gets to rename", () => {
@@ -48,6 +69,23 @@ describe("appendLineLocked", () => {
     expect(lines.map(l => JSON.parse(l).i)).toEqual([0, 1, 2, 3, 4]);
   });
 
+  it("normalizes append targets and directories under umask 000", () => {
+    const dir = path.join(tmp, "metrics");
+    const target = path.join(dir, "metrics.jsonl");
+    fs.mkdirSync(dir, { mode: 0o777 });
+    fs.writeFileSync(target, "old\n", { mode: 0o666 });
+    fs.chmodSync(dir, 0o777);
+    fs.chmodSync(target, 0o666);
+    const previousUmask = process.umask(0);
+    try {
+      appendLineLocked(target, "new");
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+    }
+  });
+
   it("returns a release function after acquiring a lock", () => {
     const target = path.join(tmp, "log2.jsonl");
     const release = acquireLockSync(target);
@@ -62,9 +100,8 @@ describe("appendLineLocked", () => {
     expect(fs.readFileSync(target, "utf8")).toContain("\"ok\":1");
   });
 
-  it("fails closed instead of appending without a lock", () => {
-    expect(() => appendLineLocked(path.join("/dev/null", "log.jsonl"), "unsafe"))
-      .toThrow("Failed to acquire lock");
+  it("fails closed instead of appending through a non-directory parent", () => {
+    expect(() => appendLineLocked(path.join("/dev/null", "log.jsonl"), "unsafe")).toThrow();
   });
 });
 

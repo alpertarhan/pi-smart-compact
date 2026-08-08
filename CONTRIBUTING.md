@@ -23,17 +23,18 @@ When making changes, prefer these priorities:
 ## Local setup
 
 ```bash
-bun install
-bun test
+bun install --frozen-lockfile
 bun run typecheck
+bun test
+bun run gate
 bun run build
-bun run compat:pi   # verify against latest host-provided Pi packages
+bun run release:audit
 ```
 
-The CI `verify` job runs `typecheck → test → build` on every pull request. A
-daily `pi-latest` job installs the latest Pi packages in an isolated temporary
-workspace and runs the same checks without changing the checkout. To probe an
-exact release locally, run `bun run compat:pi 0.80.6`.
+These are the exact CI `verify` commands. Scheduled/manual CI also runs
+`bun run compat:pi` against the latest host packages in an isolated workspace
+without changing the checkout. The contractually locked baseline is checked
+with `bun run compat:pi 0.84.0`.
 
 ## Repository map
 
@@ -85,9 +86,10 @@ Depending on the change, update the relevant docs:
 ### 4. Run validation before shipping
 
 ```bash
-bun run typecheck
-bun test
-bun run build
+bun run release:check
+bun run compat:pi 0.84.0
+bun run compat:pi latest
+bun audit
 ```
 
 ## Testing guidance
@@ -120,8 +122,8 @@ Before a release:
 
 1. sync `package.json` and `src/constants.ts` (`bun run sync-version`)
 2. update `CHANGELOG.md`
-3. rebuild `dist/`
-4. run tests + typecheck
+3. run `bun run release:check`
+4. run the locked and latest compatibility checks plus `bun audit`
 5. spot-check `README.md` for drift
 
 See [`docs/RELEASE.md`](./docs/RELEASE.md) for the full checklist.

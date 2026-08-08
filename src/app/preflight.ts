@@ -12,7 +12,9 @@ import { planCompactionWindow } from "./steps/window.ts";
 
 export function preflightDamageMedian(cwd: string, config: CompactConfig): number {
   if (!config.adaptiveDamageFeedback) return 0;
-  const recent = readRecentDamageScores(deriveProjectIdFromCwd(cwd), 5).slice(-3).sort((a, b) => a - b);
+  const projectId = deriveProjectIdFromCwd(cwd);
+  if (!projectId) return 0;
+  const recent = readRecentDamageScores(projectId, 5).slice(-3).sort((a, b) => a - b);
   return recent.length ? recent[Math.floor(recent.length / 2)] : 0;
 }
 
@@ -67,6 +69,47 @@ export interface ManualPreflight {
   overflowedContext: boolean;
 }
 
+export interface ManualPreflightContext {
+  branch: unknown[];
+  msgs: SessionMessageEntry[];
+  messageTokens: number[];
+  totalTokens: number;
+  rawEstimatedMessageTokens: number;
+  modelContextWindow?: number;
+  contextWindowTokens: number;
+  contextPercent: number;
+  toolPercent: number;
+  overflowedContext: boolean;
+}
+
+/** Mode-independent session scan shared by all three preview plans. */
+export function prepareManualPreflightContext(
+  ctx: ExtensionContext,
+  summaryModel: Model<Api>,
+  tokenCalibration: TokenCalibrationStore,
+): ManualPreflightContext {
+  const branch = (typeof ctx.sessionManager.buildContextEntries === "function"
+    ? ctx.sessionManager.buildContextEntries()
+    : ctx.sessionManager.getBranch()) as unknown[];
+  const msgs = branch.filter(
+    (entry): entry is SessionMessageEntry => (entry as { type?: string; message?: unknown }).type === "message"
+      && (entry as { message?: unknown }).message != null,
+  );
+  const totalTokens = ctx.getContextUsage()?.tokens ?? 0;
+  const modelContextWindow = ctx.model?.contextWindow;
+  const contextWindowTokens = modelContextWindow ?? 0;
+  const contextPercent = contextWindowTokens > 0 ? totalTokens / contextWindowTokens * 100 : 0;
+  const toolPercent = computeToolCharPercentage(branch);
+  const overflowedContext = contextWindowTokens > 0 && totalTokens > contextWindowTokens;
+  const estimator = makeTokenEstimator(summaryModel.provider, summaryModel.id, tokenCalibration);
+  const messageTokens = msgs.map(entry => estimator.message(entry.message as LlmMessage));
+  return {
+    branch, msgs, messageTokens, totalTokens,
+    rawEstimatedMessageTokens: messageTokens.reduce((sum, tokens) => sum + tokens, 0),
+    modelContextWindow, contextWindowTokens, contextPercent, toolPercent, overflowedContext,
+  };
+}
+
 export function planManualPreflight(
   ctx: ExtensionContext,
   summaryModel: Model<Api>,
@@ -74,20 +117,13 @@ export function planManualPreflight(
   tokenCalibration: TokenCalibrationStore,
   config: CompactConfig,
   damageMedian?: number,
+  shared: ManualPreflightContext = prepareManualPreflightContext(ctx, summaryModel, tokenCalibration),
 ): ManualPreflight {
   const prepared = preparePreflightProfile({ cwd: ctx.cwd, summaryModel, mode, tokenCalibration, config, damageMedian });
-  const manager = ctx.sessionManager;
-  const branch = typeof manager.buildContextEntries === "function" ? manager.buildContextEntries() : manager.getBranch();
-  const msgs = branch.filter(
-    (entry: { type: string; message?: unknown }) => entry.type === "message" && entry.message != null,
-  ) as SessionMessageEntry[];
-  const totalTokens = ctx.getContextUsage()?.tokens ?? 0;
-  const contextWindowTokens = ctx.model?.contextWindow ?? 0;
-  const contextPercent = contextWindowTokens > 0 ? totalTokens / contextWindowTokens * 100 : 0;
-  const toolPercent = computeToolCharPercentage(branch);
-  const overflowedContext = contextWindowTokens > 0 && totalTokens > contextWindowTokens;
-  const messageTokens = msgs.map(entry => prepared.estimator.message(entry.message as LlmMessage));
-  const rawEstimatedMessageTokens = messageTokens.reduce((sum, tokens) => sum + tokens, 0);
+  const {
+    branch, msgs, messageTokens, totalTokens, rawEstimatedMessageTokens,
+    modelContextWindow, contextWindowTokens, contextPercent, toolPercent, overflowedContext,
+  } = shared;
   if (msgs.length < 3) {
     return { mode, plan: null, reason: "not-enough-messages", profileCfg: prepared.profileCfg, totalTokens, rawEstimatedMessageTokens, estimatorScale: 1, adapted: prepared.adapted, damageMedian: prepared.damageMedian, contextWindowTokens, contextPercent, toolPercent, overflowedContext };
   }
@@ -96,7 +132,7 @@ export function planManualPreflight(
     branch: branch as unknown[],
     messageTokens,
     totalTokens,
-    modelContextWindow: ctx.model?.contextWindow,
+    modelContextWindow,
     mode,
     profileCfg: prepared.profileCfg,
     force: true,

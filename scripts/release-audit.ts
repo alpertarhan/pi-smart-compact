@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { getNpmPackFilename } from "./release-audit-lib.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspace = mkdtempSync(join(tmpdir(), "pi-smart-compact-release-"));
@@ -31,20 +32,32 @@ try {
   if (!constants.includes(`export const VERSION = "${sourceManifest.version}";`)) {
     throw new Error("package.json and src/constants.ts versions differ");
   }
+  const packageMajor = Number(sourceManifest.version.split(".")[0]);
+  if (!Number.isSafeInteger(packageMajor) || packageMajor < 0) {
+    throw new Error("package.json version has no numeric major");
+  }
+  const supportedMajor = `Latest \`${packageMajor}.x\``;
+  const securityPolicy = readFileSync(join(root, "SECURITY.md"), "utf8");
+  if (!securityPolicy.includes(supportedMajor)) {
+    throw new Error("SECURITY.md must advertise supported major as " + supportedMajor);
+  }
   for (const peer of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"]) {
     if (sourceManifest.peerDependencies[peer] !== "*") throw new Error(peer + " must remain a wildcard peer");
   }
 
-  const packed = JSON.parse(run([
+  const packResult: unknown = JSON.parse(run([
     "npm", "pack", "--json", "--ignore-scripts", "--pack-destination", workspace,
-  ], root)) as Array<{ filename: string }>;
-  const tarball = join(workspace, packed[0]?.filename ?? "");
+  ], root));
+  const filename = getNpmPackFilename(packResult);
+  if (!filename) throw new Error("npm pack --json returned no filename");
+  const tarball = join(workspace, filename);
   const files = run(["tar", "-tzf", tarball]).trim().split("\n");
   const required = [
     "package/package.json", "package/dist/index.js", "package/dist/index.d.ts",
     "package/dist/provider-eval.js", "package/dist/provider-scenario-eval.js",
     "package/dist/telemetry-report.js", "package/README.md", "package/CHANGELOG.md",
-    "package/LICENSE", "package/docs/MIGRATING_TO_V8.md", "package/docs/RELEASE.md",
+    "package/LICENSE", "package/SECURITY.md", "package/SUPPORT.md", "package/ARCHITECTURE.md",
+    "package/docs/MIGRATING_TO_V8.md", "package/docs/RELEASE.md",
   ];
   for (const file of required) if (!files.includes(file)) throw new Error("packed artifact missing " + file);
   const forbidden = files.filter(file =>

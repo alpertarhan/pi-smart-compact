@@ -9,7 +9,7 @@ import { StringEnum, type Model, type Api } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { CompactionMode, CompressionProfile, PendingCompaction } from "./types.ts";
 import { modeFromLegacyProfile } from "./app/mode-policy.ts";
-import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS } from "./constants.ts";
+import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS, BUDGET_LIMITS } from "./constants.ts";
 import { loadConfig, extractUserNote, listBackups, readBackupContent, buildRestoreMessage } from "./utils/helpers.ts";
 import { getProviderCaps } from "./utils/tokens.ts";
 import { appendMetricsSnapshot, readMetricsLog } from "./utils/cache.ts";
@@ -17,7 +17,7 @@ import { buildLocalDashboardInsights, buildMetricsReport, writeMetricsDashboard 
 import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { clearCompactProgress, notifyAppliedCompaction, showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction, showOpenLoopsUI } from "./ui/overlays.ts";
 import { formatCompactErrorForUi } from "./ui/error-format.ts";
-import { resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
+import { branchEntryIds, resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import { createSessionRunLock } from "./app/session-run-lock.ts";
 import { commitAppliedCompaction } from "./app/steps/persist.ts";
@@ -105,15 +105,15 @@ export function resolveModels(
 }
 
 function resolveGraphScope(ctx: ExtensionContext): ContextGraphScope | null {
+  const projectId = deriveProjectIdFromCwd(ctx.cwd);
   const sessionId = resolveSessionId(ctx);
-  if (isUnresolvedSessionId(sessionId)) return null;
-  const branchEntryIds = (ctx.sessionManager.getBranch() as Array<{ id?: string }>)
-    .map(entry => entry.id).filter((id): id is string => typeof id === "string");
+  if (!projectId || isUnresolvedSessionId(sessionId)) return null;
+  const ancestryIds = branchEntryIds(ctx.sessionManager.getBranch() as Array<{ id?: string }>);
   return {
-    projectId: deriveProjectIdFromCwd(ctx.cwd),
+    projectId,
     sessionId,
-    branchHeadId: branchEntryIds.at(-1),
-    branchEntryIds,
+    branchHeadId: ancestryIds.at(-1),
+    branchEntryIds: ancestryIds,
   };
 }
 
@@ -184,7 +184,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: "Smart Recall is disabled by contextGraphEnabled=false." }], details: undefined };
       }
       const scope = resolveGraphScope(ctx);
-      if (!scope) return { content: [{ type: "text" as const, text: "Smart Recall needs a persisted session id." }], details: undefined };
+      if (!scope) return { content: [{ type: "text" as const, text: "Smart Recall must run from a project directory and needs a persisted session id." }], details: undefined };
       const results = recallContext(scope, params.query, {
         limit: params.limit,
         sessionOnly: params.scope === "session",
@@ -217,7 +217,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: "Project memory is disabled by contextGraphEnabled=false." }], details: undefined };
       }
       const scope = resolveGraphScope(ctx);
-      if (!scope) return { content: [{ type: "text" as const, text: "Saving memory needs a persisted session id." }], details: undefined };
+      if (!scope) return { content: [{ type: "text" as const, text: "Saving project memory must run from a project directory and needs a persisted session id." }], details: undefined };
       const scrubber = new SecretScrubber(config.scrubSecrets, config.scrubPii);
       const title = scrubber.scrubText(params.title?.trim() || "Saved " + params.kind).value;
       const content = scrubber.scrubText(params.content).value;
@@ -228,7 +228,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       }
       const approved = await ctx.ui.confirm(
         status === "resolved" ? "Resolve Project Memory" : "Save Project Memory",
-        "Kind: " + params.kind + "\nTitle: " + title + "\n\n" + content.slice(0, 800)
+        "Kind: " + params.kind + "\nTitle: " + title + "\n\n" + content
           + (relatedPaths.length ? "\n\nPaths: " + relatedPaths.join(", ") : ""),
       );
       if (!approved || signal?.aborted) {
@@ -272,16 +272,16 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         const maxLlmCalls = maxCallsRaw == null ? undefined : Number(maxCallsRaw);
         const maxLlmInputTokens = maxInputRaw == null ? undefined : Number(maxInputRaw);
         const maxLatencyMs = maxLatencyRaw == null ? undefined : Number(maxLatencyRaw);
-        if (maxLlmCalls !== undefined && (!Number.isInteger(maxLlmCalls) || maxLlmCalls < 1 || maxLlmCalls > 100)) {
-          ctx.ui.notify("--max-calls must be an integer from 1 to 100", "error");
+        if (maxLlmCalls !== undefined && (!Number.isInteger(maxLlmCalls) || maxLlmCalls < BUDGET_LIMITS.CALLS.min || maxLlmCalls > BUDGET_LIMITS.CALLS.max)) {
+          ctx.ui.notify("--max-calls must be an integer from " + BUDGET_LIMITS.CALLS.min + " to " + BUDGET_LIMITS.CALLS.max, "error");
           return;
         }
-        if (maxLlmInputTokens !== undefined && (!Number.isInteger(maxLlmInputTokens) || maxLlmInputTokens < 10_000 || maxLlmInputTokens > 1_000_000)) {
-          ctx.ui.notify("--max-input-tokens must be an integer from 10000 to 1000000", "error");
+        if (maxLlmInputTokens !== undefined && (!Number.isInteger(maxLlmInputTokens) || maxLlmInputTokens < BUDGET_LIMITS.INPUT_TOKENS.min || maxLlmInputTokens > BUDGET_LIMITS.INPUT_TOKENS.max)) {
+          ctx.ui.notify("--max-input-tokens must be an integer from " + BUDGET_LIMITS.INPUT_TOKENS.min + " to " + BUDGET_LIMITS.INPUT_TOKENS.max, "error");
           return;
         }
-        if (maxLatencyMs !== undefined && (!Number.isFinite(maxLatencyMs) || maxLatencyMs < 5000 || maxLatencyMs > 600000)) {
-          ctx.ui.notify("--max-latency must be 5000–600000 ms", "error");
+        if (maxLatencyMs !== undefined && (!Number.isFinite(maxLatencyMs) || maxLatencyMs < BUDGET_LIMITS.LATENCY_MS.min || maxLatencyMs > BUDGET_LIMITS.LATENCY_MS.max)) {
+          ctx.ui.notify("--max-latency must be " + BUDGET_LIMITS.LATENCY_MS.min + "–" + BUDGET_LIMITS.LATENCY_MS.max + " ms", "error");
           return;
         }
         if (flags.includes("metrics") || flags.includes("dashboard")) {
@@ -355,9 +355,12 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         }
         if (flags.includes("loops")) {
           const projectId = deriveProjectIdFromCwd(ctx.cwd);
+          if (!projectId) {
+            ctx.ui.notify("Project loops must be managed from a project directory", "warning");
+            return;
+          }
           const sessionId = resolveSessionId(ctx);
-          const branchIds = (ctx.sessionManager.getBranch() as Array<{ id?: string }>)
-            .map(entry => entry.id).filter((id): id is string => typeof id === "string");
+          const branchIds = branchEntryIds(ctx.sessionManager.getBranch() as Array<{ id?: string }>);
           const state = isUnresolvedSessionId(sessionId)
             ? null
             : loadScopedCompactionState({ projectId, sessionId }, branchIds);
@@ -539,8 +542,8 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     }
     if (isUnresolvedSessionId(sessionId)) return;
     const projectId = deriveProjectIdFromCwd(ctx.cwd);
-    const branchIds = (ctx.sessionManager.getBranch() as Array<{ id?: string }>)
-      .map(entry => entry.id).filter((id): id is string => typeof id === "string");
+    if (!projectId) return;
+    const branchIds = branchEntryIds(ctx.sessionManager.getBranch() as Array<{ id?: string }>);
     const branchHeadId = typeof event.compactionEntry.id === "string" ? event.compactionEntry.id : branchIds.at(-1);
     if (!branchHeadId) return;
     const state = loadScopedCompactionState({ projectId, sessionId }, branchIds);
@@ -613,9 +616,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         report: { type: "boolean", description: "Return recent performance metrics instead of compacting." },
         dashboard: { type: "boolean", description: "Write a local HTML metrics dashboard and return its path." },
         focus: { type: "string", description: "Topic or path that should receive extra preservation budget." },
-        max_calls: { type: "number", description: "Maximum LLM calls for this run (1-100)." },
-        max_input_tokens: { type: "number", description: "Aggregate prompt-token budget for this run (10000-1000000)." },
-        max_latency_ms: { type: "number", description: "Optional hard pipeline latency budget in milliseconds (5000-600000). Modes use soft latency targets by default." },
+        max_calls: { type: "number", description: "Maximum LLM calls for this run (" + BUDGET_LIMITS.CALLS.min + "-" + BUDGET_LIMITS.CALLS.max + ")." },
+        max_input_tokens: { type: "number", description: "Aggregate prompt-token budget for this run (" + BUDGET_LIMITS.INPUT_TOKENS.min + "-" + BUDGET_LIMITS.INPUT_TOKENS.max + ")." },
+        max_latency_ms: { type: "number", description: "Optional pipeline cancellation budget in milliseconds (" + BUDGET_LIMITS.LATENCY_MS.min + "-" + BUDGET_LIMITS.LATENCY_MS.max + ")." },
       },
     },
     async execute(_id, params, signal, _onUp, ctx) {
@@ -628,9 +631,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       const verbose = !!params.verbose;
       const dryRun = !!params.dry_run;
       const focus = typeof params.focus === "string" ? params.focus.trim() || undefined : undefined;
-      const maxLlmCalls = typeof params.max_calls === "number" && Number.isInteger(params.max_calls) && params.max_calls >= 1 && params.max_calls <= 100 ? params.max_calls : undefined;
-      const maxLlmInputTokens = typeof params.max_input_tokens === "number" && Number.isInteger(params.max_input_tokens) && params.max_input_tokens >= 10_000 && params.max_input_tokens <= 1_000_000 ? params.max_input_tokens : undefined;
-      const maxLatencyMs = typeof params.max_latency_ms === "number" && params.max_latency_ms >= 5000 && params.max_latency_ms <= 600000 ? params.max_latency_ms : undefined;
+      const maxLlmCalls = typeof params.max_calls === "number" && Number.isInteger(params.max_calls) && params.max_calls >= BUDGET_LIMITS.CALLS.min && params.max_calls <= BUDGET_LIMITS.CALLS.max ? params.max_calls : undefined;
+      const maxLlmInputTokens = typeof params.max_input_tokens === "number" && Number.isInteger(params.max_input_tokens) && params.max_input_tokens >= BUDGET_LIMITS.INPUT_TOKENS.min && params.max_input_tokens <= BUDGET_LIMITS.INPUT_TOKENS.max ? params.max_input_tokens : undefined;
+      const maxLatencyMs = typeof params.max_latency_ms === "number" && params.max_latency_ms >= BUDGET_LIMITS.LATENCY_MS.min && params.max_latency_ms <= BUDGET_LIMITS.LATENCY_MS.max ? params.max_latency_ms : undefined;
       if (params.report || params.dashboard) {
         const report = buildMetricsReport();
         const fp = params.dashboard ? writeMetricsDashboard() : null;

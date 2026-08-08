@@ -48,6 +48,22 @@ describe("privacy-safe canary telemetry", () => {
     expect(report.reasons[0]).toContain("more canary runs");
   });
 
+  it("holds when 19 dry-runs and one applied success only mimic a full canary sample", () => {
+    const baseline = Array.from({ length: 20 }, () => metric("stable"));
+    const canary = [
+      ...Array.from({ length: 19 }, () => metric("canary", { status: "dry-run" })),
+      metric("canary"),
+    ];
+    const report = assessCanary([...baseline, ...canary], observed([...baseline, ...canary]), {
+      version: "8.0.0", minCanaryRuns: 20,
+    });
+    expect(report.canary.runs).toBe(20);
+    expect(report.canary.appliedRuns).toBe(1);
+    expect(report.decision).toBe("hold");
+    expect(report.reasons[0]).toContain("19 more canary runs with applied outcomes");
+    expect(report.dataConfidence).toBeLessThan(60);
+  });
+
   it("promotes only when baseline, sample, quality, and damage-observation gates pass", () => {
     const entries = [
       ...Array.from({ length: 20 }, () => metric("stable")),
@@ -55,6 +71,7 @@ describe("privacy-safe canary telemetry", () => {
     ];
     const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.decision).toBe("promote");
+    expect(report.canary.appliedRuns).toBe(20);
     expect(report.triggers).toEqual([]);
     expect(report.dataConfidence).toBe(100);
   });
@@ -85,6 +102,40 @@ describe("privacy-safe canary telemetry", () => {
     const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.decision).toBe("rollback");
     expect(report.triggers).toContainEqual(expect.objectContaining({ metric: "failure-rate", threshold: ">5% absolute" }));
+  });
+
+  it("does not let dry-runs satisfy the early rollback sample floor", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      ...Array.from({ length: 19 }, () => metric("canary", { status: "dry-run" })),
+      metric("canary", { status: "failure", verificationScore: 0 }),
+    ];
+    const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.canary.runs).toBe(20);
+    expect(report.canary.appliedRuns).toBe(1);
+    expect(report.decision).toBe("hold");
+  });
+
+  it("rolls back early with three real non-dry outcomes", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      ...Array.from({ length: 3 }, () => metric("canary", { status: "failure", verificationScore: 0 })),
+    ];
+    const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.canary.appliedRuns).toBe(3);
+    expect(report.decision).toBe("rollback");
+  });
+
+  it("keeps failed non-dry runs in latency, token, and fallback evidence", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      metric("canary", { avgLatency: 1_000, totalInput: 1_000, totalOutput: 0 }),
+      metric("canary", { status: "failure", avgLatency: 9_000, totalInput: 9_000, totalOutput: 0, method: "heuristic" }),
+    ];
+    const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.canary.p95LatencyMs).toBe(9_000);
+    expect(report.canary.avgTokens).toBe(5_000);
+    expect(report.canary.fallbackRate).toBe(0.5);
   });
 
   it("rolls back early on measurable regressions", () => {

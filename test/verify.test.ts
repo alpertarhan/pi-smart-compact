@@ -243,6 +243,63 @@ Build
     expect(result.score).toBeLessThan(50);
   });
 
+  it("rejects target-added negation for positive goals, constraints, and decisions", () => {
+    const extraction = makeExtraction({
+      mainGoal: "Build the release with Bun",
+      constraints: [{ index: 1, text: "Build the release with Bun", category: "requirement", confidence: 1 }],
+      decisions: [{ index: 2, type: "explicit", summary: "Use Bun for release builds" }],
+    });
+    const summary = "## Goal\nDo not build the release with Bun\n## Constraints & Preferences\n- Do not build the release with Bun\n## Progress\n- waiting\n## Key Decisions\n- Do not use Bun for release builds\n## Critical Context\n- stable";
+    const result = verifySummary(summary, extraction);
+
+    expect(result.ok).toBe(false);
+    expect(result.gaps.filter(gap => gap.kind === "missing-goal")).toHaveLength(1);
+    expect(result.gaps.filter(gap => gap.kind === "missing-constraint")).toHaveLength(1);
+    expect(result.gaps.filter(gap => gap.kind === "missing-decision")).toHaveLength(1);
+    expect(result.gaps.filter(gap => gap.kind === "inconsistency")).toHaveLength(3);
+  });
+
+  it("accepts faithful double-negative restatements", () => {
+    const extraction = makeExtraction({
+      mainGoal: "Run release tests",
+      constraints: [{ index: 1, text: "Build the release with Bun", category: "requirement", confidence: 1 }],
+      decisions: [{ index: 2, type: "explicit", summary: "Run the release audit" }],
+    });
+    const summary = "## Goal\nNever forget to run release tests\n## Constraints & Preferences\n- Never skip building the release with Bun\n## Progress\n- working\n## Key Decisions\n- Do not fail to run the release audit\n## Critical Context\n- stable";
+
+    expect(verifySummary(summary, extraction).gaps).toEqual([]);
+  });
+
+  it("rejects standalone polarity-inverting guards", () => {
+    const targets = [
+      "Skip building the release",
+      "Forget to build the release",
+      "Omit building the release",
+      "Neglect to build the release",
+      "Fail to build the release",
+      "Avoid building the release",
+    ];
+    for (const target of targets) {
+      const summary = `## Goal\n${target}\n## Progress\n- waiting\n## Critical Context\n- stable`;
+      const result = verifySummary(summary, makeExtraction({ mainGoal: "Build the release" }));
+      expect(result.gaps.filter(gap => gap.kind === "missing-goal")).toHaveLength(1);
+      expect(result.gaps.filter(gap => gap.kind === "inconsistency")).toHaveLength(1);
+    }
+  });
+
+  it("keeps nested negation and inverting guards fail-closed", () => {
+    const cases = [
+      ["Run release tests", "Never forget not to run release tests"],
+      ["Build release artifacts", "Never forget to skip building release artifacts"],
+    ];
+    for (const [source, target] of cases) {
+      const summary = `## Goal\n${target}\n## Progress\n- waiting\n## Critical Context\n- stable`;
+      const result = verifySummary(summary, makeExtraction({ mainGoal: source }));
+      expect(result.gaps.filter(gap => gap.kind === "missing-goal")).toHaveLength(1);
+      expect(result.gaps.filter(gap => gap.kind === "inconsistency")).toHaveLength(1);
+    }
+  });
+
   it("does not confuse separate constraints that share a generic anchor", () => {
     const extraction = makeExtraction({
       constraints: [

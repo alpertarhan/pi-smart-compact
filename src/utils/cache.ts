@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, CompactMetricsEntry, LlmMessage } from "../types.ts";
-import { flattenToolCallBlock, type ToolCallIndex } from "./extraction.ts";
+import { flattenToolCallBlock, isTransientToolDiagnostic, type ToolCallIndex } from "./extraction.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import * as log from "./logger.ts";
 import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
@@ -332,13 +332,22 @@ export function mergeExtractions(
       ? { ...file, toolCalls: previous.toolCalls + file.toolCalls, lastModifiedIndex: Math.max(previous.lastModifiedIndex, file.lastModifiedIndex) }
       : file);
   }
+  const deltaPresent = new Set([...offsetModifiedFiles.map(file => file.path), ...delta.readFiles]);
+  const deltaDeleted = new Set(delta.deletedFiles);
+  for (const file of deltaDeleted) modified.delete(file);
+  const readFiles = new Set([...base.readFiles, ...delta.readFiles]);
+  for (const file of deltaDeleted) readFiles.delete(file);
+  const deletedFiles = new Set([...base.deletedFiles, ...delta.deletedFiles]);
+  for (const file of deltaPresent) deletedFiles.delete(file);
+
   const reconciledBaseErrors = reconcileCachedErrors(base.errors, deltaMessages, deltaToolCalls, baseMsgCount);
-  const mergedErrors = [...reconciledBaseErrors, ...offsetErrors];
+  const mergedErrors = [...reconciledBaseErrors, ...offsetErrors]
+    .filter(error => !isTransientToolDiagnostic(error.message));
 
   return {
     modifiedFiles: [...modified.values()],
-    readFiles: [...new Set([...base.readFiles, ...delta.readFiles])],
-    deletedFiles: [...new Set([...base.deletedFiles, ...delta.deletedFiles])],
+    readFiles: [...readFiles],
+    deletedFiles: [...deletedFiles],
     referencedFiles: [...new Set([...(base.referencedFiles ?? []), ...(delta.referencedFiles ?? [])])].slice(0, 200),
     mediaAttachments: [...(base.mediaAttachments ?? []), ...offsetMedia],
     errors: mergedErrors,
@@ -346,9 +355,9 @@ export function mergeExtractions(
     constraints: [...base.constraints, ...offsetConstraints],
     topics: [...base.topics, ...offsetTopics],
     timeline: [...base.timeline, ...offsetTimeline],
-    // mainGoal is the FIRST user message (the original objective) — base holds
-    // it; the delta suffix's first user message is mid-conversation, not the goal.
-    mainGoal: base.mainGoal ?? delta.mainGoal,
+    // The latest substantive user request is the active goal; a suffix with no
+    // real request (tool-only work or an acknowledgement) leaves the base intact.
+    mainGoal: delta.mainGoal ?? base.mainGoal,
     // "last N" must span the cache boundary: the suffix alone is incomplete
     // when it carries fewer than N user messages / errors.
     lastUserMessages: [...base.lastUserMessages, ...delta.lastUserMessages].slice(-5),

@@ -26,10 +26,11 @@ bun install --frozen-lockfile
 bun run release:check
 ```
 
-`release:check` performs source + script typechecking, all tests, the adversarial
-EESV gate, the multi-entry build, package allowlist/denylist checks, a packed
-manifest/version/peer audit, an isolated install, a second frozen-lockfile
-install, extension/tool registration smoke, and packaged CLI smoke tests.
+`release:check` runs the expanded CI chain: source and scripts typechecking,
+all tests, the adversarial gate, build, and release audit. The audit verifies the
+packed manifest/version/peers, supported SECURITY major, package contents,
+isolated and frozen installs, extension/tool registration, Node SQLite, and
+packaged CLIs.
 
 Then validate the host boundary in an isolated workspace:
 
@@ -52,8 +53,8 @@ bun run telemetry-report --min-canary-runs=20
 
 Check that:
 
-- [ ] packed files are limited to `dist`, `docs`, README/license/support files,
-      and package metadata;
+- [ ] packed files are limited to `dist`, `docs`, README, LICENSE, CHANGELOG,
+      SECURITY, SUPPORT, ARCHITECTURE, and package metadata;
 - [ ] `dist/index.js`, declarations, and all three bundled CLIs are present;
 - [ ] the extension registers `smart_compact`, `smart_recall`, and
       `smart_save_memory` from the packed install;
@@ -74,10 +75,12 @@ After explicit approval to publish an RC, use the npm `next` tag rather than
 ```
 
 Keep all stage model routes null unless a separate routing decision is approved.
-Collect at least 20 schema-v2 canary runs, ≥70% verifier-quality coverage, and
-≥70% run-correlated damage-observation coverage in both stable and canary
-cohorts. Missing observations are missing evidence, never clean runs.
-Promotion requires:
+Collect at least 20 non-dry, host-confirmed **applied** schema-v2 canary runs,
+≥70% verifier-quality coverage, and ≥70% run-correlated damage-observation
+coverage in both stable and canary cohorts. Inspect the report's total/applied
+counts: dry runs and staged-but-unapplied runs are not promotion evidence.
+Missing observations are missing evidence, never clean runs. A deterministic
+green release check never implies `PROMOTE`. Promotion requires:
 
 - [ ] `telemetry-report` says `PROMOTE`;
 - [ ] dashboard Data Confidence is ≥85;

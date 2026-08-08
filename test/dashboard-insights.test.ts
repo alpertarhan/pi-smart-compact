@@ -82,6 +82,7 @@ describe("dashboard trust insights", () => {
       ...Array.from({ length: 20 }, () => run()),
       ...Array.from({ length: 20 }, () => run({ releaseChannel: "canary", qualityFloorUsed: true })),
       run({ status: "error", failureKind: "provider", verificationScore: undefined }),
+      run({ status: "error", failureKind: "yield", verificationScore: undefined }),
     ];
     const damage = entries
       .filter(entry => entry.status === "success")
@@ -96,9 +97,12 @@ describe("dashboard trust insights", () => {
       stage: "synthesize", provider: "openai", model: "gpt", reliability: 1,
     });
     expect(insights.failures.provider).toBe(1);
+    expect(insights.failures.yield).toBe(1);
     expect(insights.canary.decision).toBe("promote");
     expect(formatDashboardQuality(insights).join("\n")).toContain("Data Confidence");
     expect(formatDashboardProviders(insights).join("\n")).toContain("openai/gpt");
-    expect(formatDashboardCanary(insights).join("\n")).toContain("PROMOTE");
+    const canaryText = formatDashboardCanary(insights).join("\n");
+    expect(canaryText).toContain("PROMOTE");
+    expect(canaryText).toContain("Runs (total/applied): stable 22/22 | canary 20/20");
   });
 });

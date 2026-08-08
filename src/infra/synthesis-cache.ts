@@ -41,7 +41,7 @@ export function synthesisCacheKey(rc: ExtractedRc): string {
       codexCallMs: rc.config.codexMaxCallMs,
       latencyMs: rc.config.maxLatencyMs,
     },
-    focus: rc.config.focusWeighting ? rc.focus : undefined,
+    focus: rc.focus?.trim() || undefined,
     zeroCall: rc.config.zeroCallEnabled !== false,
     note: rc.userNote,
   });

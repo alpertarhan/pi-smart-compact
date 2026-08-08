@@ -8,7 +8,7 @@ import type { EffectiveCompactionMode, LlmMessage, ProfileConfig, SessionMessage
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { advancePastToolCallBoundary, guardToolCallBoundary, smartKeepBoundaryCandidates } from "../../utils/helpers.ts";
 import { resolveSessionId } from "../../infra/session-identity.ts";
-import { MIN_COMPACTION_SAVING_RATIO } from "../../constants.ts";
+import { MIN_COMPACTION_SAVING_RATIO, POST_SUMMARY_RESERVE_RATIO } from "../../constants.ts";
 
 export type { CompactionWindowPlan } from "../run-context.ts";
 
@@ -22,6 +22,18 @@ export interface CompactionWindowPlanInput {
   profileCfg: ProfileConfig;
   force: boolean;
   overflowedContext: boolean;
+}
+
+/** Canonical user-facing wording for every planner outcome. */
+export function compactionPlanReasonText(reason: CompactionPlanReason): string {
+  switch (reason) {
+    case "viable": return "safe window and useful estimated saving";
+    case "no-eligible-prefix": return "no older prefix is available";
+    case "unsafe-tool-boundary": return "no complete tool-call boundary is available";
+    case "retention-target-exceeded": return "a complete tool pair exceeds the tail target";
+    case "mode-target-not-met": return "the estimated result misses this preset's target";
+    case "insufficient-projected-saving": return "estimated saving is below 10%";
+  }
 }
 
 /** Pure, content-free result suitable for both execution and a later UI preview. */
@@ -38,8 +50,12 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
     ? Math.min(profileCfg.keepRecentTokens * 2, Math.max(profileCfg.keepRecentTokens, modelContextWindow * 0.04))
     : profileCfg.keepRecentTokens;
   const targetPercent = MODE_POLICIES[mode].targetContextPercent;
+  // Verification, delta, open-loop, and continuity sections are injected after
+  // the LLM's output cap. Reserve their observed upper band in the plan instead
+  // of loosening the post-summary target gate.
+  const postSummaryReserveTokens = Math.ceil(profileCfg.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO);
   const targetRetainedTokens = modelContextWindow
-    ? Math.max(0, modelContextWindow * targetPercent / 100 - fixedContextTokens - profileCfg.summaryBudgetTokens)
+    ? Math.max(0, modelContextWindow * targetPercent / 100 - fixedContextTokens - profileCfg.summaryBudgetTokens - postSummaryReserveTokens)
     : adaptiveKeepTokens;
   const retentionCeiling = force ? adaptiveKeepTokens : Math.max(adaptiveKeepTokens, targetRetainedTokens);
   const rawMinimumTail = adaptiveKeepTokens / messageScale;
@@ -94,12 +110,12 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
   hardBoundaryAdjusted ||= keepFrom !== boundaryBeforeHardGuard;
   const compactTokens = Math.round(messageTokens.slice(0, keepFrom).reduce((sum, tokens) => sum + tokens, 0) * messageScale);
   const retainedTokens = retainedAt(keepFrom);
-  const projectedAfterTokens = fixedContextTokens + retainedTokens + profileCfg.summaryBudgetTokens;
+  const projectedAfterTokens = fixedContextTokens + retainedTokens + profileCfg.summaryBudgetTokens + postSummaryReserveTokens;
   const projectedSavedTokens = Math.max(0, totalTokens - projectedAfterTokens);
   const projectedYield = totalTokens > 0 ? projectedSavedTokens / totalTokens : 0;
   const targetAfterTokens = !force && modelContextWindow
     ? modelContextWindow * targetPercent / 100
-    : fixedContextTokens + effectiveRetentionCeiling + profileCfg.summaryBudgetTokens;
+    : fixedContextTokens + effectiveRetentionCeiling + profileCfg.summaryBudgetTokens + postSummaryReserveTokens;
 
   let reason: CompactionPlanReason = "viable";
   if ((msgs[keepFrom]?.message as { role?: string } | undefined)?.role === "toolResult") reason = "unsafe-tool-boundary";
@@ -154,16 +170,7 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
 
   if (!plan.viable) {
     if (rc.flags.force) {
-      const detail = plan.reason === "insufficient-projected-saving"
-        ? "projected saving is below 10%."
-        : plan.reason === "unsafe-tool-boundary"
-          ? "no safe tool-call boundary is available."
-          : plan.reason === "no-eligible-prefix"
-            ? "no eligible prefix remains."
-            : plan.reason === "retention-target-exceeded"
-              ? "a complete tool pair exceeds the retention target."
-              : "the projected context remains above the mode target.";
-      rc.notify("Manual compaction skipped: " + detail, "warning");
+      rc.notify("Manual compaction skipped: " + compactionPlanReasonText(plan.reason) + ".", "warning");
     } else {
       rc.notify("Smart compact skipped: the safe plan cannot meet its target; using native compaction instead.", "warning");
     }

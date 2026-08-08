@@ -200,11 +200,36 @@ describe("mergeExtractions — deduplication", () => {
 
     expect([...merged.readFiles].sort()).toEqual(["a.ts", "b.ts", "c.ts"]);
   });
+
+  it("uses newer file evidence to reconcile cached deletion status", () => {
+    const revived = mergeExtractions(
+      makeExtraction({ deletedFiles: ["src/a.ts"] }),
+      makeExtraction({ readFiles: ["src/a.ts"] }),
+      5,
+    );
+    expect(revived.deletedFiles).toEqual([]);
+    expect(revived.readFiles).toEqual(["src/a.ts"]);
+
+    const removed = mergeExtractions(
+      makeExtraction({ modifiedFiles: [{ path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 1 }] }),
+      makeExtraction({ deletedFiles: ["src/a.ts"] }),
+      5,
+    );
+    expect(removed.modifiedFiles).toEqual([]);
+    expect(removed.deletedFiles).toEqual(["src/a.ts"]);
+  });
 });
 
 // ── messageCount ──
 
 describe("mergeExtractions — cached error reconciliation", () => {
+  it("drops transient diagnostics inherited from an older cache", () => {
+    const base = makeExtraction({
+      errors: [{ index: 1, tool: "web_search", message: "Brave Search API error (429): rate limit exceeded", retryAttempted: false, resolved: false }],
+    });
+    expect(mergeExtractions(base, makeExtraction(), 5).errors).toEqual([]);
+  });
+
   it("matches full extraction when a cached error is resolved in the delta", () => {
     const failed: LlmMessage[] = [
       { role: "user", content: [{ type: "text", text: "run tests" }] },
@@ -254,12 +279,10 @@ describe("mergeExtractions — messageCount", () => {
 // ── mainGoal / lastUserMessages / lastErrors ──
 
 describe("mergeExtractions — field precedence", () => {
-  it("preserves the original (base) mainGoal over the delta suffix", () => {
-    // mainGoal is the FIRST user message (the original objective). The delta
-    // suffix's first user message is mid-conversation, not the goal — so base wins.
+  it("lets a newer substantive user goal supersede the cached goal", () => {
     const base = makeExtraction({ mainGoal: "old goal" });
     const delta = makeExtraction({ mainGoal: "new goal" });
-    expect(mergeExtractions(base, delta, 5).mainGoal).toBe("old goal");
+    expect(mergeExtractions(base, delta, 5).mainGoal).toBe("new goal");
   });
 
   it("falls back to base.mainGoal when delta is null", () => {

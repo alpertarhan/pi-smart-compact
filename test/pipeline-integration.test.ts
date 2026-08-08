@@ -29,6 +29,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { extractWithCache } from "../src/app/steps/extract.ts";
 import { summarizeConversation } from "../src/app/steps/synthesize.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
@@ -38,6 +41,8 @@ import type { TieredRc } from "../src/app/run-context.ts";
 import type { LlmMessage } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { resetConfigCache } from "../src/utils/helpers.ts";
+import { MAX_TOOL_OUTPUT_CHARS } from "../src/constants.ts";
 
 /**
  * Build a TieredRc with the minimum fields synthesizeConversation +
@@ -137,6 +142,76 @@ afterEach(() => {
 });
 
 describe("pipeline integration: extract -> synthesize (single-pass)", () => {
+  it("carries the full current branch lineage into continuity scope", () => {
+    const lineage = Array.from({ length: 301 }, (_, index) => ({ id: "entry-" + (index + 1) }));
+    const tiered = makeTieredRc([userMsg("continue the long lineage")]);
+    (tiered.ctx as any).sessionManager = { getBranch: () => lineage };
+
+    const extracted = extractWithCache(tiered);
+
+    expect(extracted.continuityScope.branchHeadId).toBe("entry-301");
+    expect(extracted.continuityScope.branchAncestryIds).toEqual(lineage.map(entry => entry.id));
+  });
+
+  it("skips backup serialization and scrubbing when backups are disabled", () => {
+    const tiered = makeTieredRc([
+      userMsg("Start"), assistantMsg("I'll be pruned"), userMsg("Continue"),
+      assistantMsg("Substantive evidence"), userMsg("Finish"),
+    ]);
+    tiered.services.scrubber = {
+      scrubText: () => { throw new Error("backup scrub should not run"); },
+      scrubValue: <T>(value: T) => ({ value, findings: [] }),
+      count: () => 0,
+    } as any;
+
+    expect(extractWithCache(tiered).backupPath).toBeNull();
+  });
+
+  it("backs up the full selected span while synthesis receives pruned input", async () => {
+    const previousHome = process.env.HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-full-backup-"));
+    const backupDir = path.join(home, "backups");
+    fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".pi", "agent", "settings.json"), JSON.stringify({
+      smartCompact: { backupEnabled: true, backupDir },
+    }));
+    process.env.HOME = home;
+    resetConfigCache();
+    const removedEvidence = "I'll remove-only backup evidence";
+    const truncatedEvidence = "TRUNCATED-MIDDLE-BACKUP-EVIDENCE";
+    const longToolResult: LlmMessage = {
+      role: "toolResult", toolCallId: "long-output", isError: false, timestamp: Date.now(),
+      content: [{ type: "text", text: "a".repeat(MAX_TOOL_OUTPUT_CHARS) + truncatedEvidence + "b".repeat(MAX_TOOL_OUTPUT_CHARS) }],
+    };
+    const messages = [
+      userMsg("Preserve the selected span"), assistantMsg(removedEvidence), longToolResult,
+      userMsg("Continue"), assistantMsg("Substantive synthesis evidence"), userMsg("Finish"),
+    ];
+    let request = "";
+    setLlmClient({ complete: async (...args: any[]) => {
+      request = JSON.stringify(args);
+      return makeSummaryResponse("## Goal\nPreserve evidence\n## Progress\n### Done\n- done\n### In Progress\n- none\n### Blocked\n- none\n## Critical Context\n- context");
+    } });
+
+    try {
+      const tiered = makeTieredRc(messages);
+      tiered.config.backupEnabled = true;
+      const extracted = extractWithCache(tiered);
+      expect(extracted.convText).not.toContain(removedEvidence);
+      expect(extracted.convText).not.toContain(truncatedEvidence);
+      const backup = fs.readFileSync(extracted.backupPath!, "utf8");
+      expect(backup).toContain(removedEvidence);
+      expect(backup).toContain(truncatedEvidence);
+      await summarizeConversation(extracted);
+      expect(request).not.toContain(removedEvidence);
+      expect(request).not.toContain(truncatedEvidence);
+    } finally {
+      process.env.HOME = previousHome;
+      resetConfigCache();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("produces a summary when the LLM returns a well-formed markdown response", async () => {
     const messages: LlmMessage[] = [
       userMsg("Help me refactor src/auth.ts to use async/await."),
@@ -190,6 +265,31 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.llmCalls).toBe(0);
     expect(callCount).toBe(0);
     expect(synthesized.finalSummary).toContain("src/auth.ts");
+  });
+
+  it("refines auto strategy without invalidating the already planned window budget", async () => {
+    const messages = [userMsg("Resolve the risky release"), assistantMsg("Working on it")];
+    setLlmClient({ complete: async () => makeSummaryResponse(
+      "## Goal\nResolve the risky release\n## Progress\n### Done\n- none\n### In Progress\n- release\n### Blocked\n- none\n## Critical Context\n- preserve context",
+    ) });
+    const tiered = makeTieredRc(messages);
+    tiered.requestedMode = "auto";
+    tiered.mode = "balanced";
+    tiered.config.maxLlmCalls = 0;
+    tiered.config.maxLlmInputTokens = 0;
+    (tiered as any).compactionPlan = { summaryBudgetTokens: tiered.profileCfg.summaryBudgetTokens };
+    const extracted = extractWithCache(tiered);
+    extracted.extraction.errors = Array.from({ length: 6 }, (_, index) => ({
+      index, tool: "bash", message: "test failed " + index, retryAttempted: false, resolved: false,
+    }));
+    const plannedBudget = extracted.profileCfg.summaryBudgetTokens;
+    const plannedProfile = extracted.profile;
+
+    const synthesized = await summarizeConversation(extracted);
+
+    expect(synthesized.mode).toBe("thorough");
+    expect(synthesized.profile).toBe(plannedProfile);
+    expect(synthesized.profileCfg.summaryBudgetTokens).toBe(plannedBudget);
   });
 
   it("does not use zero-call for token-dense tool-heavy context", async () => {

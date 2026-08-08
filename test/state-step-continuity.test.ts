@@ -10,7 +10,7 @@ describe("buildState continuity integration", () => {
     const previous: CompactionState = {
       goal: "Ship auth", decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
       constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
-      modifiedFiles: [], readFiles: [], deletedFiles: [],
+      modifiedFiles: [], readFiles: [], deletedFiles: ["package.json", "missing-v807-file.ts"],
       unresolvedErrors: [{ id: "error-1", message: "auth test still fails", tool: "bash", files: [] }], resolvedErrors: [],
       openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth test", files: [] }],
       topics: [], nextActions: [], criticalContext: [], sessionType: "implementation", compactionVersion: "7.22.0", updatedAt: Date.now(),
@@ -18,11 +18,12 @@ describe("buildState continuity integration", () => {
     previous.scope = { schemaVersion: 2, projectId, sessionId: "session-1", branchHeadId: "entry-1" };
     const extraction: StructuredExtraction = {
       modifiedFiles: [], readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
-      mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 2,
+      mainGoal: "Ship auth", lastUserMessages: [], lastErrors: [], messageCount: 2,
     };
     const services = createServices();
     const rc: any = {
-      extraction, finalSummary: "## Goal\nContinue work\n\n## Next Steps\n1. Continue",
+      ctx: { cwd: process.cwd() },
+      extraction, finalSummary: "## Goal\nShip auth safely\n\n## Next Steps\n1. Continue",
       projectId, continuityScope: previous.scope, previousState: previous,
       llmMessages: [], explorationReport: null, config: { pinPaths: [] }, services,
       estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
@@ -45,7 +46,11 @@ describe("buildState continuity integration", () => {
     expect(result.finalSummary).toContain("No new dependencies");
     expect(result.finalSummary).toContain("auth test still fails");
     expect(result.finalSummary).toContain("fix auth test");
+    expect(result.finalSummary).not.toContain("Goal shifted");
     expect(result.details.mode).toBe("balanced");
+    expect(result.compactionState.goal).toBe("Ship auth safely");
+    expect(result.compactionState.deletedFiles).not.toContain("package.json");
+    expect(result.compactionState.deletedFiles).toContain("missing-v807-file.ts");
     expect(result.tokensSaved).toBeGreaterThan(10_000);
     expect(result.tokensSaved).toBeLessThan(20_000);
   });

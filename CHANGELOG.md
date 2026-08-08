@@ -4,6 +4,25 @@
 
 No changes yet.
 
+## [8.0.7] - 2026-08-08
+
+### Fixed
+
+- Window planning now reserves 25% of the LLM summary allowance for deterministic verification, delta, open-loop, and continuity sections added after synthesis. The reported `29,355t` versus `28,008t` near-target failure now plans a smaller retained tail and lands below the original hard target; the exact post-summary target gate and 10% minimum-saving floor remain fail-closed.
+- Auto risk refinement changes analysis depth without mutating the already-planned profile/output allowance, preventing a late Fast/Balanced/Thorough profile switch from invalidating the target contract. Manual preflight now scans and tokenizes the active branch once for all three mode previews.
+- Continuity now uses the latest substantive user request, parses host-compacted `Goal` sections, ignores acknowledgement-only turns, and treats free-form goal changes as non-destructive breadcrumbs. Prior errors, loops, next actions, and critical context remain active until positive resolution evidence or an explicit override; LLM goal paraphrases cannot silently resolve them.
+- Known transient provider/invocation diagnostics no longer become durable blockers, while project test failures that mention HTTP 429 remain real errors. Initial and merged open-loop state is capped with active, high-priority work ahead of resolved history.
+- File status follows newer successful access/mutation/delete evidence. Existing paths are removed from legacy `deletedFiles` state before persistence, eliminating the three false deletions observed in the v8.0.6 production run.
+- Context-graph facts now use branch-head occurrences and lineage-scoped resolution, preventing equivalent sibling-branch facts from overwriting or closing each other. Schema v1 preserves manual memories while resetting older derived compaction nodes once.
+- Release audit accepts both legacy-array and npm 12 object-shaped `npm pack --json` output, and the unsupported source-only Git install instruction was removed.
+- Result and approval UX now labels `100/100` as post-repair verification coverage, shows the raw source score, and explicitly identifies deterministic safety-fallback runs instead of presenting repaired coverage as raw synthesis quality.
+- Verification now rejects polarity changes symmetrically, and bounded absence never resolves continuity facts.
+- Backups contain the complete selected pre-prune conversation after scrubbing; private artifact directories/files enforce `0700`/`0600`.
+- Project memory fails closed when cwd is exactly HOME or the filesystem root, displays the complete scrubbed value for host confirmation, and caps active manual facts at 500 per project.
+- Continuity and context-graph resolution use full visible branch ancestry; focus participates in synthesis cache identity, and project fingerprints use bounded locked updates.
+- Canary reports total/applied runs and requires non-dry applied telemetry; deterministic green checks never imply `PROMOTE`.
+- Auto timeout remains a cancellation deadline that waits for safe pipeline unwind, and yield failures use the canonical `yield` telemetry kind.
+
 ## [8.0.6] - 2026-08-07
 
 ### Changed

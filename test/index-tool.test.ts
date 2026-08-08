@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import smartCompactExtension from "../src/index.ts";
+import { BUDGET_LIMITS } from "../src/constants.ts";
 
 describe("smart_compact tool cancellation", () => {
   it("publishes mode and aggregate token-budget controls", () => {
@@ -12,7 +13,9 @@ describe("smart_compact tool cancellation", () => {
 
     expect(tool.parameters.properties.mode.description).toContain("fast, balanced, thorough");
     expect(tool.parameters.properties.mode.description).not.toContain("aggressive");
-    expect(tool.parameters.properties.max_input_tokens).toBeDefined();
+    expect(tool.parameters.properties.max_input_tokens.description).toContain(BUDGET_LIMITS.INPUT_TOKENS.min + "-" + BUDGET_LIMITS.INPUT_TOKENS.max);
+    expect(tool.parameters.properties.max_calls.description).toContain(BUDGET_LIMITS.CALLS.min + "-" + BUDGET_LIMITS.CALLS.max);
+    expect(tool.parameters.properties.max_latency_ms.description).toBe("Optional pipeline cancellation budget in milliseconds (" + BUDGET_LIMITS.LATENCY_MS.min + "-" + BUDGET_LIMITS.LATENCY_MS.max + ").");
   });
 
   it("does not start the pipeline when the host signal is already aborted", async () => {

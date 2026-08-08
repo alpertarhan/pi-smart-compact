@@ -1,5 +1,5 @@
 import { VERSION } from "../constants.ts";
-import { assessCanary, type CanaryAssessment, type DamageTelemetryEntry } from "../domain/telemetry.ts";
+import { assessCanary, isTelemetryFailureKind, type CanaryAssessment, type DamageTelemetryEntry } from "../domain/telemetry.ts";
 import type { CompactMetricsEntry, ProviderRouteMetric, ProviderRouteStage, TelemetryFailureKind } from "../types.ts";
 import { metricDuration } from "./dashboard-format.ts";
 
@@ -243,7 +243,7 @@ export function formatDashboardCanary(insights: DashboardInsights): string[] {
     "Canary / stable control",
     "",
     "Decision: " + c.decision.toUpperCase() + " | data confidence " + c.dataConfidence + "%",
-    "Runs: stable " + c.baseline.runs + " | canary " + c.canary.runs,
+    "Runs (total/applied): stable " + c.baseline.runs + "/" + c.baseline.appliedRuns + " | canary " + c.canary.runs + "/" + c.canary.appliedRuns,
     "Success: stable " + Math.round(c.baseline.successRate * 100) + "% | canary " + Math.round(c.canary.successRate * 100) + "%",
     "Quality: stable " + (c.baseline.avgQuality?.toFixed(1) ?? "—") + " | canary " + (c.canary.avgQuality?.toFixed(1) ?? "—"),
     "p95: stable " + c.baseline.p95LatencyMs + "ms | canary " + c.canary.p95LatencyMs + "ms",
@@ -263,12 +263,8 @@ export function buildDashboardInsights(
   options: { version?: string; minCanaryRuns?: number; now?: number } = {},
 ): DashboardInsights {
   const failures: Partial<Record<TelemetryFailureKind, number>> = {};
-  const knownFailures = new Set<TelemetryFailureKind>([
-    "cancelled", "timeout", "rate-limit", "authentication", "budget",
-    "output-limit", "provider", "persistence", "validation", "verification", "internal",
-  ]);
   for (const entry of entries) {
-    if (entry.failureKind && knownFailures.has(entry.failureKind)) {
+    if (isTelemetryFailureKind(entry.failureKind)) {
       failures[entry.failureKind] = (failures[entry.failureKind] ?? 0) + 1;
     }
   }

@@ -5,7 +5,7 @@ import {
   computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection,
   saveCompactionState, loadCompactionState, loadScopedCompactionState,
   applyLoopOverrides, upsertLoopOverride, mergeCompactionStates, renderContinuityCapsule,
-  upsertContinuityOverride,
+  sanitizeCompactionStateEvidence, upsertContinuityOverride,
 } from "../src/utils/state.ts";
 import { scopedCompactionStateFile } from "../src/infra/paths.ts";
 import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport, CompactionState } from "../src/types.ts";
@@ -284,6 +284,99 @@ describe("continuity state", () => {
     expect(merged.openLoops.map(item => item.summary)).toContain("fix auth test");
   });
 
+  it("caps the first state and budgets active loops before resolved history", () => {
+    const first = mergeCompactionStates(null, makeFullState({
+      openLoops: Array.from({ length: 80 }, (_, index) => ({
+        id: "loop-" + index, type: "follow-up" as const, priority: "normal" as const,
+        status: "open" as const, summary: "first open " + index, files: [],
+      })),
+    }));
+    expect(first.openLoops).toHaveLength(25);
+
+    const active = Array.from({ length: 10 }, (_, index) => ({
+      id: "active-" + index, type: "bugfix" as const, priority: "critical" as const,
+      status: "open" as const, summary: "critical open " + index, files: [],
+    }));
+    const mixed = mergeCompactionStates(
+      makeFullState({
+        openLoops: Array.from({ length: 30 }, (_, index) => ({
+          id: "resolved-" + index, type: "follow-up" as const, priority: "normal" as const,
+          status: "resolved" as const, summary: "resolved history " + index, files: [],
+        })),
+      }),
+      makeFullState({ openLoops: active }),
+    );
+    expect(mixed.openLoops).toHaveLength(25);
+    expect(mixed.openLoops.filter(loop => loop.status !== "resolved").map(loop => loop.summary))
+      .toEqual(active.map(loop => loop.summary));
+  });
+
+  it("drops stale compaction status and transient diagnostics from continuity", () => {
+    const clean = sanitizeCompactionStateEvidence(makeFullState({
+      goal: "EESV Compact (model, balanced) — 259,782t Warning: Smart compact skipped",
+      unresolvedErrors: [{ id: "error-1", message: "Brave Search API error (429): rate limit exceeded", tool: "web_search", files: [] }],
+      resolvedErrors: [{ id: "error-2", message: "npm error code ENOLOCK npm audit requires an existing lockfile", tool: "bash" }],
+      openLoops: [{ id: "loop-1", type: "bugfix", priority: "normal", status: "open", summary: "Found 2 occurrences of edits[2]; oldText must be unique", files: [] }],
+      criticalContext: ["Unresolved error: Unknown JSON field: url Available fields: tagName", "Keep this invariant"],
+    }));
+    expect(clean.goal).toBeNull();
+    expect(clean.unresolvedErrors).toEqual([]);
+    expect(clean.resolvedErrors).toEqual([]);
+    expect(clean.openLoops).toEqual([]);
+    expect(clean.criticalContext).toEqual(["Keep this invariant"]);
+  });
+
+  it("records a newer goal without claiming carried diagnostics were resolved", () => {
+    const previous = makeFullState({
+      goal: "Ship the old release",
+      decisions: [{ id: "decision-1", summary: "Keep signed tags", type: "explicit" }],
+      unresolvedErrors: [{ id: "error-1", message: "old release test failed", tool: "bash", files: ["src/release.ts"] }],
+      openLoops: [
+        { id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix old release", files: ["src/release.ts"] },
+        { id: "loop-2", type: "follow-up", priority: "normal", status: "open", summary: "keep pinned", files: [] },
+      ],
+      loopOverrides: [{ id: "loop-2", summaryKey: "keep pinned", pinned: true }],
+      nextActions: ["publish old release"],
+      criticalContext: ["old release branch"],
+    });
+    const merged = mergeCompactionStates(previous, makeFullState({
+      goal: "Also add a regression test",
+      modifiedFiles: ["test/release.test.ts"],
+    }));
+
+    expect(merged.goal).toBe("Also add a regression test");
+    expect(merged.unresolvedErrors.map(error => error.message)).toContain("old release test failed");
+    expect(merged.resolvedErrors).toEqual([]);
+    expect(merged.openLoops.map(loop => [loop.summary, loop.status])).toEqual([
+      ["fix old release", "open"], ["keep pinned", "open"],
+    ]);
+    expect(merged.nextActions).toContain("publish old release");
+    expect(merged.criticalContext).toContain("Previous goal: Ship the old release");
+    expect(merged.criticalContext).toContain("old release branch");
+    expect(merged.decisions.map(item => item.summary)).toEqual(["Keep signed tags"]);
+
+    const nextCompaction = mergeCompactionStates(merged, makeFullState({ goal: "Also add a regression test" }));
+    expect(nextCompaction.unresolvedErrors.map(error => error.message)).toContain("old release test failed");
+    expect(nextCompaction.resolvedErrors).toEqual([]);
+    expect(nextCompaction.criticalContext.filter(item => item === "Previous goal: Ship the old release")).toHaveLength(1);
+  });
+
+  it("uses current file evidence to resolve prior deletion/presence status", () => {
+    const revived = mergeCompactionStates(
+      makeFullState({ deletedFiles: ["src/a.ts"] }),
+      makeFullState({ goal: null, readFiles: ["src/a.ts"] }),
+    );
+    expect(revived.deletedFiles).toEqual([]);
+
+    const removed = mergeCompactionStates(
+      makeFullState({ modifiedFiles: ["src/a.ts"], readFiles: ["src/a.ts"] }),
+      makeFullState({ goal: null, deletedFiles: ["src/a.ts"] }),
+    );
+    expect(removed.modifiedFiles).toEqual([]);
+    expect(removed.readFiles).toEqual([]);
+    expect(removed.deletedFiles).toEqual(["src/a.ts"]);
+  });
+
   it("drops diagnostic constraints carried from legacy state", () => {
     const previous = makeFullState({
       constraints: [
@@ -335,11 +428,13 @@ describe("computeDelta", () => {
     expect(delta.removedDecisions).toEqual([]);
   });
 
-  it("detects removed decisions", () => {
+  it("detects decisions removed by explicit override", () => {
     const prev = makeFullState({
       decisions: [{ id: "decision-1", summary: "Use sessions", type: "explicit" }],
     });
-    const curr = makeFullState();
+    const curr = makeFullState({
+      factOverrides: [{ id: "decision-override-1", kind: "decision", summaryKey: "use sessions", status: "superseded", updatedAt: 1 }],
+    });
     const delta = computeDelta(prev, curr);
     expect(delta.removedDecisions).toEqual(["Use sessions"]);
     expect(delta.newDecisions).toEqual([]);
@@ -354,6 +449,7 @@ describe("computeDelta", () => {
     });
     const curr = makeFullState({
       openLoops: [
+        { id: "loop-1", type: "bugfix", priority: "high", status: "resolved", summary: "fix auth bug", files: [] },
         { id: "loop-2", type: "follow-up", priority: "normal", status: "open", summary: "add tests", files: [] },
         { id: "loop-3", type: "bugfix", priority: "high", status: "open", summary: "fix caching issue", files: [] },
       ],
@@ -377,10 +473,38 @@ describe("computeDelta", () => {
     });
     const curr = makeFullState({
       unresolvedErrors: [{ id: "error-2", message: "build error", tool: "edit", files: [] }],
+      resolvedErrors: [{ id: "error-1", message: "test failed", tool: "bash" }],
     });
     const delta = computeDelta(prev, curr);
     expect(delta.resolvedErrors).toEqual(["test failed"]);
     expect(delta.newErrors).toEqual(["build error"]);
+  });
+
+  it("does not resolve cap-evicted loops, errors, or decisions by absence", () => {
+    const previous = makeFullState({
+      decisions: Array.from({ length: 30 }, (_, index) => ({ id: "decision-" + index, summary: "old decision " + index, type: "explicit" as const })),
+      unresolvedErrors: Array.from({ length: 15 }, (_, index) => ({ id: "error-" + index, message: "old error " + index, tool: "bash", files: [] })),
+      openLoops: Array.from({ length: 25 }, (_, index) => ({
+        id: "loop-" + index, type: "follow-up" as const, priority: "normal" as const,
+        status: "open" as const, summary: "old loop " + index, files: [],
+      })),
+    });
+    const merged = mergeCompactionStates(previous, makeFullState({
+      decisions: [{ id: "decision-new", summary: "new decision", type: "explicit" }],
+      unresolvedErrors: [{ id: "error-new", message: "new error", tool: "bash", files: [] }],
+      openLoops: [{ id: "loop-new", type: "bugfix", priority: "critical", status: "open", summary: "new critical loop", files: [] }],
+    }));
+    const delta = computeDelta(previous, merged);
+
+    expect(merged.decisions).toHaveLength(30);
+    expect(merged.unresolvedErrors).toHaveLength(15);
+    expect(merged.openLoops).toHaveLength(25);
+    expect(delta.removedDecisions).toEqual([]);
+    expect(delta.resolvedErrors).toEqual([]);
+    expect(delta.resolvedLoops).toEqual([]);
+    expect(delta.newDecisions).toEqual(["new decision"]);
+    expect(delta.newErrors).toEqual(["new error"]);
+    expect(delta.newLoops).toEqual(["new critical loop"]);
   });
 
   it("detects goal change", () => {

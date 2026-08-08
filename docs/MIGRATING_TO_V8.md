@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to the stable `8.0.6` release.
+This guide applies to the stable `8.0.7` release.
 
 ## Compatibility
 
@@ -34,10 +34,18 @@ the sanitized state. v8.0.3 keeps the same graph file and transparently opens it
 with `node:sqlite` under Pi or `bun:sqlite` in Bun tooling. v8.0.4 changes only
 compaction planning, UX, and privacy-safe operational metrics; v8.0.5 bounds
 user-facing failure diagnostics; v8.0.6 streamlines the three-mode decision card
-and live progress brief. None requires a state or database migration.
+and live progress brief. v8.0.7 reserves post-summary planning headroom,
+sanitizes known transient diagnostics, bounds active continuity before resolved
+history, and introduces branch-occurrence context-graph schema v1. On first graph
+open, user-confirmed manual memories remain; older derived compaction nodes are
+reset and repopulate from later apply-confirmed compactions.
 
-Facts remain conservative: absence from a new window is not deletion. A fact is
-removed only by an explicit resolved/superseded override.
+Facts remain conservative across follow-ups and free-form goal changes: bounded
+absence or new wording is never resolution. Goal shifts are retained as
+`Previous goal` context; errors and loops retire only through positive resolution
+evidence or an explicit override. Newer successful file access/mutation/delete
+evidence still resolves contradictory file status. State and graph resolution use
+the complete host-visible branch ancestry, not a truncated lineage or siblings.
 
 ### Persistent context graph
 
@@ -47,11 +55,14 @@ Applied, verified compactions are indexed into:
 ~/.pi/agent/.cache/smart-compact/context-graph.sqlite
 ```
 
-The database is local, project-partitioned, mode `0600` where supported, and
-bounded to 2,000 non-structural fact nodes per project. Apply-confirmed state is
-queued for the next event-loop turn so SQLite indexing is not part of the
-native compaction hook's latency. It enables
-`smart_recall` and confirmation-gated `smart_save_memory`. Set
+The database is local, project-partitioned, mode `0600`, and bounded to 2,000
+non-structural fact nodes per project. Private artifact directories are 0700 and
+files are 0600. Apply-confirmed state is queued for the next event-loop turn so
+SQLite indexing is not part of the native compaction hook's latency. It enables
+`smart_recall` and confirmation-gated `smart_save_memory`. Memory writes fail
+closed when the working directory is exactly `HOME` or the filesystem root; the
+interactive prompt shows the complete scrubbed memory and paths. A project may
+hold at most 500 active manual memories. Set
 `contextGraphEnabled` to `false` before first use to disable indexing and both
 tools. Disabling does not delete an existing database.
 
@@ -66,7 +77,9 @@ Consequently Data Confidence may start below 85 and rise as complete v8 runs
 replace legacy evidence.
 
 `telemetryChannel` defaults to `stable`. Use `canary` only on an externally
-selected canary installation; the extension reports Hold/Rollback/Promote but
+selected canary installation. Reports show total/applied runs, and only non-dry,
+host-confirmed applied outcomes count toward promotion; deterministic green
+checks do not imply `PROMOTE`. The extension reports Hold/Rollback/Promote but
 never deploys, edits configuration, or rolls itself back.
 
 ## New optional settings
@@ -85,10 +98,14 @@ All defaults preserve the selected model and require no migration edits.
 
 See the README configuration table for budgets and monitoring options.
 
-## Recommended rollout
+## Backups and rollout
+
+v8.0.7 backs up the complete selected pre-prune conversation after configured
+scrubbing, using 0600 files in a 0700 directory. Retention only prunes
+marker-owned backups.
 
 1. Back up `~/.pi/agent/settings.json` and the Smart Compact cache directory.
-2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.6`.
+2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.7`.
 3. Leave all model routes null initially.
 4. Keep `telemetryChannel: "stable"` unless intentionally running a separate
    canary cohort.

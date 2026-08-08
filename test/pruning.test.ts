@@ -151,6 +151,26 @@ describe("pruneRedundant", () => {
     expect(wrapper.flatMap(block => block.arguments?.tool_uses ?? []).map(tool => tool.id)).toEqual(["e1"]);
   });
 
+  it("uses extraction's synthetic nested identity when pruning id-less parallel calls", () => {
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "parallel reads"),
+      {
+        role: "assistant",
+        content: [{
+          type: "toolCall", name: "multi_tool_use.parallel",
+          arguments: { tool_uses: [{ recipient_name: "functions.read", parameters: { path: "a.ts" } }] },
+        }],
+      },
+      makeToolResult("mtu_1_0", "first"),
+      makeAssistantWithToolCall("r2", "read", { path: "a.ts" }),
+      makeToolResult("r2", "second"),
+    ];
+
+    const result = pruneRedundant(msgs);
+    expect(result.messages.some(message => message.toolCallId === "mtu_1_0")).toBe(false);
+    expect(result.messages.some(message => message.toolCallId === "r2")).toBe(true);
+  });
+
   it("prunes agent acknowledgment messages", () => {
     const msgs: LlmMessage[] = [
       makeMsg("user", "fix the bug"),

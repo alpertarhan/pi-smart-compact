@@ -38,6 +38,11 @@ export type SessionIdentityContext = Pick<ExtensionContext, "sessionManager">;
 
 const UNRESOLVED_PREFIX = "unresolved:";
 
+/** Extract the complete ordered ancestry exposed by a session branch. */
+export function branchEntryIds(branch: Iterable<{ id?: unknown }>): string[] {
+  return Array.from(branch, entry => entry.id).filter((id): id is string => typeof id === "string");
+}
+
 /**
  * Resolve the current pi session id, or mint a per-call sentinel that can
  * never compare equal to another caller's sentinel.

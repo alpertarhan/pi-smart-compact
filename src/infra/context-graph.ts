@@ -13,6 +13,7 @@ const MAX_MANUAL_NODES = 500;
 const MAX_SESSION_NODES = 256;
 const MAX_QUERY_CANDIDATES = 80;
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1_000;
+const CONTEXT_GRAPH_SCHEMA_VERSION = 1;
 
 export type ContextMemoryKind =
   | "goal" | "decision" | "constraint" | "error" | "loop"
@@ -164,8 +165,6 @@ function openDatabase(): SqliteDatabase {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS context_nodes_fact
-      ON context_nodes(project_id, session_id, kind, fact_key);
     CREATE INDEX IF NOT EXISTS context_nodes_project_status
       ON context_nodes(project_id, status, updated_at DESC);
     CREATE TABLE IF NOT EXISTS context_edges (
@@ -183,6 +182,20 @@ function openDatabase(): SqliteDatabase {
       tokenize='unicode61 remove_diacritics 2'
     );
   `);
+  const version = db.query("PRAGMA user_version").get() as { user_version: number } | null;
+  if (Number(version?.user_version ?? 0) < CONTEXT_GRAPH_SCHEMA_VERSION) {
+    db.transaction(() => {
+      db.exec(`
+        DROP INDEX IF EXISTS context_nodes_fact;
+        DELETE FROM context_nodes_fts
+          WHERE node_id IN (SELECT id FROM context_nodes WHERE source = 'compaction');
+        DELETE FROM context_nodes WHERE source = 'compaction';
+        CREATE UNIQUE INDEX context_nodes_fact
+          ON context_nodes(project_id, session_id, kind, fact_key, COALESCE(branch_head_id, ''));
+        PRAGMA user_version = ${CONTEXT_GRAPH_SCHEMA_VERSION};
+      `);
+    })();
+  }
   return db;
 }
 
@@ -249,7 +262,7 @@ function makeNode(
   const key = factKey(content);
   const now = Date.now();
   return {
-    id: stableId(scope.projectId, scope.sessionId, kind, key),
+    id: stableId(scope.projectId, scope.sessionId, kind, key, scope.branchHeadId ?? ""),
     projectId: scope.projectId,
     sessionId: scope.sessionId,
     branchHeadId: scope.branchHeadId ?? null,
@@ -279,21 +292,66 @@ function ensureFileNode(db: SqliteDatabase, scope: ContextGraphScope, file: stri
   return node;
 }
 
+function branchLineage(scope: ContextGraphScope): string[] {
+  return Array.from(new Set([...(scope.branchEntryIds ?? []), scope.branchHeadId]
+    .filter((id): id is string => typeof id === "string" && id.length > 0)));
+}
+
+function lineageFactRows(
+  db: SqliteDatabase, scope: ContextGraphScope, kind?: string, key?: string,
+): NodeRow[] {
+  const lineage = new Set(branchLineage(scope));
+  const rows = db.query(`
+    SELECT * FROM context_nodes
+    WHERE project_id = ? AND session_id = ? AND source = 'compaction'
+      ${kind ? "AND kind = ?" : ""} ${key ? "AND fact_key = ?" : ""}
+  `).all(scope.projectId, scope.sessionId, ...(kind ? [kind] : []), ...(key ? [key] : [])) as NodeRow[];
+  return rows.filter(row => lineage.size > 0
+    ? Boolean(row.branch_head_id && lineage.has(row.branch_head_id))
+    : row.branch_head_id == null);
+}
+
+function latestLineageFact(
+  db: SqliteDatabase, scope: ContextGraphScope, kind: string, key: string,
+): NodeRow | null {
+  const rank = new Map(branchLineage(scope).map((id, index) => [id, index]));
+  return lineageFactRows(db, scope, kind, key)
+    .sort((a, b) => (rank.get(b.branch_head_id ?? "") ?? -1) - (rank.get(a.branch_head_id ?? "") ?? -1)
+      || b.updated_at - a.updated_at)[0] ?? null;
+}
+
+/** Record a branch-local tombstone; never mutate a shared ancestor occurrence. */
 function markFactStatus(
   db: SqliteDatabase, scope: ContextGraphScope, kind: string, key: string,
   status: "resolved" | "superseded",
 ): void {
-  const rows = db.query(`
-    SELECT id FROM context_nodes
-    WHERE project_id = ? AND session_id = ? AND kind = ? AND fact_key = ? AND source = 'compaction'
-  `).all(scope.projectId, scope.sessionId, kind, key) as Array<{ id: string }>;
-  if (!rows.length) return;
-  db.query(`
-    UPDATE context_nodes SET status = ?, updated_at = ?
-    WHERE project_id = ? AND session_id = ? AND kind = ? AND fact_key = ? AND source = 'compaction'
-  `).run(status, Date.now(), scope.projectId, scope.sessionId, kind, key);
-  const remove = db.query("DELETE FROM context_nodes_fts WHERE node_id = ?");
-  for (const row of rows) remove.run(row.id);
+  const previous = latestLineageFact(db, scope, kind, key);
+  if (!previous || previous.status === status) return;
+  const now = Date.now();
+  upsertNode(db, {
+    id: stableId(scope.projectId, scope.sessionId, kind, key, scope.branchHeadId ?? ""),
+    projectId: scope.projectId,
+    sessionId: scope.sessionId,
+    branchHeadId: scope.branchHeadId ?? null,
+    kind,
+    factKey: key,
+    title: previous.title,
+    content: previous.content,
+    status,
+    source: "compaction",
+    confidence: previous.confidence,
+    relatedPaths: parsePaths(previous.related_paths),
+    createdAt: now,
+    updatedAt: now,
+  }, true);
+}
+
+function sameActiveFact(row: NodeRow | null, node: GraphNode): boolean {
+  return Boolean(row && row.status === "active" && node.status === "active"
+    && row.title === node.title
+    && row.content === node.content
+    && row.confidence === node.confidence
+    && JSON.stringify(parsePaths(row.related_paths)) === JSON.stringify(node.relatedPaths));
 }
 
 function addFact(
@@ -304,7 +362,8 @@ function addFact(
   if (!content.trim()) return;
   const node = makeNode(scope, kind, title, content, { relatedPaths, confidence });
   node.factKey = factKey(keyText);
-  node.id = stableId(scope.projectId, scope.sessionId, kind, node.factKey);
+  node.id = stableId(scope.projectId, scope.sessionId, kind, node.factKey, scope.branchHeadId ?? "");
+  if (sameActiveFact(latestLineageFact(db, scope, kind, node.factKey), node)) return;
   upsertNode(db, node);
   linkNodes(db, scope.projectId, sessionNodeId, node.id, "contains", 1, node.updatedAt);
   for (const file of relatedPaths) {
@@ -350,6 +409,7 @@ export function indexCompactionState(projectId: string, state: CompactionState):
     projectId,
     sessionId,
     branchHeadId: state.scope.branchHeadId,
+    branchEntryIds: state.scope.branchAncestryIds,
   };
   let db: SqliteDatabase | null = null;
   try {
@@ -366,17 +426,16 @@ export function indexCompactionState(projectId: string, state: CompactionState):
       upsertNode(db!, sessionNode);
       linkNodes(db!, projectId, projectNode.id, sessionNode.id, "contains", 1, now);
 
-      db!.query(`
-        UPDATE context_nodes SET status = 'superseded', updated_at = ?
-        WHERE project_id = ? AND session_id = ? AND kind = 'goal' AND source = 'compaction' AND status = 'active'
-      `).run(now, projectId, sessionId);
-      db!.query(`
-        DELETE FROM context_nodes_fts WHERE node_id IN (
-          SELECT id FROM context_nodes WHERE project_id = ? AND session_id = ? AND kind = 'goal' AND status <> 'active'
-        )
-      `).run(projectId, sessionId);
-
-      if (state.goal) addFact(db!, scope, sessionNode.id, "goal", "Current goal", state.goal, [], 0.98);
+      // Goal is the only complete singleton snapshot. Bounded task collections
+      // are partial: absence can mean cap eviction, never positive resolution.
+      if (state.goal) {
+        const currentGoalKey = factKey(state.goal);
+        const priorGoalKeys = new Set(lineageFactRows(db!, scope, "goal").map(row => row.fact_key));
+        for (const key of priorGoalKeys) {
+          if (key !== currentGoalKey) markFactStatus(db!, scope, "goal", key, "superseded");
+        }
+        addFact(db!, scope, sessionNode.id, "goal", "Current goal", state.goal, [], 0.98);
+      }
       for (const item of state.decisions) {
         addFact(db!, scope, sessionNode.id, "decision", "Decision", item.summary + (item.userResponse ? " → " + item.userResponse : ""), [], item.type === "explicit" ? 0.98 : 0.82, item.summary);
       }
@@ -392,6 +451,7 @@ export function indexCompactionState(projectId: string, state: CompactionState):
         const node = makeNode(scope, "loop", "Open loop", item.summary, {
           status, relatedPaths: item.files, confidence: item.priority === "critical" || item.priority === "high" ? 0.98 : 0.88,
         });
+        if (sameActiveFact(latestLineageFact(db!, scope, "loop", node.factKey), node)) continue;
         upsertNode(db!, node);
         linkNodes(db!, projectId, sessionNode.id, node.id, "contains", 1, now);
         for (const file of item.files) {
@@ -514,13 +574,17 @@ export function saveContextMemory(scope: ContextGraphScope, memory: Omit<SavedCo
     node.sessionId = "*";
     node.branchHeadId = null;
     const transaction = db.transaction(() => {
-      const exists = db!.query("SELECT 1 AS found FROM context_nodes WHERE id = ?").get(node.id) as { found: number } | null;
+      const existing = db!.query("SELECT status FROM context_nodes WHERE id = ?").get(node.id) as { status: string } | null;
       const duplicates = db!.query(`
-        SELECT id, related_paths FROM context_nodes
+        SELECT id, related_paths, status FROM context_nodes
         WHERE project_id = ? AND kind = ? AND fact_key = ? AND source = 'manual' AND id <> ?
-      `).all(scope.projectId, memory.kind, node.factKey, node.id) as Array<{ id: string; related_paths: string }>;
-      const count = db!.query("SELECT count(*) AS count FROM context_nodes WHERE project_id = ? AND source = 'manual'").get(scope.projectId) as { count: number } | null;
-      if (!exists && !duplicates.length && Number(count?.count ?? 0) >= MAX_MANUAL_NODES) {
+      `).all(scope.projectId, memory.kind, node.factKey, node.id) as Array<{ id: string; related_paths: string; status: string }>;
+      const count = db!.query(`
+        SELECT count(*) AS count FROM context_nodes
+        WHERE project_id = ? AND source = 'manual' AND status = 'active'
+      `).get(scope.projectId) as { count: number } | null;
+      const alreadyActive = existing?.status === "active" || duplicates.some(item => item.status === "active");
+      if (!alreadyActive && Number(count?.count ?? 0) >= MAX_MANUAL_NODES) {
         throw new Error("Project memory limit reached; resolve an existing memory before saving another");
       }
       node.relatedPaths = Array.from(new Set([
@@ -605,6 +669,22 @@ function parsePaths(value: string): string[] {
   } catch { return []; }
 }
 
+function latestLineageVersions(
+  db: SqliteDatabase, scope: ContextGraphScope,
+): Map<string, { id: string; status: string }> {
+  const rank = new Map(branchLineage(scope).map((id, index) => [id, index]));
+  const latest = new Map<string, { id: string; status: string; rank: number; updatedAt: number }>();
+  for (const row of lineageFactRows(db, scope)) {
+    const key = row.kind + ":" + row.fact_key;
+    const rowRank = rank.get(row.branch_head_id ?? "") ?? -1;
+    const previous = latest.get(key);
+    if (!previous || rowRank > previous.rank || (rowRank === previous.rank && row.updated_at > previous.updatedAt)) {
+      latest.set(key, { id: row.id, status: row.status, rank: rowRank, updatedAt: row.updated_at });
+    }
+  }
+  return new Map([...latest].map(([key, value]) => [key, { id: value.id, status: value.status }]));
+}
+
 /** Weighted project recall: lexical seeds + one-hop file relationships + scope/recency boosts. */
 export function recallContext(scope: ContextGraphScope, query: string, options: ContextRecallOptions = {}): ContextRecallResult[] {
   const terms = searchTerms(query.slice(0, 500));
@@ -626,7 +706,8 @@ export function recallContext(scope: ContextGraphScope, query: string, options: 
     }
 
     const allowedKinds = options.kinds?.length ? new Set(options.kinds) : null;
-    const branchIds = new Set(scope.branchEntryIds ?? []);
+    const branchIds = new Set(branchLineage(scope));
+    const latestVersions = latestLineageVersions(db, scope);
     const kindBoost: Partial<Record<ContextMemoryKind, number>> = {
       decision: 0.1, constraint: 0.1, error: 0.1, loop: 0.1,
       warning: 0.1, procedure: 0.08, critical: 0.08, goal: 0.08,
@@ -637,6 +718,10 @@ export function recallContext(scope: ContextGraphScope, query: string, options: 
       const sameBranch = Boolean(row.branch_head_id && branchIds.has(row.branch_head_id));
       if (options.sessionOnly && (!sameSession || (branchIds.size > 0 && row.branch_head_id && !sameBranch))) return [];
       if (allowedKinds && !allowedKinds.has(row.kind)) return [];
+      if (row.source === "compaction" && sameSession && sameBranch) {
+        const latest = latestVersions.get(row.kind + ":" + row.fact_key);
+        if (latest && (latest.status !== "active" || latest.id !== row.id)) return [];
+      }
       const recency = Math.max(0, 1 - (now - row.updated_at) / NINETY_DAYS_MS);
       const score = Math.min(1,
         0.05 + lexical * 0.3 + graph * 0.15

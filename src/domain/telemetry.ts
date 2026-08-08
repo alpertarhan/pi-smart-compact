@@ -12,6 +12,7 @@ export interface DamageTelemetryEntry {
 
 export interface TelemetryWindowStats {
   runs: number;
+  appliedRuns: number;
   successRate: number;
   avgQuality: number | null;
   qualityCoverage: number;
@@ -102,10 +103,10 @@ function p95(values: number[]): number {
 }
 
 function stats(entries: CompactMetricsEntry[], damage: readonly DamageTelemetryEntry[]): TelemetryWindowStats {
-  const successes = entries.filter(entry => entry.status === "success" || entry.status === "dry-run");
-  const quality = successes.filter(entry => typeof entry.verificationScore === "number");
-  const appliedRuns = entries.filter(entry => entry.status === "success");
-  const appliedRunIds = new Set(appliedRuns
+  const evidence = entries.filter(entry => entry.status !== "dry-run");
+  const successfulRuns = evidence.filter(entry => entry.status === "success");
+  const quality = successfulRuns.filter(entry => typeof entry.verificationScore === "number");
+  const appliedRunIds = new Set(successfulRuns
     .filter(entry => typeof entry.runId === "string" && entry.runId.length >= 8)
     .map(entry => entry.runId!));
   const observedScores = new Map<string, number>();
@@ -120,19 +121,20 @@ function stats(entries: CompactMetricsEntry[], damage: readonly DamageTelemetryE
   const damaging = [...observedScores.values()].filter(score => score > 0).length;
   return {
     runs: entries.length,
-    successRate: entries.length ? successes.length / entries.length : 0,
+    appliedRuns: evidence.length,
+    successRate: evidence.length ? successfulRuns.length / evidence.length : 1,
     avgQuality: quality.length ? quality.reduce((sum, entry) => sum + (entry.verificationScore ?? 0), 0) / quality.length : null,
-    qualityCoverage: entries.length ? quality.length / entries.length : 0,
-    p95LatencyMs: p95(entries.map(entry => entry.durationMs ?? entry.avgLatency).filter(Number.isFinite)),
-    avgTokens: entries.length ? entries.reduce((sum, entry) =>
-      sum + entry.totalInput + entry.totalCacheHit + (entry.totalCacheWrite ?? 0) + entry.totalOutput, 0) / entries.length : 0,
-    fallbackRate: entries.length ? entries.filter(entry =>
+    qualityCoverage: evidence.length ? quality.length / evidence.length : 0,
+    p95LatencyMs: p95(evidence.map(entry => entry.durationMs ?? entry.avgLatency).filter(Number.isFinite)),
+    avgTokens: evidence.length ? evidence.reduce((sum, entry) =>
+      sum + entry.totalInput + entry.totalCacheHit + (entry.totalCacheWrite ?? 0) + entry.totalOutput, 0) / evidence.length : 0,
+    fallbackRate: evidence.length ? evidence.filter(entry =>
       entry.method === "heuristic" || (Array.isArray(entry.providerRoutes) && entry.providerRoutes.some(route => route.successes < route.calls)),
-    ).length / entries.length : 0,
+    ).length / evidence.length : 0,
     damageRate: observedScores.size ? damaging / observedScores.size : 0,
     // Missing correlation ids are missing evidence, not silently excluded
     // from the denominator.
-    damageCoverage: appliedRuns.length ? observedScores.size / appliedRuns.length : 0,
+    damageCoverage: successfulRuns.length ? observedScores.size / successfulRuns.length : 0,
   };
 }
 
@@ -170,7 +172,7 @@ export function assessCanary(
   const triggers: CanaryTrigger[] = [];
   const failureBaseline = 1 - baseline.successRate;
   const failureCanary = 1 - canary.successRate;
-  if (canary.runs >= 3 && (failureCanary > 0.050_001 || failureCanary - failureBaseline >= 0.050_001)) {
+  if (canary.appliedRuns >= 3 && (failureCanary > 0.050_001 || failureCanary - failureBaseline >= 0.050_001)) {
     triggers.push({
       metric: "failure-rate", baseline: failureBaseline, canary: failureCanary,
       threshold: failureCanary > 0.050_001 ? ">5% absolute" : "+5pp regression",
@@ -196,21 +198,23 @@ export function assessCanary(
     triggers.push({ metric: "damage", baseline: baseline.damageRate, canary: canary.damageRate, threshold: "+10pp" });
   }
 
+  const canarySampleAdequacy = Math.min(1, canary.appliedRuns / minCanaryRuns);
+  const baselineSampleAdequacy = Math.min(1, baseline.appliedRuns / Math.max(20, minCanaryRuns));
   const dataConfidence = Math.round(100 * (
-    Math.min(1, canary.runs / minCanaryRuns) * 0.25
-    + Math.min(1, baseline.runs / Math.max(20, minCanaryRuns)) * 0.15
-    + canary.qualityCoverage * 0.2
-    + canary.damageCoverage * 0.2
-    + baseline.damageCoverage * 0.2
+    canarySampleAdequacy * 0.25
+    + baselineSampleAdequacy * 0.15
+    + canary.qualityCoverage * canarySampleAdequacy * 0.2
+    + canary.damageCoverage * canarySampleAdequacy * 0.2
+    + baseline.damageCoverage * baselineSampleAdequacy * 0.2
   ));
   const reasons: string[] = [];
   let decision: CanaryAssessment["decision"] = "hold";
-  if (triggers.length && canary.runs >= 3) {
+  if (triggers.length && canary.appliedRuns >= 3) {
     decision = "rollback";
     reasons.push(...triggers.map(trigger => trigger.metric + " crossed " + trigger.threshold));
-  } else if (canary.runs < minCanaryRuns) {
-    reasons.push("need " + (minCanaryRuns - canary.runs) + " more canary runs");
-  } else if (baseline.runs < Math.max(20, minCanaryRuns)) {
+  } else if (canary.appliedRuns < minCanaryRuns) {
+    reasons.push("need " + (minCanaryRuns - canary.appliedRuns) + " more canary runs with applied outcomes");
+  } else if (baseline.appliedRuns < Math.max(20, minCanaryRuns)) {
     reasons.push("stable baseline is too small");
   } else if (canary.qualityCoverage < 0.7) {
     reasons.push("schema-v2 quality coverage is below 70%");
@@ -242,10 +246,14 @@ function safeMetricLabel(value: unknown, fallback: string): string {
   return value;
 }
 
-const FAILURE_KINDS = new Set<TelemetryFailureKind>([
+export const TELEMETRY_FAILURE_KINDS: ReadonlySet<TelemetryFailureKind> = new Set([
   "cancelled", "timeout", "rate-limit", "authentication", "budget",
   "output-limit", "provider", "persistence", "validation", "verification", "yield", "internal",
 ]);
+
+export function isTelemetryFailureKind(value: unknown): value is TelemetryFailureKind {
+  return typeof value === "string" && TELEMETRY_FAILURE_KINDS.has(value as TelemetryFailureKind);
+}
 
 export function buildPrivacySafeTelemetry(
   entries: readonly CompactMetricsEntry[],
@@ -279,7 +287,7 @@ export function buildPrivacySafeTelemetry(
     group.input += entry.totalInput + entry.totalCacheHit + (entry.totalCacheWrite ?? 0);
     group.output += entry.totalOutput;
     groups.set(key, group);
-    if (entry.failureKind && FAILURE_KINDS.has(entry.failureKind)) {
+    if (isTelemetryFailureKind(entry.failureKind)) {
       failures[entry.failureKind] = (failures[entry.failureKind] ?? 0) + 1;
     }
   }
@@ -324,7 +332,7 @@ export function formatPrivacySafeTelemetry(report: PrivacySafeTelemetry): string
   lines.push(
     "| Gate | Stable baseline | Canary |",
     "|---|---:|---:|",
-    "| Runs | " + baseline.runs + " | " + canary.runs + " |",
+    "| Runs (total/applied) | " + baseline.runs + "/" + baseline.appliedRuns + " | " + canary.runs + "/" + canary.appliedRuns + " |",
     "| Success | " + Math.round(baseline.successRate * 100) + "% | " + Math.round(canary.successRate * 100) + "% |",
     "| Verify quality | " + (baseline.avgQuality ?? "n/a") + " | " + (canary.avgQuality ?? "n/a") + " |",
     "| p95 duration | " + baseline.p95LatencyMs + "ms | " + canary.p95LatencyMs + "ms |",

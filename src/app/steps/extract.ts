@@ -34,6 +34,7 @@ import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { asSerializableMessages } from "../../infra/ai-messages.ts";
 import { backupConversation } from "../../utils/helpers.ts";
 import { loadScopedCompactionState, renderContinuityCapsule } from "../../utils/state.ts";
+import { branchEntryIds } from "../../infra/session-identity.ts";
 
 export function extractWithCache(rc: TieredRc): ExtractedRc {
   const extractStepStart = Date.now();
@@ -44,7 +45,8 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   // messages), so we let pruneRedundant build it; we then build a *second*
   // index over the pruned messages and store it on the RunContext for
   // extractors to reuse.
-  const pruning = pruneRedundant(rc.llmMessages);
+  const selectedMessages = rc.llmMessages;
+  const pruning = pruneRedundant(selectedMessages);
   const currentKeptEntryIds = pruning.keptIndices
     .map(i => currentEntryIds[i])
     .filter((id): id is string => typeof id === "string");
@@ -63,8 +65,13 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   const extractionStart = pruneEnd;
   const convText = serializeConversation(asSerializableMessages(rc.llmMessages));
   const convTokens = rc.estimator.text(convText);
-
-  const backupPath = backupConversation(rc.services.scrubber.scrubText(convText).value, rc.sessionId);
+  let backupPath: string | null = null;
+  if (rc.config.backupEnabled) {
+    const unchanged = pruning.messages.length === selectedMessages.length
+      && pruning.messages.every((message, index) => message === selectedMessages[index]);
+    const backupText = unchanged ? convText : serializeConversation(asSerializableMessages(selectedMessages));
+    backupPath = backupConversation(rc.services.scrubber.scrubText(backupText).value, rc.sessionId);
+  }
   const prevContext = getPreviousCompactionContext(rc.branch);
 
   const cachedExt = loadCachedExtraction(rc.sessionId);
@@ -163,18 +170,19 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   }
   const projectCtx = buildProjectContext(fingerprint);
   const manager = rc.ctx.sessionManager as { getBranch?: () => readonly { id?: string }[] } | undefined;
-  const fullBranch = manager?.getBranch ? Array.from(manager.getBranch()) : rc.branch as Array<{ id?: string }>;
-  const branchEntryIds = fullBranch.map(entry => entry.id).filter((id): id is string => typeof id === "string");
+  const fullBranch = manager?.getBranch ? manager.getBranch() : rc.branch as Array<{ id?: string }>;
+  const ancestryIds = branchEntryIds(fullBranch);
   const continuityScope = {
     schemaVersion: 2 as const,
     projectId,
     sessionId: rc.sessionId,
-    ...(branchEntryIds.length ? {
-      branchHeadId: branchEntryIds[branchEntryIds.length - 1],
-      branchAncestryIds: branchEntryIds.slice(-256),
+    ...(ancestryIds.length ? {
+      branchHeadId: ancestryIds[ancestryIds.length - 1],
+      // ponytail: full lineage grows state with branch length; add compact lineage storage only if measured size becomes material.
+      branchAncestryIds: ancestryIds,
     } : {}),
   };
-  const previousState = loadScopedCompactionState(continuityScope, branchEntryIds);
+  const previousState = loadScopedCompactionState(continuityScope, ancestryIds);
   const continuity = previousState ? renderContinuityCapsule(previousState) : "";
 
   const out = rc as TieredRc & {

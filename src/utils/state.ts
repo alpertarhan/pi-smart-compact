@@ -11,7 +11,7 @@ import type {
 } from "../types.ts";
 import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX } from "../constants.ts";
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
-import { isDiagnosticConstraintText } from "./extraction.ts";
+import { isCompactionStatusText, isDiagnosticConstraintText, isTransientToolDiagnostic } from "./extraction.ts";
 import * as log from "./logger.ts";
 import { compactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
@@ -30,13 +30,19 @@ function isLegacySearchOutput(text: string): boolean {
 }
 
 export function sanitizeCompactionStateEvidence(state: CompactionState): CompactionState {
+  const isNoise = (text: string) => isLegacySearchOutput(text) || isTransientToolDiagnostic(text.replace(/^Unresolved error:\s*/i, ""));
+  const goal = state.goal && !isCompactionStatusText(state.goal) ? state.goal : null;
   const constraints = state.constraints.filter(item => !isDiagnosticConstraintText(item.text));
-  const unresolvedErrors = state.unresolvedErrors.filter(item => !isLegacySearchOutput(item.message));
-  const openLoops = state.openLoops.filter(item => !isLegacySearchOutput(item.summary));
-  if (constraints.length === state.constraints.length &&
+  const unresolvedErrors = state.unresolvedErrors.filter(item => !isNoise(item.message));
+  const resolvedErrors = state.resolvedErrors.filter(item => !isNoise(item.message));
+  const openLoops = state.openLoops.filter(item => !isNoise(item.summary));
+  const criticalContext = state.criticalContext.filter(item => !isNoise(item));
+  if (goal === state.goal && constraints.length === state.constraints.length &&
       unresolvedErrors.length === state.unresolvedErrors.length &&
-      openLoops.length === state.openLoops.length) return state;
-  return { ...state, constraints, unresolvedErrors, openLoops };
+      resolvedErrors.length === state.resolvedErrors.length &&
+      openLoops.length === state.openLoops.length &&
+      criticalContext.length === state.criticalContext.length) return state;
+  return { ...state, goal, constraints, unresolvedErrors, resolvedErrors, openLoops, criticalContext };
 }
 
 function freshState(fp: string, data: CompactionState | null): CompactionState | null {
@@ -218,20 +224,39 @@ function mergeBy<T>(current: T[], previous: T[], key: (item: T) => string, limit
   }).slice(0, limit);
 }
 
+const LOOP_PRIORITY: Record<OpenLoop["priority"], number> = { critical: 0, high: 1, normal: 2, low: 3 };
+
+/** Active work must consume the bounded loop budget before resolved history. */
+function mergeOpenLoops(current: OpenLoop[], previous: OpenLoop[]): OpenLoop[] {
+  return mergeBy(current, previous, item => normalizeFactKey(item.summary), Number.MAX_SAFE_INTEGER)
+    .map((item, order) => ({ item, order }))
+    .sort((a, b) => Number(a.item.status === "resolved") - Number(b.item.status === "resolved")
+      || LOOP_PRIORITY[a.item.priority] - LOOP_PRIORITY[b.item.priority]
+      || a.order - b.order)
+    .slice(0, 25)
+    .map(({ item }, index) => ({ ...item, id: ID_PREFIX.OPEN_LOOP + (index + 1) }));
+}
+
 /**
- * Conservative cross-compaction merge: absence from the latest active window
- * is not evidence that a decision, constraint, error, or loop was resolved.
+ * Conservative cross-compaction merge: neither absence nor free-form goal text
+ * is evidence that a decision, constraint, error, or loop was resolved.
  * Current facts win, old unresolved facts remain, and every collection is
- * bounded so continuity cannot grow without limit.
+ * bounded so continuity cannot grow without limit. Goal shifts are recorded as
+ * context; only positive resolution evidence or an explicit override retires a fact.
  */
 export function mergeCompactionStates(previous: CompactionState | null, current: CompactionState): CompactionState {
-  if (!previous) return applyContinuityOverrides(current, current.factOverrides ?? []);
+  if (!previous) {
+    const active = applyContinuityOverrides(current, current.factOverrides ?? []);
+    return { ...active, openLoops: mergeOpenLoops(active.openLoops, []) };
+  }
   const factOverrides = mergeBy(
     current.factOverrides ?? [], previous.factOverrides ?? [],
     item => item.kind + ":" + item.summaryKey, 50,
   );
   const activeCurrent = applyContinuityOverrides(current, factOverrides);
   const activePrevious = applyContinuityOverrides(previous, factOverrides);
+  const currentPresent = new Set([...activeCurrent.modifiedFiles, ...activeCurrent.readFiles].map(normalizeFactKey));
+  const currentDeleted = new Set(activeCurrent.deletedFiles.map(normalizeFactKey));
   const resolvedKeys = new Set(activeCurrent.resolvedErrors.map(error => normalizeFactKey(error.message)));
   const decisions = mergeBy(activeCurrent.decisions, activePrevious.decisions, item => normalizeFactKey(item.summary), 30)
     .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
@@ -243,12 +268,7 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
     item => normalizeFactKey(item.message),
     15,
   ).map((item, index) => ({ ...item, id: ID_PREFIX.ERROR + (index + 1) }));
-  const openLoops = mergeBy(
-    activeCurrent.openLoops,
-    activePrevious.openLoops.filter(loop => loop.status !== "resolved"),
-    item => normalizeFactKey(item.summary),
-    25,
-  ).map((item, index) => ({ ...item, id: ID_PREFIX.OPEN_LOOP + (index + 1) }));
+  const openLoops = mergeOpenLoops(activeCurrent.openLoops, activePrevious.openLoops);
   const oldGoal = activePrevious.goal && activeCurrent.goal && normalizeFactKey(activePrevious.goal) !== normalizeFactKey(activeCurrent.goal)
     ? ["Previous goal: " + activePrevious.goal]
     : [];
@@ -257,9 +277,21 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
     goal: activeCurrent.goal ?? activePrevious.goal,
     decisions,
     constraints,
-    modifiedFiles: mergeBy(activeCurrent.modifiedFiles, activePrevious.modifiedFiles, normalizeFactKey, 100),
-    readFiles: mergeBy(activeCurrent.readFiles, activePrevious.readFiles, normalizeFactKey, 100),
-    deletedFiles: mergeBy(activeCurrent.deletedFiles, activePrevious.deletedFiles, normalizeFactKey, 50),
+    modifiedFiles: mergeBy(
+      activeCurrent.modifiedFiles,
+      activePrevious.modifiedFiles.filter(file => !currentDeleted.has(normalizeFactKey(file))),
+      normalizeFactKey, 100,
+    ),
+    readFiles: mergeBy(
+      activeCurrent.readFiles,
+      activePrevious.readFiles.filter(file => !currentDeleted.has(normalizeFactKey(file))),
+      normalizeFactKey, 100,
+    ),
+    deletedFiles: mergeBy(
+      activeCurrent.deletedFiles,
+      activePrevious.deletedFiles.filter(file => !currentPresent.has(normalizeFactKey(file))),
+      normalizeFactKey, 50,
+    ),
     unresolvedErrors,
     resolvedErrors: mergeBy(activeCurrent.resolvedErrors, activePrevious.resolvedErrors, item => normalizeFactKey(item.message), 20),
     openLoops,
@@ -341,34 +373,40 @@ export interface CompactionDelta {
 }
 
 export function computeDelta(prev: CompactionState, current: CompactionState): CompactionDelta {
-  // Match on full normalized text. Extraction is deterministic, so the same
-  // item yields identical text across compactions — the old `slice(0, N)` prefix
-  // keys collided two different items that shared an opening and made the
-  // change invisible in the delta (newDecisions/removedDecisions both empty).
-  const key = (s: string): string => s.toLowerCase().replace(/\s+/g, " ").trim();
+  // Match on full canonical fact identity. Extraction is deterministic, so the
+  // same item yields identical text across compactions.
+  const overrides = current.factOverrides ?? [];
+  const retired = (kind: ContinuityOverride["kind"]): Set<string> => new Set(overrides
+    .filter(item => item.kind === kind && item.status !== "active")
+    .map(item => item.summaryKey));
 
   // Decisions
-  const prevDecisionTexts = new Set(prev.decisions.map(d => key(d.summary)));
-  const currDecisionTexts = new Set(current.decisions.map(d => key(d.summary)));
+  const prevDecisionTexts = new Set(prev.decisions.map(d => normalizeFactKey(d.summary)));
   const newDecisions = current.decisions
-    .filter(d => !prevDecisionTexts.has(key(d.summary)))
+    .filter(d => !prevDecisionTexts.has(normalizeFactKey(d.summary)))
     .map(d => d.summary);
+  const retiredDecisions = retired("decision");
   const removedDecisions = prev.decisions
-    .filter(d => !currDecisionTexts.has(key(d.summary)))
+    .filter(d => retiredDecisions.has(normalizeFactKey(d.summary)))
     .map(d => d.summary);
 
   // Open loops (summaries are already bounded to ~120 chars at extraction time)
-  const prevLoopSummaries = new Map(prev.openLoops.filter(loop => loop.status !== "resolved").map(l => [key(l.summary), l]));
-  const currLoopKeys = new Set(current.openLoops.filter(loop => loop.status !== "resolved").map(l => key(l.summary)));
+  const prevLoopSummaries = new Map(prev.openLoops.filter(loop => loop.status !== "resolved").map(l => [normalizeFactKey(l.summary), l]));
+  const currLoopKeys = new Set(current.openLoops.filter(loop => loop.status !== "resolved").map(l => normalizeFactKey(l.summary)));
+  const resolvedLoopKeys = new Set([
+    ...current.openLoops.filter(loop => loop.status === "resolved").map(loop => normalizeFactKey(loop.summary)),
+    ...(current.loopOverrides ?? []).filter(item => item.status === "resolved").map(item => item.summaryKey),
+    ...retired("loop"),
+  ]);
   const resolvedLoops: string[] = [];
   const persistentLoops: string[] = [];
   for (const [k, loop] of prevLoopSummaries) {
     if (currLoopKeys.has(k)) persistentLoops.push(loop.summary);
-    else resolvedLoops.push(loop.summary);
+    else if (resolvedLoopKeys.has(k)) resolvedLoops.push(loop.summary);
   }
   const newLoops = current.openLoops
     .filter(loop => loop.status !== "resolved")
-    .filter(l => !prevLoopSummaries.has(key(l.summary)))
+    .filter(l => !prevLoopSummaries.has(normalizeFactKey(l.summary)))
     .map(l => l.summary);
 
   // Files: diff sets
@@ -376,13 +414,16 @@ export function computeDelta(prev: CompactionState, current: CompactionState): C
   const newModifiedFiles = current.modifiedFiles.filter(f => !prevFiles.has(f));
 
   // Errors (messages bounded to ~300 chars at build time)
-  const prevErrorMsgs = new Set(prev.unresolvedErrors.map(e => key(e.message)));
-  const currErrorMsgs = new Set(current.unresolvedErrors.map(e => key(e.message)));
+  const prevErrorMsgs = new Set(prev.unresolvedErrors.map(e => normalizeFactKey(e.message)));
+  const resolvedErrorKeys = new Set([
+    ...current.resolvedErrors.map(error => normalizeFactKey(error.message)),
+    ...retired("error"),
+  ]);
   const resolvedErrors = prev.unresolvedErrors
-    .filter(e => !currErrorMsgs.has(key(e.message)))
+    .filter(e => resolvedErrorKeys.has(normalizeFactKey(e.message)))
     .map(e => e.message);
   const newErrors = current.unresolvedErrors
-    .filter(e => !prevErrorMsgs.has(key(e.message)))
+    .filter(e => !prevErrorMsgs.has(normalizeFactKey(e.message)))
     .map(e => e.message);
 
   // Goal change

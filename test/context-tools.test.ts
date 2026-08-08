@@ -27,11 +27,11 @@ function registeredTools(): Map<string, any> {
   return tools;
 }
 
-function context(approved = true) {
+function context(approved = true, cwd = process.cwd()) {
   return {
-    cwd: process.cwd(),
+    cwd,
     hasUI: true,
-    ui: { confirm: async () => approved },
+    ui: { confirm: async (_title: string, _message: string) => approved },
     sessionManager: {
       getSessionId: () => "session-a",
       getBranch: () => [{ id: "branch-root" }, { id: "branch-head" }],
@@ -89,12 +89,42 @@ describe("context memory tools", () => {
     expect(after.content[0].text).toContain("No matching");
   });
 
-  it("requires an independent host confirmation", async () => {
-    const save = registeredTools().get("smart_save_memory");
-    const result = await save.execute("save-2", {
-      kind: "context", content: "an inferred guess",
-    }, new AbortController().signal, () => {}, context(false));
+  it("fails closed for project memory save and recall from HOME or root", async () => {
+    const tools = registeredTools();
+    for (const cwd of [home, path.parse(home).root]) {
+      const ctx = context(true, cwd);
+      const saved = await tools.get("smart_save_memory").execute("unsafe-save", {
+        kind: "context", content: "must not cross projects",
+      }, new AbortController().signal, () => {}, ctx);
+      const recalled = await tools.get("smart_recall").execute("unsafe-recall", {
+        query: "cross projects",
+      }, new AbortController().signal, () => {}, ctx);
+      expect(saved.content[0].text).toContain("run from a project directory");
+      expect(recalled.content[0].text).toContain("run from a project directory");
+    }
+  });
+
+  it("shows the full scrubbed content before an unapproved long memory write", async () => {
+    const tools = registeredTools();
+    const content = "a".repeat(850) + " visible-confirmation-tail";
+    let confirmation = "";
+    const ctx = context();
+    ctx.ui.confirm = async (_title: string, message: string) => {
+      confirmation = message;
+      return false;
+    };
+
+    const result = await tools.get("smart_save_memory").execute("save-2", {
+      kind: "context", content,
+    }, new AbortController().signal, () => {}, ctx);
+
+    expect(confirmation).toContain(content);
+    expect(confirmation).toContain("visible-confirmation-tail");
     expect(result.content[0].text).toContain("user did not approve");
+    const recalled = await tools.get("smart_recall").execute("recall-unapproved", {
+      query: "visible confirmation tail",
+    }, new AbortController().signal, () => {}, ctx);
+    expect(recalled.content[0].text).toContain("No matching");
   });
 
   it("refuses memory writes in a non-interactive host", async () => {

@@ -14,39 +14,44 @@
 Preserve the agent's **working state**—goals, files, decisions, errors,
 constraints, and open loops—not just a vague recap of the conversation.
 
+**Deterministic facts · fail-closed verification · branch-safe continuity · local-first privacy**
+
+[Install](#install) · [Why](#why-smart-compaction) · [Pipeline](#eesv-pipeline) · [Safety](#safety-and-privacy) · [Configuration](#configuration) · [Development](#development)
+
 </div>
 
 ## Install
+
+Requires the Pi Coding Agent on Node.js 22.19 or newer. The published extension
+uses Pi's host packages and does not bundle a second Pi runtime.
 
 ```bash
 pi install npm:pi-smart-compact
 ```
 
-Or install directly from GitHub:
-
-```bash
-pi install git:github.com/alpertarhan/pi-smart-compact
-```
+Then run `/smart-compact` for an explainable preflight before anything changes.
 
 ## Quick start
 
 ```bash
-/smart-compact                                         # explainable single-screen preflight
-/smart-compact auto                                    # adaptive default
-/smart-compact anthropic/claude-sonnet-4 fast         # direct model + mode
-/smart-compact balanced --focus=auth                   # preserve extra auth detail
-/smart-compact metrics                                 # text metrics report
-/smart-compact dashboard                               # interactive metrics dashboard
-/smart-compact restore                                 # browse and restore backups
-/smart-compact loops                                   # manage persisted open loops
+/smart-compact                                      # interactive preflight
+/smart-compact auto                                 # adaptive mode selection
+/smart-compact anthropic/claude-sonnet-4 fast      # explicit model + mode
+/smart-compact balanced --focus=auth                # preserve extra auth detail
+/smart-compact metrics                              # text metrics report
+/smart-compact dashboard                            # interactive dashboard
+/smart-compact restore                              # browse and restore backups
+/smart-compact loops                                # manage persisted open loops
 ```
 
-The extension also participates in Pi's native compaction flow automatically
-when actual context usage crosses the configured threshold (60% by default),
-and exposes `smart_compact`, `smart_recall`, and `smart_save_memory` tools for long-running agents.
+At 60% context usage by default, the extension also participates in Pi's native
+compaction flow. Long-running agents can call `smart_compact`, `smart_recall`,
+and `smart_save_memory` directly.
 
-> The tool path stages a safe pending summary. It never compacts the active
-> conversation in the middle of an agent turn.
+> [!IMPORTANT]
+> The tool path only stages a verified pending summary for Pi's next natural
+> compact. It never compacts the active conversation in the middle of an agent
+> turn.
 
 ## Why smart compaction?
 
@@ -92,12 +97,12 @@ Pi conversation
 
 - The current goal and user constraints
 - Modified, read, and deleted files
-- Unresolved **and** resolved error history
+- Unresolved **and** resolved error history; free-form goal changes never claim an unfixed error was resolved
 - Explicit and implicit decisions
 - Open follow-ups, blockers, priorities, and pinned loops
 - Next actions and critical continuation context
 - Changes since the previous compaction
-- A bounded **Continuity Ledger** carrying prior decisions, constraints, unresolved errors, and open loops until explicit resolution
+- A bounded **Continuity Ledger** carrying prior decisions, constraints, unresolved errors, and open loops across follow-ups and goal wording changes. Goal shifts are recorded as context; facts retire only through positive resolution evidence or an explicit override.
 
 Summaries use a canonical H1/H2/H3-aware structure, collision-safe file
 matching, typed verification gaps, and persisted repair provenance.
@@ -107,15 +112,19 @@ matching, typed verification gaps, and persisted repair provenance.
 Applied compactions also index their verified scoped state into a bounded,
 project-isolated SQLite FTS5 context graph. `smart_recall` searches goals,
 decisions, constraints, unresolved errors, open loops, files, and critical
-context across this project's sessions; same-session and same-branch evidence
-ranks first. File relationships add one-hop graph recall without an embedding
-service or extra LLM call.
+context across this project's sessions; recall and resolution use the complete
+visible branch ancestry, never sibling-branch state. File relationships add
+one-hop graph recall without an embedding service or extra LLM call.
 
 `smart_save_memory` persists or explicitly resolves one user-confirmed decision,
-constraint, preference, warning, procedure, or context fact. It rejects empty inputs,
-scrubs configured secrets/PII, deduplicates exact facts, and must not be used
-for guesses, transient progress, secrets, or code that is cheap to re-read.
-Set `contextGraphEnabled` to `false` to disable indexing and both tools.
+constraint, preference, warning, procedure, or context fact. It fails closed
+when the working directory is exactly `HOME` or the filesystem root, and
+requires an interactive confirmation showing the complete scrubbed title,
+content, and paths. Each project may have at most 500 active manual memories.
+It rejects empty inputs, scrubs configured secrets/PII, deduplicates exact facts,
+and must not be used for guesses, transient progress, secrets, or code that is
+cheap to re-read. Set `contextGraphEnabled` to `false` to disable indexing and
+both tools.
 
 ## Usage surfaces
 
@@ -132,8 +141,9 @@ The interactive command uses the configured summary route and exact execution
 planner before spending LLM tokens. Its compact decision card compares the
 three modes by estimated after-size and saving, highlights the recommendation,
 and keeps only the selected plan plus hard tool-pair/zero-gap guarantees in the
-primary view. Technical estimator, target, route, and boundary data stays under
-`D` instead of crowding the decision.
+primary view. The plan reserves 25% of the LLM summary allowance for verified
+state/delta/continuity sections added after synthesis. Technical estimator,
+target, route, and boundary data stays under `D` instead of crowding the decision.
 
 - `↑` / `↓` changes `Fast`, `Balanced`, or `Thorough` and recalculates the plan.
 - `Enter` runs only a viable plan; `Esc` cancels without mutation.
@@ -148,7 +158,10 @@ boundary: its older prefix is verified into the summary while the budgeted
 working tail stays raw. Tool exchanges are summarized or retained as complete
 call/result pairs, never split. If Verify, yield, provider, or native apply
 fails, the UI shows one bounded actionable line without evidence text or a
-JavaScript stack. Stack diagnostics are opt-in with `DEBUG=smart-compact`.
+JavaScript stack. A successful `100/100` is labeled **verification coverage**;
+the source score and deterministic/LLM/fallback provenance remain visible so
+repaired coverage is never presented as raw synthesis quality. Stack diagnostics
+are opt-in with `DEBUG=smart-compact`.
 During execution a two-line live brief shows the EESV phase chain and the
 meaningful current action; it states that the conversation remains unchanged
 until verified Apply. Routine phase toasts and raw per-batch watchdog/provider
@@ -169,7 +182,7 @@ brief. `verbose` restores routine phase notices; full stack diagnostics require
   does **not** attempt unsupported non-contiguous compaction.
 - `--max-calls` accepts `1–100`.
 - `--max-input-tokens` accepts `10000–1000000` aggregate prompt tokens.
-- `--max-latency` accepts `5000–600000` milliseconds as an explicit hard override; mode latency targets are otherwise soft.
+- `--max-latency` accepts `5000–600000` milliseconds as a cancellation deadline; cancellation waits for safe pipeline unwind before returning.
 - Budget exhaustion degrades to deterministic summaries instead of dropping context.
 
 The tool exposes equivalent `focus`, `max_calls`, `max_input_tokens`, and
@@ -189,7 +202,9 @@ not a fourth execution policy. Fast can use a zero-call deterministic summary
 when extraction confidence is high; otherwise it keeps the bounded LLM path.
 The mode token target is binding: recent user turns, pi-toolkit checkpoints,
 and topical grouping remain raw only when they fit the planned tail; otherwise
-the verified summary carries them forward.
+the verified summary carries them forward. Automatic risk refinement may deepen
+analysis/repair strategy after extraction, but it does not mutate the profile
+allowance or retention window that was already used to prove the target.
 
 Output caps stop subsequent calls after observed usage reaches the threshold.
 The ChatGPT Codex subscription endpoint rejects `max_output_tokens`,
@@ -238,15 +253,17 @@ Raw local JSONL remains available to the interactive dashboard, while
 `bun run telemetry-report` emits aggregate-only telemetry: no session/project
 IDs, prompts, summaries, paths, or error text. Failures use a stable taxonomy
 (cancelled, timeout, rate limit, authentication, budget, output limit,
-provider, persistence, validation, verification, internal). Verification failures
-retain only content-free score/count/gap-kind diagnostics.
+provider, persistence, validation, verification, **yield**, internal).
+Verification and yield failures retain only content-free diagnostics.
 
 Set `telemetryChannel` to `canary` only on the externally selected canary
-cohort. The report compares schema-v2 canary runs with the stable baseline and
-returns `HOLD`, `ROLLBACK`, or `PROMOTE`. Rollback triggers are: failure rate
+cohort. The report shows total/applied counts, but only non-dry, host-confirmed
+applied runs satisfy promotion evidence. A deterministic green check never
+implies `PROMOTE`; the report compares schema-v2 canary runs with the stable
+baseline and returns `HOLD`, `ROLLBACK`, or `PROMOTE`. Rollback triggers are: failure rate
 +5pp and ≥10%, verifier quality −5 points, p95 latency +50%, tokens +50%,
 heuristic fallback +10pp, or post-compaction damage +10pp. Promotion requires
-at least 20 canary runs, a stable baseline, ≥70% verifier-quality coverage,
+20 non-dry applied canary runs, a stable baseline, ≥70% verifier-quality coverage,
 ≥70% run-correlated damage-observation coverage in both cohorts, ≥85 absolute
 canary quality, and ≥95% success. The extension reports the decision; it never
 edits config or deploys automatically.
@@ -271,8 +288,9 @@ guidance for reaching the target.
 - Bounded fixed-point repair for patchable verification gaps, followed by a zero-gap deterministic quality floor
 - Cross-session guard and five-minute TTL for pending summaries
 - Session-log recovery for older, truncated tool results
-- Marker-owned retention-pruned backups before compaction; foreign files in a
-  custom directory are untouched
+- Full selected pre-prune conversation backups, scrubbed before a 0600 write;
+  marker-owned retention leaves foreign files in custom directories untouched
+- Private artifact directories are enforced as 0700 and files as 0600
 
 ### Secrets and PII
 
@@ -408,7 +426,7 @@ the run fails closed before staging or apply.
 | `summaryThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for synthesis and repair; provider default when null |
 | `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for exploration; provider default when null |
 | `autoTrigger` | `boolean` | `true` | Participate in Pi's native compact hook |
-| `autoTriggerTimeoutMs` | `number` | `120000` | Hard timeout for automatic runs |
+| `autoTriggerTimeoutMs` | `number` | `120000` | Auto cancellation deadline; waits for safe pipeline unwind, never an unsafe hard return |
 | `minContextPercent` | `number` | `60` | Auto/tool context gate; manual `/smart-compact` warns and bypasses it |
 | `backupEnabled` | `boolean` | `true` | Write a pre-compaction backup |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` | Empty config value uses this path |
@@ -420,7 +438,7 @@ the run fails closed before staging or apply.
 | `maxLlmCalls` | integer `0–100` | `8` | Global ceiling combined with the selected mode |
 | `maxLlmInputTokens` | integer `0–1000000` | `0` | `0` uses the selected mode's aggregate prompt-token cap |
 | `codexMaxCallMs` | integer `0` or `5000–300000` | `0` | ChatGPT Codex per-call watchdog; `0` derives 15–90s from requested output tokens |
-| `maxLatencyMs` | `0` or `5000–600000` | `0` | `0` means unlimited |
+| `maxLatencyMs` | `0` or `5000–600000` | `0` | Pipeline cancellation deadline; `0` means unlimited |
 | `focusWeighting` | `boolean` | `true` | Weight focused topics/paths higher |
 | `zeroCallEnabled` | `boolean` | `true` | Use deterministic synthesis for high-confidence Fast runs |
 | `contextGraphEnabled` | `boolean` | `true` | Index verified state and enable project-scoped recall/save tools |
@@ -489,12 +507,15 @@ cancelled runs.
 <details>
 <summary><strong>Runtime artifacts</strong></summary>
 
-All files live under `~/.pi/agent/`.
+Default artifacts live under `~/.pi/agent/`. Smart Compact normalizes the
+private directories it creates to `0700` and its files to `0600`; a custom
+`backupDir` receives the same protection. `settings.json` remains host-owned
+and read-only to the extension.
 
 | Path | Purpose |
 | --- | --- |
 | `settings.json` | Configuration (read only) |
-| `compact-backups/` | Marker-owned retention-pruned conversation backups |
+| `compact-backups/` | Full selected pre-prune conversation backups, scrubbed before write and retention-pruned |
 | `.cache/compact-extraction-<session>.json` | Incremental extraction cache |
 | `.cache/compact-metrics.jsonl` | Tail-retained metrics log; 5 MiB cap |
 | `.cache/smart-compact-report.html` | Local HTML dashboard |
@@ -524,17 +545,15 @@ coordinate hook order or prefer a single automatic compaction owner.
 ## Development
 
 ```bash
-bun install
-bun run typecheck
-bun test
-bun run gate          # deterministic adversarial EESV release gate
+bun install --frozen-lockfile
+bun run release:check   # typecheck + tests + adversarial gate + build + package audit
 bun run bench
-bun run build
-bun run compat:pi     # isolated latest-Pi compatibility check
+bun run compat:pi       # isolated latest-Pi compatibility check
 ```
 
-Pull requests run typecheck, the complete test suite, the adversarial gate, and
-the build in GitHub Actions.
+Pull requests run the same deterministic checks in GitHub Actions. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for focused test commands and
+[docs/RELEASE.md](./docs/RELEASE.md) for publication and canary gates.
 
 ## Project documentation
 

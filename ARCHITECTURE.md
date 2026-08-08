@@ -145,10 +145,10 @@ keeps chunked recovery instead of sending an oversized one-shot prompt to
 native summarization. Manual runs use the profile's absolute adaptive tail, so
 model-window size cannot turn an explicit command into a full-context no-op.
 
-Before summarization the pipeline also prunes redundant messages, serializes the
-compacted portion, creates a backup, loads the previous verified summary plus
-bounded continuity state, checks the incremental extraction cache, and loads
-the project fingerprint.
+Before summarization the pipeline serializes the full selected conversation,
+scrubs it, and writes that pre-prune backup; it then prunes redundant messages,
+loads the previous verified summary plus bounded continuity state, checks the
+incremental extraction cache, and loads the project fingerprint.
 
 ### Extract
 
@@ -197,8 +197,12 @@ open-loop coverage.
 idempotent) → (2) one LLM patch only in `thorough` mode if still insufficient
 → (3) replace lower-scoring output with the deterministic quality floor → (4)
 reject unless final verification has no gaps and meets the verified threshold.
-Final verification runs again after continuity injection. Unresolved-error
-source snippets and fallback-rendered evidence share `summaryEvidenceLine()`, so
+Final verification runs again after continuity injection. The final scalar is
+reported as repaired **verification coverage**, alongside the pre-repair source
+score and fallback provenance; it is not labeled as raw synthesis quality.
+Polarity checks are symmetric: adding negation to a positive fact is rejected
+just as removing negation from a prohibition is. Unresolved-error source
+snippets and fallback-rendered evidence share `summaryEvidenceLine()`, so
 Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 
 ## EESV hardening and control surfaces
@@ -206,7 +210,7 @@ Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 - **Canonical summary IR** accepts recognized H1/H2/H3 headings, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
 - **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Provenance is persisted and shown before optional approval.
 - **Fine tool semantics** separate read/search/list/mutate/delete/execute operations. Pruning deduplicates only identical idempotent access signatures.
-- **Unified token planning** uses a run-bound estimator with bounded process-shared provider/model calibration, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, and reserves/reconciles every request against the mode's aggregate prompt/output-token caps.
+- **Unified token planning** uses a run-bound estimator with bounded process-shared provider/model calibration, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, reserves 25% of the synthesis allowance for deterministic post-summary state sections, and reserves/reconciles every request against the mode's aggregate prompt/output-token caps.
 - **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in.
 - **Policy controls** include focus weighting, exact call/latency budgets, fail-closed manual approval, online damage monitoring, and persisted open-loop overrides.
 - **Release gate** (`bun run gate`) covers adversarial parser, verification, tool, cache, budget, scrub and damage fixtures.
@@ -214,9 +218,10 @@ Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 ## State, caching & persistence
 
 Post-verification, `app/steps/state.ts` + `src/utils/state.ts` enrich the
-summary, then `domain/yield-gate.ts` measures the final replacement. Missing
-the planned target or 10% net-saving floor throws before a `StatedRc` can reach
-staging/apply. `session_before_compact` only stages a passing candidate; after
+summary, then `domain/yield-gate.ts` measures the final replacement. Planning
+has already reserved the bounded post-synthesis enrichment band by reducing the
+retained tail; missing the original target or 10% net-saving floor still throws
+before a `StatedRc` can reach staging/apply. `session_before_compact` only stages a passing candidate; after
 the host emits the matching `session_compact`, `app/steps/persist.ts` commits
 reusable state and success telemetry. Aborted/unconfirmed candidates write
 neither, and the UI reports `Applied` only after that correlated commit.
@@ -233,12 +238,13 @@ leaving one content-free safe-fallback notice in the UI.
 | Concern | Where | Notes |
 | --- | --- | --- |
 | Open-loop injection | `utils/state.ts` | inserted before Next Steps via the canonical parser |
-| `CompactionState` | `utils/state.ts` | conservatively merged and bounded; absence is not deletion |
-| Continuity Ledger | `utils/state.ts` | deterministic carry-forward of goal, decisions, constraints, unresolved errors, and loops |
+| `CompactionState` | `utils/state.ts` | conservatively merged and bounded across goal wording changes; newer file evidence resolves delete/present contradictions |
+| Continuity Ledger | `utils/state.ts` | prior facts carry forward until positive resolution evidence or an explicit override; goal shifts become non-destructive breadcrumbs |
 | Cross-compaction delta | `utils/state.ts` | "Changes Since Last Compaction" section |
-| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | SHA-256 prefix fingerprint + tail; safe only when the pruned prefix still matches |
+| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | bounded SHA-256 prefix fingerprint + tail; safe only when the pruned prefix still matches |
+| Synthesis cache | `infra/synthesis-cache.ts` | behavior key includes normalized focus, route, mode, budgets, and reasoning |
 | Session-log recovery | `utils/session-log.ts` | streaming JSONL parse; bypasses pi-toolkit truncation by entry-id mapping |
-| Project fingerprint | `utils/fingerprint.ts` | language / framework / key dirs across sessions |
+| Project fingerprint | `utils/fingerprint.ts` | locked read/merge/write; language/framework/key dirs stay bounded across sessions |
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 | Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 non-structural nodes per project |
 
@@ -250,7 +256,11 @@ query/transaction contract to `bun:sqlite` in Bun tests and `node:sqlite`
 `DatabaseSync` in Pi's Node runtime; the packed release audit exercises both.
 The referenced queue timer survives extension
 shutdown/reload in the process; graph data is derived and a later cumulative
-state safely supersedes a missed update after a hard process kill. Recall starts from FTS5 lexical matches, expands one hop
+state safely supersedes a missed update after a hard process kill. Fact occurrences are branch-head scoped; state, recall, and resolution use the
+complete host-visible branch ancestry before equivalent facts are deduplicated.
+Schema v1 preserves user-confirmed manual memory but resets older derived
+compaction nodes once so sibling branches cannot inherit a last-writer identity.
+Recall starts from FTS5 lexical matches, expands one hop
 through file-reference edges, then applies session, branch, fact-kind,
 confidence, recency, and explicit-memory weights. Exact equivalent facts are
 deduplicated before bounded output. Resolved/superseded state is removed from
@@ -259,7 +269,7 @@ the active FTS index; another project's rows are never eligible.
 **Important retention limits:** pending in-memory compaction 5 min · exploration
 tool-support cache 1 h / 128 routes · token calibration 128 routes · extraction
 cache 1 h · compaction state 7 d · context graph 2,000 non-structural fact nodes
-per project · remediation hints 7 d · metrics and damage
+and 500 active manual memories per project · remediation hints 7 d · metrics and damage
 JSONL logs 5 MiB each.
 
 ## Concurrency & safety model
@@ -284,25 +294,24 @@ Session identity comes from [`infra/session-identity.ts`](./src/infra/session-id
 a real id when the host exposes one, otherwise a per-call unforgeable
 `unresolved:<uuid>` — two unresolved sessions can never collide.
 
-### Cancellation & hard timeout
+### Cancellation deadlines
 
 Some providers ignore `AbortSignal`. The auto-trigger therefore uses a shared
 [`ExternalCancellation`](./src/app/run-smart-compact.ts) handle as a second line
 of defense: an outer `setTimeout` fires `abort()` and sets `timedOut`, and every
 side-effect gate in the orchestrator checks that flag before writing state or
-applying compaction. No `Promise.race` is needed — the shared flag drives the
-bailout, eliminating the race where the outer timer fired while the pipeline was
-mid-`applyCompaction`.
+applying compaction. The caller waits for safe pipeline unwind; no unsafe
+`Promise.race` hard return can leave work running past the hook lifecycle.
 
 ### Filesystem & concurrency
 
-JSON/text cache writes use [`src/infra/fs.ts`](./src/infra/fs.ts): atomic
-temp-file + rename prevents half-truncated readers but intentionally does not
-claim fsync/power-loss durability. Append/trim operations use a `mkdir`-based
-cross-process lock and fail closed if ownership cannot be acquired, so sessions
-cannot interleave bytes. SQLite supplies its own WAL durability. Native
-continuity handoffs are 0600, one-shot, bounded, and keyed by project + session
-+ branch head.
+JSON/text cache writes use [`src/infra/fs.ts`](./src/infra/fs.ts): private
+artifact directories are 0700 and files are 0600; atomic temp-file + rename
+prevents half-truncated readers but intentionally does not claim fsync/power-loss
+durability. Append/trim operations use a `mkdir`-based cross-process lock and
+fail closed if ownership cannot be acquired, so sessions cannot interleave
+bytes. SQLite supplies its own WAL durability. Native continuity handoffs are
+one-shot, bounded, and keyed by project + session + branch head.
 
 ## Provider awareness
 
@@ -347,13 +356,14 @@ models.
 [`src/domain/telemetry.ts`](./src/domain/telemetry.ts) maps raw exceptions to a
 content-free failure taxonomy, aggregates schema-v2 run quality without IDs or
 conversation data, and compares an explicitly tagged `canary` cohort against
-`stable` history. A deterministic gate returns Hold, Rollback, or Promote from
-sample/quality coverage plus failure, verifier quality, p95 latency, token,
-heuristic-fallback, and post-compaction-damage thresholds. Damage observations
-join their originating compaction by local run id, dedupe per run, and require
-≥70% stable/canary coverage before promotion. It is deliberately
-advisory: rollout selection, configuration changes, and rollback remain
-external operations.
+`stable` history. Reports expose total/applied counts; only non-dry,
+host-confirmed applied outcomes count toward promotion. A deterministic green
+release check is not promotion evidence. The gate returns Hold, Rollback, or
+Promote from applied sample/quality coverage plus failure, verifier quality, p95
+latency, token, heuristic-fallback, and post-compaction-damage thresholds.
+Damage observations join their originating compaction by local run id, dedupe
+per run, and require ≥70% stable/canary coverage before promotion. It is
+advisory: rollout selection, configuration changes, and rollback remain external.
 
 Dashboard trust calculations live in
 [`src/ui/dashboard-insights.ts`](./src/ui/dashboard-insights.ts). Data
@@ -404,7 +414,6 @@ The code is organized into six layers, each with a single responsibility.
 | `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
 | `app/mode-policy.ts` | Auto selector and finite Fast/Balanced/Thorough policies; legacy Aggressive maps to Fast |
 | `app/pending-slot.ts` | encapsulated pending-compaction state cell |
-| `app/explore-wrap.ts` | thin re-export shim isolating the explore import for headless tests |
 | `app/steps/prepare.ts` | resolve config, auth, provider caps |
 | `app/steps/window.ts` | pick the prefix of messages to compact |
 | `app/steps/recover.ts` | recover full content for log-truncated messages |
