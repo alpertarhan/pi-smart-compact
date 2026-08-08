@@ -10,6 +10,7 @@ import {
   extractMainGoal,
   extractMediaAttachments,
   extractStructured,
+  nestedToolCallId,
 } from "../src/utils/extraction.ts";
 import type { LlmMessage, ProfileConfig } from "../src/types.ts";
 
@@ -70,6 +71,18 @@ describe("trackFileOps", () => {
     expect(ops.read[0]).toBe("/tmp/bar.ts");
   });
 
+  it("does not infer deletion from source prose and lets newer access revive a path", () => {
+    const msgs: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "1", name: "delete", arguments: { path: "/tmp/bar.ts" } }] },
+      { role: "toolResult", toolCallId: "1", content: "deleted" },
+      { role: "assistant", content: [{ type: "toolCall", id: "2", name: "read", arguments: { path: "/tmp/bar.ts" } }] },
+      { role: "toolResult", toolCallId: "2", content: "// removed legacy branch, file remains" },
+    ];
+    const ops = trackFileOps(msgs);
+    expect(ops.deleted).toEqual([]);
+    expect(ops.read).toEqual(["/tmp/bar.ts"]);
+  });
+
   it("classifies payload-carrying path tools as modifications (name-agnostic)", () => {
     // Names are deliberately varied/unknown to prove classification is by
     // argument shape, not name: any tool carrying a path + content payload is
@@ -128,6 +141,38 @@ describe("catalogErrors", () => {
     const errs = catalogErrors(msgs);
     expect(errs.length).toBe(1);
     expect(errs[0].tool).toBe("bash");
+  });
+
+  it("excludes transient provider and invocation diagnostics from continuity errors", () => {
+    const messages = [
+      "Brave Search API error (429): rate limit exceeded for plan",
+      "npm error code ENOLOCK\nnpm error audit This command requires an existing lockfile",
+      "Found 2 occurrences of edits[2] in test/a.ts. Each oldText must be unique.",
+      "Unknown JSON field: url Available fields: tagName name",
+    ];
+    for (const [index, content] of messages.entries()) {
+      const id = String(index);
+      expect(catalogErrors([
+        { role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: { command: "failing command" } }] },
+        { role: "toolResult", toolCallId: id, isError: true, content },
+      ])).toEqual([]);
+    }
+    expect(catalogErrors([
+      { role: "assistant", content: [{ type: "toolCall", id: "real", name: "bash", arguments: { command: "bun test" } }] },
+      { role: "toolResult", toolCallId: "real", isError: true, content: "test failed in auth.ts" },
+    ])).toHaveLength(1);
+  });
+
+  it("keeps real project test failures that mention HTTP 429 rate limits", () => {
+    const errors = catalogErrors([
+      { role: "assistant", content: [{ type: "toolCall", id: "429-test", name: "bash", arguments: { command: "bun test" } }] },
+      {
+        role: "toolResult", toolCallId: "429-test", isError: true,
+        content: "FAIL rate limiter returns HTTP 429 when rate limit is exceeded\nExpected: 429\nReceived: 200",
+      },
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].tool).toBe("bash");
   });
 
   it("ignores rg/grep exit 1 when every chained command is a search", () => {
@@ -225,12 +270,35 @@ describe("mineConstraints", () => {
 });
 
 describe("extractMainGoal", () => {
-  it("extracts first non-command user message", () => {
+  it("uses the latest substantive request while ignoring commands and acknowledgements", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "/compact" },
       { role: "user", content: "Build a todo app" },
+      { role: "user", content: "Now fix the authentication regression" },
+      { role: "user", content: "tamam devam et" },
     ];
-    expect(extractMainGoal(msgs)).toBe("Build a todo app");
+    expect(extractMainGoal(msgs)).toBe("Now fix the authentication regression");
+  });
+
+  it("recovers the canonical goal from a host compaction summary", () => {
+    const compacted = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nShip the stable release\n\n## Progress\n- working\n</summary>";
+    expect(extractMainGoal([
+      { role: "user", content: compacted },
+      { role: "user", content: "okay" },
+    ])).toBe("Ship the stable release");
+  });
+
+  it("treats a goal-less host summary as a boundary to older raw goals", () => {
+    const compacted = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Progress\n- working\n</summary>";
+    expect(extractMainGoal([
+      { role: "user", content: "Old raw goal that predates compaction" },
+      { role: "user", content: compacted },
+    ])).toBeNull();
+  });
+
+  it("does not revive a compaction status banner as the active goal", () => {
+    const compacted = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nEESV Compact (model, balanced) — 259,782t Warning: Smart compact skipped\n</summary>";
+    expect(extractMainGoal([{ role: "user", content: compacted }])).toBeNull();
   });
 });
 
@@ -270,6 +338,12 @@ describe("extractStructured", () => {
 // ── multi_tool_use.parallel wrapper shape ──
 
 describe("buildToolCallIndex — multi_tool_use.parallel", () => {
+  it("uses one exact identity contract for real and synthetic nested calls", () => {
+    expect(nestedToolCallId("wrapper", 7, 2, "real-id")).toBe("real-id");
+    expect(nestedToolCallId("wrapper", 7, 2)).toBe("wrapper_2");
+    expect(nestedToolCallId(undefined, 7, 2)).toBe("mtu_7_2");
+  });
+
   it("flattens nested tool_uses with real ids when present", () => {
     const msgs: LlmMessage[] = [
       {

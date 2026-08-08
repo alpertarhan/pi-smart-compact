@@ -20,9 +20,9 @@
 
 import type { ChunkSummary, TopicBoundary } from "../../types.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
-import { exploreConversation, shouldExplore } from "../explore-wrap.ts";
+import { exploreConversation, shouldExplore } from "../../phases/explore.ts";
 import { chunkLlmMessages, singlePassCompact, summarizeBatch, assembleLLM, assembleFallback, failedChunkSummary } from "../../phases/synthesize.ts";
-import { MAX_EXPLORATION_ROUNDS, PROFILES } from "../../constants.ts";
+import { MAX_EXPLORATION_ROUNDS } from "../../constants.ts";
 import {
   batchOutputLimit, continuityRisk, deterministicExtractionConfidence, effectiveBudget,
   MODE_POLICIES, modeFromLegacyProfile, resolveMode,
@@ -47,21 +47,17 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       continuityRisk(rc.previousState) + (rc.adapted ? 12 : 0),
     );
     if (refined !== rc.mode) {
-      const oldBase = { ...PROFILES[rc.profile], ...(rc.config.profiles?.[rc.profile] ?? {}) };
-      const keepScale = rc.profileCfg.keepRecentTokens / oldBase.keepRecentTokens;
-      const summaryScale = rc.profileCfg.summaryBudgetTokens / oldBase.summaryBudgetTokens;
       rc.mode = refined;
-      rc.profile = MODE_POLICIES[refined].profile;
-      rc.profileCfg = { ...PROFILES[rc.profile], ...(rc.config.profiles?.[rc.profile] ?? {}) };
-      rc.profileCfg.keepRecentTokens = Math.round(rc.profileCfg.keepRecentTokens * keepScale);
-      rc.profileCfg.summaryBudgetTokens = Math.round(rc.profileCfg.summaryBudgetTokens * summaryScale);
       const policy = MODE_POLICIES[refined];
       rc.services.budget.setLimits(
         rc.maxLlmCalls ?? effectiveBudget(rc.config.maxLlmCalls, policy.maxLlmCalls),
         rc.maxLlmInputTokens ?? effectiveBudget(rc.config.maxLlmInputTokens, policy.maxInputTokens),
         policy.maxOutputTokens,
       );
-      rc.notify("Auto mode selected " + refined + " from deterministic session risk", "info");
+      // The retention window and output allowance were already planned before
+      // extraction. Refine strategy depth only; changing profileCfg here would
+      // invalidate the target contract that the yield gate later enforces.
+      rc.notify("Auto strategy refined to " + refined + " within the planned " + rc.profile + " window", "info");
     }
   }
   const pc = rc.profileCfg;
@@ -73,12 +69,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     if (!rc.flags.autoTriggered) showProgressOverlay(rc.ctx, {
       phase: 3, phaseName: "Synthesize", detail: "Reusing the cached continuation summary · no LLM call",
     });
-    const hit = rc as ExtractedRc & {
-      _synthesized: true; finalSummary: string; method: "eesv" | "single-pass" | "heuristic";
-      methodForMetrics: string; llmCalls: number; summaries: ChunkSummary[];
-      explorationReport: import("../../types.ts").ExplorationReport | null;
-      explorationRounds: number; chunkCount: number;
-    };
+    const hit = advance<ExtractedRc, SynthesizedRc>(rc, "_synthesized");
     hit.finalSummary = cached.finalSummary;
     hit.method = cached.method;
     hit.methodForMetrics = cached.method + "-cache";
@@ -88,7 +79,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     hit.explorationRounds = cached.explorationRounds;
     hit.chunkCount = cached.chunkCount;
     markMeasuredPhase(hit, "synthesize", synthPhaseStart);
-    return advance<ExtractedRc, SynthesizedRc>(hit, "_synthesized");
+    return hit;
   }
   const zeroCall = rc.config.zeroCallEnabled !== false
     && rc.mode === "fast"
@@ -107,11 +98,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
       explorationRounds: 0, chunkCount: 0,
     });
     rc.notify("Zero-call deterministic compaction (high-confidence extraction)", "info");
-    const deterministic = rc as ExtractedRc & {
-      _synthesized: true; finalSummary: string; method: "heuristic"; methodForMetrics: string;
-      llmCalls: number; summaries: ChunkSummary[];
-      explorationReport: null; explorationRounds: number; chunkCount: number;
-    };
+    const deterministic = advance<ExtractedRc, SynthesizedRc>(rc, "_synthesized");
     deterministic.finalSummary = finalSummary;
     deterministic.method = "heuristic";
     deterministic.methodForMetrics = "zero-call";
@@ -121,7 +108,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     deterministic.explorationRounds = 0;
     deterministic.chunkCount = 0;
     markMeasuredPhase(deterministic, "synthesize", synthPhaseStart);
-    return advance<ExtractedRc, SynthesizedRc>(deterministic, "_synthesized");
+    return deterministic;
   }
   const shouldSkipExplore = !policy.explore;
   // convText was computed and cached on `rc` in extractWithCache to avoid a
@@ -365,17 +352,7 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     method = "eesv";
   }
 
-  const out = rc as ExtractedRc & {
-    _synthesized: true;
-    finalSummary: string;
-    method: "eesv" | "single-pass" | "heuristic";
-    methodForMetrics: string;
-    llmCalls: number;
-    summaries: ChunkSummary[];
-    explorationReport: import("../../types.ts").ExplorationReport | null;
-    explorationRounds: number;
-    chunkCount: number;
-  };
+  const out = advance<ExtractedRc, SynthesizedRc>(rc, "_synthesized");
   out.finalSummary = finalSummary;
   out.method = method;
   out.methodForMetrics = method;
@@ -391,6 +368,6 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
     finalSummary, method, summaries, explorationReport, explorationRounds, chunkCount,
   });
   markMeasuredPhase(out, "synthesize", synthPhaseStart);
-  return advance<ExtractedRc, SynthesizedRc>(out, "_synthesized");
+  return out;
 }
 

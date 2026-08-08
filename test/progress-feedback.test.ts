@@ -48,8 +48,10 @@ describe("semantic compact progress", () => {
     notifyAppliedCompaction(ctx, {
       tokensBefore: 1_000, tokensSaved: 400, plannedAfterTokens: 550, estimatedAfterTokens: 600, estimatedYield: 0.4,
       qualityScore: 100,
+      provenance: { initialScore: 11, deterministicPatched: [{ kind: "missing-goal", goal: "ship" }], llmPatched: false, qualityFloorUsed: true, finalScore: 100, remainingGaps: [] },
     } as any, false);
     expect(calls.at(-1)).toContain("1,000t → planned ~550t / ~600t applied estimate");
+    expect(calls.at(-1)).toContain("verified 100/100 coverage (source 11/100, safety fallback)");
     expect(calls.at(-1)).toContain("0 gaps");
     expect(calls.at(-1)).not.toContain("actual");
   });

@@ -4,6 +4,7 @@
 
 import { CHARS_PER_TOKEN, TUNING } from "../constants.ts";
 import type { LlmMessage, ProviderCapabilities } from "../types.ts";
+import { lruGet, lruSet } from "./lru.ts";
 
 const PROVIDER_MAP: Record<string, ProviderCapabilities> = {
   // ── Anthropic family ──
@@ -126,39 +127,23 @@ export class TokenCalibrationStore {
   get(provider?: string, model?: string): number {
     if (!provider) return 1.0;
     const exactKey = calibrationKey(provider, model);
-    const exact = this.factors.get(exactKey);
-    if (exact !== undefined) {
-      this.factors.delete(exactKey);
-      this.factors.set(exactKey, exact);
-      return exact;
-    }
+    const exact = lruGet(this.factors, exactKey);
+    if (exact !== undefined) return exact;
     // Fall back to the provider-wide bucket so a fresh model still benefits
     // from sibling calibration until it builds up its own samples.
-    const providerKey = calibrationKey(provider);
-    const fallback = this.factors.get(providerKey);
-    if (fallback !== undefined) {
-      this.factors.delete(providerKey);
-      this.factors.set(providerKey, fallback);
-    }
-    return fallback ?? 1.0;
+    return lruGet(this.factors, calibrationKey(provider)) ?? 1.0;
   }
 
   calibrate(estimated: number, actual: number, provider?: string, model?: string): void {
     if (actual <= 0 || estimated <= 0 || !provider) return;
     const key = calibrationKey(provider, model);
-    const prev = this.factors.get(key) ?? 1.0;
+    const prev = lruGet(this.factors, key) ?? 1.0;
     // `estimated` already includes the previous factor. Convert the observed
     // actual/estimated correction back into an absolute target factor before
     // EMA smoothing; otherwise repeated calibration converges to sqrt(target).
     const target = prev * actual / estimated;
     const clamped = Math.max(TUNING.CALIBRATION_CLAMP_MIN, Math.min(TUNING.CALIBRATION_CLAMP_MAX, target));
-    this.factors.delete(key);
-    this.factors.set(key, prev * TUNING.EMA_PREV + clamped * TUNING.EMA_SAMPLE);
-    while (this.factors.size > Math.max(1, this.maxEntries)) {
-      const oldest = this.factors.keys().next().value;
-      if (oldest === undefined) break;
-      this.factors.delete(oldest);
-    }
+    lruSet(this.factors, key, prev * TUNING.EMA_PREV + clamped * TUNING.EMA_SAMPLE, Math.max(1, this.maxEntries));
   }
 
   size(): number { return this.factors.size; }

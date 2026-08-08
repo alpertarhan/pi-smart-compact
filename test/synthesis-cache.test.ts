@@ -45,6 +45,16 @@ describe("synthesis cache", () => {
     expect(getCachedSynthesis(synthesisCacheKey(differentRetention), 101)).toBeNull();
   });
 
+  it("separates differing focus even when focus weighting is disabled", () => {
+    const first = rc("s1");
+    first.config.focusWeighting = false;
+    const second = rc("s1");
+    second.config.focusWeighting = false;
+    second.focus = "database";
+
+    expect(synthesisCacheKey(first)).not.toBe(synthesisCacheKey(second));
+  });
+
   it("caches chunk summaries by content without sharing mutable arrays", () => {
     const key = batchCacheKey({ model: "x", text: "chunk" });
     setCachedBatch(key, [{

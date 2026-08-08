@@ -121,6 +121,15 @@ describe("smart compact preflight UI", () => {
     expect(details).toContain("Route  openai/summary");
   });
 
+  it("discloses the verified-state reserve behind the projected result", () => {
+    const item = preview("balanced", true);
+    item.plan!.projectedAfterTokens = 27_500;
+    item.plan!.projectedSavedTokens = 62_500;
+    item.plan!.projectedYield = 62_500 / 90_000;
+    expect(formatPreflightSummary(item, "openai/summary").join("\n"))
+      .toContain("summary up to 6K + ~1.5K verified-state reserve");
+  });
+
   it("renders the three-mode decision card, supports D, and never exceeds width", async () => {
     const result = await showCompactUI(context((component, done) => {
       const narrowLines = component.render(36);
@@ -143,6 +152,20 @@ describe("smart compact preflight UI", () => {
       expect(done.value).toBeDefined();
     }), opts);
     expect(result?.mode).toBe("fast");
+  });
+
+  it("scans the active branch once for all three mode previews", async () => {
+    const ctx = context(component => component.handleInput("esc"));
+    const original = ctx.sessionManager.buildContextEntries;
+    let scans = 0;
+    ctx.sessionManager.buildContextEntries = () => {
+      scans++;
+      return original();
+    };
+
+    await showCompactUI(ctx, opts);
+
+    expect(scans).toBe(1);
   });
 
   it("uses the configured summary route as the initial preflight model", async () => {

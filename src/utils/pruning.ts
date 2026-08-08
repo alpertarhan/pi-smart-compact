@@ -5,7 +5,7 @@
 
 import type { LlmMessage } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
-import { extractText, buildToolCallIndex, type ToolCallIndex } from "./extraction.ts";
+import { extractText, buildToolCallIndex, nestedToolCallId, type ToolCallIndex } from "./extraction.ts";
 import { estimateTokens } from "./tokens.ts";
 
 export interface PruningResult {
@@ -193,9 +193,7 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
         if (block.name === "multi_tool_use.parallel" && Array.isArray(block.arguments?.tool_uses)) {
           const tools = block.arguments.tool_uses as Record<string, unknown>[];
           const retained = tools.filter((tool, toolIndex) => {
-            const id = typeof tool.id === "string"
-              ? tool.id
-              : block.id ? block.id + "_" + toolIndex : "mtu_" + idx + "_" + toolIndex;
+            const id = nestedToolCallId(block.id, idx, toolIndex, tool.id);
             return !removedToolCallIds.has(id);
           });
           if (retained.length !== tools.length) changed = true;

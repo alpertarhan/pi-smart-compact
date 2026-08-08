@@ -3,6 +3,8 @@ import { planCompactionWindow, resolveCompactionWindow } from "../src/app/steps/
 import type { PreparedRc } from "../src/app/run-context.ts";
 import type { SessionMessageEntry } from "../src/types.ts";
 import { makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
+import { POST_SUMMARY_RESERVE_RATIO } from "../src/constants.ts";
+import { verifyCompactionYield } from "../src/domain/yield-gate.ts";
 
 function messageEntry(
   id: string,
@@ -97,7 +99,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     rc.notify = message => { notices.push(message); };
 
     expect(resolveCompactionWindow(rc)).toBeNull();
-    expect(notices.join(" ")).toContain("no eligible prefix remains");
+    expect(notices.join(" ")).toContain("no older prefix is available");
   });
 
   it("backs up when the token window naturally starts at a toolResult", () => {
@@ -350,9 +352,35 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(plan.projectedYield).toBeGreaterThanOrEqual(0.1);
     expect(plan.fixedContextTokens).toBeGreaterThan(500_000);
     expect(plan.summaryBudgetTokens).toBe(10_000);
-    expect(plan.targetAfterTokens).toBe(plan.fixedContextTokens + plan.retentionTargetTokens + plan.summaryBudgetTokens);
+    expect(plan.targetAfterTokens).toBe(
+      plan.fixedContextTokens + plan.retentionTargetTokens + plan.summaryBudgetTokens +
+        Math.ceil(plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO),
+    );
     expect(plan.projectedAfterTokens).toBeLessThanOrEqual(plan.targetAfterTokens);
     expect(plan.hardBoundaryAdjusted).toBeFalse();
+  });
+
+  it("reserves post-synthesis state overhead and admits the reported near-target result", () => {
+    const branch = [
+      messageEntry("old", null, { role: "user", content: [{ type: "text", text: "old context" }] }),
+      messageEntry("recent", "old", { role: "assistant", content: [{ type: "text", text: "recent context" }] }),
+      messageEntry("tail", "recent", { role: "assistant", content: [{ type: "text", text: "tail" }] }),
+    ];
+    const profileCfg = {
+      summaryBudgetTokens: 6_000, keepRecentTokens: 20_000,
+      minChunkTokens: 500, maxChunkTokens: 8_000,
+      singlePassMaxTokens: 30_000, batchMaxTokens: 24_000,
+    };
+    const plan = planCompactionWindow({
+      msgs: branch, branch, messageTokens: [49_492, 20_008, 500], totalTokens: 70_000,
+      modelContextWindow: 70_020, mode: "balanced", profileCfg,
+      force: false, overflowedContext: false,
+    });
+
+    expect(plan.targetAfterTokens).toBe(28_008);
+    expect(plan.retainedTokens).toBe(20_508);
+    expect(plan.projectedAfterTokens).toBe(28_008);
+    expect(verifyCompactionYield(70_000, 7_347, plan).estimatedAfterTokens).toBe(27_855);
   });
 
   it("retains context up to the mode target instead of stopping at the minimum tail", () => {
@@ -452,7 +480,8 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result.compactionPlan.retentionTargetTokens).toBeGreaterThanOrEqual(result.accTokens);
     expect(result.compactionPlan.summaryBudgetTokens).toBe(10_000);
     expect(result.compactionPlan.targetAfterTokens).toBe(
-      result.compactionPlan.fixedContextTokens + result.compactionPlan.retentionTargetTokens + 10_000,
+      result.compactionPlan.fixedContextTokens + result.compactionPlan.retentionTargetTokens + 10_000 +
+        Math.ceil(10_000 * POST_SUMMARY_RESERVE_RATIO),
     );
     expect(result.compactionPlan.hardBoundaryAdjusted).toBeFalse();
     expect(result.compactionPlan.relaxedSoftBoundaries).toContain("recent-user-turn");
@@ -473,7 +502,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     rc.notify = message => { notices.push(message); };
 
     expect(resolveCompactionWindow(rc)).toBeNull();
-    expect(notices.join(" ")).toContain("projected saving is below 10%");
+    expect(notices.join(" ")).toContain("estimated saving is below 10%");
   });
 
   it("recovers with EESV when reported usage exceeds the active model window", () => {

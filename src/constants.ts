@@ -10,10 +10,19 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "8.0.6";
+export const VERSION = "8.0.7";
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.10;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
+/** Space reserved in the window plan for deterministic verification/state sections added after LLM synthesis. */
+export const POST_SUMMARY_RESERVE_RATIO = 0.25;
+
+/** Positive per-run bounds shared by CLI and tool arguments; config separately allows 0 as a mode-derived sentinel. */
+export const BUDGET_LIMITS = {
+  CALLS: { min: 1, max: 100 },
+  INPUT_TOKENS: { min: 10_000, max: 1_000_000 },
+  LATENCY_MS: { min: 5_000, max: 600_000 },
+} as const;
 
 export const COMPACT_SYSTEM_PREFIX =
   "You are an expert conversation summarizer for a coding agent. " +

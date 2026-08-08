@@ -4,7 +4,7 @@
 
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
-import { TRUNC } from "../constants.ts";
+import { POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../constants.ts";
 import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
@@ -15,7 +15,8 @@ import type { BackupEntry } from "../utils/helpers.ts";
 import { createProductionServices, type SmartCompactServices } from "../infra/services.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
-import { planManualPreflight, preflightDamageMedian, type ManualPreflight } from "../app/preflight.ts";
+import { planManualPreflight, preflightDamageMedian, prepareManualPreflightContext, type ManualPreflight } from "../app/preflight.ts";
+import { compactionPlanReasonText } from "../app/steps/window.ts";
 import type { EffectiveCompactionMode } from "../types.ts";
 import {
   DASHBOARD_PAGE_SIZE,
@@ -123,15 +124,7 @@ const MODE_COPY: Record<EffectiveCompactionMode, string> = {
 };
 
 export function explainPreflightReason(reason: ManualPreflight["reason"]): string {
-  switch (reason) {
-    case "viable": return "safe window and useful estimated saving";
-    case "not-enough-messages": return "fewer than 3 active messages";
-    case "no-eligible-prefix": return "no older prefix is available";
-    case "unsafe-tool-boundary": return "no complete tool-call boundary is available";
-    case "retention-target-exceeded": return "a complete tool pair exceeds the tail target";
-    case "mode-target-not-met": return "the estimated result misses this preset's target";
-    case "insufficient-projected-saving": return "estimated saving is below 10%";
-  }
+  return reason === "not-enough-messages" ? "fewer than 3 active messages" : compactionPlanReasonText(reason);
 }
 
 function recommendationEvidence(preflight: ManualPreflight): string {
@@ -197,9 +190,10 @@ export function formatPreflightSummary(preflight: ManualPreflight, modelLabel: s
     );
     return lines;
   }
+  const stateReserve = Math.ceil(plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO);
   const lines = [
     "Plan  " + compactTokenCount(preflight.totalTokens) + " → ~" + compactTokenCount(plan.projectedAfterTokens) + " · ~" + compactTokenCount(plan.projectedSavedTokens) + " saved (" + percent(plan.projectedYield * 100) + ")",
-    "Keep  ~" + compactTokenCount(plan.retainedTokens) + " recent · summary up to " + compactTokenCount(plan.summaryBudgetTokens),
+    "Keep  ~" + compactTokenCount(plan.retainedTokens) + " recent · summary up to " + compactTokenCount(plan.summaryBudgetTokens) + " + ~" + compactTokenCount(stateReserve) + " verified-state reserve",
     "✓ Complete tool pairs · ✓ zero-gap verification before apply",
   ];
   if (!plan.viable) lines.unshift("Unavailable · " + explainPreflightReason(plan.reason));
@@ -251,10 +245,13 @@ export function notifyAppliedCompaction(ctx: ExtensionContext, details: SmartCom
   const after = details.estimatedAfterTokens ?? Math.max(0, before - details.tokensSaved);
   const saving = Math.round((details.estimatedYield ?? (before ? details.tokensSaved / before : 0)) * 100);
   const quality = details.qualityScore ?? 0;
+  const initial = details.provenance?.initialScore ?? quality;
+  const repaired = details.provenance && (details.provenance.deterministicPatched.length > 0 || details.provenance.llmPatched || details.provenance.qualityFloorUsed);
+  const verification = "verified " + quality + "/100 coverage" + (repaired ? " (source " + initial + "/100" + (details.provenance?.qualityFloorUsed ? ", safety fallback" : "") + ")" : "") + " · 0 gaps";
   const planned = details.plannedAfterTokens ?? after;
   ctx.ui.notify(concise
-    ? "Smart compact applied ✓ · " + before.toLocaleString() + "t → ~" + after.toLocaleString() + "t estimate (plan ~" + planned.toLocaleString() + "t) · " + saving + "% saved · quality " + quality + " · 0 gaps"
-    : "Smart compact applied ✓ — " + before.toLocaleString() + "t → planned ~" + planned.toLocaleString() + "t / ~" + after.toLocaleString() + "t applied estimate · saved " + saving + "% · quality " + quality + "/100 · 0 gaps", "info");
+    ? "Smart compact applied ✓ · " + before.toLocaleString() + "t → ~" + after.toLocaleString() + "t estimate (plan ~" + planned.toLocaleString() + "t) · " + saving + "% saved · " + verification
+    : "Smart compact applied ✓ — " + before.toLocaleString() + "t → planned ~" + planned.toLocaleString() + "t / ~" + after.toLocaleString() + "t applied estimate · saved " + saving + "% · " + verification, "info");
 }
 
 // Same narrowing rationale as showProgressOverlay: only ctx.ui.custom is
@@ -293,15 +290,18 @@ export async function showResultScreen(
     }
 
     const scoreColor = details.qualityScore >= 80 ? "success" : details.qualityScore >= 50 ? "warning" : "error";
-    c.addChild(new Text(theme.fg("text", "  Quality: ") + theme.fg(scoreColor, details.qualityScore + "/100"), 0, 0));
+    c.addChild(new Text(theme.fg("text", "  Verification coverage: ") + theme.fg(scoreColor, details.qualityScore + "/100"), 0, 0));
     if (details.provenance) {
       const provenance = details.provenance;
       c.addChild(new Text(
-        theme.fg("dim", "  Provenance: score " + provenance.initialScore + " → deterministic " + provenance.deterministicPatched.length +
-          (provenance.llmPatched ? " → LLM patch" : "") + " → " + provenance.finalScore +
+        theme.fg("dim", "  Provenance: source " + provenance.initialScore + " → deterministic " + provenance.deterministicPatched.length +
+          (provenance.llmPatched ? " → LLM patch" : "") + " → verified " + provenance.finalScore +
           " (" + provenance.remainingGaps.length + " remaining)"),
         0, 0,
       ));
+      if (provenance.qualityFloorUsed) {
+        c.addChild(new Text(theme.fg("warning", "  Safety fallback used · verified coverage is not raw synthesis quality"), 0, 0));
+      }
     }
     if ((details.redactions ?? 0) > 0) {
       c.addChild(new Text(theme.fg("warning", "  Security: " + details.redactions + " sensitive value(s) redacted"), 0, 0));
@@ -442,8 +442,9 @@ export async function showResultScreen(
   if (!opts.approval) return "closed";
   const approved = await ctx.ui.confirm(
     "Apply Smart Compact?",
-    "Quality " + details.qualityScore + "/100 · " + details.gaps.length + " remaining gap(s) · " +
-      details.tokensSaved.toLocaleString() + " estimated tokens saved.\n\nCancel keeps the current conversation unchanged.",
+    "Verification coverage " + details.qualityScore + "/100 · source " + (details.provenance?.initialScore ?? details.qualityScore) + "/100 · " +
+      details.gaps.length + " remaining gap(s) · " + details.tokensSaved.toLocaleString() +
+      " estimated tokens saved.\n\nCancel keeps the current conversation unchanged.",
   );
   return approved ? "apply" : "cancel";
 }
@@ -576,7 +577,11 @@ export async function showCompactUI(
   const damageMedian = preflightDamageMedian(ctx.cwd, opts.config);
 
   while (true) {
-    const plans = new Map(PRIMARY_MODES.map(mode => [mode, planManualPreflight(ctx, selectedModel.model, mode, calibration, opts.config, damageMedian)]));
+    const shared = prepareManualPreflightContext(ctx, selectedModel.model, calibration);
+    const plans = new Map(PRIMARY_MODES.map(mode => [
+      mode,
+      planManualPreflight(ctx, selectedModel.model, mode, calibration, opts.config, damageMedian, shared),
+    ]));
     const recommended = recommendPreflight(plans);
     const action = await ctx.ui.custom<EffectiveCompactionMode | "model" | null>((tui, theme, keybindings, done) => {
       let selected = Math.max(0, PRIMARY_MODES.indexOf(recommended.mode));

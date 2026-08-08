@@ -38,25 +38,15 @@ const LOCK_STALE_MS = 5_000;
 const LOCK_RETRY_MS = 25;
 const LOCK_MAX_RETRIES = 80; // ≈2s
 
-/** Ensure a directory exists, ignoring EEXIST races. */
+/** Ensure a private directory exists and normalize an existing target. */
 export function ensureDir(dir: string): void {
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") {
-      log.warn("ensureDir failed for " + dir, e);
-    }
-  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
 }
 
 export async function ensureDirAsync(dir: string): Promise<void> {
-  try {
-    await fsp.mkdir(dir, { recursive: true });
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") {
-      log.warn("ensureDirAsync failed for " + dir, e);
-    }
-  }
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fsp.chmod(dir, 0o700);
 }
 
 function tempPath(target: string): string {
@@ -73,8 +63,9 @@ export function atomicWriteFileSync(target: string, data: string | Uint8Array): 
   ensureDir(path.dirname(target));
   const tmp = tempPath(target);
   try {
-    fs.writeFileSync(tmp, data);
+    fs.writeFileSync(tmp, data, { mode: 0o600 });
     fs.renameSync(tmp, target);
+    fs.chmodSync(target, 0o600);
   } catch (e) {
     // Clean up the temp file if rename failed — we never want orphans.
     try { fs.unlinkSync(tmp); } catch { /* best effort */ }
@@ -86,8 +77,9 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
   await ensureDirAsync(path.dirname(target));
   const tmp = tempPath(target);
   try {
-    await fsp.writeFile(tmp, data);
+    await fsp.writeFile(tmp, data, { mode: 0o600 });
     await fsp.rename(tmp, target);
+    await fsp.chmod(target, 0o600);
   } catch (e) {
     try { await fsp.unlink(tmp); } catch { /* best effort */ }
     throw e;
@@ -107,7 +99,7 @@ export function acquireLockSync(target: string): () => void {
   const lockDir = target + ".lock";
   for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
     try {
-      fs.mkdirSync(lockDir);
+      fs.mkdirSync(lockDir, { mode: 0o700 });
       return () => { try { fs.rmdirSync(lockDir); } catch { /* ignore */ } };
     } catch (e) {
       if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") {
@@ -161,7 +153,9 @@ export function appendLineLocked(target: string, line: string): void {
   ensureDir(path.dirname(target));
   const release = acquireLockSync(target);
   try {
-    fs.appendFileSync(target, line.endsWith("\n") ? line : line + "\n");
+    if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
+    fs.appendFileSync(target, line.endsWith("\n") ? line : line + "\n", { mode: 0o600 });
+    fs.chmodSync(target, 0o600);
   } finally {
     release();
   }

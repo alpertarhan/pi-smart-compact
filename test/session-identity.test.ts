@@ -12,6 +12,7 @@ import {
   resolveSessionId,
   isUnresolvedSessionId,
   type SessionIdentityContext,
+  branchEntryIds,
 } from "../src/infra/session-identity.ts";
 
 function ctxWith(id: string | undefined): SessionIdentityContext {
@@ -23,6 +24,12 @@ function ctxWith(id: string | undefined): SessionIdentityContext {
     },
   } as unknown as SessionIdentityContext;
 }
+
+describe("branchEntryIds", () => {
+  it("preserves full ordered ancestry while excluding absent and non-string ids", () => {
+    expect(branchEntryIds([{ id: "root" }, {}, { id: 42 }, { id: "leaf" }])).toEqual(["root", "leaf"]);
+  });
+});
 
 describe("resolveSessionId — real session id", () => {
   it("returns the host-provided id verbatim when present", () => {

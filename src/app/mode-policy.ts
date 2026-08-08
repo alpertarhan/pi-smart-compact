@@ -11,7 +11,6 @@ export interface ModePolicy {
   allowLlmPatch: boolean;
   singlePassMultiplier: number;
   batchOutput: { min: number; perChunk: number; max: number };
-  softLatencyMs: number;
   targetContextPercent: number;
 }
 
@@ -19,17 +18,17 @@ export const MODE_POLICIES: Readonly<Record<EffectiveCompactionMode, ModePolicy>
   fast: {
     profile: "aggressive", maxLlmCalls: 3, maxInputTokens: 100_000, maxOutputTokens: 20_000,
     explore: false, allowLlmPatch: false, singlePassMultiplier: 2,
-    batchOutput: { min: 800, perChunk: 160, max: 2_400 }, softLatencyMs: 30_000, targetContextPercent: 30,
+    batchOutput: { min: 800, perChunk: 160, max: 2_400 }, targetContextPercent: 30,
   },
   balanced: {
     profile: "balanced", maxLlmCalls: 6, maxInputTokens: 200_000, maxOutputTokens: 40_000,
     explore: false, allowLlmPatch: false, singlePassMultiplier: 1.5,
-    batchOutput: { min: 1_000, perChunk: 250, max: 4_096 }, softLatencyMs: 60_000, targetContextPercent: 40,
+    batchOutput: { min: 1_000, perChunk: 250, max: 4_096 }, targetContextPercent: 40,
   },
   thorough: {
     profile: "light", maxLlmCalls: 8, maxInputTokens: 300_000, maxOutputTokens: 80_000,
     explore: true, allowLlmPatch: true, singlePassMultiplier: 0.9,
-    batchOutput: { min: 1_500, perChunk: 400, max: 6_000 }, softLatencyMs: 120_000, targetContextPercent: 50,
+    batchOutput: { min: 1_500, perChunk: 400, max: 6_000 }, targetContextPercent: 50,
   },
 };
 

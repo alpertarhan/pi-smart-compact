@@ -10,6 +10,7 @@ import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
+import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 
 /** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
 export const TRUNCATE_RE = /…✂\d+$/;
@@ -17,10 +18,6 @@ export const TRUNCATE_RE = /…✂\d+$/;
 export function isTruncated(content: unknown): boolean {
   return TRUNCATE_RE.test(extractText(content));
 }
-
-/** Best-effort delete detection: arguments can't tell a delete from a read
- *  (both carry only a path), so the result text is the only signal. */
-const DELETE_RESULT_RE = /\b(?:deleted|removed|unlinked)\b/i;
 
 /** Reusable tool call index type */
 export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
@@ -30,6 +27,13 @@ export interface FlatToolCall {
   name: string;
   id?: string;
   arguments: Record<string, unknown>;
+}
+
+/** Identity contract shared by extraction and pruning for nested parallel calls. */
+export function nestedToolCallId(wrapperId: string | undefined, messageIndex: number, toolIndex: number, nestedId?: unknown): string {
+  return typeof nestedId === "string"
+    ? nestedId
+    : wrapperId ? wrapperId + "_" + toolIndex : ID_PREFIX.MULTI_TOOL_USE_SYNTHETIC + messageIndex + "_" + toolIndex;
 }
 
 /**
@@ -122,8 +126,8 @@ export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
         const nested = flattenToolCallBlock(b);
         for (let t = 0; t < nested.length; t++) {
           const tool = nested[t];
-          const syntheticId = b.id ? b.id + "_" + t : "mtu_" + i + "_" + t;
-          idx.set(tool.id || syntheticId, { name: tool.name, arguments: tool.arguments, msgIndex: i });
+          const id = nestedToolCallId(b.id, i, t, tool.id);
+          idx.set(id, { name: tool.name, arguments: tool.arguments, msgIndex: i });
         }
       }
     }
@@ -153,14 +157,17 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
       if (isTruncated(resultText) || !NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
         modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
+        delSet.delete(filePath);
       }
     } else if (operation === "delete") {
       delSet.add(filePath);
+      modMap.delete(filePath);
+      readSet.delete(filePath);
     } else if (operation === "read" || operation === "search" || operation === "list") {
-      // Unknown path-only tools default to read; preserve result-text fallback
-      // for providers whose delete tool has no useful name.
-      if (DELETE_RESULT_RE.test(extractText(m.content))) delSet.add(filePath);
-      else readSet.add(filePath);
+      // A successful access proves the path is present now. Never infer a
+      // deletion from source/search prose merely containing "removed".
+      readSet.add(filePath);
+      delSet.delete(filePath);
     }
   }
 
@@ -188,6 +195,14 @@ function hasCommandFailureSignal(text: string): boolean {
   return LIKELY_ERROR_RE.test(firstLine) || /^(?:npm\s+error|fatal:|traceback\b)/i.test(firstLine);
 }
 
+export function isTransientToolDiagnostic(text: string): boolean {
+  const candidate = text.trim();
+  return /\bBrave Search API error\s*\(429\)/i.test(candidate)
+    || (/\bnpm error code ENOLOCK\b/i.test(candidate) && /(?:audit|existing lockfile|loadVirtual)/i.test(candidate))
+    || /^Found \d+ occurrences? of edits\[\d+\](?!\w)/i.test(candidate)
+    || (/^Unknown JSON field:/i.test(candidate) && /Available fields:/i.test(candidate));
+}
+
 export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["errors"] {
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const errors: StructuredExtraction["errors"] = [];
@@ -198,7 +213,7 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     const tc = tcIdx.get(m.toolCallId ?? "");
 
     const text = extractText(m.content);
-    if (tc && isBenignSearchResult(tc, text)) continue;
+    if ((tc && isBenignSearchResult(tc, text)) || isTransientToolDiagnostic(text)) continue;
 
     if (m.isError) {
       errors.push({ index: i, tool: tc?.name ?? "unknown", message: text.slice(0, TRUNC.ERROR_DETAIL), retryAttempted: false, resolved: false });
@@ -384,11 +399,30 @@ export function buildTimeline(msgs: LlmMessage[], errors: StructuredExtraction["
     : timeline;
 }
 
+const HISTORY_SUMMARY_RE = /^(?:The conversation history before this point was compacted|The following is a summary of a branch that this conversation came back from)[\s\S]*<summary>/i;
+const ACK_ONLY_RE = /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
+
+/** Machine status from an earlier compaction is context, not an active user goal. */
+export function isCompactionStatusText(text: string): boolean {
+  const candidate = summaryEvidenceLine(text, TRUNC.MESSAGE).replace(/^["'`]+/, "").trim();
+  return /^(?:EESV Compact\b|Smart compact (?:skipped|prepared|run finished)\b|Auto-compacting\b)/i.test(candidate);
+}
+
 export function extractMainGoal(msgs: LlmMessage[]): string | null {
-  for (const m of msgs) {
+  // The latest substantive request is the active goal. Commands and bare
+  // acknowledgements do not supersede it; a host compaction message contributes
+  // only its canonical Goal section and forms a boundary to older raw history.
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
     if (m?.role !== "user") continue;
-    const txt = extractText(m.content).trim();
-    if (txt && !txt.startsWith("/")) return txt.slice(0, TRUNC.MESSAGE);
+    const text = extractText(m.content).trim();
+    if (!text) continue;
+    if (HISTORY_SUMMARY_RE.test(text)) {
+      const carried = summaryEvidenceLine(findSection(text, "goal")?.body ?? "", TRUNC.MESSAGE);
+      return carried && !isCompactionStatusText(carried) ? carried : null;
+    }
+    if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
+    return summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
   }
   return null;
 }
