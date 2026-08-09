@@ -1,6 +1,6 @@
 # Migrating from v7 to v8
 
-This guide applies to the stable `8.0.7` release.
+This guide applies to the stable `8.0.8` release.
 
 ## Compatibility
 
@@ -105,7 +105,7 @@ scrubbing, using 0600 files in a 0700 directory. Retention only prunes
 marker-owned backups.
 
 1. Back up `~/.pi/agent/settings.json` and the Smart Compact cache directory.
-2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.7`.
+2. Install the exact stable version: `pi install npm:pi-smart-compact@8.0.8`.
 3. Leave all model routes null initially.
 4. Keep `telemetryChannel: "stable"` unless intentionally running a separate
    canary cohort.
