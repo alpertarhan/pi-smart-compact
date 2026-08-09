@@ -126,6 +126,21 @@ Something
     expect(result.gaps.some(gap => gap.kind === "missing-file" && gap.path === "packages/web/src/auth.ts")).toBe(true);
   });
 
+  it("accepts an exact root path without letting a nested path satisfy it", () => {
+    const extraction = makeExtraction({
+      modifiedFiles: [
+        { path: "README.md", toolCalls: 1, lastModifiedIndex: 1 },
+        { path: "agents/monitor/README.md", toolCalls: 1, lastModifiedIndex: 2 },
+      ],
+    });
+    const summary = "## Goal\nDocument monitor\n## Progress\n- docs updated\n## Files Modified\n- README.md\n- agents/monitor/README.md\n## Critical Context\n- none";
+    expect(verifySummary(summary, extraction).ok).toBe(true);
+
+    const nestedOnly = verifySummary(summary.replace("- README.md\n", ""), extraction);
+    expect(nestedOnly.gaps.some(gap => gap.kind === "missing-file" && gap.path === "README.md")).toBe(true);
+    expect(nestedOnly.gaps.some(gap => gap.kind === "missing-file" && gap.path === "agents/monitor/README.md")).toBe(false);
+  });
+
   it("penalizes potentially fabricated files", () => {
     const extraction = makeExtraction({
       modifiedFiles: [{ path: "/src/real.ts", toolCalls: 1, lastModifiedIndex: 2 }],
@@ -476,19 +491,21 @@ describe("verifyAndPatch", () => {
     expect(uiErrors).toEqual([]);
   });
 
-  it("repairs a patchable high-score gap instead of skipping it", async () => {
-    const extraction = makeExtraction({ modifiedFiles: [{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 1 }] });
-    const result = await verifyAndPatch({
-      finalSummary: "## Goal\nBuild auth\n## Progress\n- setup\n## Critical Context\n- stable",
-      extraction,
-      flags: { autoTriggered: true },
-      notify: () => {},
-      vlog: () => {},
-    } as any);
-    expect(result.finalSummary).toContain("src/auth.ts");
-    expect(result.verificationProvenance.initialScore).toBe(95);
-    expect(result.verificationProvenance.deterministicPatched).toHaveLength(1);
-    expect(result.verificationScore).toBe(100);
+  it("repairs top-level paths without usable suffix needles", async () => {
+    for (const path of ["index.ts", "x.ts"]) {
+      const extraction = makeExtraction({ modifiedFiles: [{ path, toolCalls: 1, lastModifiedIndex: 1 }] });
+      const result = await verifyAndPatch({
+        finalSummary: "## Goal\nBuild auth\n## Progress\n- setup\n## Critical Context\n- stable",
+        extraction,
+        flags: { autoTriggered: true },
+        notify: () => {},
+        vlog: () => {},
+      } as any);
+      expect(result.finalSummary).toContain(path);
+      expect(result.verificationProvenance.initialScore).toBe(95);
+      expect(result.verificationProvenance.deterministicPatched).toHaveLength(1);
+      expect(result.verificationScore).toBe(100);
+    }
   });
 });
 

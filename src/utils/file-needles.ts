@@ -47,7 +47,7 @@ export const MIN_BARE_BASENAME_LEN = 5;
  * path. All needles are lowercased so substring matching can be done with
  * `errorMessage.toLowerCase().includes(needle)` cheaply.
  */
-function normalizePath(filePath: string): string {
+export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
 }
 

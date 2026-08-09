@@ -4,6 +4,12 @@
 
 No changes yet.
 
+## [8.0.8] - 2026-08-09
+
+### Fixed
+
+- Modified-file verification now accepts exact normalized paths from canonical `Files Modified` entries before collision-safe suffix matching. Root files that share a basename with nested files, plus top-level generic or short filenames, can be deterministically repaired without weakening the zero-gap verification gate.
+
 ## [8.0.7] - 2026-08-08
 
 ### Fixed

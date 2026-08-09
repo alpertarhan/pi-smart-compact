@@ -12,7 +12,7 @@ import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import { extractFileRefs } from "../utils/file-ref-detect.ts";
 import { isDiagnosticConstraintText } from "../utils/extraction.ts";
-import { buildUniquePathNeedles, isKnownPathReference } from "../utils/file-needles.ts";
+import { buildUniquePathNeedles, isKnownPathReference, normalizePath } from "../utils/file-needles.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, summaryEvidenceLine, upsertSection } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
@@ -267,9 +267,20 @@ export function verifySummary(
   }
 
   const modifiedPaths = extraction.modifiedFiles.map(file => file.path);
+  const listedModifiedPaths = new Set(
+    (findSection(parsed, "files-modified")?.body ?? "")
+      .split("\n")
+      .map(line => line
+        .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
+        .replace(/^\[[ x]\]\s+/i, "")
+        .trim())
+      .map(line => line.startsWith("`") && line.endsWith("`") ? line.slice(1, -1) : line)
+      .filter(Boolean)
+      .map(normalizePath),
+  );
   for (const file of extraction.modifiedFiles) {
     const needles = buildUniquePathNeedles(file.path, modifiedPaths);
-    if (!needles.some(needle => lower.includes(needle))) {
+    if (!listedModifiedPaths.has(normalizePath(file.path)) && !needles.some(needle => lower.includes(needle))) {
       gaps.push({ kind: "missing-file", path: file.path });
       score -= 5;
     }
