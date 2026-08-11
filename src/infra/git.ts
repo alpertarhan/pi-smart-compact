@@ -1,36 +1,48 @@
 /**
- * Git root resolver with a cwd-keyed cache.
+ * Git root resolver with a bounded, expiring cwd cache.
  *
- * `runSmartCompact` calls `findGitRoot(ctx.cwd)` once per run. Each call shells
- * out via `execSync("git rev-parse --show-toplevel")`, which blocks the event
- * loop for ~5-25ms on typical machines. Under auto-trigger this fires on every
- * compaction. Caching by cwd is safe because the git root for a given cwd
- * never changes within an extension process lifetime, and the cache only holds
- * a few entries per session.
- *
- * Non-git directories are also cached (null result) so we don't re-shell out
- * for every single invocation in a non-repo directory.
+ * Positive entries avoid repeated synchronous `git rev-parse` calls during
+ * compaction. Negative entries use a short TTL because a directory may become
+ * a repository while the extension process is still running.
  */
 
 import { execSync } from "node:child_process";
+import path from "node:path";
 import * as log from "../utils/logger.ts";
 
-const ROOT_CACHE = new Map<string, string | null>();
+const POSITIVE_TTL_MS = 5 * 60_000;
+const NEGATIVE_TTL_MS = 5_000;
+const ROOT_CACHE_MAX = 128;
+const ROOT_CACHE = new Map<string, { root: string | null; expiresAt: number }>();
 
-export function findGitRoot(cwd: string): string | null {
+export function findGitRoot(cwd: string, now = Date.now()): string | null {
   if (!cwd) return null;
-  if (ROOT_CACHE.has(cwd)) return ROOT_CACHE.get(cwd) ?? null;
+  const key = path.resolve(cwd);
+  const cached = ROOT_CACHE.get(key);
+  if (cached && cached.expiresAt > now) {
+    ROOT_CACHE.delete(key);
+    ROOT_CACHE.set(key, cached);
+    return cached.root;
+  }
+  if (cached) ROOT_CACHE.delete(key);
   let root: string | null = null;
   try {
     const out = execSync("git rev-parse --show-toplevel", {
-      cwd, encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"],
+      cwd: key, encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"],
     });
     root = out.trim() || null;
   } catch (e) {
-    log.debug("git rev-parse failed for " + cwd, e);
-    root = null;
+    log.debug("git rev-parse failed for " + key, e);
   }
-  ROOT_CACHE.set(cwd, root);
+  ROOT_CACHE.set(key, {
+    root,
+    expiresAt: now + (root ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS),
+  });
+  while (ROOT_CACHE.size > ROOT_CACHE_MAX) {
+    const oldest = ROOT_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    ROOT_CACHE.delete(oldest);
+  }
   return root;
 }
 

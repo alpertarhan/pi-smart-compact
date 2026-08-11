@@ -252,6 +252,27 @@ describe("mergeExtractions — cached error reconciliation", () => {
     expect(merged.errors[0].resolved).toBe(full.errors[0].resolved);
     expect(merged.lastErrors).toEqual([]);
   });
+
+  it("does not resolve a cached failure with an unrelated operation from the same tool", () => {
+    const failed: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "f", name: "edit", arguments: { path: "src/a.ts", oldText: "old", newText: "new" } }] },
+      { role: "toolResult", toolCallId: "f", isError: true, content: [{ type: "text", text: "old text not found" }] },
+    ];
+    const unrelated: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "s", name: "edit", arguments: { path: "src/b.ts", oldText: "x", newText: "y" } }] },
+      { role: "toolResult", toolCallId: "s", isError: false, content: [{ type: "text", text: "updated" }] },
+    ];
+    const base = extractStructured(failed, PROFILES.balanced);
+    const deltaIndex = buildToolCallIndex(unrelated);
+    const merged = mergeExtractions(
+      base,
+      extractStructured(unrelated, PROFILES.balanced, deltaIndex),
+      failed.length,
+      unrelated,
+      deltaIndex,
+    );
+    expect(merged.errors[0]).toMatchObject({ retryAttempted: false, resolved: false });
+  });
 });
 
 // ── messageCount ──

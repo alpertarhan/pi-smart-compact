@@ -121,9 +121,13 @@ export function buildState(rc: VerifiedRc): StatedRc {
   // The continuity ledger is injected after the LLM verification stage. Run a
   // final deterministic verification against the merged state so its score
   // reflects cross-generation fidelity, not only the current extraction.
-  let postVerification = verifySummary(summary, extraction, compactionState);
+  const verificationEvidence = {
+    sourceMessages: rc.llmMessages,
+    steering: { focus: rc.focus, note: rc.userNote },
+  };
+  let postVerification = verifySummary(summary, extraction, compactionState, verificationEvidence);
   const postInitialScore = postVerification.score;
-  const postRepair = repairSummaryDeterministically(summary, postVerification, extraction, compactionState);
+  const postRepair = repairSummaryDeterministically(summary, postVerification, extraction, compactionState, verificationEvidence);
   summary = postRepair.summary;
   postVerification = postRepair.result;
   rc.verified = postVerification.ok;
@@ -146,6 +150,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
   const details: SmartCompactDetails = {
     runId: rc.runId,
     method: rc.method,
+    generationFallbacks: rc.generationFallbacks,
     chunkCount: rc.chunkCount || 1,
     topics: rc.summaries.length ? rc.summaries.map(s => s.topic) : [rc.method],
     readFiles: detRead, modifiedFiles: detModified,

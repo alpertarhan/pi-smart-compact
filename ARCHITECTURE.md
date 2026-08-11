@@ -60,14 +60,14 @@ threads a typed context through ten stages:
 
 | # | Stage | Module | Transition |
 | ---: | --- | --- | --- |
-| 1 | prepare | `app/steps/prepare.ts` | config + auth + provider caps |
-| 2 | window | `app/steps/window.ts` | pick the prefix to compact |
+| 1 | prepare | `app/steps/prepare.ts` | config + provider caps + budgets; auth remains lazy |
+| 2 | window | `app/steps/window.ts` | pick the prefix using a calibrated final-summary allowance |
 | 3 | recover | `app/steps/recover.ts` | restore log-truncated messages |
 | 4 | tier | `app/steps/tier.ts` | choose none / light / full |
 | 5 | extract | `app/steps/extract.ts` | prune + deterministic extraction + cache |
 | 6 | synthesize | `app/steps/synthesize.ts` | single-pass or EESV |
-| 7 | verify | `app/steps/verify.ts` | structural verify + repair |
-| 8 | state | `app/steps/state.ts` + `domain/yield-gate.ts` | state/open loops/delta + final yield proof |
+| 7 | verify | `app/steps/verify.ts` | structural verify + repair; high-risk outcomes require successful tool evidence |
+| 8 | state | `app/steps/state.ts` + `domain/yield-gate.ts` | state/open loops/resolved history/delta + final yield proof |
 | 9 | persist | `app/steps/persist.ts` | stage pending, apply compaction |
 | 10 | metrics | `app/steps/metrics.ts` | success / failure record |
 
@@ -120,8 +120,9 @@ pressure and deterministic extraction risk.
 Model routes are stage-specific but never inferred from mode. With no explicit
 configuration, Explore, Synthesize, and Verify all use the selected Pi model.
 `segmentationModel`, `summaryModel`, and `verificationModel` can independently
-override those routes. `prepareRun()` resolves credentials once per distinct
-provider/model route; call metrics preserve the actual route.
+override those routes. Credentials resolve lazily immediately before each
+stage's first network call and are reused for equivalent routes; call metrics
+preserve the actual route.
 
 ### Keep window and preprocessing
 
@@ -145,10 +146,11 @@ keeps chunked recovery instead of sending an oversized one-shot prompt to
 native summarization. Manual runs use the profile's absolute adaptive tail, so
 model-window size cannot turn an explicit command into a full-context no-op.
 
-Before summarization the pipeline serializes the full selected conversation,
-scrubs it, and writes that pre-prune backup; it then prunes redundant messages,
+Before summarization the pipeline serializes and scrubs the full selected
+conversation into an in-memory prepared backup, then prunes redundant messages,
 loads the previous verified summary plus bounded continuity state, checks the
-incremental extraction cache, and loads the project fingerprint.
+incremental extraction cache, and loads the project fingerprint. The backup is
+written atomically only after the matching native compaction is confirmed.
 
 ### Extract
 
@@ -187,16 +189,20 @@ deterministic fallback assembly when any budget or LLM call fails.
 ### Verify
 
 Primary: [`src/phases/verify.ts`](./src/phases/verify.ts). Scores the summary
-against the deterministic extraction. It checks for missing modified files,
-missing unresolved errors, missing high-confidence constraints, weak goal
-coverage, missing structure sections, suspicious fabricated file references,
-done/unresolved inconsistencies, missing explicit decisions, and missing
-open-loop coverage.
+against deterministic extraction, continuity, explicit focus/note steering,
+and source messages. It checks missing modified/read/deleted files, unresolved
+errors, high-confidence constraints, weak goal coverage, missing structure,
+suspicious fabricated paths, done/unresolved inconsistencies, explicit
+decisions, open loops, and unsupported high-risk outcome claims. Claims such as
+“tests passed” require matching source prose or a successful related tool
+result.
 
 **Repair order is intentional:** (1) deterministic patch first (free,
 idempotent) → (2) one LLM patch only in `thorough` mode if still insufficient
-→ (3) replace lower-scoring output with the deterministic quality floor → (4)
-reject unless final verification has no gaps and meets the verified threshold.
+→ (3) replace lower-scoring output with a deterministic quality floor built
+only from extraction, continuity, and steering → (4) reject unless final
+verification has no gaps and meets the verified threshold. Untrusted chunk
+prose is never an input to the quality floor.
 Final verification runs again after continuity injection. The final scalar is
 reported as repaired **verification coverage**, alongside the pre-repair source
 score and fallback provenance; it is not labeled as raw synthesis quality.
@@ -210,10 +216,10 @@ Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 - **Canonical summary IR** accepts recognized H1/H2/H3 headings, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
 - **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Provenance is persisted and shown before optional approval.
 - **Fine tool semantics** separate read/search/list/mutate/delete/execute operations. Pruning deduplicates only identical idempotent access signatures.
-- **Unified token planning** uses a run-bound estimator with bounded process-shared provider/model calibration, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, reserves 25% of the synthesis allowance for deterministic post-summary state sections, and reserves/reconciles every request against the mode's aggregate prompt/output-token caps.
-- **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in.
-- **Policy controls** include focus weighting, exact call/latency budgets, fail-closed manual approval, online damage monitoring, and persisted open-loop overrides.
-- **Release gate** (`bun run gate`) covers adversarial parser, verification, tool, cache, budget, scrub and damage fixtures.
+- **Unified token planning** uses a run-bound estimator with bounded process-shared provider/model calibration, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, reserves bounded deterministic post-summary state sections, clamps every provider request to the model's advertised output limit, and reserves/reconciles every request against aggregate prompt/output-token caps. Missing provider usage is estimated conservatively. Tool exchanges remain atomic; oversized result bodies are head/tail bounded only for synthesis after full deterministic extraction.
+- **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in. Backups remain in memory until confirmed apply.
+- **Policy controls** include focus weighting, exact call/latency budgets, default fail-closed manual approval, online damage monitoring, and persisted open-loop overrides. Interactive review time is outside the pipeline deadline.
+- **Release gates** (`bun run gate`, `bun run bench`) cover adversarial parser, verification, tool, cache, budget, scrub and damage fixtures plus bounded p95 regressions for extraction, pruning, chunking, summary parsing, and path matching.
 
 ## State, caching & persistence
 
@@ -221,10 +227,12 @@ Post-verification, `app/steps/state.ts` + `src/utils/state.ts` enrich the
 summary, then `domain/yield-gate.ts` measures the final replacement. Planning
 has already reserved the bounded post-synthesis enrichment band by reducing the
 retained tail; missing the original target or 10% net-saving floor still throws
-before a `StatedRc` can reach staging/apply. `session_before_compact` only stages a passing candidate; after
-the host emits the matching `session_compact`, `app/steps/persist.ts` commits
-reusable state and success telemetry. Aborted/unconfirmed candidates write
-neither, and the UI reports `Applied` only after that correlated commit.
+before a `StatedRc` can reach staging/apply. `session_before_compact` only stages
+a passing candidate; after the host emits the matching `session_compact`,
+`app/steps/persist.ts` commits reusable state, the prepared conversation backup,
+and success telemetry. Aborted/unconfirmed candidates write none of them. The
+UI reports `Applied` only after that correlated commit and emits a separate
+warning if any durable side effect was partial.
 `ui/error-format.ts` converts verification/yield failures to one bounded,
 content-free diagnostic and collapses unknown multiline errors; full stacks are
 suppressed by default and emitted only under explicit `DEBUG=smart-compact`.
@@ -238,13 +246,13 @@ leaving one content-free safe-fallback notice in the UI.
 | Concern | Where | Notes |
 | --- | --- | --- |
 | Open-loop injection | `utils/state.ts` | inserted before Next Steps via the canonical parser |
-| `CompactionState` | `utils/state.ts` | conservatively merged and bounded across goal wording changes; newer file evidence resolves delete/present contradictions |
+| `CompactionState` | `utils/state.ts` | immutable project/session/branch-head snapshots; descendants resolve the newest matching ancestor and siblings never overwrite each other |
 | Continuity Ledger | `utils/state.ts` | prior facts carry forward until positive resolution evidence or an explicit override; goal shifts become non-destructive breadcrumbs |
 | Cross-compaction delta | `utils/state.ts` | "Changes Since Last Compaction" section |
 | Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | bounded SHA-256 prefix fingerprint + tail; safe only when the pruned prefix still matches |
-| Synthesis cache | `infra/synthesis-cache.ts` | behavior key includes normalized focus, route, mode, budgets, and reasoning |
-| Session-log recovery | `utils/session-log.ts` | streaming JSONL parse; bypasses pi-toolkit truncation by entry-id mapping |
-| Project fingerprint | `utils/fingerprint.ts` | locked read/merge/write; language/framework/key dirs stay bounded across sessions |
+| Synthesis cache | `infra/synthesis-cache.ts` | behavior key includes normalized focus, route, mode, profile limits, run-level call/input/latency limits, and reasoning |
+| Session-log recovery | `utils/session-log.ts` | async bounded-memory JSONL scan with event-loop yields; bypasses pi-toolkit truncation by entry-id mapping without dropping late active-branch IDs at a fixed byte cap |
+| Project fingerprint | `utils/fingerprint.ts` | locked read/merge/write; language/framework/key dirs stay bounded and `sessionCount` tracks distinct hashed session identities |
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 | Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 non-structural nodes per project |
 
@@ -330,11 +338,13 @@ drives pipeline behavior:
 | `singlePassTokenMultiplier` | single-pass vs chunked threshold |
 | `tokenRatioEstimate` | token estimation; refined by per-(provider,model) **EMA calibration** |
 
-The Codex limiter is hybrid. Custom Codex endpoints receive
-`max_output_tokens` through Pi AI's payload hook. The ChatGPT subscription
-endpoint rejects every wire output-cap field, so it uses a derived 15–90s
-per-call stream watchdog plus a visible-output ceiling; aborts route to the
-phase's deterministic fallback.
+Every provider call is raced against one aborting hard deadline so a transport
+that ignores cancellation cannot keep the run lock indefinitely. Custom Codex
+endpoints also receive `max_output_tokens` through Pi AI's payload hook. The
+ChatGPT subscription endpoint rejects every wire output-cap field, so its
+deadline is derived from the requested output allowance (15–90s) and paired
+with a visible-output ceiling. Deadline failures route to the phase's
+deterministic fallback.
 
 ### Provider evaluation and routing evidence
 
@@ -414,14 +424,14 @@ The code is organized into six layers, each with a single responsibility.
 | `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
 | `app/mode-policy.ts` | Auto selector and finite Fast/Balanced/Thorough policies; legacy Aggressive maps to Fast |
 | `app/pending-slot.ts` | encapsulated pending-compaction state cell |
-| `app/steps/prepare.ts` | resolve config, auth, provider caps |
-| `app/steps/window.ts` | pick the prefix of messages to compact |
+| `app/steps/prepare.ts` | resolve config, provider caps, budgets, and cancellation; stage auth resolves lazily |
+| `app/steps/window.ts` | pick the prefix using provider-calibrated synthesis and deterministic post-processing bounds |
 | `app/steps/recover.ts` | recover full content for log-truncated messages |
 | `app/steps/tier.ts` | choose compaction tier (none / light / full) |
 | `app/steps/extract.ts` | pruning + deterministic extraction with incremental cache |
 | `app/steps/synthesize.ts` | single-pass / EESV synthesis |
-| `app/steps/verify.ts` | structural verification + repair |
-| `app/steps/state.ts` | enrich summary with state machine + open loops |
+| `app/steps/verify.ts` | structural verification + repair with tool-result trust boundaries |
+| `app/steps/state.ts` | enrich summary with state, open loops, and recent resolved-error history |
 | `app/steps/persist.ts` | apply compaction, save fingerprint, persist state |
 | `app/steps/metrics.ts` | record success / failure metrics |
 

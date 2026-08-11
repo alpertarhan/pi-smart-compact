@@ -39,7 +39,7 @@ import type {
   CompressionProfile, CompactionMode, EffectiveCompactionMode, LlmMessage, StructuredExtraction,
   ExplorationReport, ChunkSummary, SessionMessageEntry, PipelinePhaseTiming,
   CompactConfig, ProfileConfig, ProviderCapabilities, SmartCompactDetails,
-  CompactionState, ContinuityScope, OpenLoop, Cell,
+  CompactionState, ContinuityScope, OpenLoop, Cell, PreparedConversationBackup,
 } from "../types.ts";
 import type { PendingSlot } from "./pending-slot.ts";
 import type { PruningResult } from "../utils/pruning.ts";
@@ -129,8 +129,8 @@ export interface RcBase {
 
 // ── Stage 1: Prepared ────────────────────────────────────────────────────────
 //
-// After `prepareRun` resolves config + auth. Resolved here once so later
-// steps can rely on these fields existing.
+// After `prepareRun` resolves config, provider capabilities, and budgets.
+// Stage credentials remain optional and are lazily populated before use.
 
 export interface PreparedExt {
   /** Discriminator field; never read at runtime. */
@@ -172,6 +172,8 @@ export interface CompactionWindowPlan {
   fixedContextTokens: number;
   retentionTargetTokens: number;
   summaryBudgetTokens: number;
+  /** Locally estimated upper bound for synthesis plus deterministic post-processing. */
+  finalSummaryAllowanceTokens?: number;
   targetAfterTokens: number;
   hardBoundaryAdjusted: boolean;
   viable: boolean;
@@ -204,6 +206,8 @@ export type WindowedRc = RcBase & WindowedExt;
 export interface RecoveredExt extends WindowedExt {
   readonly _recovered: true;
   llmMessages: LlmMessage[];
+  /** Entry id aligned 1:1 with `llmMessages` after convertToLlm filtering. */
+  llmEntryIds: string[];
 }
 export type RecoveredRc = RcBase & RecoveredExt;
 
@@ -243,6 +247,8 @@ export interface ExtractedExt extends TieredExt {
   convText: string;
   convTokens: number;
   backupPath: string | null;
+  /** Scrubbed exact payload staged in memory and written only after apply confirmation. */
+  preparedBackup?: PreparedConversationBackup;
 }
 export type ExtractedRc = RcBase & ExtractedExt;
 
@@ -253,6 +259,7 @@ export interface SynthesizedExt extends ExtractedExt {
   finalSummary: string;
   method: "eesv" | "single-pass" | "heuristic";
   methodForMetrics: string;
+  generationFallbacks: string[];
   llmCalls: number;
   summaries: ChunkSummary[];
   explorationReport: ExplorationReport | null;
@@ -312,14 +319,39 @@ export function markPhase(rc: RcBase, phase: PipelinePhaseTiming["phase"]): void
   markMeasuredPhase(rc, phase, rc.phaseStart);
 }
 
-/**
- * In-place stage advancement.
- *
- * Each step mutates its input then casts to the next stage. The cast is the
- * only place we widen the type — the runtime object never copies. Centralizing
- * it here means tests can spot the transition easily and IDE jumps to the
- * factory rather than scattering `as` keywords through every step.
- */
-export function advance<TIn extends RcBase, TOut extends TIn>(rc: TIn, _stage: keyof TOut): TOut {
+const STAGE_ORDER = [
+  "_prepared", "_windowed", "_recovered", "_tiered",
+  "_extracted", "_synthesized", "_verified", "_stated",
+] as const;
+type StageMarker = (typeof STAGE_ORDER)[number];
+const STAGE_REQUIRED_FIELDS: Record<StageMarker, readonly string[]> = {
+  _prepared: ["config", "profileCfg", "providerCaps", "estimator", "adapted"],
+  _windowed: ["sessionId", "branch", "msgs", "toCompact", "totalTokens", "contextPercent", "keepFrom", "firstKeptId"],
+  _recovered: ["llmMessages", "llmEntryIds"],
+  _tiered: ["tier"],
+  _extracted: ["pruning", "currentEntryIds", "currentKeptEntryIds", "extraction", "convText", "convTokens"],
+  _synthesized: ["finalSummary", "method", "methodForMetrics", "generationFallbacks", "llmCalls", "summaries", "explorationRounds", "chunkCount"],
+  _verified: ["verificationScore", "verificationGaps", "verificationProvenance", "verified"],
+  _stated: ["openLoops", "compactionState", "details", "tokensSaved"],
+};
+
+/** Runtime-checked, in-place transition between adjacent pipeline stages. */
+export function advance<TIn extends RcBase, TOut extends TIn>(rc: TIn, stage: keyof TOut): TOut {
+  if (!STAGE_ORDER.includes(stage as StageMarker)) throw new Error("Unknown pipeline stage: " + String(stage));
+  const marker = stage as StageMarker;
+  const index = STAGE_ORDER.indexOf(marker);
+  const record = rc as unknown as Record<string, unknown>;
+  const hasStageHistory = STAGE_ORDER.some(candidate => record[candidate] === true);
+  if (hasStageHistory) {
+    for (let prior = 0; prior < index; prior++) {
+      if (record[STAGE_ORDER[prior]] !== true) {
+        throw new Error("Pipeline stage out of order: " + marker + " requires " + STAGE_ORDER[prior]);
+      }
+    }
+  }
+  for (const field of STAGE_REQUIRED_FIELDS[marker]) {
+    if (!(field in rc)) throw new Error("Pipeline stage " + marker + " missing field: " + field);
+  }
+  Object.defineProperty(rc, marker, { value: true, enumerable: true, configurable: false, writable: false });
   return rc as unknown as TOut;
 }

@@ -43,6 +43,7 @@ import { createServices } from "../src/infra/services.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/constants.ts";
+import { commitPreparedConversationBackup } from "../src/utils/backups.ts";
 
 /**
  * Build a TieredRc with the minimum fields synthesizeConversation +
@@ -74,7 +75,7 @@ function makeTieredRc(messages: LlmMessage[]): TieredRc {
     phaseStart: Date.now(),
     sessionId: "test-session-" + Math.random().toString(36).slice(2),
     branch: messages,
-    msgs: messages.map(m => ({ id: "m-" + Math.random().toString(36).slice(2), type: "message", message: m })),
+    msgs: messages.map((message, index) => ({ id: "m-" + index, type: "message", message })),
     totalTokens: 1000,
     contextPercent: 30,
     toolPercent: 20,
@@ -84,6 +85,7 @@ function makeTieredRc(messages: LlmMessage[]): TieredRc {
     compactTokens: 500,
     accTokens: 500,
     llmMessages: messages,
+    llmEntryIds: messages.map((_, index) => "m-" + index),
     tier: "balanced",
     summaryModel: { provider: "openai", id: "gpt-5", contextWindow: 200000 },
     segModel: { provider: "openai", id: "gpt-5", contextWindow: 200000 },
@@ -98,7 +100,8 @@ function makeTieredRc(messages: LlmMessage[]): TieredRc {
     },
     profileCfg: {
       singlePassMaxTokens: 50000, batchMaxTokens: 8000,
-      summaryBudgetTokens: 2000, chunkTokenBudget: 4000, keepRecentTokens: 10000,
+      summaryBudgetTokens: 2000, keepRecentTokens: 10000,
+      minChunkTokens: 500, maxChunkTokens: 4000,
     },
     estimator: makeTokenEstimator("openai", "gpt-5", services.tokenCalibration),
     providerCaps: {
@@ -142,15 +145,21 @@ afterEach(() => {
 });
 
 describe("pipeline integration: extract -> synthesize (single-pass)", () => {
-  it("carries the full current branch lineage into continuity scope", () => {
-    const lineage = Array.from({ length: 301 }, (_, index) => ({ id: "entry-" + (index + 1) }));
+  it("bounds long lineage while retaining pre-compaction state heads", () => {
+    const lineage = Array.from({ length: 1_001 }, (_, index) => ({
+      id: "entry-" + (index + 1),
+      ...(index === 100 ? { type: "compaction", parentId: "entry-100" } : {}),
+    }));
     const tiered = makeTieredRc([userMsg("continue the long lineage")]);
     (tiered.ctx as any).sessionManager = { getBranch: () => lineage };
 
     const extracted = extractWithCache(tiered);
+    const ancestry = extracted.continuityScope.branchAncestryIds!;
 
-    expect(extracted.continuityScope.branchHeadId).toBe("entry-301");
-    expect(extracted.continuityScope.branchAncestryIds).toEqual(lineage.map(entry => entry.id));
+    expect(extracted.continuityScope.branchHeadId).toBe("entry-1001");
+    expect(ancestry.length).toBeLessThanOrEqual(512);
+    expect(ancestry).toContain("entry-100");
+    expect(ancestry.at(-1)).toBe("entry-1001");
   });
 
   it("skips backup serialization and scrubbing when backups are disabled", () => {
@@ -167,7 +176,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(extractWithCache(tiered).backupPath).toBeNull();
   });
 
-  it("backs up the full selected span while synthesis receives pruned input", async () => {
+  it("backs up the full selected span while synthesis keeps substantive assistant evidence", async () => {
     const previousHome = process.env.HOME;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-full-backup-"));
     const backupDir = path.join(home, "backups");
@@ -196,14 +205,28 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     try {
       const tiered = makeTieredRc(messages);
       tiered.config.backupEnabled = true;
+      const scrubber = tiered.services.scrubber;
+      let backupScrubs = 0;
+      tiered.services.scrubber = {
+        scrubText: (text: string) => {
+          backupScrubs++;
+          return scrubber.scrubText(text);
+        },
+        scrubValue: <T>(value: T) => scrubber.scrubValue(value),
+        count: () => scrubber.count(),
+      } as any;
       const extracted = extractWithCache(tiered);
-      expect(extracted.convText).not.toContain(removedEvidence);
+      expect(extracted.convText).toContain(removedEvidence);
       expect(extracted.convText).not.toContain(truncatedEvidence);
-      const backup = fs.readFileSync(extracted.backupPath!, "utf8");
-      expect(backup).toContain(removedEvidence);
-      expect(backup).toContain(truncatedEvidence);
+      expect(fs.existsSync(extracted.backupPath!)).toBe(false);
+      expect(extracted.preparedBackup?.content).toBeUndefined();
+      expect(extracted.preparedBackup?.materialize).toBeFunction();
+      expect(backupScrubs).toBe(0);
+      await commitPreparedConversationBackup(extracted.preparedBackup!);
+      expect(backupScrubs).toBe(1);
+      expect(fs.readFileSync(extracted.backupPath!, "utf8")).toContain(truncatedEvidence);
       await summarizeConversation(extracted);
-      expect(request).not.toContain(removedEvidence);
+      expect(request).toContain(removedEvidence);
       expect(request).not.toContain(truncatedEvidence);
     } finally {
       process.env.HOME = previousHome;
@@ -344,5 +367,39 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.llmCalls).toBe(1);
     expect(notices).toContain("Single-pass generation stopped · using deterministic fallback");
     expect(notices.join("\n")).not.toContain("simulated provider outage");
+  });
+
+  it("records a one-batch fallback and never caches its degraded synthesis", async () => {
+    const messages = [userMsg("Preserve the release plan"), assistantMsg("Working through the release plan")];
+    let calls = 0;
+    setLlmClient({
+      complete: async () => {
+        calls++;
+        if (calls === 1) throw new Error("single batch unavailable");
+        return makeSummaryResponse(
+          "## Goal\nPreserve the release plan\n## Progress\n### Done\n- none\n### In Progress\n- release\n### Blocked\n- none\n## Critical Context\n- keep release evidence",
+        );
+      },
+    });
+    const notices: string[] = [];
+    const makeExtracted = () => {
+      const tiered = makeTieredRc(messages);
+      tiered.sessionId = "one-batch-fallback-session";
+      tiered.notify = message => { notices.push(message); };
+      tiered.profileCfg.singlePassMaxTokens = 1;
+      tiered.profileCfg.batchMaxTokens = 100_000;
+      tiered.profileCfg.maxChunkTokens = 100_000;
+      const extracted = extractWithCache(tiered);
+      extracted.convTokens = 60_000;
+      return extracted;
+    };
+
+    const first = await summarizeConversation(makeExtracted());
+    expect(first.generationFallbacks).toContain("1 synthesis batch fallback");
+    expect(notices).toContain("Synthesis batch stopped · deterministic evidence fallback preserved coverage");
+    expect(calls).toBe(2);
+
+    await summarizeConversation(makeExtracted());
+    expect(calls).toBeGreaterThan(2);
   });
 });

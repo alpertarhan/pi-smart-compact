@@ -10,6 +10,8 @@ describe("selectTier overflow recovery", () => {
       totalTokens: 50_000,
       config: { minContextPercent: 60 },
       ctx: { ui: { notify: () => {} } },
+      _prepared: true,
+      _windowed: true,
       _recovered: true,
     } as any;
 

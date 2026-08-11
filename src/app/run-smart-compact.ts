@@ -19,10 +19,10 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import type { Cell } from "../types.ts";
+import type { Cell, PendingCompaction, SmartCompactDetails } from "../types.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 import { acquireRunLock, releaseRunLock } from "./session-run-lock.ts";
-import { resolveSessionId } from "../infra/session-identity.ts";
+import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompactionMode, CompressionProfile } from "../types.ts";
 import { MODE_POLICIES, modeFromLegacyProfile, resolveMode } from "./mode-policy.ts";
@@ -110,6 +110,12 @@ export interface SmartCompactOptions {
   /** Lifecycle callback supplied by the extension's commit store. */
   onNativeApplyError?: (runId: string, error: Error) => boolean;
 }
+export type CompactOutcome =
+  | { kind: "staged"; pending: PendingCompaction }
+  | { kind: "apply-requested"; pending: PendingCompaction }
+  | { kind: "dry-run"; details: SmartCompactDetails }
+  | { kind: "skipped"; reason: "model-unavailable" | "session-unavailable" | "already-running" | "window-not-viable" | "tier-selection-failed" }
+  | { kind: "cancelled"; source: "user" | "timeout" | "host" };
 
 /**
  * Build the Stage 0 context. Every subsequent field is added by a step;
@@ -165,19 +171,33 @@ function makeBase(opts: SmartCompactOptions): RcBase {
   };
 }
 
-export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> {
+export async function runSmartCompact(opts: SmartCompactOptions): Promise<CompactOutcome> {
   if (!opts.summaryModel || !opts.segModel) {
     if (!opts.autoTriggered) opts.ctx.ui.notify("Model resolve failed", "error");
-    return;
+    return { kind: "skipped", reason: "model-unavailable" };
+  }
+  if (opts.abortSignal?.aborted) {
+    return { kind: "cancelled", source: "host" };
   }
   const runSessionId = resolveSessionId(opts.ctx);
+  if (isUnresolvedSessionId(runSessionId) && !opts.dryRun) {
+    if (!opts.autoTriggered) {
+      opts.ctx.ui.notify(
+        "Smart compact cannot stage or apply safely until the host exposes a stable session ID. No model calls were made.",
+        "warning",
+      );
+    }
+    return { kind: "skipped", reason: "session-unavailable" };
+  }
   if (!acquireRunLock(opts.isRunning, runSessionId)) {
     if (!opts.autoTriggered) opts.ctx.ui.notify("Smart compact is already running for this session.", "warning");
-    return;
+    return { kind: "skipped", reason: "already-running" };
   }
 
   const base = makeBase(opts);
+  let externallyAborted = false;
   const abortFromHost = () => {
+    externallyAborted = true;
     base.cancellation.timedOut = true;
     base.cancellation.controller.abort();
   };
@@ -212,9 +232,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
   }
 
   try {
-    if (base.cancellation.signal.aborted) return;
+    if (base.cancellation.signal.aborted) return { kind: "cancelled", source: externallyAborted ? "host" : "timeout" };
     const prepared = await prepareRun(base);
-    if (!prepared) return;
 
     base.notify(
       "EESV Compact (" + base.modelLabel + ", " + base.mode + ") — " +
@@ -223,7 +242,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     );
 
     const windowed = resolveCompactionWindow(prepared);
-    if (!windowed) return;
+    if (!windowed) return { kind: "skipped", reason: "window-not-viable" };
     failureSummaryFields = {
       ...failureSummaryFields,
       sessionId: windowed.sessionId,
@@ -232,19 +251,17 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
     };
     markPhase(windowed, "prepare");
 
-    if (!windowed.flags.autoTriggered) {
-      showProgressOverlay(windowed.ctx, {
-        phase: 1, phaseName: "Extract",
-        detail: "Indexing goals, files, decisions, errors, and open loops",
-        model: windowed.modelLabel, profile: windowed.profile,
-      });
-    }
+    showProgressOverlay(windowed.ctx, {
+      phase: 1, phaseName: "Extract",
+      detail: "Indexing goals, files, decisions, errors, and open loops",
+      model: windowed.modelLabel, profile: windowed.profile,
+    });
 
-    const recovered = recoverSessionLog(windowed);
+    const recovered = await recoverSessionLog(windowed);
     markPhase(recovered, "recover");
 
     const tiered = selectTier(recovered);
-    if (!tiered) return;
+    if (!tiered) return { kind: "skipped", reason: "tier-selection-failed" };
     failureSummaryFields = { ...failureSummaryFields, tier: tiered.tier, toolPercent: tiered.toolPercent };
 
     const extracted = extractWithCache(tiered);
@@ -276,13 +293,19 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
           stated.toCompact.length + " msgs, " + stated.llmCalls + " calls",
         "info",
       );
-      return;
+      return { kind: "dry-run", details: stated.details };
     }
 
     // Auto-trigger may have hard-timed-out while we were still running. In
     // that case Pi has already moved on to its native compact and we must
     // skip every side effect (no pending, no state writes, no apply).
-    if (stated.cancellation.timedOut) return;
+    if (stated.cancellation.timedOut) return { kind: "cancelled", source: externallyAborted ? "host" : "timeout" };
+    // The configured deadline bounds provider/pipeline work, not the user's
+    // review time. External host cancellation remains wired during approval.
+    if (base.cancellation.timeoutId) {
+      clearTimeout(base.cancellation.timeoutId);
+      base.cancellation.timeoutId = null;
+    }
 
     // Damage detection runs in best-effort mode against the existing branch's
     // previous compaction. Cheap to run, useful for the metrics dashboard.
@@ -295,7 +318,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
       try {
         // Approval is fail-closed and never races an auto-apply timer.
         decision = stated.ctx.hasUI
-          ? await showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services, { approval: true })
+          ? await showResultScreen(stated.ctx, stated.details, stated.extraction, stated.services, { approval: true, summary: stated.finalSummary })
           : "cancel";
       } catch (err) {
         log.debugError("Approval UI stopped", err);
@@ -305,12 +328,12 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         stated.pendingRef.clear(stated.sessionId);
         recordSuccessMetrics(stated, "cancelled");
         stated.ctx.ui.notify("Compaction cancelled — current conversation unchanged", "info");
-        return;
+        return { kind: "cancelled", source: "user" };
       }
     }
 
     // One last cancellation gate before staging anything the host could use.
-    if (stated.cancellation.timedOut) return;
+    if (stated.cancellation.timedOut) return { kind: "cancelled", source: externallyAborted ? "host" : "timeout" };
 
     // Snapshot telemetry now, but append it only after session_compact proves
     // Pi applied this exact runId. This prevents failed native compactions
@@ -321,16 +344,17 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<void> 
         detail: "Verified " + stated.verificationScore + "/100 · staging this run · awaiting Pi confirmation",
       });
     }
-    stagePendingCompaction(stated, buildSuccessMetrics(stated, "success"));
+    const pending = stagePendingCompaction(stated, buildSuccessMetrics(stated, "success"));
     if (stated.cancellation.timedOut) {
       stated.pendingRef.clear(stated.sessionId);
-      return;
+      return { kind: "cancelled", source: externallyAborted ? "host" : "timeout" };
     }
 
     if (willApply) {
       applyCompaction(stated);
       keepApplyProgress = true;
     }
+    return willApply ? { kind: "apply-requested", pending } : { kind: "staged", pending };
   } catch (err) {
     runFailed = true;
     // The failure path may run before any step has populated stage data, so

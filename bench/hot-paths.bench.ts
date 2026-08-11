@@ -27,6 +27,21 @@ interface Benchmark {
   run: () => void;
 }
 
+interface Measurement {
+  medianMs: number;
+  p95Ms: number;
+  opsPerSec: number;
+}
+
+const P95_LIMIT_MS: Record<string, number> = {
+  "incremental hit (legacy full index)": 5,
+  "incremental hit (optimized)": 3,
+  "prune 5k messages": 30,
+  "chunk + bound 5k messages": 40,
+  "parse 1MB canonical summary": 5,
+  "unique needles across 500 paths": 2,
+};
+
 const benchmarks: Benchmark[] = [
   {
     name: "incremental hit (legacy full index)",
@@ -71,7 +86,7 @@ function percentile(sorted: number[], ratio: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * ratio))] ?? 0;
 }
 
-function measure(benchmark: Benchmark): { medianMs: number; p95Ms: number; opsPerSec: number } {
+function measure(benchmark: Benchmark): Measurement {
   for (let i = 0; i < 5; i++) benchmark.run();
   const samples: number[] = [];
   for (let sample = 0; sample < 25; sample++) {
@@ -89,5 +104,12 @@ function measure(benchmark: Benchmark): { medianMs: number; p95Ms: number; opsPe
 }
 
 console.log("pi-smart-compact hot-path benchmark (5,000 messages, 100-message delta)");
-console.table(benchmarks.map(benchmark => ({ name: benchmark.name, ...measure(benchmark) })));
+const measurements = benchmarks.map(benchmark => ({ name: benchmark.name, ...measure(benchmark) }));
+console.table(measurements);
+const regressions = measurements.filter(result => result.p95Ms > P95_LIMIT_MS[result.name]);
+if (regressions.length) {
+  throw new Error("Hot-path benchmark regression: " + regressions
+    .map(result => result.name + " p95=" + result.p95Ms + "ms > " + P95_LIMIT_MS[result.name] + "ms")
+    .join("; "));
+}
 if (sink === Number.MIN_SAFE_INTEGER) console.log(sink);

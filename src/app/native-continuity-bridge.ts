@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { SEVEN_DAYS_MS } from "../constants.ts";
+import { ONE_HOUR_MS, SEVEN_DAYS_MS } from "../constants.ts";
 import { acquireLockSync, atomicWriteFileSync, ensureDir } from "../infra/fs.ts";
 import { nativeContinuityDir } from "../infra/paths.ts";
 import * as log from "../utils/logger.ts";
@@ -62,9 +62,15 @@ export function createNativeContinuityBridge(opts: {
 
   const prune = (reserve: number): Array<{ file: string; entry: Entry }> => {
     const fresh: Array<{ file: string; entry: Entry }> = [];
-    let files: string[] = [];
-    try { files = fs.readdirSync(dir).filter(file => file.endsWith(".json")); }
+    let names: string[] = [];
+    try { names = fs.readdirSync(dir); }
     catch { return fresh; }
+    for (const name of names) {
+      if (!/\.tmp\.\d+\.[0-9a-f]+$/i.test(name)) continue;
+      const file = path.join(dir, name);
+      try { if (now() - fs.statSync(file).mtimeMs > ONE_HOUR_MS) fs.unlinkSync(file); } catch { /* another process won */ }
+    }
+    const files = names.filter(file => file.endsWith(".json"));
     for (const name of files) {
       const file = path.join(dir, name);
       const entry = readEntry(file);

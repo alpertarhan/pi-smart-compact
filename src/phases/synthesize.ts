@@ -29,33 +29,80 @@ export function renderBatchMessage(message: LlmMessage): string {
   const content = extractText(message.content).slice(0, TRUNC.PREVIEW_XL);
   const toolCalls = filterToolCalls(message.content)
     .map(call => call.name + " " + JSON.stringify(boundedToolArgs(call.arguments)).slice(0, TRUNC.DETAIL))
-    .join("; ");
+    .join("; ")
+    .slice(0, TRUNC.PREVIEW_XL);
   return "[" + message.role + "] " + content + (toolCalls ? "\n[tool_calls] " + toolCalls : "");
 }
 
 function estimateChunkTokens(msgs: LlmMessage[], estimator: TokenEstimator): number {
   return estimator.text(msgs.map(renderBatchMessage).join("\n"));
 }
+function fitChunkBudget(messages: LlmMessage[], maxTokens: number, estimator: TokenEstimator): LlmMessage[] {
+  let fitted = messages;
+  let estimate = estimateChunkTokens(fitted, estimator);
+  for (let round = 0; estimate > maxTokens && round < 8; round++) {
+    const ratio = Math.max(0.02, Math.min(0.8, maxTokens / Math.max(1, estimate) * 0.75));
+    let changed = false;
+    fitted = fitted.map(message => {
+      const text = extractText(message.content);
+      if (!text || message.role === "assistant") return message;
+      const target = Math.max(16, Math.floor(Math.min(text.length, TRUNC.PREVIEW_XL) * ratio));
+      if (text.length <= target) return message;
+      const head = Math.max(8, Math.floor(target * 0.6));
+      const tail = Math.max(4, target - head);
+      changed = true;
+      return { ...message, content: text.slice(0, head) + "\n[…tool evidence bounded for synthesis…]\n" + text.slice(-tail) };
+    });
+    if (!changed) break;
+    estimate = estimateChunkTokens(fitted, estimator);
+  }
+  return fitted;
+}
+
+function extendThroughToolResults(messages: LlmMessage[], start: number, proposedEnd: number): number {
+  const callIndexes = new Map<string, number>();
+  for (let index = 0; index < messages.length; index++) {
+    if (messages[index].role !== "assistant") continue;
+    for (const call of filterToolCalls(messages[index].content)) {
+      if (call.id) callIndexes.set(call.id, index);
+    }
+  }
+  let end = Math.max(start + 1, Math.min(proposedEnd, messages.length));
+  for (let index = end; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== "toolResult" || !message.toolCallId) continue;
+    const callIndex = callIndexes.get(message.toolCallId);
+    if (callIndex !== undefined && callIndex >= start && callIndex < end) end = index + 1;
+  }
+  return end;
+}
+
 
 function splitOversizedChunk(ch: LlmChunk, maxTokens: number, estimator: TokenEstimator): LlmChunk[] {
-  if (ch.tokenEstimate <= maxTokens || ch.messages.length <= 1) return [ch];
+  if (ch.tokenEstimate <= maxTokens) return [ch];
+  if (ch.messages.length <= 1) {
+    const messages = fitChunkBudget(ch.messages, maxTokens, estimator);
+    return [{ ...ch, tokenEstimate: estimateChunkTokens(messages, estimator), messages }];
+  }
   const parts: LlmChunk[] = [];
   let start = 0;
   while (start < ch.messages.length) {
-    let end = start;
+    let proposedEnd = start;
     let tokens = 0;
-    while (end < ch.messages.length) {
-      const next = estimateChunkTokens([ch.messages[end]], estimator);
-      if (end > start && tokens + next > maxTokens) break;
+    while (proposedEnd < ch.messages.length) {
+      const next = estimateChunkTokens([ch.messages[proposedEnd]], estimator);
+      if (proposedEnd > start && tokens + next > maxTokens) break;
       tokens += next;
-      end++;
+      proposedEnd++;
     }
+    const end = extendThroughToolResults(ch.messages, start, proposedEnd);
+    const messages = fitChunkBudget(ch.messages.slice(start, end), maxTokens, estimator);
     parts.push({
       ...ch,
       startIndex: ch.startIndex + start,
       endIndex: ch.startIndex + end - 1,
-      tokenEstimate: tokens,
-      messages: ch.messages.slice(start, end),
+      tokenEstimate: estimateChunkTokens(messages, estimator),
+      messages,
     });
     start = end;
   }
@@ -87,22 +134,28 @@ export function chunkLlmMessages(
     return parts;
   }
 
-  const sorted = [...boundaries].sort((a, b) => a.afterIndex - b.afterIndex);
+  const sorted = boundaries
+    .filter(boundary => Number.isFinite(boundary.afterIndex))
+    .map(boundary => ({
+      ...boundary,
+      afterIndex: Math.max(0, Math.min(Math.trunc(boundary.afterIndex), Math.max(0, msgs.length - 2))),
+    }))
+    .sort((a, b) => a.afterIndex - b.afterIndex)
+    .filter((boundary, index, all) => index === 0 || boundary.afterIndex !== all[index - 1].afterIndex);
   const chunks: LlmChunk[] = [];
   let start = 0;
 
   for (const bp of sorted) {
-    const end = bp.afterIndex + 1;
-    if (end > start && end <= msgs.length) {
-      const slice = msgs.slice(start, end);
-      chunks.push({
-        startIndex: start, endIndex: end - 1,
-        tokenEstimate: estimateChunkTokens(slice, estimator),
-        topic: bp.topic || "Segment " + (chunks.length + 1),
-        priority: bp.priority,
-        messages: slice,
-      });
-    }
+    const end = extendThroughToolResults(msgs, start, bp.afterIndex + 1);
+    if (end <= start || end > msgs.length) continue;
+    const slice = msgs.slice(start, end);
+    chunks.push({
+      startIndex: start, endIndex: end - 1,
+      tokenEstimate: estimateChunkTokens(slice, estimator),
+      topic: bp.topic || "Segment " + (chunks.length + 1),
+      priority: bp.priority,
+      messages: slice,
+    });
     start = end;
   }
 
@@ -237,6 +290,7 @@ export async function summarizeBatch(
       startIndex: ch.startIndex, endIndex: ch.endIndex,
       summary: f("Summary") || sectionFallback || chunkFallback || "No summary generated for this segment.",
       keyDecisions: l("Decisions"), filesModified: l("Modified"), filesRead: l("Read"),
+      filesDeleted: l("Deleted"),
       priority: ["critical", "high", "normal", "low"].includes(prio) ? prio as ChunkSummary["priority"] : ch.priority,
     };
   });
@@ -252,11 +306,13 @@ export async function assembleLLM(
   const pp = preProcessSummaries(summaries, budget, focus);
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
+  const detDeleted = extraction.deletedFiles;
   const explorationCtx = report ? buildExplorationContext(report) : "";
   const dynamicSuffix = ASSEMBLY_PROMPT_SUFFIX
     .replace("{DECISIONS}", pp.decisions.join("; ") || "None")
     .replace("{MODIFIED}", detModified.join(", ") || "None")
     .replace("{READ}", detRead.join(", ") || "None")
+    .replace("{DELETED}", detDeleted.join(", ") || "None")
     .replace("{EXPLORATION_CONTEXT}", explorationCtx)
     .replace("{PREV_CONTEXT}", prevContext)
     .replace("{SUMMARIES}", pp.text);
@@ -271,14 +327,21 @@ export async function assembleLLM(
   return resp.content.filter((c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text").map(c => c.text).join("\n").trim();
 }
 
-export function assembleFallback(summaries: ChunkSummary[], extraction: StructuredExtraction): string {
+export function assembleFallback(
+  summaries: ChunkSummary[],
+  extraction: StructuredExtraction,
+  steering: { focus?: string; note?: string } = {},
+): string {
   const safe = (value: string, max: number = TRUNC.PREVIEW_MID) => summaryEvidenceLine(value, max);
   const detModified = extraction.modifiedFiles.map(f => safe(f.path)).filter(Boolean);
   const detRead = extraction.readFiles.map(file => safe(file)).filter(Boolean);
+  const detDeleted = extraction.deletedFiles.map(file => safe(file)).filter(Boolean);
   const unresolved = extraction.errors.filter(error => !error.resolved)
     .map(error => safe(error.message, TRUNC.PREVIEW)).filter(Boolean);
   const constraints = extraction.constraints
     .map(item => "- [" + item.category + "] " + safe(item.text)).filter(line => !line.endsWith("] "));
+  if (steering.focus?.trim()) constraints.push("- [focus] Preserve detail about: " + safe(steering.focus, TRUNC.CONSTRAINT_TEXT));
+  if (steering.note?.trim()) constraints.push("- [note] " + safe(steering.note, TRUNC.CONSTRAINT_TEXT));
   const decisions = extraction.decisions.map(item => {
     const summary = safe(item.summary, TRUNC.DECISION_SUMMARY);
     const response = item.userResponse ? safe(item.userResponse, TRUNC.USER_RESPONSE) : "";
@@ -294,6 +357,13 @@ export function assembleFallback(summaries: ChunkSummary[], extraction: Structur
   const next = safe(extraction.lastUserMessages.at(-1) ?? extraction.timeline.at(-1)?.summary ?? "", TRUNC.PREVIEW)
     || "Continue from the latest preserved context.";
   const goal = safe(extraction.mainGoal ?? "", TRUNC.DETAIL) || "Continue the current task.";
+  const overflow = Object.entries(extraction.evidenceOverflow ?? {})
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([kind, count]) => "- Safety bound omitted " + count + " older " + kind + " item(s) from the human summary.");
+  const critical = [
+    ...unresolved.map(error => "- Unresolved error: " + safe(error, TRUNC.TOPIC_LABEL)),
+    ...overflow,
+  ];
   return [
     "## Goal", goal, "",
     "## Constraints & Preferences", ...(constraints.length ? constraints : ["- None recorded."]), "",
@@ -303,8 +373,9 @@ export function assembleFallback(summaries: ChunkSummary[], extraction: Structur
     "## Key Decisions", ...(decisions.length ? decisions : ["- None recorded."]), "",
     "## Files Modified", ...(detModified.length ? detModified.map(file => "- " + file) : ["- None recorded."]), "",
     "## Files Read", ...(detRead.length ? detRead.map(file => "- " + file) : ["- None recorded."]), "",
+    "## Files Deleted", ...(detDeleted.length ? detDeleted.map(file => "- " + file) : ["- None recorded."]), "",
     "## Next Steps", "1. " + next, "",
-    "## Critical Context", ...(unresolved.length ? unresolved.map(error => "- Unresolved error: " + safe(error, TRUNC.TOPIC_LABEL)) : ["- None recorded."]), "",
+    "## Critical Context", ...(critical.length ? critical : ["- None recorded."]), "",
     "## Topics Covered", ...(summaries.length ? summaries.map(item => {
       const topic = safe(item.topic, TRUNC.TOPIC_LABEL) || "Segment";
       return "- **" + topic + "** [" + item.priority + "]: " + safe(item.summary);
@@ -322,6 +393,6 @@ export function failedChunkSummary(ch: LlmChunk): ChunkSummary {
   return {
     topic: ch.topic, startIndex: ch.startIndex, endIndex: ch.endIndex,
     summary: "[Failed] " + summaryEvidenceLine(ch.messages.map(m => extractText(m.content)).join("\n"), TRUNC.DETAIL),
-    keyDecisions: [], filesModified: [], filesRead: [], priority: ch.priority,
+    keyDecisions: [], filesModified: [], filesRead: [], filesDeleted: [], priority: ch.priority,
   };
 }

@@ -81,6 +81,10 @@ export function buildSuccessMetrics(
     llmPatched: rc.verificationProvenance?.llmPatched ?? false,
     qualityFloorUsed: rc.verificationProvenance?.qualityFloorUsed ?? false,
     remainingVerificationGaps: rc.verificationProvenance?.remainingGaps.length ?? rc.verificationGaps.length,
+    verificationGapKinds: Array.from(new Set([
+      ...(rc.verificationProvenance?.deterministicPatched ?? []).map(gap => gap.kind),
+      ...(rc.verificationProvenance?.remainingGaps ?? []).map(gap => gap.kind),
+    ])),
     method: rc.methodForMetrics,
     model: rc.modelLabel,
     provider: rc.summaryModel.provider,
@@ -157,7 +161,7 @@ export function recordFailureMetrics(
     : undefined;
   const knownGapKinds = new Set<VerificationGap["kind"]>([
     "missing-section", "missing-file", "missing-error", "missing-constraint", "missing-decision",
-    "missing-goal", "fabricated-file", "inconsistency", "missing-open-loops",
+    "missing-goal", "fabricated-file", "inconsistency", "missing-open-loops", "unsupported-claim",
   ]);
   const gapKinds = Array.isArray(gate?.gapKinds)
     ? gate.gapKinds.filter((kind): kind is VerificationGap["kind"] => typeof kind === "string" && knownGapKinds.has(kind as VerificationGap["kind"]))

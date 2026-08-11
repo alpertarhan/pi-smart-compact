@@ -51,6 +51,16 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+
+  it("normalizes the graph directory to owner-only permissions", () => {
+    const graphDir = path.dirname(contextGraphFile());
+    fs.mkdirSync(graphDir, { recursive: true, mode: 0o755 });
+    fs.chmodSync(graphDir, 0o755);
+
+    indexCompactionState("project-a", state("project-a", "session-a", "branch-a"));
+
+    expect(fs.statSync(graphDir).mode & 0o777).toBe(0o700);
+  });
 describe("persistent context graph", () => {
   it("defers and coalesces duplicate branch indexing off the caller's turn", () => {
     scheduleCompactionStateIndex("project-a", state("project-a", "session-a", "branch-b", {
@@ -80,6 +90,17 @@ describe("persistent context graph", () => {
     expect(alpha.some(result => result.content.includes("beta"))).toBe(false);
     expect(beta.some(result => result.content.includes("beta"))).toBe(true);
     expect(beta.some(result => result.content.includes("alpha"))).toBe(false);
+  });
+
+  it("reports queue backpressure instead of silently evicting accepted updates", () => {
+    const accepted = Array.from({ length: 65 }, (_, index) => scheduleCompactionStateIndex(
+      "project-a",
+      state("project-a", "session-" + index, "branch-" + index),
+    ));
+    expect(accepted.filter(Boolean)).toHaveLength(64);
+    expect(accepted[64]).toBe(false);
+    flushCompactionStateIndexes();
+    expect(getContextGraphStats("project-a").sessions).toBe(64);
   });
 
   it("keeps equivalent sibling occurrences isolated from resolution and overrides", () => {

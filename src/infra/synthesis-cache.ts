@@ -18,32 +18,73 @@ const cache = new Map<string, Entry>();
 const batchCache = new Map<string, BatchEntry>();
 const TTL_MS = 10 * 60_000;
 const MAX_ENTRIES = 16;
+function fingerprint(value: string | undefined): string {
+  return createHash("sha256").update(value ?? "").digest("hex");
+}
+
+function cloneExplorationReport(report: ExplorationReport | null): ExplorationReport | null {
+  if (!report) return null;
+  return {
+    ...report,
+    boundaries: report.boundaries.map(boundary => ({ ...boundary })),
+    enrichedConstraints: report.enrichedConstraints.slice(),
+    crossReferences: report.crossReferences.slice(),
+    statusAssessment: {
+      done: report.statusAssessment.done.slice(),
+      inProgress: report.statusAssessment.inProgress.slice(),
+      blocked: report.statusAssessment.blocked.slice(),
+    },
+    criticalContext: report.criticalContext.slice(),
+    keyDecisions: report.keyDecisions.slice(),
+  };
+}
+
+function cloneSynthesis(value: CachedSynthesis): CachedSynthesis {
+  return {
+    ...value,
+    summaries: getCachedBatchClone(value.summaries),
+    explorationReport: cloneExplorationReport(value.explorationReport),
+  };
+}
+
 
 export function synthesisCacheKey(rc: ExtractedRc): string {
   const payload = JSON.stringify({
-    v: VERSION,
+    version: VERSION,
     session: rc.sessionId,
     project: rc.projectId,
     entries: rc.currentKeptEntryIds,
+    conversation: fingerprint(rc.convText),
+    projectContext: fingerprint(rc.projectCtx),
     previous: rc.prevContext,
     mode: rc.mode,
+    requestedMode: rc.requestedMode,
     profile: rc.profile,
-    profileConfig: rc.profileCfg,
-    model: rc.modelLabel,
-    segmentationModel: rc.segModel.provider + "/" + rc.segModel.id,
-    thinking: {
-      summary: rc.config.summaryThinkingLevel,
-      segmentation: rc.config.segmentationThinkingLevel,
+    profileCfg: rc.profileCfg,
+    summaryThinkingLevel: rc.config.summaryThinkingLevel,
+    segmentationThinkingLevel: rc.config.segmentationThinkingLevel,
+    focusWeighting: rc.config.focusWeighting !== false,
+    summaryModel: {
+      route: rc.modelLabel,
+      api: rc.summaryModel.api,
+      baseUrl: rc.summaryModel.baseUrl ?? "",
     },
-    limits: {
-      calls: rc.config.maxLlmCalls,
-      input: rc.config.maxLlmInputTokens,
-      codexCallMs: rc.config.codexMaxCallMs,
-      latencyMs: rc.config.maxLatencyMs,
+    segmentationModel: {
+      route: rc.segModel?.provider + "/" + rc.segModel?.id,
+      api: rc.segModel?.api,
+      baseUrl: rc.segModel?.baseUrl ?? "",
     },
-    focus: rc.focus?.trim() || undefined,
+    verificationModel: {
+      route: rc.verifyModel?.provider + "/" + rc.verifyModel?.id,
+      api: rc.verifyModel?.api,
+      baseUrl: rc.verifyModel?.baseUrl ?? "",
+    },
+    maxLlmCalls: rc.maxLlmCalls,
+    maxLlmInputTokens: rc.maxLlmInputTokens,
+    timeoutMs: rc.timeoutMs,
+    focus: rc.focus,
+    userNote: rc.userNote,
     zeroCall: rc.config.zeroCallEnabled !== false,
-    note: rc.userNote,
   });
   return createHash("sha256").update(payload).digest("hex");
 }
@@ -54,7 +95,7 @@ export function getCachedSynthesis(key: string, now = Date.now()): CachedSynthes
   if (now - entry.createdAt > TTL_MS) { cache.delete(key); return null; }
   cache.delete(key);
   cache.set(key, entry);
-  return { ...entry.value, summaries: entry.value.summaries.slice() };
+  return cloneSynthesis(entry.value);
 }
 
 export function setCachedSynthesis(key: string, value: CachedSynthesis, now = Date.now()): void {
@@ -64,7 +105,7 @@ export function setCachedSynthesis(key: string, value: CachedSynthesis, now = Da
     if (!oldest) break;
     cache.delete(oldest);
   }
-  cache.set(key, { value: { ...value, summaries: value.summaries.slice() }, createdAt: now });
+  cache.set(key, { value: cloneSynthesis(value), createdAt: now });
 }
 
 export function batchCacheKey(value: unknown): string {
@@ -77,7 +118,7 @@ export function getCachedBatch(key: string, now = Date.now()): ChunkSummary[] | 
   if (now - entry.createdAt > TTL_MS) { batchCache.delete(key); return null; }
   batchCache.delete(key);
   batchCache.set(key, entry);
-  return entry.value.map(item => ({ ...item, keyDecisions: item.keyDecisions.slice(), filesModified: item.filesModified.slice(), filesRead: item.filesRead.slice() }));
+  return entry.value.map(item => ({ ...item, keyDecisions: item.keyDecisions.slice(), filesModified: item.filesModified.slice(), filesRead: item.filesRead.slice(), filesDeleted: (item.filesDeleted ?? []).slice() }));
 }
 
 export function setCachedBatch(key: string, value: ChunkSummary[], now = Date.now()): void {
@@ -91,7 +132,7 @@ export function setCachedBatch(key: string, value: ChunkSummary[], now = Date.no
 }
 
 function getCachedBatchClone(value: ChunkSummary[]): ChunkSummary[] {
-  return value.map(item => ({ ...item, keyDecisions: item.keyDecisions.slice(), filesModified: item.filesModified.slice(), filesRead: item.filesRead.slice() }));
+  return value.map(item => ({ ...item, keyDecisions: item.keyDecisions.slice(), filesModified: item.filesModified.slice(), filesRead: item.filesRead.slice(), filesDeleted: (item.filesDeleted ?? []).slice() }));
 }
 
 export function clearSynthesisCache(): void { cache.clear(); batchCache.clear(); }

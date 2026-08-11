@@ -207,10 +207,12 @@ describe("smart compact preflight UI", () => {
     expect(result).toBeNull();
   });
 
-  it("blocks Enter for non-viable plans and lets Esc cancel", async () => {
+  it("explains blocked Enter for non-viable plans and lets Esc cancel", async () => {
     const result = await showCompactUI(context((component, done) => {
+      expect(component.render(100).join("\n")).not.toContain("Choose another mode");
       component.handleInput("enter");
       expect(done.value).toBeUndefined();
+      expect(component.render(100).join("\n")).toContain("Choose another mode");
       component.handleInput("esc");
     }, 1_000), { ...opts, contextTokens: 1_000, contextPercent: 1 });
     expect(result).toBeNull();

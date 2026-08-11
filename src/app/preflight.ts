@@ -5,10 +5,10 @@ import type { CompactConfig, EffectiveCompactionMode, LlmMessage, ProfileConfig,
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { computeToolCharPercentage } from "../utils/helpers.ts";
 import { readRecentDamageScores } from "../utils/damage.ts";
-import { makeTokenEstimator, type TokenCalibrationStore, type TokenEstimator } from "../utils/tokens.ts";
+import { getProviderCaps, makeTokenEstimator, type TokenCalibrationStore, type TokenEstimator } from "../utils/tokens.ts";
 import { MODE_POLICIES } from "./mode-policy.ts";
 import type { CompactionWindowPlan } from "./run-context.ts";
-import { planCompactionWindow } from "./steps/window.ts";
+import { estimateFinalSummaryAllowance, planCompactionWindow } from "./steps/window.ts";
 
 export function preflightDamageMedian(cwd: string, config: CompactConfig): number {
   if (!config.adaptiveDamageFeedback) return 0;
@@ -21,6 +21,7 @@ export function preflightDamageMedian(cwd: string, config: CompactConfig): numbe
 export interface PreparedPreflightProfile {
   profileCfg: ProfileConfig;
   estimator: TokenEstimator;
+  providerCaps: ReturnType<typeof getProviderCaps>;
   adapted: boolean;
   damageMedian: number;
 }
@@ -48,6 +49,7 @@ export function preparePreflightProfile(input: {
   return {
     profileCfg,
     estimator: makeTokenEstimator(input.summaryModel.provider, input.summaryModel.id, input.tokenCalibration),
+    providerCaps: getProviderCaps(input.summaryModel.provider),
     adapted: damageMedian >= 25,
     damageMedian,
   };
@@ -137,6 +139,7 @@ export function planManualPreflight(
     profileCfg: prepared.profileCfg,
     force: true,
     overflowedContext,
+    finalSummaryAllowanceTokens: estimateFinalSummaryAllowance(prepared.profileCfg, prepared.estimator, prepared.providerCaps),
   });
   const normalizedMessages = plan.compactTokens + plan.retainedTokens;
   return {

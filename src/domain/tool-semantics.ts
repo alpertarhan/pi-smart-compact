@@ -91,6 +91,46 @@ export function classifyToolOperation(args: unknown, toolName?: string): ToolOpe
   if (hasPath || nameHas(name, ["read"])) return "read";
   return "unknown";
 }
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Args)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableValue(item)]),
+  );
+}
+
+function commandIdentity(args: Args): string {
+  const raw = COMMAND_KEYS.map(key => args[key]).find((value): value is string => typeof value === "string") ?? "";
+  return raw
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(token => token !== "--" && !/^--?(?:retry|force|runInBand|no-cache|verbose|silent)(?:=|$)/i.test(token))
+    .join(" ");
+}
+
+/** Stable identity for deciding whether a later call is a retry of an earlier one. */
+export function toolOperationSignature(toolName: string, args: Record<string, unknown>): string {
+  const operation = classifyToolOperation(args, toolName);
+  const name = normalizeToolName(toolName);
+  if (operation === "execute") return operation + "\0" + name + "\0" + commandIdentity(args);
+  const target = extractToolPath(args);
+  if (target) return operation + "\0" + name + "\0" + target.replace(/\\/g, "/");
+  if (operation === "search") {
+    const query = ["pattern", "query", "glob"].map(key => args[key]).find((value): value is string => typeof value === "string") ?? "";
+    return operation + "\0" + name + "\0" + query;
+  }
+  return operation + "\0" + name + "\0" + JSON.stringify(stableValue(args));
+}
+
+export function sameToolOperation(
+  left: { name: string; arguments: Record<string, unknown> },
+  right: { name: string; arguments: Record<string, unknown> },
+): boolean {
+  return toolOperationSignature(left.name, left.arguments) === toolOperationSignature(right.name, right.arguments);
+}
 
 /**
  * Broad compatibility classifier retained for existing name-agnostic callers.

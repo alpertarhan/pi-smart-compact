@@ -30,7 +30,7 @@
 
 import {
   SECTION_GOAL, SECTION_CONSTRAINTS, SECTION_PROGRESS, SECTION_DECISIONS,
-  SECTION_FILES_MODIFIED, SECTION_FILES_READ, SECTION_NEXT_STEPS,
+  SECTION_FILES_MODIFIED, SECTION_FILES_READ, SECTION_FILES_DELETED, SECTION_NEXT_STEPS,
   SECTION_CRITICAL_CONTEXT, SECTION_TOPICS, SECTION_OPEN_LOOPS, SECTION_CHANGES,
 } from "../constants.ts";
 
@@ -41,6 +41,7 @@ export type SectionKind =
   | "decisions"
   | "files-modified"
   | "files-read"
+  | "files-deleted"
   | "next-steps"
   | "critical-context"
   | "topics"
@@ -75,6 +76,7 @@ export function classifyHeading(raw: string): SectionKind {
   if (text.includes("key decision") || text === "decisions") return "decisions";
   if (text.includes("file") && text.includes("modif")) return "files-modified";
   if (text.includes("file") && (text.includes("read") || text.includes("viewed"))) return "files-read";
+  if (text.includes("file") && (text.includes("delet") || text.includes("remov"))) return "files-deleted";
   if (text.includes("next step") || text === "next actions") return "next-steps";
   if (text.includes("critical context") || text === "important context") return "critical-context";
   if (text === "topics" || text.includes("topics covered")) return "topics";
@@ -93,6 +95,7 @@ export function canonicalHeading(kind: SectionKind): string {
     case "decisions": return SECTION_DECISIONS;
     case "files-modified": return SECTION_FILES_MODIFIED;
     case "files-read": return SECTION_FILES_READ;
+    case "files-deleted": return SECTION_FILES_DELETED;
     case "next-steps": return SECTION_NEXT_STEPS;
     case "critical-context": return SECTION_CRITICAL_CONTEXT;
     case "topics": return SECTION_TOPICS;

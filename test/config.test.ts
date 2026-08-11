@@ -131,6 +131,36 @@ describe("validateSmartCompactConfig", () => {
     expect("weird" in profiles).toBe(false);
   });
 
+  it("rejects fractional and cross-field-invalid profile overrides", () => {
+    const sc = {
+      profiles: {
+        light: { minChunkTokens: 1_000.5 },
+        balanced: { minChunkTokens: 9_000, maxChunkTokens: 8_000 },
+        aggressive: { maxChunkTokens: 20_000, batchMaxTokens: 18_000 },
+      },
+    } as Record<string, unknown>;
+
+    validateSmartCompactConfig(sc);
+    const profiles = sc.profiles as Record<string, Record<string, unknown>>;
+    expect(profiles.light.minChunkTokens).toBeUndefined();
+    expect(profiles.balanced).toBeUndefined();
+    expect(profiles.aggressive).toBeUndefined();
+  });
+
+  it("keeps a coherent integer profile override", () => {
+    const sc = {
+      profiles: {
+        balanced: { minChunkTokens: 600, maxChunkTokens: 9_000, batchMaxTokens: 27_000 },
+      },
+    } as Record<string, unknown>;
+    validateSmartCompactConfig(sc);
+    expect((sc.profiles as any).balanced).toEqual({
+      minChunkTokens: 600,
+      maxChunkTokens: 9_000,
+      batchMaxTokens: 27_000,
+    });
+  });
+
   it("keeps runtime VERSION in sync with package.json", () => {
     expect(VERSION).toBe(pkg.version);
   });
@@ -235,7 +265,7 @@ describe("validateSmartCompactConfig", () => {
   });
 
   it("ships roadmap features with explicit safety defaults", () => {
-    expect(DEFAULT_CONFIG.requireApproval).toBe(false);
+    expect(DEFAULT_CONFIG.requireApproval).toBe(true);
     expect(DEFAULT_CONFIG.scrubSecrets).toBe(true);
     expect(DEFAULT_CONFIG.scrubPii).toBe(false);
     expect(DEFAULT_CONFIG.zeroCallEnabled).toBe(true);

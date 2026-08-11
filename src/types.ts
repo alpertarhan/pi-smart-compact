@@ -83,6 +83,8 @@ export interface LLMCallMetric {
   cacheWriteTokens: number;
   latencyMs: number;
   success: boolean;
+  /** True when provider usage was absent or partial and local estimates were used. */
+  usageEstimated?: boolean;
 }
 
 export type ProviderRouteStage = "explore" | "synthesize" | "verify";
@@ -173,6 +175,9 @@ export interface CompactMetricsEntry {
   redactions?: number;
   adapted?: boolean;
   providerRoutes?: ProviderRouteMetric[];
+  /** Durable post-apply side effects; compaction itself may still have succeeded. */
+  persistenceStatus?: "complete" | "partial";
+  persistenceFailures?: string[];
 }
 
 export interface TopicBoundary {
@@ -190,6 +195,7 @@ export interface ChunkSummary {
   keyDecisions: string[];
   filesModified: string[];
   filesRead: string[];
+  filesDeleted: string[];
   priority: "critical" | "high" | "normal" | "low";
 }
 
@@ -197,6 +203,7 @@ export interface SmartCompactDetails {
   /** Correlates session_before_compact staging with session_compact commit. */
   runId?: string;
   method: "eesv" | "single-pass" | "heuristic";
+  generationFallbacks?: string[];
   chunkCount: number;
   topics: string[];
   readFiles: string[];
@@ -254,6 +261,19 @@ export interface Cell<T> {
 
 export type MetricsSnapshot = Omit<CompactMetricsEntry, "ts" | "sessionId">;
 
+export interface PreparedConversationBackup {
+  path: string;
+  /** Eager payload retained for compatibility with direct callers. */
+  content?: string;
+  /** Deferred exact payload; materialized only after native apply confirmation. */
+  materialize?: () => string;
+  sessionId: string;
+  createdAt: string;
+  /** Pre-compaction leaf used for an exact, non-duplicating restore fork. */
+  branchLeafId?: string;
+  contextTokens?: number;
+}
+
 export interface PendingCompaction {
   /** Unique lifecycle correlation id persisted in compaction details. */
   runId: string;
@@ -264,6 +284,8 @@ export interface PendingCompaction {
   /** Complete metrics payload, appended only after Pi emits session_compact. */
   metricsSnapshot?: MetricsSnapshot;
   compactionState?: CompactionState;
+  /** Exact backup source, written only after native apply confirmation. */
+  preparedBackup?: PreparedConversationBackup;
   /**
    * Project id + extraction snapshot for durable-state persistence after
    * Pi confirms the entry via `session_compact`. Consuming in
@@ -300,12 +322,15 @@ export interface ModelOption {
 export type VerificationGap =
   | { kind: "missing-section"; section: SectionKind }
   | { kind: "missing-file"; path: string }
-  | { kind: "missing-error"; message: string }
+  | { kind: "missing-read-file"; path: string }
+  | { kind: "missing-deleted-file"; path: string }
+  | { kind: "missing-error"; message: string; resolved?: boolean }
   | { kind: "missing-constraint"; text: string }
   | { kind: "missing-decision"; summary: string }
   | { kind: "missing-goal"; goal: string }
   | { kind: "fabricated-file"; ref: string }
   | { kind: "inconsistency"; detail: string }
+  | { kind: "unsupported-claim"; claim: string }
   | { kind: "missing-open-loops"; unresolvedCount: number };
 
 export interface VerificationResult {
@@ -342,6 +367,17 @@ export interface MediaAttachment {
   sizeBytes?: number;
   source?: string;
 }
+export interface ExtractionEvidenceOverflow {
+  modifiedFiles?: number;
+  readFiles?: number;
+  deletedFiles?: number;
+  errors?: number;
+  decisions?: number;
+  constraints?: number;
+  timeline?: number;
+  mediaAttachments?: number;
+}
+
 
 export interface StructuredExtraction {
   modifiedFiles: Array<{ path: string; toolCalls: number; lastModifiedIndex: number }>;
@@ -350,7 +386,15 @@ export interface StructuredExtraction {
   /** File paths grounded in compacted source evidence but not necessarily touched by a tool. */
   referencedFiles?: string[];
   mediaAttachments?: MediaAttachment[];
-  errors: Array<{ index: number; tool: string; message: string; retryAttempted: boolean; resolved: boolean }>;
+  errors: Array<{
+    index: number;
+    tool: string;
+    message: string;
+    retryAttempted: boolean;
+    resolved: boolean;
+    /** Stable failed-operation identity used to reconcile incremental retries without source messages. */
+    operationSignature?: string;
+  }>;
   decisions: Array<{ index: number; type: "explicit" | "implicit"; summary: string; userResponse?: string }>;
   constraints: Array<{ index: number; text: string; category: "requirement" | "preference" | "prohibition"; confidence: number }>;
   topics: Array<{ startIndex: number; endIndex: number; primaryFile: string | null; type: "implementation" | "debugging" | "exploration" | "review"; errorDensity: number }>;
@@ -359,6 +403,8 @@ export interface StructuredExtraction {
   lastUserMessages: string[];
   lastErrors: string[];
   messageCount: number;
+  /** Counts of older, lower-priority evidence omitted from the bounded summary domain. */
+  evidenceOverflow?: ExtractionEvidenceOverflow;
 }
 
 export interface LlmChunk {

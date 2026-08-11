@@ -43,6 +43,6 @@ describe("smart_compact tool cancellation", () => {
 
     const result = await tool.execute("call-1", {}, controller.signal, () => { /* noop */ }, ctx);
 
-    expect(result.content[0].text).toContain("no summary was generated");
+    expect(result.content[0].text).toContain("cancelled by host");
   });
 });

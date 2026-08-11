@@ -105,12 +105,45 @@ describe("appendLineLocked", () => {
   });
 });
 
+  it("keeps post-trim records from concurrent processes", async () => {
+    const target = path.join(tmp, "racing.jsonl");
+    const go = path.join(tmp, "go");
+    const cap = 8 * 1024;
+    const modulePath = path.resolve(import.meta.dir, "../src/infra/fs.ts");
+    const workers = Array.from({ length: 8 }, (_, worker) => {
+      const script = [
+        `import fs from "node:fs";`,
+        `import { appendLineLocked } from ${JSON.stringify(modulePath)};`,
+        `const target=${JSON.stringify(target)}, go=${JSON.stringify(go)}, cap=${cap};`,
+        `for (let i=0;i<40;i++) appendLineLocked(target, JSON.stringify({worker:${worker},i,pad:"x".repeat(180)}), cap);`,
+        `console.log("ready");`,
+        `while (!fs.existsSync(go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);`,
+        `appendLineLocked(target, JSON.stringify({sentinel:${worker}}), cap);`,
+      ].join("\n");
+      return Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+    });
+
+    await Promise.all(workers.map(async worker => {
+      const firstChunk = await worker.stdout.getReader().read();
+      expect(new TextDecoder().decode(firstChunk.value)).toContain("ready");
+    }));
+    fs.writeFileSync(go, "go");
+    const statuses = await Promise.all(workers.map(worker => worker.exited));
+    expect(statuses).toEqual(new Array(workers.length).fill(0));
+
+    const raw = fs.readFileSync(target, "utf8");
+    const records = raw.trim().split("\n").map(line => JSON.parse(line));
+    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(cap);
+    expect(records.filter(record => "sentinel" in record).map(record => record.sentinel).sort())
+      .toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
 describe("trimFileTailLocked", () => {
-  it("keeps the newest complete JSONL records under the byte cap", () => {
+  it("keeps the newest complete JSONL records under the byte cap", async () => {
     const target = path.join(tmp, "bounded.jsonl");
     for (let i = 0; i < 20; i++) appendLineLocked(target, JSON.stringify({ i, value: "x".repeat(12) }));
 
-    trimFileTailLocked(target, 120);
+    await trimFileTailLocked(target, 120);
 
     const raw = fs.readFileSync(target, "utf8");
     const records = raw.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));

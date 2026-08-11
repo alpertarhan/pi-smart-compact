@@ -6,6 +6,9 @@
  */
 import { describe, it, expect, beforeEach } from "bun:test";
 import { findGitRoot, _resetGitRootCacheForTests } from "../src/infra/git.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 beforeEach(() => { _resetGitRootCacheForTests(); });
 
@@ -20,5 +23,18 @@ describe("findGitRoot", () => {
   it("returns null for /tmp (not a git repo) and caches the negative", () => {
     expect(findGitRoot("/tmp")).toBeNull();
     expect(findGitRoot("/tmp")).toBeNull();
+  });
+
+  it("expires a negative entry when the directory becomes a repository", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "psc-git-cache-"));
+    try {
+      expect(findGitRoot(dir, 1_000)).toBeNull();
+      const init = Bun.spawnSync(["git", "init", "--quiet"], { cwd: dir });
+      expect(init.exitCode).toBe(0);
+      expect(findGitRoot(dir, 5_999)).toBeNull();
+      expect(findGitRoot(dir, 6_001)).toBe(fs.realpathSync(dir));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

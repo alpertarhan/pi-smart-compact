@@ -4,11 +4,11 @@
 
 import path from "node:path";
 import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop, MediaAttachment } from "../types.ts";
-import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_SCAN_MAX_LEN, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW, TRUNC, ID_PREFIX, TUNING } from "../constants.ts";
+import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW, TRUNC, ID_PREFIX, TUNING, EXTRACTION_LIMITS } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
-import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
+import { classifyToolOperation, extractToolPath, sameToolOperation, toolOperationSignature } from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
 import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 
@@ -195,6 +195,23 @@ function hasCommandFailureSignal(text: string): boolean {
   return LIKELY_ERROR_RE.test(firstLine) || /^(?:npm\s+error|fatal:|traceback\b)/i.test(firstLine);
 }
 
+/**
+ * Preserve the actionable part of a long command failure instead of blindly
+ * returning its prefix. The tail is retained as well because shells commonly
+ * report their non-zero exit status there.
+ */
+export function commandFailureEvidence(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const match = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:|FATAL\b|Traceback\b|(?:failed|failure)\b)/im.exec(text);
+  const evidenceBudget = Math.max(1, Math.floor(maxChars * 0.7));
+  const tailBudget = Math.max(0, maxChars - evidenceBudget);
+  const anchor = match?.index ?? Math.max(0, text.length - evidenceBudget);
+  const start = Math.max(0, anchor - Math.floor(evidenceBudget / 4));
+  const evidence = text.slice(start, start + evidenceBudget);
+  const tail = tailBudget > 0 ? text.slice(-tailBudget) : "";
+  return evidence + (tail && !evidence.endsWith(tail) ? "\n...\n" + tail : "");
+}
+
 export function isTransientToolDiagnostic(text: string): boolean {
   const candidate = text.trim();
   return /\bBrave Search API error\s*\(429\)/i.test(candidate)
@@ -216,7 +233,14 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     if ((tc && isBenignSearchResult(tc, text)) || isTransientToolDiagnostic(text)) continue;
 
     if (m.isError) {
-      errors.push({ index: i, tool: tc?.name ?? "unknown", message: text.slice(0, TRUNC.ERROR_DETAIL), retryAttempted: false, resolved: false });
+      errors.push({
+        index: i,
+        tool: tc?.name ?? "unknown",
+        message: text.slice(0, TRUNC.ERROR_DETAIL),
+        retryAttempted: false,
+        resolved: false,
+        operationSignature: tc ? toolOperationSignature(tc.name, tc.arguments) : undefined,
+      });
       continue;
     }
 
@@ -224,33 +248,45 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     // Gated by argument shape, not by tool name, so it auto-covers shell-like
     // tools this code has never seen. Explicit m.isError is handled above.
     if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute") {
-      if (hasCommandFailureSignal(text) && text.length < ERROR_SCAN_MAX_LEN) {
-        errors.push({ index: i, tool: tc.name, message: text.slice(0, TRUNC.MESSAGE), retryAttempted: false, resolved: false });
+      if (hasCommandFailureSignal(text)) {
+        errors.push({
+          index: i,
+          tool: tc.name,
+          message: commandFailureEvidence(text, TRUNC.MESSAGE),
+          retryAttempted: false,
+          resolved: false,
+          operationSignature: toolOperationSignature(tc.name, tc.arguments),
+        });
       }
     }
   }
 
   for (const err of errors) {
-    // Scan forward for a retry: an assistant tool call of the same name.
+    const failedCall = tcIdx.get(msgs[err.index]?.toolCallId ?? "");
+    if (!failedCall) continue;
     for (let j = err.index + 1; j < Math.min(msgs.length, err.index + ERROR_RETRY_WINDOW); j++) {
       if (msgs[j]?.role !== "assistant") continue;
-      const rawBlocks = msgs[j]?.content;
-      const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
-      const retryTool = blocks.flatMap(b => flattenToolCallBlock(b)).find(t => t.name === err.tool);
+      const blocks: unknown[] = Array.isArray(msgs[j]?.content) ? msgs[j].content as unknown[] : [];
+      const retryTool = blocks
+        .flatMap(block => flattenToolCallBlock(block))
+        .find(candidate => sameToolOperation(failedCall, candidate));
       if (!retryTool) continue;
       err.retryAttempted = true;
-      // Did that retry succeed? Link by id when present; for id-less calls
-      // (some multi_tool_use inner tools / id-less providers) fall back to a
-      // non-error result of the same tool within the resolve window.
       for (let k = j + 1; k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW); k++) {
-        const mk = msgs[k];
-        if (mk?.role !== "toolResult" || mk.isError) continue;
+        const result = msgs[k];
+        if (result?.role !== "toolResult" || result.isError) continue;
         const resolved = retryTool.id != null
-          ? mk.toolCallId === retryTool.id
-          : tcIdx.get(mk.toolCallId ?? "")?.name === err.tool;
-        if (resolved) { err.resolved = true; break; }
+          ? result.toolCallId === retryTool.id
+          : (() => {
+            const resultCall = tcIdx.get(result.toolCallId ?? "");
+            return Boolean(resultCall && sameToolOperation(retryTool, resultCall));
+          })();
+        if (resolved) {
+          err.resolved = true;
+          break;
+        }
       }
-      break; // the first retry is enough
+      break;
     }
   }
   return errors;
@@ -291,8 +327,8 @@ const CONSTRAINT_PATTERNS: Array<{ re: RegExp; cat: StructuredExtraction["constr
   // JS `\b` is ASCII-only (a leading ö/ş is not a word boundary, so the
   // Turkish-leading forms never matched). (?<![A-Za-z0-9_])…(?![A-Za-z0-9_])
   // treats any non-ASCII letter as a valid edge, so both spellings now work.
-  { re: /(?<![A-Za-z0-9_])(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|asla|sakın|sakınha|bunu yapma|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)(?![A-Za-z0-9_])/iu, cat: "requirement", conf: TUNING.CONFIDENCE_MEDIUM },
-  { re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|asla\s+(?:kullanma|yapma|getirme))(?![A-Za-z0-9_])/iu, cat: "prohibition", conf: TUNING.CONFIDENCE_MEDIUM },
+  { re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu, cat: "prohibition", conf: TUNING.CONFIDENCE_MEDIUM },
+  { re: /(?<![A-Za-z0-9_])(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)(?![A-Za-z0-9_])/iu, cat: "requirement", conf: TUNING.CONFIDENCE_MEDIUM },
   { re: /(?<![A-Za-z0-9_])(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)(?![A-Za-z0-9_])/iu, cat: "preference", conf: TUNING.CONFIDENCE_LOW },
 ];
 
@@ -336,39 +372,61 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
 
   for (let i = 0; i < msgs.length; i++) {
-    const m = msgs[i];
-    const txt = extractText(m.content);
-    tokenAcc += estimateTokens(txt);
-    let brk = false;
+    const message = msgs[i];
+    const text = extractText(message.content);
+    const messageTokens = estimateTokens(text);
+    const tools = message.role === "assistant"
+      ? (Array.isArray(message.content) ? message.content : []).flatMap(flattenToolCallBlock)
+      : [];
+    const nextFile = tools.map(tool => extractToolPath(tool.arguments)).find((value): value is string => Boolean(value));
+    const nextBasename = nextFile ? path.basename(nextFile) : null;
+    const closesActiveTool = message.role === "toolResult"
+      && (tcIdx.get(message.toolCallId ?? "")?.msgIndex ?? -1) >= startIdx;
+    const fileShift = Boolean(lastFile && nextBasename && nextBasename !== lastFile);
+    const userShift = message.role === "user" && SHIFT_RE.test(text);
+    const sizeShift = tokenAcc > 0 && tokenAcc + messageTokens > pc.maxChunkTokens;
+    const breakBefore = !closesActiveTool
+      && i > startIdx
+      && tokenAcc >= pc.minChunkTokens
+      && (fileShift || userShift || sizeShift)
+      && topics.length < maxSegs - 1;
 
-    if (m.role === "assistant") {
-      const blocks = Array.isArray(m.content) ? m.content : [];
-      for (const b of blocks) {
-        for (const tool of flattenToolCallBlock(b)) {
-          const fp = extractToolPath(tool.arguments);
-          if (!fp) continue;
-          const fn = path.basename(fp);
-          if (lastFile && fn !== lastFile && tokenAcc > pc.minChunkTokens) brk = true;
-          lastFile = fn;
-          currentPrimaryFile = fp;
-          const operation = classifyToolOperation(tool.arguments, tool.name);
-          if (operation === "mutate" || operation === "delete") { if (currentType !== "implementation") currentType = "implementation"; }
-          else if (operation === "read" || operation === "search" || operation === "list") { if (currentType === "exploration") currentType = "review"; }
-        }
+    if (breakBefore) {
+      topics.push({
+        startIndex: startIdx,
+        endIndex: i - 1,
+        primaryFile: currentPrimaryFile,
+        type: currentType,
+        errorDensity: errAcc,
+      });
+      startIdx = i;
+      tokenAcc = 0;
+      lastFile = null;
+      errAcc = 0;
+      currentType = "exploration";
+      currentPrimaryFile = null;
+    }
+
+    tokenAcc += messageTokens;
+    for (const tool of tools) {
+      const filePath = extractToolPath(tool.arguments);
+      if (filePath) {
+        lastFile = path.basename(filePath);
+        currentPrimaryFile = filePath;
       }
+      const operation = classifyToolOperation(tool.arguments, tool.name);
+      if (operation === "mutate" || operation === "delete") currentType = "implementation";
+      else if ((operation === "read" || operation === "search" || operation === "list") && currentType === "exploration") currentType = "review";
     }
-    if (m.role === "toolResult" && m.isError) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
-    if (m.role === "toolResult" && !m.isError) {
-      const tc = tcIdx.get(m.toolCallId ?? "");
-      if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute" && /error|fail/i.test(txt)) { errAcc++; if (currentType !== "implementation") currentType = "debugging"; }
-    }
-    if (m.role === "user" && SHIFT_RE.test(txt) && tokenAcc > pc.minChunkTokens) brk = true;
-    if (tokenAcc >= pc.maxChunkTokens) brk = true;
-
-    if (brk && i > startIdx && topics.length < maxSegs - 1) {
-      topics.push({ startIndex: startIdx, endIndex: i, primaryFile: currentPrimaryFile, type: currentType, errorDensity: errAcc });
-      startIdx = i + 1; tokenAcc = 0; lastFile = null; errAcc = 0;
-      currentType = "exploration"; currentPrimaryFile = null;
+    if (message.role === "toolResult" && message.isError) {
+      errAcc++;
+      if (currentType !== "implementation") currentType = "debugging";
+    } else if (message.role === "toolResult") {
+      const tool = tcIdx.get(message.toolCallId ?? "");
+      if (tool && classifyToolOperation(tool.arguments, tool.name) === "execute" && /error|fail/i.test(text)) {
+        errAcc++;
+        if (currentType !== "implementation") currentType = "debugging";
+      }
     }
   }
   if (startIdx < msgs.length) {
@@ -548,21 +606,47 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
  */
 export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomputedTcIdx?: ToolCallIndex): StructuredExtraction {
   const tcIdx = precomputedTcIdx ?? buildToolCallIndex(msgs);
-  const { modified, read, deleted } = trackFileOps(msgs, tcIdx);
-  const errors = catalogErrors(msgs, tcIdx);
-  const decisions = extractDecisions(msgs, tcIdx);
-  const constraints = mineConstraints(msgs);
+  const tracked = trackFileOps(msgs, tcIdx);
+  const allErrors = catalogErrors(msgs, tcIdx);
+  const allDecisions = extractDecisions(msgs, tcIdx);
+  const allConstraints = mineConstraints(msgs);
   const topics = segmentTopicsHeuristic(msgs, pc, 20, tcIdx);
-  const timeline = buildTimeline(msgs, errors);
-  const mediaAttachments = extractMediaAttachments(msgs);
+  const allTimeline = buildTimeline(msgs, allErrors);
+  const allMediaAttachments = extractMediaAttachments(msgs);
+  const recent = <T>(items: T[], max: number): T[] => items.length > max ? items.slice(-max) : items;
+  const modifiedFiles = recent(
+    tracked.modified.slice().sort((a, b) => a.lastModifiedIndex - b.lastModifiedIndex),
+    EXTRACTION_LIMITS.MODIFIED_FILES,
+  );
+  const readFiles = recent(tracked.read, EXTRACTION_LIMITS.READ_FILES);
+  const deletedFiles = recent(tracked.deleted, EXTRACTION_LIMITS.DELETED_FILES);
+  const errors = recent(allErrors, EXTRACTION_LIMITS.ERRORS);
+  const decisions = recent(allDecisions, EXTRACTION_LIMITS.DECISIONS);
+  const constraints = recent(allConstraints, EXTRACTION_LIMITS.CONSTRAINTS);
+  const timeline = recent(allTimeline, EXTRACTION_LIMITS.TIMELINE);
+  const mediaAttachments = recent(allMediaAttachments, EXTRACTION_LIMITS.MEDIA_ATTACHMENTS);
+  const overflow = {
+    modifiedFiles: tracked.modified.length - modifiedFiles.length,
+    readFiles: tracked.read.length - readFiles.length,
+    deletedFiles: tracked.deleted.length - deletedFiles.length,
+    errors: allErrors.length - errors.length,
+    decisions: allDecisions.length - decisions.length,
+    constraints: allConstraints.length - constraints.length,
+    timeline: allTimeline.length - timeline.length,
+    mediaAttachments: allMediaAttachments.length - mediaAttachments.length,
+  };
+  const evidenceOverflow = Object.fromEntries(
+    Object.entries(overflow).filter(([, count]) => count > 0),
+  );
   const referencedFiles = Array.from(new Set(msgs
     .flatMap(message => extractFileRefs((JSON.stringify(message.content) ?? "").replace(/\\[nrt]/g, " "))))).slice(0, 200);
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs.filter(m => m.role === "user").slice(-5).map(m => extractText(m.content));
   const lastErrors = errors.slice(-3).map(e => e.message);
   return {
-    modifiedFiles: modified, readFiles: read, deletedFiles: deleted, referencedFiles,
+    modifiedFiles, readFiles, deletedFiles, referencedFiles,
     errors, decisions, constraints, topics, timeline, mediaAttachments,
     mainGoal, lastUserMessages, lastErrors, messageCount: msgs.length,
+    ...(Object.keys(evidenceOverflow).length ? { evidenceOverflow } : {}),
   };
 }

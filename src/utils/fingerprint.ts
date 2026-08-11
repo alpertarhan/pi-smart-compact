@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import type { StructuredExtraction } from "../types.ts";
 import * as log from "./logger.ts";
 import { projectFingerprintFile } from "../infra/paths.ts";
-import { acquireLockSync, ensureDir, writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { acquireLock, ensureDir, writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { findGitRoot as findGitRootCached } from "../infra/git.ts";
 import { THIRTY_DAYS_MS, ID_PREFIX, TRUNC } from "../constants.ts";
 
@@ -19,6 +19,10 @@ export interface ProjectFingerprint {
   keyDirectories: string[];
   knownFiles: string[];
   sessionCount: number;
+  /** Hashed session identities tracked after distinct-session accounting shipped. */
+  knownSessionIds?: string[];
+  /** Historical count not attributable to a stored session identity. */
+  legacySessionCount?: number;
   updatedAt: number;
 }
 
@@ -267,14 +271,15 @@ export function loadProjectFingerprint(projectId: string): ProjectFingerprint | 
  * truncated JSON file behind. The next session would otherwise lose the
  * sessionCount counter or worse, throw on parse.
  */
-export function saveProjectFingerprint(
+export async function saveProjectFingerprint(
   projectId: string,
+  sessionId: string,
   extraction: StructuredExtraction,
-): void {
+): Promise<boolean> {
   try {
     const fingerprintPath = getFingerprintPath(projectId);
     ensureDir(path.dirname(fingerprintPath));
-    const release = acquireLockSync(fingerprintPath);
+    const release = await acquireLock(fingerprintPath);
     try {
       const existing = loadProjectFingerprint(projectId);
       const newKnownFiles = [...new Set([
@@ -289,13 +294,22 @@ export function saveProjectFingerprint(
         ...(existing?.keyDirectories ?? []),
         ...extractKeyDirs(extraction),
       ])].slice(-20);
+      const sessionKey = crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
+      const baseLegacySessionCount = existing?.legacySessionCount
+        ?? (existing ? Math.max(0, existing.sessionCount - (existing.knownSessionIds?.length ?? 1)) : 0);
+      const allKnownSessionIds = [...new Set([...(existing?.knownSessionIds ?? []), sessionKey])];
+      const retiredSessionCount = Math.max(0, allKnownSessionIds.length - 1_000);
+      const knownSessionIds = allKnownSessionIds.slice(-1_000);
+      const legacySessionCount = baseLegacySessionCount + retiredSessionCount;
       const fingerprint: ProjectFingerprint = {
         id: projectId,
         language: existing?.language && existing.language !== "unknown" ? existing.language : detectedLanguage,
         framework: existing?.framework ?? detectedFramework,
         keyDirectories,
         knownFiles: newKnownFiles,
-        sessionCount: (existing?.sessionCount ?? 0) + 1,
+        sessionCount: legacySessionCount + knownSessionIds.length,
+        knownSessionIds,
+        legacySessionCount,
         updatedAt: Date.now(),
       };
 
@@ -303,7 +317,11 @@ export function saveProjectFingerprint(
     } finally {
       release();
     }
-  } catch (e) { log.warn("saveProjectFingerprint failed", e); }
+    return true;
+  } catch (error) {
+    log.warn("saveProjectFingerprint failed", error);
+    return false;
+  }
 }
 
 /**

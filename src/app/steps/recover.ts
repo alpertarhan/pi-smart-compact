@@ -16,20 +16,27 @@ import { asBranchMessage } from "../../infra/ai-messages.ts";
 import type { LlmMessage } from "../../types.ts";
 import { hasTruncatedMessages, resolveCompactionMessages } from "../../utils/session-log.ts";
 
-export function recoverSessionLog(rc: WindowedRc): RecoveredRc {
-  let llmMessages = convertToLlm(
-    rc.toCompact.map(e => asBranchMessage(e.message)),
-  ) as LlmMessage[];
+export async function recoverSessionLog(rc: WindowedRc): Promise<RecoveredRc> {
+  let resolved = rc.toCompact.flatMap(entry => {
+    if (!entry.id) return [];
+    return (convertToLlm([asBranchMessage(entry.message)]) as LlmMessage[])
+      .map(message => ({ entryId: entry.id, message }));
+  });
 
-  if (hasTruncatedMessages(llmMessages)) {
-    const fromLog = resolveCompactionMessages(rc.sessionId, rc.toCompact);
+  if (hasTruncatedMessages(resolved.map(item => item.message))) {
+    const fromLog = await resolveCompactionMessages(rc.sessionId, rc.toCompact);
     if (fromLog) {
-      llmMessages = fromLog;
-      rc.notify("Using untruncated session log (" + llmMessages.length + " msgs)", "info");
+      resolved = fromLog;
+      rc.notify("Using untruncated session log (" + resolved.length + " msgs)", "info");
     }
   }
 
-  const out = rc as WindowedRc & { _recovered: true; llmMessages: LlmMessage[] };
-  out.llmMessages = llmMessages;
+  const out = rc as WindowedRc & {
+    _recovered: true;
+    llmMessages: LlmMessage[];
+    llmEntryIds: string[];
+  };
+  out.llmMessages = resolved.map(item => item.message);
+  out.llmEntryIds = resolved.map(item => item.entryId);
   return advance<WindowedRc, RecoveredRc>(out, "_recovered");
 }

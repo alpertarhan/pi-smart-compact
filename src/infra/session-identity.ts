@@ -43,6 +43,32 @@ export function branchEntryIds(branch: Iterable<{ id?: unknown }>): string[] {
   return Array.from(branch, entry => entry.id).filter((id): id is string => typeof id === "string");
 }
 
+export const MAX_BRANCH_LINEAGE_IDS = 512;
+
+/**
+ * Bound persisted/queried lineage while retaining the leaves immediately
+ * preceding compaction entries. Those parent IDs are the branch heads used by
+ * scoped state snapshots and can otherwise fall far outside a recent tail.
+ */
+export function boundedBranchLineageIds(
+  branch: Iterable<{ id?: unknown; parentId?: unknown; type?: unknown }>,
+  maxEntries = MAX_BRANCH_LINEAGE_IDS,
+): string[] {
+  const entries = Array.from(branch);
+  const ids = branchEntryIds(entries);
+  const cap = Math.max(1, Math.floor(maxEntries));
+  if (ids.length <= cap) return ids;
+  const structuralBudget = Math.max(1, Math.floor(cap / 4));
+  const structural = entries
+    .filter(entry => entry.type === "compaction")
+    .flatMap(entry => [entry.parentId, entry.id])
+    .filter((id): id is string => typeof id === "string")
+    .slice(-structuralBudget);
+  const tail = ids.slice(-(cap - structural.length));
+  const keep = new Set([...structural, ...tail]);
+  return ids.filter(id => keep.has(id)).slice(-cap);
+}
+
 /**
  * Resolve the current pi session id, or mint a per-call sentinel that can
  * never compare equal to another caller's sentinel.

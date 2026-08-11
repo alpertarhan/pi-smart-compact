@@ -103,11 +103,19 @@ export function compactionStateFile(projectId: string): string {
   return path.join(compactionStateDir(), projectId.replace(/[^a-zA-Z0-9_-]/g, "_") + ".json");
 }
 
-/** Session-scoped state file; branch ancestry is validated inside the envelope. */
-export function scopedCompactionStateFile(projectId: string, sessionId: string): string {
+/** Pre-v8.1 session-only path, retained solely for one-time branch migration. */
+export function legacyScopedCompactionStateFile(projectId: string, sessionId: string): string {
   const project = projectId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const session = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
   return path.join(compactionStateDir(), project, session + ".json");
+}
+
+/** Immutable branch snapshot; descendants find it through their ancestry IDs. */
+export function scopedCompactionStateFile(projectId: string, sessionId: string, branchHeadId: string): string {
+  const project = projectId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const session = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const branch = branchHeadId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(compactionStateDir(), project, session, branch + ".json");
 }
 
 /** Remediation hints file — files to re-preserve after a damage event. */

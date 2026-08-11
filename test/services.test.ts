@@ -191,6 +191,27 @@ describe("run-scoped services", () => {
     // The default container must stay untouched — explicit bags only.
     expect(getMetricsSummary(getDefaultServices()).totalCalls).toBe(0);
   });
+
+  it("conservatively estimates missing provider usage for metrics and budgets", async () => {
+    const model = { id: "m", provider: "openai", contextWindow: 128000 } as Model<Api>;
+    const services = createServices({
+      llm: {
+        complete: async () => ({
+          content: [{ type: "text" as const, text: "generated ".repeat(200) }],
+        }) as any,
+      },
+    });
+    await trackedComplete("batch", model, {
+      systemPrompt: "system ".repeat(50),
+      messages: [{ role: "user", content: [{ type: "text", text: "input ".repeat(100) }] }],
+    } as any, { apiKey: "k", maxTokens: 500 } as any, services);
+    const metric = services.metrics.snapshot()[0];
+    expect(metric.usageEstimated).toBe(true);
+    expect(metric.inputTokens).toBeGreaterThan(0);
+    expect(metric.outputTokens).toBeGreaterThan(0);
+    expect(services.budget.inputTokenCount()).toBe(metric.inputTokens);
+    expect(services.budget.outputTokenCount()).toBe(metric.outputTokens);
+  });
 });
 
 describe("default container", () => {

@@ -26,6 +26,7 @@ import { saveCompactionState } from "../../utils/state.ts";
 import { scheduleCompactionStateIndex } from "../../infra/context-graph.ts";
 import { loadConfig } from "../../utils/helpers.ts";
 import { appendMetricsSnapshot } from "../../utils/cache.ts";
+import { commitPreparedConversationBackup } from "../../utils/backups.ts";
 import { detectDamage, logDamageReport, writeRemediationHints } from "../../utils/damage.ts";
 import { sanitizeSmartCompactDetails } from "../../utils/type-guards.ts";
 import { recordFailureMetrics } from "./metrics.ts";
@@ -45,29 +46,38 @@ import * as log from "../../utils/logger.ts";
  * `session_compact` event after the compaction entry exists. Best-effort:
  * persistence failures are logged without corrupting the host session.
  */
-export function persistAppliedState(pending: PendingCompaction): void {
-  if (!pending.projectId) return;
-  try {
-    if (pending.extraction) saveProjectFingerprint(pending.projectId, pending.extraction);
-    if (pending.compactionState) {
-      saveCompactionState(pending.projectId, pending.compactionState);
-      if (loadConfig().contextGraphEnabled) scheduleCompactionStateIndex(pending.projectId, pending.compactionState);
+export async function persistAppliedState(pending: PendingCompaction): Promise<string[]> {
+  if (!pending.projectId) return pending.compactionState || pending.extraction ? ["project state (project identity unavailable)"] : [];
+  const failures: string[] = [];
+  if (pending.extraction && !await saveProjectFingerprint(pending.projectId, pending.sessionId, pending.extraction)) {
+    failures.push("project fingerprint");
+  }
+  if (pending.compactionState) {
+    if (!saveCompactionState(pending.projectId, pending.compactionState)) {
+      failures.push("continuity state");
+    } else if (loadConfig().contextGraphEnabled
+      && !scheduleCompactionStateIndex(pending.projectId, pending.compactionState)) {
+      failures.push("context graph");
     }
-  } catch (e) { log.warn("persistAppliedState failed", e); }
+  }
+  return failures;
 }
 
-/** Commit state and telemetry after Pi confirms this exact compaction entry. */
-export function commitAppliedCompaction(pending: PendingCompaction): void {
+export async function commitAppliedCompaction(pending: PendingCompaction): Promise<string[]> {
   const startedAt = Date.now();
-  persistAppliedState(pending);
-  if (!pending.metricsSnapshot) return;
+  const failures = await persistAppliedState(pending);
+  if (pending.preparedBackup && !await commitPreparedConversationBackup(pending.preparedBackup)) failures.push("conversation backup");
+  if (!pending.metricsSnapshot) return failures;
   appendMetricsSnapshot(pending.sessionId, {
     ...pending.metricsSnapshot,
+    persistenceStatus: failures.length ? "partial" : "complete",
+    persistenceFailures: failures.length ? failures : undefined,
     phaseTimings: [
       ...(pending.metricsSnapshot.phaseTimings ?? []),
       { phase: "persist", durationMs: Date.now() - startedAt },
     ],
   });
+  return failures;
 }
 
 /** Run post-compaction damage detection. Best-effort — never throws. */
@@ -128,6 +138,7 @@ export function stagePendingCompaction(rc: RunContext, metricsSnapshot?: Metrics
     projectId: rc.projectId,
     extraction: rc.extraction,
     sessionId: rc.sessionId,
+    preparedBackup: rc.preparedBackup,
   };
   rc.pendingRef.set(pending);
   return pending;

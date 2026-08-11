@@ -13,6 +13,7 @@ import {
   nestedToolCallId,
 } from "../src/utils/extraction.ts";
 import type { LlmMessage, ProfileConfig } from "../src/types.ts";
+import { EXTRACTION_LIMITS } from "../src/constants.ts";
 
 const PC: ProfileConfig = {
   summaryBudgetTokens: 6000, keepRecentTokens: 20000,
@@ -259,6 +260,15 @@ describe("mineConstraints", () => {
     expect(cons.map(item => item.text)).toEqual(["Do not publish stable before approval"]);
   });
 
+
+  it("prioritizes Turkish prohibition semantics over embedded requirement words", () => {
+    const constraints = mineConstraints([{
+      role: "user",
+      content: "Bunu yapma; onay olmadan release kesinlikle yapılmamalı",
+    }]);
+    expect(constraints).toHaveLength(1);
+    expect(constraints[0].category).toBe("prohibition");
+  });
   it("ignores short messages and commands", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "/help" },
@@ -332,6 +342,20 @@ describe("extractStructured", () => {
       { role: "user", content: "The removed test/llm-retry.test.ts remains relevant." },
     ], PC);
     expect(ext.referencedFiles).toContain("test/llm-retry.test.ts");
+  });
+
+  it("bounds high-cardinality evidence and records omitted counts", () => {
+    const messages: LlmMessage[] = [];
+    for (let index = 0; index < EXTRACTION_LIMITS.READ_FILES + 50; index++) {
+      const id = "read-" + index;
+      messages.push(
+        { role: "assistant", content: [{ type: "toolCall", id, name: "read", arguments: { path: "src/file-" + index + ".ts" } }] },
+        { role: "toolResult", toolCallId: id, content: "ok" },
+      );
+    }
+    const extraction = extractStructured(messages, PC);
+    expect(extraction.readFiles).toHaveLength(EXTRACTION_LIMITS.READ_FILES);
+    expect(extraction.evidenceOverflow?.readFiles).toBe(50);
   });
 });
 

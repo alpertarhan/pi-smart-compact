@@ -5,13 +5,13 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, Theme } from "@earendil-works/pi-coding-agent";
 import { POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../constants.ts";
-import { Container, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Key, matchesKey, ScrollView, type SelectItem, SelectList, Text, truncateToWidth, visibleWidth, VStack } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
   CompactConfig, CompactMetricsEntry, CompactionMode, ModelOption, ProgressState,
   SmartCompactDetails, StructuredExtraction, OpenLoop, LoopOverride,
 } from "../types.ts";
-import type { BackupEntry } from "../utils/helpers.ts";
+import type { BackupEntry } from "../utils/backups.ts";
 import { createProductionServices, type SmartCompactServices } from "../infra/services.ts";
 import { effectivePromptInputTokens, getExtractionCacheStats, getMetricsSummary } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
@@ -45,6 +45,7 @@ export function renderContextBar(theme: Theme, pct: number, tokens: number, barL
   // loses the `this` binding and causes "Cannot read properties of undefined (reading 'fgColors')".
   return theme.fg("text", "  Context: ") + theme.fg(color, bar) + theme.fg("text", " " + clamped + "%") + theme.fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)");
 }
+
 
 export function renderTokenBar(theme: Theme, before: number, after: number, label: string, barLen = 30): string {
   const ratio = before > 0 ? after / before : 0;
@@ -210,7 +211,7 @@ const PROGRESS_KEY = "smart-compact-progress";
 const PROGRESS_PHASES = ["Extract", "Explore", "Synthesize", "Verify", "Apply"];
 
 export function showProgressOverlay(ctx: ExtensionContext, state: ProgressState): void {
-  if (ctx.hasUI === false) return;
+  if (!ctx || ctx.hasUI === false) return;
   const name = PROGRESS_PHASES[state.phase - 1] ?? state.phaseName;
   try {
     ctx.ui.setStatus?.(PROGRESS_KEY, "Smart Compact " + state.phase + "/5 · " + name);
@@ -247,23 +248,27 @@ export function notifyAppliedCompaction(ctx: ExtensionContext, details: SmartCom
   const quality = details.qualityScore ?? 0;
   const initial = details.provenance?.initialScore ?? quality;
   const repaired = details.provenance && (details.provenance.deterministicPatched.length > 0 || details.provenance.llmPatched || details.provenance.qualityFloorUsed);
-  const verification = "verified " + quality + "/100 coverage" + (repaired ? " (source " + initial + "/100" + (details.provenance?.qualityFloorUsed ? ", safety fallback" : "") + ")" : "") + " · 0 gaps";
+  const remainingGapCount = details.gaps?.length ?? 0;
+  const verification = "verified " + quality + "/100 coverage" + (repaired ? " (source " + initial + "/100" + (details.provenance?.qualityFloorUsed ? ", safety fallback" : "") + ")" : "") + " · " + remainingGapCount + (remainingGapCount === 1 ? " remaining gap" : " remaining gaps");
+  const fallback = details.generationFallbacks?.length
+    ? " · fallback: " + details.generationFallbacks.join(", ")
+    : details.method ? " · generation: " + details.method : "";
   const planned = details.plannedAfterTokens ?? after;
   ctx.ui.notify(concise
-    ? "Smart compact applied ✓ · " + before.toLocaleString() + "t → ~" + after.toLocaleString() + "t estimate (plan ~" + planned.toLocaleString() + "t) · " + saving + "% saved · " + verification
-    : "Smart compact applied ✓ — " + before.toLocaleString() + "t → planned ~" + planned.toLocaleString() + "t / ~" + after.toLocaleString() + "t applied estimate · saved " + saving + "% · " + verification, "info");
+    ? "Smart compact applied · " + before.toLocaleString() + "t → ~" + after.toLocaleString() + "t estimate (plan ~" + planned.toLocaleString() + "t) · " + saving + "% saved · " + verification + fallback
+    : "Smart compact applied — " + before.toLocaleString() + "t → planned ~" + planned.toLocaleString() + "t / ~" + after.toLocaleString() + "t applied estimate · saved " + saving + "% · " + verification + fallback, "info");
 }
 
-// Same narrowing rationale as showProgressOverlay: only ctx.ui.custom is
+
 // touched, which belongs to ExtensionContext.
 export async function showResultScreen(
   ctx: ExtensionContext,
   details: SmartCompactDetails,
   extraction: StructuredExtraction,
   services: SmartCompactServices,
-  opts: { approval?: boolean } = {},
+  opts: { approval?: boolean; summary?: string } = {},
 ): Promise<"apply" | "cancel" | "closed"> {
-  await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+  const decision = await ctx.ui.custom<"apply" | "cancel" | "closed">((tui, theme, keybindings, done) => {
     const c = new Container();
     c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
     c.addChild(new Text(theme.fg("accent", theme.bold(opts.approval ? "  \uD83D\uDD0E Smart Compact Review" : "  \u2705 Smart Compact Complete")), 1, 0));
@@ -302,6 +307,9 @@ export async function showResultScreen(
       if (provenance.qualityFloorUsed) {
         c.addChild(new Text(theme.fg("warning", "  Safety fallback used · verified coverage is not raw synthesis quality"), 0, 0));
       }
+    }
+    if (details.generationFallbacks?.length) {
+      c.addChild(new Text(theme.fg("warning", "  Generation fallback: " + details.generationFallbacks.join(", ")), 0, 0));
     }
     if ((details.redactions ?? 0) > 0) {
       c.addChild(new Text(theme.fg("warning", "  Security: " + details.redactions + " sensitive value(s) redacted"), 0, 0));
@@ -396,9 +404,9 @@ export async function showResultScreen(
 
     c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDD0D Verification")), 0, 0));
     if (details.verified) {
-      c.addChild(new Text(theme.fg("success", "    \u2705 All facts verified \u2014 no gaps detected"), 0, 0));
+      c.addChild(new Text(theme.fg("success", "    All configured deterministic checks passed"), 0, 0));
     } else if (details.gaps.length > 0) {
-      c.addChild(new Text(theme.fg("warning", "    \u26A0\uFE0F  " + details.gaps.length + " gap(s) patched:"), 0, 0));
+      c.addChild(new Text(theme.fg("warning", "    \u26A0\uFE0F  " + details.gaps.length + (details.gaps.length === 1 ? " gap patched:" : " gaps patched:")), 0, 0));
       for (const g of details.gaps.slice(0, TRUNC.RESULT_GAPS)) {
         c.addChild(new Text(theme.fg("dim", "      \u2022 " + g), 0, 0));
       }
@@ -408,11 +416,11 @@ export async function showResultScreen(
     c.addChild(new Text(theme.fg("text", theme.bold("  \uD83D\uDD04 Pipeline")), 0, 0));
     const phase1Status = theme.fg("success", "\u2713");
     const phase2Status = details.explorationRounds > 0
-      ? theme.fg("success", "\u2713 " + details.explorationRounds + " rounds")
-      : theme.fg("warning", "\u26A0 skipped");
+      ? theme.fg("success", "✓ " + details.explorationRounds + " rounds")
+      : theme.fg("dim", "not required");
     const phase2Bounds = details.explorationBoundaries > 0
       ? theme.fg("text", " (" + details.explorationBoundaries + " boundaries)")
-      : theme.fg("dim", " (heuristic fallback)");
+      : theme.fg("dim", " (no model boundaries)");
     const phase4Status = details.verified
       ? theme.fg("success", "\u2713 verified")
       : details.gaps.length > 0
@@ -420,33 +428,58 @@ export async function showResultScreen(
         : theme.fg("dim", "\u2014");
     c.addChild(new Text(theme.fg("dim", "    Phase 1 Extract: ") + phase1Status, 0, 0));
     c.addChild(new Text(theme.fg("dim", "    Phase 2 Explore: ") + phase2Status + phase2Bounds, 0, 0));
-    c.addChild(new Text(theme.fg("dim", "    Phase 3 Synthesize: ") + theme.fg("success", "\u2713 " + details.chunkCount + " chunks"), 0, 0));
+    c.addChild(new Text(theme.fg("dim", "    Phase 3 Synthesize: ") + theme.fg(details.generationFallbacks?.length ? "warning" : "success", (details.generationFallbacks?.length ? "fallback · " : "✓ ") + details.chunkCount + " chunks"), 0, 0));
     c.addChild(new Text(theme.fg("dim", "    Phase 4 Verify: ") + phase4Status, 0, 0));
     c.addChild(new Text("", 0, 0));
 
     if (details.backupPath) {
-      c.addChild(new Text(theme.fg("dim", "  \uD83D\uDCBE Backup: " + details.backupPath), 0, 0));
+      c.addChild(new Text(theme.fg("dim", "  \uD83D\uDCBE Backup after apply: " + details.backupPath), 0, 0));
       c.addChild(new Text("", 0, 0));
     }
 
-    c.addChild(new Text(theme.fg("dim", opts.approval ? "  Press any key to continue to Apply/Cancel" : "  Press any key to close"), 0, 0));
-    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    if (opts.summary) {
+      c.addChild(new Text(theme.fg("text", theme.bold("  Summary to apply")), 0, 0));
+      c.addChild(new Text(theme.fg("text", opts.summary), 2, 0));
+      c.addChild(new Text("", 0, 0));
+    }
 
-    return {
-      render: (w: number) => c.render(w),
-      invalidate: () => c.invalidate(),
-      handleInput: (_d: string) => done(undefined),
-    };
-  }, { overlay: true, overlayOptions: { width: "70%", anchor: "center", maxHeight: "80%" } });
-
-  if (!opts.approval) return "closed";
-  const approved = await ctx.ui.confirm(
-    "Apply Smart Compact?",
-    "Verification coverage " + details.qualityScore + "/100 · source " + (details.provenance?.initialScore ?? details.qualityScore) + "/100 · " +
-      details.gaps.length + " remaining gap(s) · " + details.tokensSaved.toLocaleString() +
-      " estimated tokens saved.\n\nCancel keeps the current conversation unchanged.",
-  );
-  return approved ? "apply" : "cancel";
+    const scroll = new ScrollView(c, {
+      follow: "none",
+      primary: true,
+      overscroll: "contain",
+      scrollbar: "auto",
+      scrollbarStyle: text => theme.fg("borderMuted", text),
+    });
+    const footer = new Container();
+    footer.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    footer.addChild(new Text(
+      theme.fg("dim", opts.approval
+        ? "  ↑↓/PgUp/PgDn scroll · [A] Apply · [C/Esc] Cancel"
+        : "  ↑↓/PgUp/PgDn scroll · [Q/Esc] Close"),
+      0,
+      0,
+    ));
+    const root = new VStack([
+      { component: scroll, basis: 0, grow: 1, minSize: 5 },
+      { component: footer, basis: "auto", shrink: 0, minSize: 2 },
+    ]);
+    return Object.assign(root, {
+      handleInput: (data: string) => {
+        const page = Math.max(1, scroll.viewportHeight - 2);
+        if (keybindings.matches(data, "tui.select.up")) scroll.scrollBy(-1);
+        else if (keybindings.matches(data, "tui.select.down")) scroll.scrollBy(1);
+        else if (keybindings.matches(data, "tui.select.pageUp")) scroll.scrollBy(-page);
+        else if (keybindings.matches(data, "tui.select.pageDown")) scroll.scrollBy(page);
+        else if (matchesKey(data, Key.home)) scroll.scrollToStart();
+        else if (matchesKey(data, Key.end)) scroll.scrollToEnd();
+        else if (opts.approval && matchesKey(data, "a")) return done("apply");
+        else if (opts.approval && (matchesKey(data, "c") || keybindings.matches(data, "tui.select.cancel"))) return done("cancel");
+        else if (!opts.approval && (matchesKey(data, "q") || keybindings.matches(data, "tui.select.cancel") || matchesKey(data, Key.enter))) return done("closed");
+        tui.requestRender();
+      },
+    });
+  }, { overlay: true, overlayOptions: { width: "80%", anchor: "center", maxHeight: "85%" } });
+  return decision;
 }
 
 type DashboardView = "menu" | "overview" | "quality" | "providers" | "canary" | "latest" | "session" | "recent";
@@ -460,9 +493,13 @@ export async function showMetricsDashboardUI(
   const latest = entries[entries.length - 1];
   const insights = opts.insights ?? buildDashboardInsights(entries);
   const currentRuns = opts.currentSessionId ? entries.filter(entry => entry.sessionId === opts.currentSessionId) : [];
+  const hasQualityData = entries.some(entry =>
+    Number.isFinite(entry.verificationScore) || Number.isFinite(entry.initialVerificationScore));
   const menuItems: Array<{ view?: DashboardView; action?: DashboardAction; label: string; desc: string }> = [
     { view: "overview", label: "Overview report", desc: entries.length + " run(s) · Data Confidence " + insights.confidence.score + "/100" },
-    { view: "quality", label: "Quality & confidence", desc: "Verifier evidence, repair gain, and ≥85 trust target" },
+    ...(hasQualityData
+      ? [{ view: "quality" as const, label: "Quality & confidence", desc: "Verifier evidence, repair gain, and ≥85 trust target" }]
+      : []),
     { view: "providers", label: "Provider routes", desc: insights.providers.length + " stage/provider/model comparison row(s)" },
     { view: "canary", label: "Canary vs stable", desc: insights.canary.decision.toUpperCase() + " · " + insights.canary.dataConfidence + "% canary confidence" },
     { view: "latest", label: "Latest run details", desc: latest ? formatMetricRunCompact(latest) : "No run recorded yet" },
@@ -494,7 +531,15 @@ export async function showMetricsDashboardUI(
 
     const renderHeader = (width: number): string[] => [
       truncateToWidth(theme.fg("accent", theme.bold("  📊 Smart Compact Dashboard")) + theme.fg("dim", "  " + entries.length + " recorded run(s)"), width),
-      truncateToWidth(theme.fg("dim", "  session: " + (opts.currentSessionId ?? "unknown")) + theme.fg("dim", latest ? " • latest score " + metricScore(latest) : "") + theme.fg(insights.confidence.targetMet ? "success" : "warning", " • Data Confidence " + insights.confidence.score + "/100") + theme.fg(insights.quality.targetMet ? "success" : "warning", " • Quality " + insights.quality.healthScore + "/100"), width),
+      truncateToWidth(
+        theme.fg("dim", "  session: " + (opts.currentSessionId ?? "unknown"))
+          + theme.fg("dim", latest && Number.isFinite(latest.verificationScore) ? " • latest score " + metricScore(latest) : "")
+          + theme.fg(insights.confidence.targetMet ? "success" : "warning", " • Data Confidence " + insights.confidence.score + "/100")
+          + (hasQualityData
+            ? theme.fg(insights.quality.targetMet ? "success" : "warning", " • Quality " + insights.quality.healthScore + "/100")
+            : theme.fg("dim", " • Quality unavailable")),
+        width,
+      ),
       truncateToWidth(theme.fg("borderMuted", "─".repeat(Math.max(0, width))), width),
     ];
 
@@ -586,6 +631,7 @@ export async function showCompactUI(
     const action = await ctx.ui.custom<EffectiveCompactionMode | "model" | null>((tui, theme, keybindings, done) => {
       let selected = Math.max(0, PRIMARY_MODES.indexOf(recommended.mode));
       let details = false;
+      let feedback = "";
       return {
         render: (width: number) => {
           const inner = Math.max(1, width - 2);
@@ -642,6 +688,7 @@ export async function showCompactUI(
             lines.push(cell("  " + theme.fg(color, line)));
           }
           if (details) lines.push(cell("  " + theme.fg("dim", MODE_LABELS[selectedMode] + " · " + MODE_COPY[selectedMode])));
+          if (feedback) lines.push(cell("  " + theme.fg("warning", feedback)));
           lines.push(
             divider,
             cell(theme.fg("dim", "  ↑↓ choose · Enter run · D details · M model · Esc cancel")),
@@ -652,12 +699,18 @@ export async function showCompactUI(
         invalidate: () => {},
         handleInput: (data: string) => {
           if (keybindings.matches(data, "tui.select.cancel")) { done(null); return; }
-          if (keybindings.matches(data, "tui.select.up")) selected = (selected + PRIMARY_MODES.length - 1) % PRIMARY_MODES.length;
-          else if (keybindings.matches(data, "tui.select.down")) selected = (selected + 1) % PRIMARY_MODES.length;
-          else if (keybindings.matches(data, "tui.select.confirm")) {
+          if (keybindings.matches(data, "tui.select.up")) {
+            selected = (selected + PRIMARY_MODES.length - 1) % PRIMARY_MODES.length;
+            feedback = "";
+          } else if (keybindings.matches(data, "tui.select.down")) {
+            selected = (selected + 1) % PRIMARY_MODES.length;
+            feedback = "";
+          } else if (keybindings.matches(data, "tui.select.confirm")) {
             const mode = PRIMARY_MODES[selected];
-            if (plans.get(mode)?.plan?.viable) { done(mode); return; }
-          } else if (data.toLowerCase() === "d") details = !details;
+            const preview = plans.get(mode)!;
+            if (preview.plan?.viable) { done(mode); return; }
+            feedback = "Unavailable: " + explainPreflightReason(preview.reason) + ". Choose another mode or model.";
+          } else if (data.toLowerCase() === "d") feedback = "", details = !details;
           else if (data.toLowerCase() === "m") { done("model"); return; }
           tui.requestRender();
         },

@@ -17,10 +17,11 @@ import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens
 import * as log from "./logger.ts";
 import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { extractionCacheFile, metricsLogFile } from "../infra/paths.ts";
-import { appendLineLocked, readJsonSync, writeJsonSync, scheduleFileTailTrim } from "../infra/fs.ts";
+import { appendLineLocked, readJsonSync, writeJsonSync } from "../infra/fs.ts";
 import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX, RUNTIME_LOG_MAX_BYTES, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW } from "../constants.ts";
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
 import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
+import { toolOperationSignature } from "../domain/tool-semantics.ts";
 
 // ── Cache Options ──
 
@@ -97,6 +98,14 @@ export function getMetricsSummary(services: SmartCompactServices): { totalCalls:
 // ── Tracked complete wrapper ──
 // We resolve the LLM client on every call rather than caching the reference so
 // that tests which call `setLlmClient` mid-suite see their fake immediately.
+export function clampCompletionMaxTokens(model: Model<Api>, requested: number | undefined): number | undefined {
+  if (requested === undefined) return undefined;
+  const modelLimit = Number.isFinite(model.maxTokens) && model.maxTokens > 0
+    ? model.maxTokens
+    : requested;
+  return Math.max(1, Math.min(requested, modelLimit));
+}
+
 export async function trackedComplete(
   phase: LLMCallMetric["phase"],
   model: Model<Api>,
@@ -111,31 +120,41 @@ export async function trackedComplete(
   const safeRequest = svc.scrubber.scrubValue(reqBody).value;
   const rawRequest = JSON.stringify(safeRequest);
   const estimatedInput = estimateTokens(rawRequest, model.provider, model.id, svc.tokenCalibration);
-  const outputReservation = svc.budget.reserveCall(estimatedInput, opts.maxTokens ?? 0);
+  const maxTokens = clampCompletionMaxTokens(model, opts.maxTokens);
+  const outputReservation = svc.budget.reserveCall(estimatedInput, maxTokens ?? 0);
   const start = Date.now();
   try {
+    const boundedOpts = maxTokens === opts.maxTokens ? opts : { ...opts, maxTokens };
     const configuredReasoning = SEGMENTATION_PHASES.has(phase)
       ? svc.thinkingLevels.segmentationThinkingLevel
       : svc.thinkingLevels.summaryThinkingLevel;
-    const callOpts = opts.reasoning !== undefined || configuredReasoning === null
-      ? opts
-      : { ...opts, reasoning: configuredReasoning };
+    const callOpts = boundedOpts.reasoning !== undefined || configuredReasoning === null
+      ? boundedOpts
+      : { ...boundedOpts, reasoning: configuredReasoning };
     const resolvedOpts = cacheOpts(callOpts, model.provider, phase, svc);
     const resp = await svc.llm.complete(model, safeRequest, resolvedOpts);
     const latency = Date.now() - start;
     const usage = resp.usage;
-    const inputT = usage?.input ?? 0;
-    const outputT = usage?.output ?? 0;
-    const cacheT = usage?.cacheRead ?? 0;
-    const cacheWriteT = usage?.cacheWrite ?? 0;
+    const hasInputUsage = typeof usage?.input === "number" && Number.isFinite(usage.input);
+    const hasOutputUsage = typeof usage?.output === "number" && Number.isFinite(usage.output);
+    const inputT = hasInputUsage ? Math.max(0, usage.input) : estimatedInput;
+    const outputT = hasOutputUsage
+      ? Math.max(0, usage.output)
+      : estimateTokens(JSON.stringify(resp.content), model.provider, model.id, svc.tokenCalibration);
+    // Cache counters are meaningful only alongside provider-reported input.
+    // When input usage is absent, `estimatedInput` already covers the complete
+    // wire prompt and adding partial cache counters would double count it.
+    const cacheT = hasInputUsage ? Math.max(0, usage?.cacheRead ?? 0) : 0;
+    const cacheWriteT = hasInputUsage ? Math.max(0, usage?.cacheWrite ?? 0) : 0;
+    const usageEstimated = !hasInputUsage || !hasOutputUsage;
     svc.budget.reconcileInput(estimatedInput, effectivePromptInputTokens(inputT, cacheT, cacheWriteT));
     svc.budget.reconcileOutput(outputReservation, outputT);
     recordMetric({
       phase, model: model.id, provider: model.provider, inputTokens: inputT, outputTokens: outputT,
-      cacheHitTokens: cacheT, cacheWriteTokens: cacheWriteT, latencyMs: latency, success: true,
+      cacheHitTokens: cacheT, cacheWriteTokens: cacheWriteT, latencyMs: latency, success: true, usageEstimated,
     }, svc);
     try {
-      if (inputT > 0) {
+      if (hasInputUsage && inputT > 0) {
         const calibration = svc.tokenCalibration;
         calibrateFromResponse(
           estimateTokens(rawRequest, model.provider, model.id, calibration),
@@ -278,23 +297,33 @@ export function reconcileCachedErrors(
 ): StructuredExtraction["errors"] {
   return errors.map(error => {
     if (error.resolved) return { ...error };
+    // Legacy cache entries lack the failed call's arguments. Preserve them as
+    // unresolved rather than attributing an unrelated successful operation.
+    if (!error.operationSignature) return { ...error };
     let retryAttempted = error.retryAttempted;
     let resolved = false;
     for (let j = 0; j < deltaMessages.length; j++) {
       const globalIndex = baseMsgCount + j;
-      if (globalIndex <= error.index || globalIndex >= error.index + ERROR_RETRY_WINDOW) continue;
+      if (globalIndex <= error.index || globalIndex > error.index + ERROR_RETRY_WINDOW) continue;
       const message = deltaMessages[j];
       if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-      const retry = message.content.flatMap(flattenToolCallBlock).find(call => call.name === error.tool);
+      const retry = message.content
+        .flatMap(flattenToolCallBlock)
+        .find(call => toolOperationSignature(call.name, call.arguments) === error.operationSignature);
       if (!retry) continue;
       retryAttempted = true;
       for (let k = j + 1; k < Math.min(deltaMessages.length, j + ERROR_RESOLVE_WINDOW); k++) {
         const result = deltaMessages[k];
         if (result.role !== "toolResult" || result.isError) continue;
+        const resultCall = deltaToolCalls.get(result.toolCallId ?? "");
         const matches = retry.id != null
           ? result.toolCallId === retry.id
-          : deltaToolCalls.get(result.toolCallId ?? "")?.name === error.tool;
-        if (matches) { resolved = true; break; }
+          : Boolean(resultCall
+            && toolOperationSignature(resultCall.name, resultCall.arguments) === error.operationSignature);
+        if (matches) {
+          resolved = true;
+          break;
+        }
       }
       break;
     }
@@ -370,8 +399,7 @@ export function mergeExtractions(
 /** Extended metrics entry including pipeline context for regression detection. */
 function appendMetricsEntry(entry: CompactMetricsEntry): void {
   const logPath = metricsLogFile();
-  appendLineLocked(logPath, JSON.stringify(entry));
-  scheduleFileTailTrim(logPath, RUNTIME_LOG_MAX_BYTES);
+  appendLineLocked(logPath, JSON.stringify(entry), RUNTIME_LOG_MAX_BYTES);
 }
 
 /** Append a fully materialized payload after an external lifecycle commits. */
