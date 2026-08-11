@@ -73,6 +73,19 @@ describe("assembleFallback (deterministic fallback when LLM assembly fails)", ()
     }));
     expect(out).toContain("Use JWT");
   });
+
+  it("preserves explicit focus/note steering and bounded evidence overflow", () => {
+    const out = assembleFallback([], makeExtraction({
+      evidenceOverflow: { readFiles: 7, decisions: 2 },
+    }), {
+      focus: "authentication migration",
+      note: "Keep the rollback constraint",
+    });
+    expect(out).toContain("Preserve detail about: authentication migration");
+    expect(out).toContain("Keep the rollback constraint");
+    expect(out).toContain("omitted 7 older readFiles item(s)");
+    expect(out).toContain("omitted 2 older decisions item(s)");
+  });
 });
 
 describe("failedChunkSummary (per-segment fallback when a batch LLM call fails)", () => {

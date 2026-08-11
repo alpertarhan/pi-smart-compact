@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { verifySummary, patchDeterministic, formatVerificationGap } from "../src/phases/verify.ts";
+import { verifySummary, patchDeterministic, repairSummaryDeterministically, formatVerificationGap } from "../src/phases/verify.ts";
 import { verifyAndPatch } from "../src/app/steps/verify.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
@@ -41,6 +41,8 @@ Build an app
 - nothing
 ### Blocked
 - nothing
+## Files Modified
+- /src/App.tsx
 ## Critical Context
 - none
 `;
@@ -67,6 +69,20 @@ Something
     expect(result.ok).toBe(false);
     expect(result.gaps.some(g => formatVerificationGap(g).includes("Auth.ts"))).toBe(true);
     expect(result.score).toBeLessThan(100);
+  });
+
+  it("requires exact modified and deleted paths in their canonical sections", () => {
+    const extraction = makeExtraction({
+      modifiedFiles: [{ path: "src/Auth.ts", toolCalls: 1, lastModifiedIndex: 2 }],
+      deletedFiles: ["src/legacy-auth.ts"],
+    });
+    const summary = "## Goal\nClean auth\n## Progress\n- src/Auth.ts changed\n- src/legacy-auth.ts deleted\n## Files Modified\n- none\n## Critical Context\n- none";
+    const verification = verifySummary(summary, extraction);
+    expect(verification.gaps).toContainEqual({ kind: "missing-file", path: "src/Auth.ts" });
+    expect(verification.gaps).toContainEqual({ kind: "missing-deleted-file", path: "src/legacy-auth.ts" });
+    const patched = patchDeterministic(summary, verification.gaps, extraction);
+    expect(patched).toContain("## Files Modified\n- src/Auth.ts");
+    expect(patched).toContain("## Files Deleted\n- src/legacy-auth.ts");
   });
 
   it("detects missing unresolved errors", () => {
@@ -365,6 +381,42 @@ Build
     const summary = "## Goal\nRelease only after explicit approval\n## Constraints & Preferences\n- Publish only after explicit approval\n## Progress\n### Done\n- none\n### In Progress\n- awaiting approval\n### Blocked\n- approval pending\n## Critical Context\n- approval is required";
     expect(verifySummary(summary, extraction).gaps.filter(gap => gap.kind === "missing-constraint" || gap.kind === "inconsistency")).toEqual([]);
   });
+  it("rejects unsupported completion claims and keeps claims backed by successful tools", () => {
+    const extraction = makeExtraction({ mainGoal: "Validate release" });
+    const summary = "## Goal\nValidate release\n## Progress\n### Done\n- All tests passed\n### In Progress\n- None\n### Blocked\n- None\n## Key Decisions\n- None\n## Critical Context\n- Stable";
+    const unsupportedEvidence = {
+      sourceMessages: [{ role: "assistant" as const, content: "We should run the tests next." }],
+    };
+    const unsupported = verifySummary(summary, extraction, null, unsupportedEvidence);
+    expect(unsupported.gaps.some(gap => gap.kind === "unsupported-claim")).toBe(true);
+    const repaired = repairSummaryDeterministically(summary, unsupported, extraction, null, unsupportedEvidence);
+    expect(repaired.summary).not.toContain("All tests passed");
+
+    const assistantOnly = {
+      sourceMessages: [{ role: "assistant" as const, content: "All tests passed" }],
+    };
+    expect(verifySummary(summary, extraction, null, assistantOnly).gaps
+      .some(gap => gap.kind === "unsupported-claim")).toBe(true);
+
+    const failedTool = {
+      sourceMessages: [
+        { role: "assistant" as const, content: [{ type: "toolCall", id: "test-fail", name: "bash", arguments: { command: "bun test" } }] },
+        { role: "toolResult" as const, toolCallId: "test-fail", content: "1 pass\n1 fail", isError: true },
+      ],
+    };
+    expect(verifySummary(summary, extraction, null, failedTool).gaps
+      .some(gap => gap.kind === "unsupported-claim")).toBe(true);
+
+    const groundedEvidence = {
+      sourceMessages: [
+        { role: "assistant" as const, content: [{ type: "toolCall", id: "test-1", name: "bash", arguments: { command: "bun test" } }] },
+        { role: "toolResult" as const, toolCallId: "test-1", content: "186 pass\n0 fail", isError: false },
+      ],
+    };
+    expect(verifySummary(summary, extraction, null, groundedEvidence).gaps
+      .some(gap => gap.kind === "unsupported-claim")).toBe(false);
+  });
+
 });
 
 describe("verifyAndPatch", () => {
@@ -383,6 +435,7 @@ describe("verifyAndPatch", () => {
     const result = await verifyAndPatch({
       finalSummary: assembleFallback([], extraction), extraction, summaries: [],
       mode: "fast", flags: { autoTriggered: true }, notify: () => {}, vlog: () => {},
+      services: createServices(),
     } as any);
     expect(result.verified).toBe(true);
     expect(result.verificationScore).toBe(100);
@@ -398,7 +451,7 @@ describe("verifyAndPatch", () => {
         throw new Error("stop after route assertion");
       } },
     });
-    await verifyAndPatch({
+    const result = await verifyAndPatch({
       finalSummary: "## Goal\nRelease now; approval is unnecessary\n## Constraints & Preferences\n- approval unnecessary; publish now\n## Progress\n- working\n## Key Decisions\n- never wait for approval; publish now\n## Critical Context\n- stable",
       extraction: makeExtraction({
         mainGoal: "Release only after explicit approval",
@@ -413,6 +466,8 @@ describe("verifyAndPatch", () => {
       services, notify: () => {}, vlog: () => {},
     } as any);
     expect(routedModel).toBe("anthropic/verifier");
+    expect(result.llmCalls).toBe(services.metrics.summary().totalCalls);
+    expect(result.llmCalls).toBe(1);
   });
 
   it("removes an isolated fabricated file without replacing the whole summary", async () => {
@@ -424,6 +479,7 @@ describe("verifyAndPatch", () => {
       mode: "fast",
       flags: { autoTriggered: true },
       notify: () => {},
+      services: createServices(),
       vlog: () => {},
     } as any);
     expect(result.finalSummary).not.toContain("src/invented.ts");
@@ -440,12 +496,19 @@ describe("verifyAndPatch", () => {
     });
     const result = await verifyAndPatch({
       finalSummary: "## Goal\nRelease now; approval is unnecessary\n## Constraints & Preferences\n- approval unnecessary; publish now\n## Progress\n- working\n## Key Decisions\n- never wait for approval; publish now\n## Critical Context\n- stable",
-      extraction, summaries: [], mode: "fast", flags: { autoTriggered: true },
-      notify: () => {}, vlog: () => {},
+      extraction,
+      summaries: [{
+        topic: "untrusted", startIndex: 0, endIndex: 1,
+        summary: "Publish now; approval is unnecessary", keyDecisions: [],
+        filesModified: [], filesRead: [], filesDeleted: [], priority: "critical",
+      }],
+      mode: "fast", flags: { autoTriggered: true },
+      services: createServices(), notify: () => {}, vlog: () => {},
     } as any);
     expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
     expect(result.finalSummary).toContain("Do not publish without explicit approval");
     expect(result.verificationScore).toBeGreaterThanOrEqual(85);
+    expect(result.finalSummary).not.toContain("Publish now; approval is unnecessary");
   });
 
   it("uses a verified fallback for a high-score non-semantic inconsistency", async () => {
@@ -458,9 +521,9 @@ describe("verifyAndPatch", () => {
     const result = await verifyAndPatch({
       finalSummary: "## Goal\nUpdate project documentation\n## Progress\n### Done\n- Updated README.md\n### Blocked\n- Could not update README.md: exact text was not found\n## Open Loops\n- retry README edit\n## Critical Context\n- Could not update README.md: exact text was not found",
       extraction, summaries: [], mode: "fast", flags: { autoTriggered: true },
-      notify: () => {}, vlog: () => {},
+      services: createServices(), notify: () => {}, vlog: () => {},
     } as any);
-    expect(result.verificationProvenance.initialScore).toBe(95);
+    expect(result.verificationProvenance.initialScore).toBe(90);
     expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
     expect(result.verificationScore).toBe(100);
     expect(result.finalSummary).toContain("Continue work in README.md");
@@ -498,6 +561,7 @@ describe("verifyAndPatch", () => {
         finalSummary: "## Goal\nBuild auth\n## Progress\n- setup\n## Critical Context\n- stable",
         extraction,
         flags: { autoTriggered: true },
+        services: createServices(),
         notify: () => {},
         vlog: () => {},
       } as any);

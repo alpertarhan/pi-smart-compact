@@ -6,30 +6,105 @@
  */
 
 import type { Model, Api, ProviderHeaders } from "@earendil-works/pi-ai";
-import type { CompactionState, StructuredExtraction, VerificationGap, VerificationResult } from "../types.ts";
-import { COMPACT_SYSTEM_PREFIX, TRUNC } from "../constants.ts";
+import type { CompactionState, StructuredExtraction, VerificationGap, VerificationResult, LlmMessage } from "../types.ts";
+import { COMPACT_SYSTEM_PREFIX, LIKELY_ERROR_RE, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import { extractFileRefs } from "../utils/file-ref-detect.ts";
-import { isDiagnosticConstraintText } from "../utils/extraction.ts";
+import { buildToolCallIndex, extractText, isDiagnosticConstraintText } from "../utils/extraction.ts";
 import { buildUniquePathNeedles, isKnownPathReference, normalizePath } from "../utils/file-needles.ts";
 import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, summaryEvidenceLine, upsertSection } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
+export interface VerificationEvidence {
+  sourceMessages?: readonly LlmMessage[];
+  steering?: { focus?: string; note?: string };
+}
+
+const HIGH_RISK_OUTCOME_RE = /(?:\ball\s+tests?\s+(?:pass|passed|passing)\b|\btests?\s+(?:pass|passed|passing)\b|\b(?:build|deployment|migration)\s+(?:completed|succeeded|passed|successful)\b|\b(?:deployed|published|released)\b|\b(?:bug|issue|error)\s+(?:fixed|resolved)\b|\bno\s+(?:errors?|failures?)\b|\bcompleted successfully\b|\btestler?\s+(?:geçti|başarılı)\b|\bbaşarıyla\s+(?:tamamlandı|dağıtıldı|yayınlandı)\b|\b(?:deploy edildi|yayınlandı|hata yok)\b)/iu;
+const NEGATED_OUTCOME_RE = /\b(?:not|never|pending|failed|failing|unresolved|henüz|değil|başarısız)\b/iu;
+
+function outcomeClaims(summary: string): string[] {
+  return Array.from(new Set(summary.split(/\r?\n/)
+    .map(line => line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\[[ x]\]\s+/i, "").trim())
+    .filter(line => line.length > 0 && !line.startsWith("#"))
+    .filter(line => HIGH_RISK_OUTCOME_RE.test(line))
+    .filter(line => /\bno\s+(?:errors?|failures?)\b/i.test(line) || !NEGATED_OUTCOME_RE.test(line))))
+    .slice(0, 12);
+}
+
+function classifyOutcomeClaim(claim: string): "test" | "build" | "release" | "error" | "file" | "generic" {
+  const lower = claim.toLowerCase();
+  if (/\btests?\b|\btestler?\b/.test(lower)) return "test";
+  if (/\bbuild\b|\bcompil(?:e|ed|ation)\b|\btypecheck\b/.test(lower)) return "build";
+  if (/\bdeploy(?:ed|ment)?\b|\bpublish(?:ed)?\b|\breleas(?:e|ed)\b/.test(lower)) return "release";
+  if (/\bbug\b|\bissue\b|\berror\b|\bfail(?:ed|ure)?\b|\bhata\b/.test(lower)) return "error";
+  if (/\bfile\b|\bdosya\b/.test(lower)) return "file";
+  return "generic";
+}
+
+function successfulToolSupportsClaim(
+  claim: string,
+  messages: readonly LlmMessage[],
+  extraction: StructuredExtraction,
+): boolean {
+  const shape = semanticShape(claim);
+  const category = classifyOutcomeClaim(claim);
+  if (category === "error" && extraction.errors.some(error => error.resolved
+    && hasSemanticEvidence(claim, error.message))) return true;
+  if (category === "file" && extraction.modifiedFiles.some(file => claim.toLowerCase().includes(file.path.toLowerCase()))) return true;
+
+  // Positive outcome claims require host/tool evidence. Assistant prose is an
+  // untrusted assertion even when it repeats the claim exactly.
+  for (const message of messages) {
+    if (message.role !== "toolResult" || message.isError) continue;
+    const bounded = extractText(message.content).slice(0, 8_000);
+    if (!bounded.trim() || LIKELY_ERROR_RE.test(bounded)) continue;
+    if (hasSemanticEvidence(claim, bounded)) return true;
+    const lower = bounded.toLowerCase();
+    if (category === "test" && /\b\d+\s+(?:tests?\s+)?pass(?:ed)?\b/.test(lower)
+      && !/\b(?:fail(?:ed|ures?)?|errors?)\s*[:=]?\s*[1-9]\d*\b/.test(lower)) return true;
+    if (category === "build" && /\b(?:build|compile|typecheck)\b/.test(lower)
+      && /\b(?:succeeded|successful|passed|exit(?:ed)?\s+(?:code\s+)?0)\b/.test(lower)) return true;
+    if (category === "release" && /\b(?:publish|release|deploy)\b/.test(lower)
+      && /\b(?:succeeded|successful|completed|published|deployed|released)\b/.test(lower)) return true;
+    if (category === "error" && shape.concepts.length > 0
+      && /\b(?:fixed|resolved|passed|succeeded|successful)\b/.test(lower)
+      && hasSemanticEvidence(claim, bounded)) return true;
+  }
+  return false;
+}
+
+function removeUnsupportedClaim(summary: CanonicalSummary, claim: string): CanonicalSummary {
+  const normalized = claim.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  return {
+    sections: summary.sections.map(section => ({
+      ...section,
+      body: section.body.split("\n").filter(line => {
+        const candidate = line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "").replace(/^\[[ x]\]\s+/i, "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+        return candidate !== normalized;
+      }).join("\n").trim(),
+    })),
+  };
+}
+
 
 export function formatVerificationGap(gap: VerificationGap): string {
   switch (gap.kind) {
     case "missing-section": return "Missing section: " + canonicalHeading(gap.section);
     case "missing-file": return "Missing modified file: " + gap.path;
-    case "missing-error": return "Missing error: " + gap.message.slice(0, TRUNC.SNIPPET);
+    case "missing-read-file": return "Missing read file: " + gap.path;
+    case "missing-deleted-file": return "Missing deleted file: " + gap.path;
+    case "missing-error": return (gap.resolved ? "Missing resolved error history: " : "Missing error: ") + gap.message.slice(0, TRUNC.SNIPPET);
     case "missing-constraint": return "Missing constraint: " + gap.text.slice(0, TRUNC.TOPIC_LABEL);
     case "missing-decision": return "Missing decision: " + gap.summary.slice(0, TRUNC.TOPIC_LABEL);
     case "missing-goal": return "Main goal may be missing from summary";
     case "fabricated-file": return "Potentially fabricated file: " + gap.ref;
     case "inconsistency": return "Inconsistency: " + gap.detail;
     case "missing-open-loops": return "Missing Open Loops section despite " + gap.unresolvedCount + " unresolved errors";
+    case "unsupported-claim": return "Unsupported outcome claim: " + gap.claim.slice(0, TRUNC.SNIPPET);
   }
 }
 
@@ -39,7 +114,7 @@ export function verificationFailureMessage(result: VerificationResult): string |
     .map(gap => formatVerificationGap(gap).replace(/\s+/g, " ").slice(0, 160))
     .join("; ");
   return "Verification gate rejected summary (" + result.score + "/100, " +
-    result.gaps.length + " unresolved gap(s))" + (findings ? ": " + findings : "");
+    result.gaps.length + (result.gaps.length === 1 ? " unresolved gap)" : " unresolved gaps)") + (findings ? ": " + findings : "");
 }
 
 /** Content-free diagnostics survive the throw without leaking evidence to telemetry. */
@@ -202,6 +277,7 @@ export function repairSummaryDeterministically(
   result: VerificationResult,
   extraction: StructuredExtraction,
   continuity: CompactionState | null = null,
+  evidence: VerificationEvidence = {},
   maxRounds = 3,
 ): { summary: string; result: VerificationResult; patched: VerificationGap[] } {
   const patched: VerificationGap[] = [];
@@ -216,7 +292,7 @@ export function repairSummaryDeterministically(
       if (!seen.has(key)) { seen.add(key); patched.push(gap); }
     }
     summary = next;
-    result = verifySummary(summary, extraction, continuity);
+    result = verifySummary(summary, extraction, continuity, evidence);
   }
   return { summary, result, patched };
 }
@@ -225,6 +301,7 @@ export function verifySummary(
   summary: string,
   extraction: StructuredExtraction,
   continuity: CompactionState | null = null,
+  evidence: VerificationEvidence = {},
 ): VerificationResult {
   const parsed = parseSummary(summary);
   const gaps: VerificationGap[] = [];
@@ -244,9 +321,18 @@ export function verifySummary(
     ...extraction.errors.filter(error => !error.resolved).map(error => ({ message: error.message })),
     ...(continuity?.unresolvedErrors ?? []).map(error => ({ message: error.message })),
   ], item => item.message);
+  const resolvedEvidence = uniqueByText([
+    ...extraction.errors.filter(error => error.resolved).map(error => ({ message: error.message })),
+    ...(continuity?.resolvedErrors ?? []).map(error => ({ message: error.message })),
+  ], item => item.message).slice(-5);
+  const steeringConstraints = [
+    evidence.steering?.focus ? { text: "Preserve detail about: " + evidence.steering.focus } : null,
+    evidence.steering?.note ? { text: evidence.steering.note } : null,
+  ].filter((item): item is { text: string } => Boolean(item?.text.trim()));
   const constraintEvidence = uniqueByText([
     ...extraction.constraints.filter(item => item.confidence >= 0.8).map(item => ({ text: item.text })),
     ...(continuity?.constraints ?? []).filter(item => item.confidence >= 0.8).map(item => ({ text: item.text })),
+    ...steeringConstraints,
   ], item => item.text).filter(item => !isDiagnosticConstraintText(item.text));
   const decisionEvidence = uniqueByText([
     ...extraction.decisions.filter(item => item.type === "explicit").map(item => ({ summary: item.summary })),
@@ -266,31 +352,48 @@ export function verifySummary(
     }
   }
 
-  const modifiedPaths = extraction.modifiedFiles.map(file => file.path);
-  const listedModifiedPaths = new Set(
-    (findSection(parsed, "files-modified")?.body ?? "")
+  const listedPaths = (kind: "files-modified" | "files-read" | "files-deleted"): Set<string> => new Set(
+    (findSection(parsed, kind)?.body ?? "")
       .split("\n")
       .map(line => line
         .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, "")
         .replace(/^\[[ x]\]\s+/i, "")
         .trim())
       .map(line => line.startsWith("`") && line.endsWith("`") ? line.slice(1, -1) : line)
-      .filter(Boolean)
+      .filter(line => line.length > 0 && !/^none(?: recorded)?[.!]?$/i.test(line))
       .map(normalizePath),
   );
-  for (const file of extraction.modifiedFiles) {
-    const needles = buildUniquePathNeedles(file.path, modifiedPaths);
-    if (!listedModifiedPaths.has(normalizePath(file.path)) && !needles.some(needle => lower.includes(needle))) {
-      gaps.push({ kind: "missing-file", path: file.path });
-      score -= 5;
-    }
+  const modifiedPaths = extraction.modifiedFiles.map(file => file.path);
+  const modifiedListed = listedPaths("files-modified");
+  const readListed = listedPaths("files-read");
+  const deletedListed = listedPaths("files-deleted");
+  for (const file of modifiedPaths) {
+    if (!modifiedListed.has(normalizePath(file))) gaps.push({ kind: "missing-file", path: file });
   }
+  for (const file of extraction.readFiles) {
+    if (!readListed.has(normalizePath(file))) gaps.push({ kind: "missing-read-file", path: file });
+  }
+  const deletedEvidence = Array.from(new Set([
+    ...extraction.deletedFiles,
+    ...(continuity?.deletedFiles ?? []),
+  ]));
+  for (const file of deletedEvidence) {
+    if (!deletedListed.has(normalizePath(file))) gaps.push({ kind: "missing-deleted-file", path: file });
+  }
+  score -= gaps.filter(gap => gap.kind === "missing-file" || gap.kind === "missing-read-file" || gap.kind === "missing-deleted-file").length * 5;
 
   for (const error of unresolvedEvidence) {
     const snippet = summaryEvidenceLine(error.message, TRUNC.ERROR_SNIPPET).toLowerCase();
     if (snippet.length > 5 && !normalizedSummary.includes(snippet)) {
       gaps.push({ kind: "missing-error", message: error.message });
       score -= 5;
+    }
+  }
+  for (const error of resolvedEvidence) {
+    const snippet = summaryEvidenceLine(error.message, TRUNC.ERROR_SNIPPET).toLowerCase();
+    if (snippet.length > 5 && !normalizedSummary.includes(snippet)) {
+      gaps.push({ kind: "missing-error", message: error.message, resolved: true });
+      score -= 2;
     }
   }
 
@@ -382,6 +485,14 @@ export function verifySummary(
     gaps.push({ kind: "missing-open-loops", unresolvedCount });
     score -= 5;
   }
+  if (evidence.sourceMessages) {
+    for (const claim of outcomeClaims(summary)) {
+      if (!successfulToolSupportsClaim(claim, evidence.sourceMessages, extraction)) {
+        gaps.push({ kind: "unsupported-claim", claim });
+        score -= 20;
+      }
+    }
+  }
 
   const finalScore = Math.max(0, score);
   return { ok: gaps.length === 0 && finalScore >= 85, gaps, score: finalScore };
@@ -431,11 +542,21 @@ export function patchDeterministic(
       case "missing-file":
         canonical = appendToSection(canonical, "files-modified", "- " + safe(gap.path));
         break;
+      case "missing-read-file":
+        canonical = appendToSection(canonical, "files-read", "- " + safe(gap.path));
+        break;
+      case "missing-deleted-file":
+        canonical = appendToSection(canonical, "files-deleted", "- " + safe(gap.path));
+        break;
       case "missing-error": {
         const existing = findSection(canonical, "critical-context")?.body.toLowerCase() ?? "";
         const message = safe(gap.message);
         if (!existing.includes(message.toLowerCase())) {
-          canonical = appendToSection(canonical, "critical-context", "- Unresolved error: " + message);
+          canonical = appendToSection(
+            canonical,
+            "critical-context",
+            "- " + (gap.resolved ? "Resolved error: " : "Unresolved error: ") + message,
+          );
         }
         break;
       }
@@ -474,6 +595,9 @@ export function patchDeterministic(
         };
         break;
       }
+      case "unsupported-claim":
+        canonical = removeUnsupportedClaim(canonical, gap.claim);
+        break;
       case "inconsistency":
         if (gap.detail.startsWith("blocked-none:")) patchBlockedNone();
         break;

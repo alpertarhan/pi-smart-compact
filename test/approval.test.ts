@@ -15,7 +15,7 @@ const extraction: StructuredExtraction = {
   errors: [], decisions: [], constraints: [], topics: [], timeline: [], mainGoal: "auth", lastUserMessages: [], lastErrors: [], messageCount: 10,
 };
 
-function context(confirmed: boolean) {
+function context(action: "a" | "c", calls: { custom: number }) {
   const theme = {
     fg: (_color: string, text: string) => text,
     bold: (text: string) => text,
@@ -23,20 +23,30 @@ function context(confirmed: boolean) {
   return {
     ui: {
       custom: async (factory: any) => await new Promise(resolve => {
-        const component = factory({ requestRender: () => {} }, theme, {}, resolve);
-        component.handleInput("x");
+        calls.custom++;
+        const component = factory(
+          { requestRender: () => {} },
+          theme,
+          { matches: () => false },
+          resolve,
+        );
+        component.handleInput(action);
       }),
-      confirm: async () => confirmed,
+      confirm: async () => { throw new Error("approval must stay in the review screen"); },
     },
   } as any;
 }
 
 describe("manual compaction approval", () => {
-  it("returns cancel when the user declines after reviewing provenance", async () => {
-    expect(await showResultScreen(context(false), details, extraction, createServices(), { approval: true })).toBe("cancel");
+  it("returns cancel from the single review screen", async () => {
+    const calls = { custom: 0 };
+    expect(await showResultScreen(context("c", calls), details, extraction, createServices(), { approval: true })).toBe("cancel");
+    expect(calls.custom).toBe(1);
   });
 
-  it("returns apply only after explicit confirmation", async () => {
-    expect(await showResultScreen(context(true), details, extraction, createServices(), { approval: true })).toBe("apply");
+  it("applies only from the explicit review-screen action", async () => {
+    const calls = { custom: 0 };
+    expect(await showResultScreen(context("a", calls), details, extraction, createServices(), { approval: true })).toBe("apply");
+    expect(calls.custom).toBe(1);
   });
 });

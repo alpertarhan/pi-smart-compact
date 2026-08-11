@@ -1,11 +1,9 @@
 /**
- * Step 1: prepare a run — load config, resolve auth, wire cancellation.
+ * Step 1: prepare a run — load config, provider caps, budgets, and
+ * cancellation. Provider credentials are intentionally resolved later by
+ * `resolveStageAuth()` immediately before each stage's first network call.
  *
  * Stage transition: `RcBase` → `PreparedRc`.
- *
- * Returns `null` when authentication fails so the orchestrator can bail
- * before any side effects. The null return is the explicit guard that lets
- * TypeScript prove later steps never see a half-initialised context.
  */
 
 import type { RcBase, PreparedRc, ResolvedAuth } from "../run-context.ts";
@@ -19,7 +17,7 @@ import * as log from "../../utils/logger.ts";
 import { SecretScrubber } from "../../domain/scrub.ts";
 import { BudgetGuard } from "../../infra/services.ts";
 
-export async function prepareRun(rc: RcBase): Promise<PreparedRc | null> {
+export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
   const config = rc.config ?? loadConfig();
   const { profileCfg, estimator, adapted, damageMedian } = preparePreflightProfile({
     cwd: rc.ctx.cwd,

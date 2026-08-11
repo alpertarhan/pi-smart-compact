@@ -1,8 +1,34 @@
 # Changelog
 
-## [Unreleased]
+## [9.0.0] - 2026-08-09
 
-No changes yet.
+### Changed
+
+- Major hardening release: verified host-correlated apply, strict command/tool inputs, bounded automatic compaction, model-aware output ceilings, branch-scoped continuity, and fail-closed yield and evidence contracts are now enforced end to end.
+
+### Fixed
+
+- Command and tool inputs now share one strict parser. Control tokens are consumed only from the left edge, `--note`/`--` preserve literal notes, file paths are not mistaken for model IDs, and invalid modes or budgets fail explicitly.
+- Verified state is stored as immutable project/session/branch-head snapshots; sibling branches no longer overwrite continuity, loop overrides re-index the updated graph, and synthesis cache keys include every output-affecting run budget.
+- Deleted-file evidence now survives chunk synthesis, fallback assembly, verification, and repair. Modified/deleted paths count only in their canonical sections; unrelated parallel tool calls and substantive assistant constraints are no longer pruned.
+- Every provider transport has an aborting hard deadline, stale filesystem locks are reclaimed asynchronously, backup listing reads bounded headers, and session-log recovery scans large active logs incrementally without a 50 MiB correctness cutoff.
+- Result and approval UI expose generation fallbacks, source-versus-repaired coverage, remaining-gap counts, and the actual summary preview. Project fingerprints count distinct sessions instead of compaction runs.
+- Verification now grounds high-risk completion claims only against successful tool results or deterministic resolved-error/file evidence, removes unsupported assistant-only claims, and builds the quality floor only from deterministic extraction, continuity, and explicit steering.
+- Session-log recovery preserves exact entry/message identity; synthesis cache keys include recovered content and every provider route; full cache values are cloned without sharing nested mutable state.
+- Boundary indexes are integer-canonicalized, exploration arguments reject empty broad matches, extraction evidence is bounded with visible overflow counts, and delayed tool results remain paired under the chunk ceiling.
+- Missing provider usage is conservatively estimated for budgets and telemetry. Budget-driven synthesis fallbacks are recorded explicitly rather than appearing as provider-free success.
+- Scrubbed backups are prepared without I/O and written only after correlated native apply. Partial persistence is reported separately, stale state/temp artifacts are removed, and stage transitions now enforce runtime order and required fields.
+- Manual verified-summary review is enabled by default and excluded from the pipeline deadline; the preview wraps long evidence lines and dashboards hide unavailable quality scores.
+- Cross-process JSONL retention now holds the append/trim lock for the complete transaction, overflow planning accounts for host-only fixed context, and long command failures preserve a bounded error window from the middle of pruned tool output.
+- Single-batch synthesis fallbacks are visible and never cached as clean output; verification refreshes the run-wide LLM-call total; transient tool-probe failures no longer poison capability caches; profile overrides enforce integer and cross-field bounds.
+- Verified-summary review is one scrollable Apply/Cancel screen, unavailable preflight choices explain why Enter is blocked, exact backup payloads materialize only after native apply, and restore forks from the recorded branch leaf or opens an isolated session for legacy backups.
+- Unresolved host sessions stop before pipeline work, branch ancestry snapshots are bounded while retaining compaction state heads, Git-root caching is bounded and expiring, and context-graph directories are normalized to owner-only permissions.
+- Window planning now translates provider output caps through the calibrated local estimator and budgets bounded deterministic repair/state additions, preventing late target rejection after a high-saving run.
+- Secret scrubbing recognizes provider-specific Google/Stripe/GitLab/npm credentials, AWS secret assignments, credential-bearing object keys, and passwords in connection URIs.
+- Incremental extraction caches retain failed-operation signatures, so only the same later operation can resolve a cached error; recent resolved errors remain visible in the continuation summary.
+- Automatic compaction shows live phase progress and is bounded to 60 seconds and four LLM calls before native recovery. Context-graph queue saturation now rejects and reports the newest update instead of silently evicting accepted state.
+- CI actions are pinned to immutable commits, the redundant adversarial rerun was removed from CI, and restore tests delete their temporary HOME directories.
+- Every tracked provider request is clamped to the model's advertised output limit before budget reservation and dispatch. The release check now includes p95 hot-path regression limits and a host-correlated end-to-end auto-compaction/apply lifecycle test.
 
 ## [8.0.8] - 2026-08-09
 

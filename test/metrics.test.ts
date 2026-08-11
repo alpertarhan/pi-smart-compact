@@ -95,8 +95,8 @@ describe("metrics reporting", () => {
   it("persists content-free verification diagnostics for pre-state failures", () => {
     const svc = services.createServices();
     const error = Object.assign(new Error("Verification gate rejected summary: secret evidence"), {
-      name: "VerificationGateError", score: 92, initialScore: 64, gapCount: 2,
-      gapKinds: ["inconsistency", "fabricated-file"],
+      name: "VerificationGateError", score: 92, initialScore: 64, gapCount: 3,
+      gapKinds: ["inconsistency", "fabricated-file", "unsupported-claim"],
     });
     recordFailureMetrics({
       services: svc,
@@ -109,8 +109,8 @@ describe("metrics reporting", () => {
     const entry = cache.readMetricsLog().at(-1);
     expect(entry).toMatchObject({
       failureKind: "verification", verificationScore: 92, initialVerificationScore: 64,
-      verificationGaps: 2, remainingVerificationGaps: 2,
-      verificationGapKinds: ["inconsistency", "fabricated-file"],
+      verificationGaps: 3, remainingVerificationGaps: 3,
+      verificationGapKinds: ["inconsistency", "fabricated-file", "unsupported-claim"],
     });
     expect(JSON.stringify(entry)).not.toContain("secret evidence");
   });

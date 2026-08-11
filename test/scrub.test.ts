@@ -24,6 +24,36 @@ describe("SecretScrubber", () => {
     expect(result).toBe("sk-example and token=userToken and version 7.20.0");
   });
 
+  it("redacts common provider secrets and credential-bearing connection URIs", () => {
+    const google = "AIza" + "A".repeat(35);
+    const source = [
+      "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "STRIPE_SECRET_KEY=sk_live_1234567890abcdefghijk",
+      "GOOGLE_API_KEY=" + google,
+      "DATABASE_URL=postgres://admin:SuperSecretPassword123@db.example/app",
+    ].join("\n");
+    const value = new SecretScrubber(true, false).scrubText(source).value;
+    expect(value).not.toContain("wJalrXUtnFEMI");
+    expect(value).not.toContain("sk_live_");
+    expect(value).not.toContain(google);
+    expect(value).not.toContain("SuperSecretPassword123");
+    expect(value).toContain("postgres://admin:[REDACTED:password]@db.example/app");
+  });
+
+  it("uses object keys as secret evidence without redacting token counters", () => {
+    const source = {
+      AWS_SECRET_ACCESS_KEY: "short-but-secret",
+      clientSecret: "another-secret",
+      maxTokens: 8192,
+      tokenRatioEstimate: 3.8,
+    };
+    const value = new SecretScrubber(true, false).scrubValue(source).value;
+    expect(value.AWS_SECRET_ACCESS_KEY).toBe("[REDACTED:credential]");
+    expect(value.clientSecret).toBe("[REDACTED:credential]");
+    expect(value.maxTokens).toBe(8192);
+    expect(value.tokenRatioEstimate).toBe(3.8);
+  });
+
   it("keeps PII disabled by default and supports opt-in", () => {
     const text = "Contact dev@example.com";
     expect(new SecretScrubber(true, false).scrubText(text).value).toContain("dev@example.com");

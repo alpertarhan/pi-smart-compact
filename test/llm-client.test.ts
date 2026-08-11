@@ -8,11 +8,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   setLlmClient, resetLlmClient, defaultLlmClient, getLlmClient, rawLlmClient,
-  isChatGptCodex, resolveCodexWatchdogMs, withCodexWireLimit,
+  isChatGptCodex, resolveCodexWatchdogMs, withCodexWireLimit, withProviderDeadline,
 } from "../src/infra/llm-client.ts";
+import type { LlmCompleteOptions } from "../src/infra/llm-client.ts";
 import { createServices } from "../src/infra/services.ts";
 import { trackedComplete } from "../src/utils/cache.ts";
-import type { Model, Api } from "@earendil-works/pi-ai";
+import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
 
 const model = { id: "test-model", provider: "openai", contextWindow: 128000 } as Model<Api>;
 
@@ -35,6 +36,29 @@ describe("llm-client seam", () => {
     const resp = await trackedComplete("batch", model, { systemPrompt: "x", messages: [] } as any, { apiKey: "k" } as any);
     expect(captured.model?.id).toBe("test-model");
     expect(resp.usage?.input).toBe(10);
+  });
+
+  it("clamps every tracked request to the model output limit", async () => {
+    let capturedMaxTokens: number | undefined;
+    const limitedModel = { ...model, maxTokens: 2_048 } as Model<Api>;
+    const services = createServices({
+      llm: {
+        complete: async (_model, _body, opts) => {
+          capturedMaxTokens = opts.maxTokens;
+          return { content: [], usage: { input: 1, output: 1, cacheRead: 0 } } as any;
+        },
+      },
+    });
+
+    await trackedComplete(
+      "batch",
+      limitedModel,
+      { systemPrompt: "x", messages: [] } as any,
+      { apiKey: "k", maxTokens: 100_000 },
+      services,
+    );
+
+    expect(capturedMaxTokens).toBe(2_048);
   });
 
   it("uses the run config snapshot by phase and preserves explicit overrides", async () => {
@@ -113,6 +137,21 @@ describe("llm-client seam", () => {
     expect(resolveCodexWatchdogMs(4_096)).toBe(42_768);
     expect(resolveCodexWatchdogMs(128_000)).toBe(90_000);
     expect(resolveCodexWatchdogMs(4_096, 25_000)).toBe(25_000);
+  });
+
+  it("releases a hung provider call at the configured hard deadline", async () => {
+    const never = Promise.withResolvers<AssistantMessage>();
+    let aborted = false;
+    const startedAt = Date.now();
+    await expect(withProviderDeadline(
+      { apiKey: "k", codexWatchdogMs: 10 } satisfies LlmCompleteOptions,
+      async bounded => {
+        bounded.signal?.addEventListener("abort", () => { aborted = true; });
+        return never.promise;
+      },
+    )).rejects.toThrow("Provider watchdog");
+    expect(aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
   it("resetLlmClient restores the default", () => {

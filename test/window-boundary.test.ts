@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { planCompactionWindow, resolveCompactionWindow } from "../src/app/steps/window.ts";
+import { estimateFinalSummaryAllowance, planCompactionWindow, resolveCompactionWindow } from "../src/app/steps/window.ts";
 import type { PreparedRc } from "../src/app/run-context.ts";
 import type { SessionMessageEntry } from "../src/types.ts";
-import { makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
+import { getProviderCaps, makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
 import { POST_SUMMARY_RESERVE_RATIO } from "../src/constants.ts";
 import { verifyCompactionYield } from "../src/domain/yield-gate.ts";
 
@@ -353,8 +353,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(plan.fixedContextTokens).toBeGreaterThan(500_000);
     expect(plan.summaryBudgetTokens).toBe(10_000);
     expect(plan.targetAfterTokens).toBe(
-      plan.fixedContextTokens + plan.retentionTargetTokens + plan.summaryBudgetTokens +
-        Math.ceil(plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO),
+      plan.fixedContextTokens + plan.retentionTargetTokens + plan.finalSummaryAllowanceTokens!,
     );
     expect(plan.projectedAfterTokens).toBeLessThanOrEqual(plan.targetAfterTokens);
     expect(plan.hardBoundaryAdjusted).toBeFalse();
@@ -381,6 +380,42 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(plan.retainedTokens).toBe(20_508);
     expect(plan.projectedAfterTokens).toBe(28_008);
     expect(verifyCompactionYield(70_000, 7_347, plan).estimatedAfterTokens).toBe(27_855);
+  });
+
+  it("plans manual runs against the calibrated final-summary envelope", () => {
+    const branch = [
+      messageEntry("old", null, { role: "user", content: "old" }),
+      messageEntry("recent", "old", { role: "assistant", content: "recent" }),
+      messageEntry("tail", "recent", { role: "assistant", content: "tail" }),
+    ];
+    const profileCfg = {
+      summaryBudgetTokens: 6_000, keepRecentTokens: 20_000,
+      minChunkTokens: 500, maxChunkTokens: 8_000,
+      singlePassMaxTokens: 30_000, batchMaxTokens: 24_000,
+    };
+    const allowance = estimateFinalSummaryAllowance(
+      profileCfg,
+      makeTokenEstimator("openai", "test", new TokenCalibrationStore()),
+      getProviderCaps("openai"),
+    );
+    const plan = planCompactionWindow({
+      msgs: branch,
+      branch,
+      messageTokens: [225_000, 20_343, 196],
+      totalTokens: 245_539,
+      modelContextWindow: 140_000,
+      mode: "balanced",
+      profileCfg,
+      force: true,
+      overflowedContext: false,
+      finalSummaryAllowanceTokens: allowance,
+    });
+    expect(allowance).toBeGreaterThan(
+      profileCfg.summaryBudgetTokens + Math.ceil(profileCfg.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO),
+    );
+    expect(plan.finalSummaryAllowanceTokens).toBe(allowance);
+    expect(verifyCompactionYield(245_539, 10_359, plan).estimatedAfterTokens)
+      .toBeLessThanOrEqual(plan.targetAfterTokens);
   });
 
   it("retains context up to the mode target instead of stopping at the minimum tail", () => {
@@ -419,7 +454,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
   it("recounts the retained tail after anchor protection expands it", () => {
     const toolCallId = "anchor-call";
     const branch = [
-      messageEntry("old", null, { role: "user", content: [{ type: "text", text: "old " + "x".repeat(20_000) }] }),
+      messageEntry("old", null, { role: "user", content: [{ type: "text", text: "old " + "x".repeat(200_000) }] }),
       messageEntry("anchor-request", "old", { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "context", arguments: { action: "anchor" } }] }),
       messageEntry("anchor", "anchor-request", { role: "toolResult", toolCallId, toolName: "context", details: { anchor: true }, content: [{ type: "text", text: "checkpoint" }] }),
       messageEntry("kept-1", "anchor", { role: "assistant", content: [{ type: "text", text: "kept " + "y".repeat(500) }] }),
@@ -480,8 +515,8 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result.compactionPlan.retentionTargetTokens).toBeGreaterThanOrEqual(result.accTokens);
     expect(result.compactionPlan.summaryBudgetTokens).toBe(10_000);
     expect(result.compactionPlan.targetAfterTokens).toBe(
-      result.compactionPlan.fixedContextTokens + result.compactionPlan.retentionTargetTokens + 10_000 +
-        Math.ceil(10_000 * POST_SUMMARY_RESERVE_RATIO),
+      result.compactionPlan.fixedContextTokens + result.compactionPlan.retentionTargetTokens
+        + result.compactionPlan.finalSummaryAllowanceTokens!,
     );
     expect(result.compactionPlan.hardBoundaryAdjusted).toBeFalse();
     expect(result.compactionPlan.relaxedSoftBoundaries).toContain("recent-user-turn");
@@ -505,7 +540,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(notices.join(" ")).toContain("estimated saving is below 10%");
   });
 
-  it("recovers with EESV when reported usage exceeds the active model window", () => {
+  it("rejects overflow recovery when host usage contains uncompactable fixed overhead", () => {
     const notices: string[] = [];
     const branch = Array.from({ length: 16 }, (_, index) => messageEntry(
       "overflow-" + index,
@@ -523,12 +558,31 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     rc.ctx.getContextUsage = () => ({ tokens: 372_358, contextWindow: 272_000, percent: 137 } as any);
     rc.notify = message => { notices.push(message); };
 
-    const result = resolveCompactionWindow(rc);
+    expect(resolveCompactionWindow(rc)).toBeNull();
+    expect(notices.join(" ")).toContain("safe plan cannot meet its target");
+  });
 
-    expect(result).not.toBeNull();
-    expect(result!.compactTokens).toBeGreaterThan(200_000);
-    expect(result!.accTokens + rc.profileCfg.summaryBudgetTokens).toBeLessThan(rc.ctx.model!.contextWindow);
-    expect(notices.join(" ")).toContain("native fallback would resend the oversized context");
+  it("never scales estimated messages up over fixed context during overflow", () => {
+    const profileCfg = {
+      summaryBudgetTokens: 3_000, keepRecentTokens: 10_000,
+      minChunkTokens: 300, maxChunkTokens: 6_000,
+      singlePassMaxTokens: 20_000, batchMaxTokens: 18_000,
+    };
+    const msgs = Array.from({ length: 5 }, (_, index) => messageEntry(
+      "m-" + index,
+      index ? "m-" + (index - 1) : null,
+      { role: index === 0 || index === 4 ? "user" : "assistant", content: "message " + index },
+    ));
+    const plan = planCompactionWindow({
+      msgs, branch: msgs, messageTokens: [10_000, 10_000, 10_000, 10_000, 10_000],
+      totalTokens: 150_000, modelContextWindow: 128_000, mode: "fast", profileCfg,
+      force: false, overflowedContext: true,
+    });
+
+    expect(plan.fixedContextTokens).toBe(100_000);
+    expect(plan.projectedAfterTokens).toBeGreaterThan(100_000);
+    expect(plan.reason).toBe("mode-target-not-met");
+    expect(plan.viable).toBeFalse();
   });
 
   it("falls back before spending tokens when a protected tail cannot drop below the trigger", () => {

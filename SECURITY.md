@@ -6,7 +6,7 @@ Security fixes target the latest published version of `pi-smart-compact`.
 
 | Version | Supported |
 | --- | --- |
-| Latest `8.x` | ✅ |
+| Latest `9.x` | ✅ |
 | Older | ❌ |
 
 ## Reporting a vulnerability

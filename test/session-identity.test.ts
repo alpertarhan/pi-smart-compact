@@ -9,11 +9,15 @@
  */
 import { describe, it, expect } from "bun:test";
 import {
+  boundedBranchLineageIds,
   resolveSessionId,
   isUnresolvedSessionId,
   type SessionIdentityContext,
   branchEntryIds,
 } from "../src/infra/session-identity.ts";
+import { runSmartCompact } from "../src/app/run-smart-compact.ts";
+import { createPendingSlot } from "../src/app/pending-slot.ts";
+import { createSessionRunLock } from "../src/app/session-run-lock.ts";
 
 function ctxWith(id: string | undefined): SessionIdentityContext {
   // The helper accepts `Pick<ExtensionContext, "sessionManager">`, which in
@@ -28,6 +32,19 @@ function ctxWith(id: string | undefined): SessionIdentityContext {
 describe("branchEntryIds", () => {
   it("preserves full ordered ancestry while excluding absent and non-string ids", () => {
     expect(branchEntryIds([{ id: "root" }, {}, { id: 42 }, { id: "leaf" }])).toEqual(["root", "leaf"]);
+  });
+});
+
+describe("boundedBranchLineageIds", () => {
+  it("keeps a bounded tail plus old pre-compaction snapshot heads", () => {
+    const branch = Array.from({ length: 1_000 }, (_, index) => ({
+      id: "id-" + index,
+      ...(index === 100 ? { type: "compaction", parentId: "id-99" } : {}),
+    }));
+    const ids = boundedBranchLineageIds(branch, 100);
+    expect(ids).toHaveLength(100);
+    expect(ids).toContain("id-99");
+    expect(ids.at(-1)).toBe("id-999");
   });
 });
 
@@ -83,6 +100,35 @@ describe("resolveSessionId — unique fallback (cross-session leak guard)", () =
     expect(real).not.toBe(fake);
     expect(isUnresolvedSessionId(real)).toBe(false);
     expect(isUnresolvedSessionId(fake)).toBe(true);
+  });
+});
+
+describe("runSmartCompact unresolved identity guard", () => {
+  it("stops before config, auth, LLM, or pending work", async () => {
+    let authCalls = 0;
+    const notices: string[] = [];
+    const model = { provider: "openai", id: "test", contextWindow: 128_000 } as any;
+    const outcome = await runSmartCompact({
+      ctx: {
+        sessionManager: { getSessionId: () => undefined },
+        modelRegistry: {
+          getApiKeyAndHeaders: async () => {
+            authCalls++;
+            return { ok: true, apiKey: "must-not-be-used" };
+          },
+        },
+        ui: { notify: (message: string) => { notices.push(message); } },
+      } as any,
+      summaryModel: model,
+      segModel: model,
+      pendingRef: createPendingSlot({ ttlMs: 300_000 }),
+      isRunning: createSessionRunLock(),
+      autoTriggered: false,
+    });
+
+    expect(outcome).toEqual({ kind: "skipped", reason: "session-unavailable" });
+    expect(authCalls).toBe(0);
+    expect(notices.join(" ")).toContain("stable session ID");
   });
 });
 

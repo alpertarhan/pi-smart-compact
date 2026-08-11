@@ -52,4 +52,15 @@ describe("NativeContinuityBridge", () => {
     expect(bridge.take(scope("b"))).toBeNull();
     expect(bridge.size()).toBe(1);
   });
+
+  it("removes stale atomic-write temp files during retention sweeps", () => {
+    const dir = tempDir();
+    const orphan = path.join(dir, "entry.json.tmp.123.abcd1234");
+    fs.writeFileSync(orphan, "partial");
+    const stale = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+    fs.utimesSync(orphan, stale, stale);
+    const bridge = createNativeContinuityBridge({ dir });
+    expect(bridge.size()).toBe(0);
+    expect(fs.existsSync(orphan)).toBe(false);
+  });
 });

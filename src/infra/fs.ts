@@ -95,66 +95,99 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
  * crashed and reclaim it. Acquisition errors/timeouts throw, so callers never
  * proceed unlocked. Callers should always release through the returned function.
  */
-export function acquireLockSync(target: string): () => void {
+function tryAcquireLock(target: string): (() => void) | null {
   const lockDir = target + ".lock";
-  for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
+  for (let reclaimAttempt = 0; reclaimAttempt < 2; reclaimAttempt++) {
     try {
       fs.mkdirSync(lockDir, { mode: 0o700 });
       return () => { try { fs.rmdirSync(lockDir); } catch { /* ignore */ } };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") {
-        throw new Error("Failed to acquire lock for " + target, { cause: e });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
+        throw new Error("Failed to acquire lock for " + target, { cause: error });
       }
       try {
         const stat = fs.statSync(lockDir);
-        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          // Reclaim via rename-steal, not rmdir. A bare `rmdirSync(lockDir)`
-          // has a classic race: two waiters both observe staleness, waiter A
-          // reclaims (rmdir + mkdir), then waiter B's delayed rmdir deletes
-          // A's FRESH lock and both end up holding it. `renameSync` is
-          // atomic, so exactly one thief wins the steal; the loser gets
-          // ENOENT and loops back to mkdir. The thief then re-checks the
-          // stolen dir's mtime — if it turned out to be fresh (the owner
-          // reclaimed between our stat and our rename), we put it back.
-          const stolen = lockDir + ".stale." + process.pid + "." + crypto.randomBytes(4).toString("hex");
-          try {
-            fs.renameSync(lockDir, stolen);
-            const stolenStat = fs.statSync(stolen);
-            if (Date.now() - stolenStat.mtimeMs > LOCK_STALE_MS) {
-              fs.rmdirSync(stolen);
-            } else {
-              // Stole a live lock — restore it and keep waiting. If the
-              // restore fails (owner released meanwhile) the dir is gone
-              // and the next mkdir attempt simply succeeds.
-              try { fs.renameSync(stolen, lockDir); } catch { /* released */ }
-            }
-          } catch { /* another waiter won the steal — loop and retry mkdir */ }
-          continue;
-        }
-      } catch { /* lock vanished between EEXIST and stat */ }
-      // Park instead of burning the main thread. Supported Node/Bun runtimes
-      // allow Atomics.wait here; exotic runtimes fail closed rather than spin.
-      try {
-        const sab = new SharedArrayBuffer(4);
-        Atomics.wait(new Int32Array(sab), 0, 0, LOCK_RETRY_MS);
-      } catch (error) {
-        throw new Error("Synchronous lock waiting is unavailable", { cause: error });
-      }
+        if (Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return null;
+        const stolen = lockDir + ".stale." + process.pid + "." + crypto.randomBytes(4).toString("hex");
+        fs.renameSync(lockDir, stolen);
+        const stolenStat = fs.statSync(stolen);
+        if (Date.now() - stolenStat.mtimeMs > LOCK_STALE_MS) fs.rmdirSync(stolen);
+        else try { fs.renameSync(stolen, lockDir); } catch { /* released */ }
+      } catch { /* lock changed; retry acquisition once */ }
     }
+  }
+  return null;
+}
+
+/** Immediate lock attempt for synchronous best-effort paths; never parks JS. */
+export function acquireLockSync(target: string): () => void {
+  const release = tryAcquireLock(target);
+  if (!release) throw new Error("Lock busy for " + target);
+  return release;
+}
+
+/** Bounded blocking acquisition for synchronous durability paths. */
+function acquireLockBlockingSync(target: string): () => void {
+  for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
+    const release = tryAcquireLock(target);
+    if (release) return release;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MS);
+  }
+  throw new Error("Timed out acquiring lock for " + target);
+}
+
+/** Cooperative multi-process lock for durable read-modify-write operations. */
+export async function acquireLock(target: string): Promise<() => void> {
+  for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
+    const release = tryAcquireLock(target);
+    if (release) return release;
+    const delay = Promise.withResolvers<void>();
+    setTimeout(delay.resolve, LOCK_RETRY_MS);
+    await delay.promise;
   }
   throw new Error("Timed out acquiring lock for " + target);
 }
 
 /**
- * Append a single line of text under a coarse lock. The newline is appended if
- * `line` does not already end with one.
+ * Append one complete line while enforcing an optional tail-retention cap.
+ *
+ * Append and trim share the same advisory lock. This matters because O_APPEND
+ * only serializes writes to one inode; it does not protect a concurrent
+ * temp-file rename from replacing an append that landed after the trim read.
+ * Retention therefore happens synchronously, but only when the cap is crossed.
  */
-export function appendLineLocked(target: string, line: string): void {
+export function appendLineLocked(target: string, line: string, maxBytes?: number): void {
   ensureDir(path.dirname(target));
-  const release = acquireLockSync(target);
+  const payload = Buffer.from(line.endsWith("\n") ? line : line + "\n");
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)) {
+    throw new Error("maxBytes must be a positive safe integer");
+  }
+  if (maxBytes !== undefined && payload.length > maxBytes) {
+    throw new Error("Log entry exceeds retention cap for " + target);
+  }
+  const release = acquireLockBlockingSync(target);
   try {
+    if (maxBytes !== undefined && fs.existsSync(target)) {
+      const stat = fs.statSync(target);
+      if (stat.size + payload.length > maxBytes) {
+        const retainedBudget = Math.max(0, maxBytes - payload.length);
+        const retainedLength = Math.min(stat.size, retainedBudget);
+        const buffer = Buffer.allocUnsafe(retainedLength);
+        if (retainedLength > 0) {
+          const fd = fs.openSync(target, "r");
+          try { fs.readSync(fd, buffer, 0, retainedLength, stat.size - retainedLength); }
+          finally { fs.closeSync(fd); }
+        }
+        let tail = buffer.toString("utf8");
+        if (retainedLength < stat.size) {
+          const firstNewline = tail.indexOf("\n");
+          tail = firstNewline >= 0 ? tail.slice(firstNewline + 1) : "";
+        }
+        atomicWriteFileSync(target, tail);
+      }
+    }
     if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
-    fs.appendFileSync(target, line.endsWith("\n") ? line : line + "\n", { mode: 0o600 });
+    fs.appendFileSync(target, payload, { mode: 0o600 });
     fs.chmodSync(target, 0o600);
   } finally {
     release();
@@ -185,36 +218,24 @@ export function readJsonlTail<T>(target: string, limit: number, maxBytes = 512 *
 }
 
 /** Keep only complete trailing lines that fit within `maxBytes`. */
-export function trimFileTailLocked(target: string, maxBytes: number): void {
-  const release = acquireLockSync(target);
+export async function trimFileTailLocked(target: string, maxBytes: number): Promise<void> {
+  const release = await acquireLock(target);
   try {
-    const stat = fs.statSync(target);
+    const stat = await fsp.stat(target);
     if (stat.size <= maxBytes) return;
     const length = Math.min(stat.size, maxBytes);
     const buffer = Buffer.allocUnsafe(length);
-    const fd = fs.openSync(target, "r");
-    try { fs.readSync(fd, buffer, 0, length, stat.size - length); }
-    finally { fs.closeSync(fd); }
+    const fd = await fsp.open(target, "r");
+    try { await fd.read(buffer, 0, length, stat.size - length); }
+    finally { await fd.close(); }
     const tail = buffer.toString("utf8");
     const firstNewline = tail.indexOf("\n");
-    atomicWriteFileSync(target, firstNewline >= 0 ? tail.slice(firstNewline + 1) : "");
+    await atomicWriteFile(target, firstNewline >= 0 ? tail.slice(firstNewline + 1) : "");
   } finally {
     release();
   }
 }
 
-const scheduledTailTrims = new Set<string>();
-
-/** Defer disk retention work to a later event-loop turn and coalesce writers. */
-export function scheduleFileTailTrim(target: string, maxBytes: number): void {
-  if (scheduledTailTrims.has(target)) return;
-  scheduledTailTrims.add(target);
-  setTimeout(() => {
-    try { trimFileTailLocked(target, maxBytes); }
-    catch (e) { log.debug("tail trim failed for " + target, e); }
-    finally { scheduledTailTrims.delete(target); }
-  }, 0);
-}
 
 export function readJsonSync<T>(target: string): T | null {
   try {

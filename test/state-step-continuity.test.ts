@@ -11,7 +11,8 @@ describe("buildState continuity integration", () => {
       goal: "Ship auth", decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
       constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
       modifiedFiles: [], readFiles: [], deletedFiles: ["package.json", "missing-v807-file.ts"],
-      unresolvedErrors: [{ id: "error-1", message: "auth test still fails", tool: "bash", files: [] }], resolvedErrors: [],
+      unresolvedErrors: [{ id: "error-1", message: "auth test still fails", tool: "bash", files: [] }],
+      resolvedErrors: [{ id: "error-2", message: "legacy migration test failed", tool: "bash", files: [] }],
       openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth test", files: [] }],
       topics: [], nextActions: [], criticalContext: [], sessionType: "implementation", compactionVersion: "7.22.0", updatedAt: Date.now(),
     };
@@ -45,6 +46,7 @@ describe("buildState continuity integration", () => {
     expect(result.finalSummary).toContain("Use JWT");
     expect(result.finalSummary).toContain("No new dependencies");
     expect(result.finalSummary).toContain("auth test still fails");
+    expect(result.finalSummary).toContain("Resolved error: legacy migration test failed");
     expect(result.finalSummary).toContain("fix auth test");
     expect(result.finalSummary).not.toContain("Goal shifted");
     expect(result.details.mode).toBe("balanced");

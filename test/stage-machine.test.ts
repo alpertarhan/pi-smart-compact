@@ -16,6 +16,7 @@ import type {
   RcBase, PreparedRc, WindowedRc, RecoveredRc, TieredRc, ExtractedRc,
   SynthesizedRc, VerifiedRc, StatedRc, RunContext,
 } from "../src/app/run-context.ts";
+import { advance } from "../src/app/run-context.ts";
 
 describe("stage machine type chain", () => {
   it("StatedRc is the final stage and includes every prior brand", () => {
@@ -58,5 +59,12 @@ describe("stage machine type chain", () => {
     // `_prepared` plus the resolved config fields appear in Diff.
     const hasPreparedDiff: Diff extends "_prepared" | "config" | "profileCfg" | "providerCaps" | "summaryAuth" | "segAuth" | "verifyAuth" ? true : true = true;
     expect(hasPreparedDiff).toBe(true);
+  });
+
+  it("rejects skipped runtime stage markers and missing stage fields", () => {
+    expect(() => advance({ _prepared: true } as any, "_recovered" as any))
+      .toThrow("requires _windowed");
+    expect(() => advance({} as any, "_prepared" as any))
+      .toThrow("missing field: config");
   });
 });

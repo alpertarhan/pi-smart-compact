@@ -134,6 +134,24 @@ describe("adversarial planning and safety", () => {
     expect(chunks.flatMap(chunk => chunk.messages)).toEqual(messages);
   });
 
+  it("keeps tool calls with delayed results while enforcing the chunk ceiling", () => {
+    const estimator = makeTokenEstimator("openai", "test");
+    const messages: LlmMessage[] = [
+      { role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/large.ts" } }] },
+      { role: "user", content: "continue after the read" },
+      { role: "toolResult", toolCallId: "read-1", content: "result " + "x".repeat(20_000) },
+      { role: "assistant", content: "done" },
+    ];
+    const chunks = chunkLlmMessages(messages, [
+      { afterIndex: 0, topic: "read", priority: "normal", confidence: 1 },
+    ], { ...PROFILES.balanced, minChunkTokens: 1, maxChunkTokens: 700 }, estimator);
+    const containingCall = chunks.find(chunk => chunk.messages.some(message =>
+      JSON.stringify(message.content).includes("read-1")));
+    expect(containingCall?.messages.some(message => message.toolCallId === "read-1")).toBe(true);
+    expect(chunks.every(chunk => Number.isInteger(chunk.startIndex) && Number.isInteger(chunk.endIndex))).toBe(true);
+    expect(chunks.every(chunk => chunk.tokenEstimate <= 700)).toBe(true);
+  });
+
   it("enforces the call budget at the shared LLM seam", async () => {
     const services = createServices({
       budget: new BudgetGuard(1),

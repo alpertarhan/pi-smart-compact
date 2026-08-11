@@ -4,11 +4,12 @@ import type {
   CompactionPlanReason, CompactionWindowPlan, PreparedRc, RelaxedSoftBoundary, WindowedRc,
 } from "../run-context.ts";
 import { advance } from "../run-context.ts";
-import type { EffectiveCompactionMode, LlmMessage, ProfileConfig, SessionMessageEntry } from "../../types.ts";
+import type { EffectiveCompactionMode, LlmMessage, ProfileConfig, ProviderCapabilities, SessionMessageEntry } from "../../types.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { advancePastToolCallBoundary, guardToolCallBoundary, smartKeepBoundaryCandidates } from "../../utils/helpers.ts";
 import { resolveSessionId } from "../../infra/session-identity.ts";
-import { MIN_COMPACTION_SAVING_RATIO, POST_SUMMARY_RESERVE_RATIO } from "../../constants.ts";
+import { MAX_STATE_OPEN_LOOPS, MIN_COMPACTION_SAVING_RATIO, POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../../constants.ts";
+import type { TokenEstimator } from "../../utils/tokens.ts";
 
 export type { CompactionWindowPlan } from "../run-context.ts";
 
@@ -22,6 +23,8 @@ export interface CompactionWindowPlanInput {
   profileCfg: ProfileConfig;
   force: boolean;
   overflowedContext: boolean;
+  /** Estimated final summary size in the same local units as messageTokens. */
+  finalSummaryAllowanceTokens?: number;
 }
 
 /** Canonical user-facing wording for every planner outcome. */
@@ -37,25 +40,49 @@ export function compactionPlanReasonText(reason: CompactionPlanReason): string {
 }
 
 /** Pure, content-free result suitable for both execution and a later UI preview. */
+export function estimateFinalSummaryAllowance(
+  profileCfg: ProfileConfig,
+  estimator: TokenEstimator,
+  providerCaps: ProviderCapabilities | undefined,
+): number {
+  const maxModelOutputChars = Math.ceil(profileCfg.summaryBudgetTokens * (providerCaps?.tokenRatioEstimate ?? 3.8));
+  // Deterministic repair, delta, open-loop, and continuity rendering happens
+  // after the provider output cap. Bound it from the same named storage caps.
+  const deterministicChars = TRUNC.PREVIOUS_SUMMARY
+    + TRUNC.CONTINUITY_CAPSULE
+    + MAX_STATE_OPEN_LOOPS * (TRUNC.OPEN_LOOP_SUMMARY + 24);
+  const calibratedOutput = estimator.text("x".repeat(maxModelOutputChars));
+  const calibratedPostProcessing = estimator.text("x".repeat(deterministicChars));
+  const legacyFloor = profileCfg.summaryBudgetTokens
+    + Math.ceil(profileCfg.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO);
+  return Math.max(legacyFloor, calibratedOutput + calibratedPostProcessing);
+}
 export function planCompactionWindow(input: CompactionWindowPlanInput): CompactionWindowPlan {
   const {
     msgs, branch, messageTokens, totalTokens, modelContextWindow, mode, profileCfg, force, overflowedContext,
+    finalSummaryAllowanceTokens,
   } = input;
   const allMessageTokens = messageTokens.reduce((sum, tokens) => sum + tokens, 0);
-  const messageScale = totalTokens > 0 && allMessageTokens > 0 && (allMessageTokens > totalTokens || overflowedContext)
+  // Host usage can include system prompt, tool schemas, images, and provider
+  // accounting that are absent from our message estimator. Treat any positive
+  // remainder as uncompactable fixed context. Scaling message estimates up to
+  // the whole usage (the old overflow path) double-counted that overhead as
+  // compactable and could approve a plan that still exceeded the model window.
+  const messageScale = totalTokens > 0 && allMessageTokens > totalTokens
     ? totalTokens / allMessageTokens
     : 1;
-  const fixedContextTokens = overflowedContext ? 0 : Math.max(0, totalTokens - allMessageTokens);
+  const fixedContextTokens = Math.max(0, totalTokens - allMessageTokens);
   const adaptiveKeepTokens = modelContextWindow
     ? Math.min(profileCfg.keepRecentTokens * 2, Math.max(profileCfg.keepRecentTokens, modelContextWindow * 0.04))
     : profileCfg.keepRecentTokens;
   const targetPercent = MODE_POLICIES[mode].targetContextPercent;
-  // Verification, delta, open-loop, and continuity sections are injected after
-  // the LLM's output cap. Reserve their observed upper band in the plan instead
-  // of loosening the post-summary target gate.
+  // Execution/preflight callers provide a calibrated upper bound. Direct
+  // planner consumers retain the conservative legacy floor.
   const postSummaryReserveTokens = Math.ceil(profileCfg.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO);
+  const finalSummaryAllowance = finalSummaryAllowanceTokens
+    ?? profileCfg.summaryBudgetTokens + postSummaryReserveTokens;
   const targetRetainedTokens = modelContextWindow
-    ? Math.max(0, modelContextWindow * targetPercent / 100 - fixedContextTokens - profileCfg.summaryBudgetTokens - postSummaryReserveTokens)
+    ? Math.max(0, modelContextWindow * targetPercent / 100 - fixedContextTokens - finalSummaryAllowance)
     : adaptiveKeepTokens;
   const retentionCeiling = force ? adaptiveKeepTokens : Math.max(adaptiveKeepTokens, targetRetainedTokens);
   const rawMinimumTail = adaptiveKeepTokens / messageScale;
@@ -110,12 +137,12 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
   hardBoundaryAdjusted ||= keepFrom !== boundaryBeforeHardGuard;
   const compactTokens = Math.round(messageTokens.slice(0, keepFrom).reduce((sum, tokens) => sum + tokens, 0) * messageScale);
   const retainedTokens = retainedAt(keepFrom);
-  const projectedAfterTokens = fixedContextTokens + retainedTokens + profileCfg.summaryBudgetTokens + postSummaryReserveTokens;
+  const projectedAfterTokens = fixedContextTokens + retainedTokens + finalSummaryAllowance;
   const projectedSavedTokens = Math.max(0, totalTokens - projectedAfterTokens);
   const projectedYield = totalTokens > 0 ? projectedSavedTokens / totalTokens : 0;
   const targetAfterTokens = !force && modelContextWindow
     ? modelContextWindow * targetPercent / 100
-    : fixedContextTokens + effectiveRetentionCeiling + profileCfg.summaryBudgetTokens + postSummaryReserveTokens;
+    : fixedContextTokens + effectiveRetentionCeiling + finalSummaryAllowance;
 
   let reason: CompactionPlanReason = "viable";
   if ((msgs[keepFrom]?.message as { role?: string } | undefined)?.role === "toolResult") reason = "unsafe-tool-boundary";
@@ -134,6 +161,7 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
     fixedContextTokens,
     retentionTargetTokens: effectiveRetentionCeiling,
     summaryBudgetTokens: profileCfg.summaryBudgetTokens,
+    finalSummaryAllowanceTokens: finalSummaryAllowance,
     targetAfterTokens,
     hardBoundaryAdjusted,
     viable: reason === "viable",
@@ -166,6 +194,7 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
     profileCfg: rc.profileCfg,
     force: rc.flags.force,
     overflowedContext,
+    finalSummaryAllowanceTokens: estimateFinalSummaryAllowance(rc.profileCfg, rc.estimator, rc.providerCaps),
   });
 
   if (!plan.viable) {

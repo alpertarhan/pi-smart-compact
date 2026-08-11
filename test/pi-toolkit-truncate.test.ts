@@ -326,8 +326,7 @@ describe("pruneRedundant with pi-toolkit truncation", () => {
     expect(result.prunedCount).toBeGreaterThanOrEqual(0);
   });
 
-  it("truncated error chains lose collapse optimization", () => {
-    // 3 consecutive failures of the same tool
+  it("preserves truncated error chains when retry identity is ambiguous", () => {
     const msgs: LlmMessage[] = [
       makeToolCall("f1", "bash", { cmd: "deploy" }),
       makeToolResult("f1", "Error: connection refused to server-us-east-1.example.com:443 after 30s", true),
@@ -337,12 +336,9 @@ describe("pruneRedundant with pi-toolkit truncation", () => {
       makeToolResult("f3", "Error: connection refused to server-us-west-1.example.com:443 after 30s", true),
     ];
     const truncated = applyPiToolkitTruncation(msgs, [makeAnchor(7)]);
-
     const result = pruneRedundant(truncated);
-    // All three errors are truncated to "Error: connection re…✂76"
-    // The pruning logic groups by tool name and index distance < 10
-    // It should still collapse them since toolCall messages are intact
-    expect(result.reasons.some((r) => r.reason.includes("Collapsed error chains"))).toBe(true);
+    expect(result.reasons.some(reason => reason.reason.includes("Collapsed error chains"))).toBe(false);
+    expect(result.messages.filter(message => message.role === "toolResult")).toHaveLength(3);
   });
 });
 

@@ -127,6 +127,38 @@ function assertSuccessful(message: AssistantMessage): AssistantMessage {
   }
   return message;
 }
+/** @internal Test seam for the transport deadline used by every provider. */
+export async function withProviderDeadline(
+  opts: LlmCompleteOptions,
+  invoke: (bounded: LlmCompleteOptions) => Promise<AssistantMessage>,
+): Promise<AssistantMessage> {
+  if (opts.signal?.aborted) throw new Error("LLM request aborted before dispatch");
+  const controller = new AbortController();
+  const watchdogMs = resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs);
+  const abort = Promise.withResolvers<never>();
+  const abortFromCaller = () => {
+    controller.abort(opts.signal?.reason);
+    abort.reject(new Error("LLM request aborted by caller"));
+  };
+  opts.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timeout = Promise.withResolvers<never>();
+  const timer = setTimeout(() => {
+    controller.abort("provider-watchdog");
+    timeout.reject(new Error("Provider watchdog stopped generation after " + watchdogMs + "ms"));
+  }, watchdogMs);
+  if (typeof timer === "object" && "unref" in timer) timer.unref();
+  try {
+    return await Promise.race([
+      invoke({ ...opts, signal: controller.signal }),
+      abort.promise,
+      timeout.promise,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
 
 async function completeChatGptCodex(
   model: Model<Api>, body: Context, opts: LlmCompleteOptions,
@@ -177,11 +209,13 @@ async function completeChatGptCodex(
 export const rawLlmClient: LlmClient = {
   complete: async (model, body, originalOpts) => {
     const opts = withCodexWireLimit(model, originalOpts);
-    if (isChatGptCodex(model)) return completeChatGptCodex(model, body, opts);
-    const response = opts.reasoning === undefined
-      ? await (await resolveComplete())(model, body, opts as ProviderStreamOptions)
-      : await (await resolveCompleteSimple())(model, body, opts);
-    return assertSuccessful(response);
+    return withProviderDeadline(opts, async bounded => {
+      if (isChatGptCodex(model)) return completeChatGptCodex(model, body, bounded);
+      const response = bounded.reasoning === undefined
+        ? await (await resolveComplete())(model, body, bounded as ProviderStreamOptions)
+        : await (await resolveCompleteSimple())(model, body, bounded);
+      return assertSuccessful(response);
+    });
   },
 };
 

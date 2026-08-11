@@ -38,11 +38,18 @@ Then run `/smart-compact` for an explainable preflight before anything changes.
 /smart-compact auto                                 # adaptive mode selection
 /smart-compact anthropic/claude-sonnet-4 fast      # explicit model + mode
 /smart-compact balanced --focus=auth                # preserve extra auth detail
+/smart-compact --note="keep balanced and fast terminology"
+/smart-compact -- preserve this note verbatim after the option boundary
 /smart-compact metrics                              # text metrics report
 /smart-compact dashboard                            # interactive dashboard
 /smart-compact restore                              # browse and restore backups
 /smart-compact loops                                # manage persisted open loops
 ```
+
+Command controls are consumed only from the left edge. Once note text starts,
+words such as `fast`, `balanced`, and paths such as `src/auth.ts` remain note
+content. Use `--note=...` or `--` when the boundary should be explicit. Invalid
+tool modes and budgets return an error instead of silently using defaults.
 
 At 60% context usage by default, the extension also participates in Pi's native
 compaction flow. Long-running agents can call `smart_compact`, `smart_recall`,
@@ -68,7 +75,7 @@ The design principle is simple:
 
 > **Facts first. Synthesis second. Verification before apply.**
 
-Any unresolved verification gap rejects the custom summary before staging or apply. A zero-gap deterministic fallback is preferred over unverifiable model output; only failure of that fallback rejects the run. A successful compaction must also meet its mode target and at least 10% estimated net savings both before synthesis and after the final summary is measured. Automatic failures leave Pi free to use its native compactor, while manual failures leave the conversation unchanged.
+Any unresolved verification gap rejects the custom summary before staging or apply. High-risk outcome claims such as “tests passed” or “deployed” must match source messages or a successful related tool result; unsupported claims are removed deterministically. A zero-gap fallback built only from extraction, continuity, and explicit focus/note steering is preferred over unverifiable model output; untrusted chunk prose cannot become the quality floor. A successful compaction must also meet its mode target and at least 10% estimated net savings both before synthesis and after the final summary is measured. Automatic failures leave Pi free to use its native compactor, while manual failures leave the conversation unchanged.
 
 ## EESV pipeline
 
@@ -150,14 +157,18 @@ target, route, and boundary data stays under `D` instead of crowding the decisio
 - `D` toggles calibrated estimator, target, boundary, and route details.
 - `M` opens Advanced model selection and replans with that route's calibration.
 
-Values remain estimates until the next provider turn reports usage. Smart
-Compact therefore uses `~`/`≤` language, measures the completed summary again
-before staging, and reports final success only after Pi confirms the matching
-`session_compact` run ID. A single long user turn may be split at a safe message
-boundary: its older prefix is verified into the summary while the budgeted
-working tail stays raw. Tool exchanges are summarized or retained as complete
-call/result pairs, never split. If Verify, yield, provider, or native apply
-fails, the UI shows one bounded actionable line without evidence text or a
+Provider-reported token usage is used when available; missing or partial usage
+is conservatively estimated for both metrics and aggregate budgets. Every
+provider request is clamped to the selected model's advertised output limit
+before reservation and dispatch. Smart Compact uses `~`/`≤` language for
+post-compaction estimates, measures the completed summary again before staging,
+and reports final success only after Pi confirms the matching
+`session_compact` run ID. A single long user turn may be
+split at a safe message boundary: its older prefix is verified into the summary
+while the budgeted working tail stays raw. Tool exchanges remain complete
+call/result pairs; oversized result evidence is head/tail bounded only in the
+synthesis prompt after deterministic extraction has consumed the full input.
+If Verify, yield, provider, or native apply fails, the UI shows one bounded actionable line without evidence text or a
 JavaScript stack. A successful `100/100` is labeled **verification coverage**;
 the source score and deterministic/LLM/fallback provenance remain visible so
 repaired coverage is never presented as raw synthesis quality. Stack diagnostics
@@ -182,8 +193,8 @@ brief. `verbose` restores routine phase notices; full stack diagnostics require
   does **not** attempt unsupported non-contiguous compaction.
 - `--max-calls` accepts `1–100`.
 - `--max-input-tokens` accepts `10000–1000000` aggregate prompt tokens.
-- `--max-latency` accepts `5000–600000` milliseconds as a cancellation deadline; cancellation waits for safe pipeline unwind before returning.
-- Budget exhaustion degrades to deterministic summaries instead of dropping context.
+- `--max-latency` accepts `5000–600000` milliseconds as a provider/pipeline cancellation deadline; interactive summary review time is excluded.
+- Budget exhaustion is recorded as an explicit fallback outcome and degrades to deterministic summaries instead of dropping context.
 
 The tool exposes equivalent `focus`, `max_calls`, `max_input_tokens`, and
 `max_latency_ms` parameters.
@@ -206,7 +217,7 @@ the verified summary carries them forward. Automatic risk refinement may deepen
 analysis/repair strategy after extraction, but it does not mutate the profile
 allowance or retention window that was already used to prove the target.
 
-Output caps stop subsequent calls after observed usage reaches the threshold.
+Output caps stop subsequent calls after reported or conservatively estimated usage reaches the threshold.
 The ChatGPT Codex subscription endpoint rejects `max_output_tokens`,
 `max_tokens`, and `max_completion_tokens`; Smart Compact therefore enforces a
 15–90 second per-call watchdog plus a streamed visible-output ceiling and falls
@@ -286,11 +297,20 @@ guidance for reaching the target.
 - Tool-call/tool-result pair integrity at the compaction boundary
 - Collision-safe modified-file verification for monorepos
 - Bounded fixed-point repair for patchable verification gaps, followed by a zero-gap deterministic quality floor
+- High-risk success claims are grounded only in successful host/tool results or
+  deterministic resolved-error/file evidence; assistant prose is never proof
+  of its own claim.
+- The window planner converts provider output caps through the calibrated local
+  estimator and reserves bounded deterministic repair/state additions before
+  choosing the retained tail.
+- Recent resolved errors remain explicit in the Continuity Ledger instead of
+  disappearing when they leave the unresolved set.
 - Cross-session guard and five-minute TTL for pending summaries
 - Session-log recovery for older, truncated tool results
-- Full selected pre-prune conversation backups, scrubbed before a 0600 write;
-  marker-owned retention leaves foreign files in custom directories untouched
-- Private artifact directories are enforced as 0700 and files as 0600
+- The full selected pre-prune conversation is scrubbed and prepared in memory;
+  its 0600 backup is written only after the matching native compaction succeeds.
+  Marker-owned retention leaves foreign files in custom directories untouched.
+- Private artifact directories are enforced as 0700 and files as 0600; stale state snapshots and orphaned atomic-write temp files are removed during bounded retention sweeps.
 
 ### Secrets and PII
 
@@ -301,9 +321,10 @@ boundary:
 provider request · extraction cache · backup · state · context graph · pending summary
 ```
 
-It covers common API keys, cloud/GitHub/Slack tokens, JWTs, bearer tokens,
-private keys, and credential assignments. Optional email/phone/payment-card
-scrubbing is available through `scrubPii`.
+It covers common API keys (including Google and Stripe), AWS/GitHub/GitLab/npm/
+Slack tokens, JWTs, bearer tokens, private keys, secret-bearing object fields,
+generic credential assignments, and passwords embedded in connection URIs.
+Optional email/phone/payment-card scrubbing is available through `scrubPii`.
 
 Secret scrubbing is defense in depth, **not a replacement for proper secret
 handling or a dedicated DLP system**. See the
@@ -311,12 +332,13 @@ handling or a dedicated DLP system**. See the
 
 ### Approval and feedback
 
-- The manual preflight is the default decision point. `requireApproval: true`
-  additionally shows a fail-closed verified-summary **Apply / Cancel** review;
-  `false` avoids a redundant second modal. Fingerprint, continuity state,
-  context graph, and success telemetry commit only after the host confirms the
-  matching native `session_compact` event, and only then does the UI report
-  `Applied`.
+- Manual runs show a fail-closed verified-summary **Apply / Cancel** review by
+  default (`requireApproval: true`); set it to `false` only to opt out of the
+  second modal after preflight. Review time is not charged to the pipeline
+  deadline. Fingerprint, continuity state, context graph, prepared backup, and
+  success telemetry commit only after the host confirms the matching native
+  `session_compact` event. The UI reports `Applied` at that point and separately
+  warns if any durable persistence side effect was partial.
 - Online damage monitoring observes the first post-compaction messages and
   records re-read files or repeated context. Observations join the originating
   compaction by a local run id; missing evidence lowers coverage rather than
@@ -359,7 +381,7 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
     "backupEnabled": true,
     "scrubSecrets": true,
     "scrubPii": false,
-    "requireApproval": false,
+    "requireApproval": true,
     "maxLlmCalls": 8,
     "maxLlmInputTokens": 0,
     "codexMaxCallMs": 0,
@@ -426,13 +448,13 @@ the run fails closed before staging or apply.
 | `summaryThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for synthesis and repair; provider default when null |
 | `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for exploration; provider default when null |
 | `autoTrigger` | `boolean` | `true` | Participate in Pi's native compact hook |
-| `autoTriggerTimeoutMs` | `number` | `120000` | Auto cancellation deadline; waits for safe pipeline unwind, never an unsafe hard return |
+| `autoTriggerTimeoutMs` | `number` | `120000` | Requested auto cancellation deadline; the synchronous hook clamps it to 60s and four LLM calls, shows live phase progress, then safely unwinds to native recovery |
 | `minContextPercent` | `number` | `60` | Auto/tool context gate; manual `/smart-compact` warns and bypasses it |
-| `backupEnabled` | `boolean` | `true` | Write a pre-compaction backup |
+| `backupEnabled` | `boolean` | `true` | Prepare a scrubbed pre-compaction backup; write it only after confirmed apply |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` | Empty config value uses this path |
 | `profiles` | object | built-ins | Per-profile numeric overrides |
 | `pinPaths` | `string[]` | `[]` | Always preserve matching paths |
-| `requireApproval` | `boolean` | `false` | Manual UI only; cancel/error fails closed |
+| `requireApproval` | `boolean` | `true` | Manual verified-summary review; cancel/error fails closed |
 | `scrubSecrets` | `boolean` | `true` | High-confidence credential redaction |
 | `scrubPii` | `boolean` | `false` | Email/phone/card-shaped redaction |
 | `maxLlmCalls` | integer `0–100` | `8` | Global ceiling combined with the selected mode |
@@ -546,8 +568,8 @@ coordinate hook order or prefer a single automatic compaction owner.
 
 ```bash
 bun install --frozen-lockfile
-bun run release:check   # typecheck + tests + adversarial gate + build + package audit
-bun run bench
+bun run release:check   # typecheck + tests + adversarial/performance gates + build + package audit
+bun run bench           # standalone hot-path p95 regression gate
 bun run compat:pi       # isolated latest-Pi compatibility check
 ```
 

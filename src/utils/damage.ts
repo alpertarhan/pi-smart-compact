@@ -9,7 +9,7 @@ import { extractText } from "./extraction.ts";
 import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
 import * as log from "./logger.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
-import { appendLineLocked, readJsonlTail, scheduleFileTailTrim, writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import { appendLineLocked, readJsonlTail, writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { RUNTIME_LOG_MAX_BYTES, SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
 
@@ -171,10 +171,9 @@ export function logDamageReport(
       signals: report.signals.length,
       summary: report.summary,
     };
-    // Lock the JSONL append so concurrent pi sessions cannot interleave bytes.
-    const logPath = damageReportsFile();
-    appendLineLocked(logPath, JSON.stringify(entry));
-    scheduleFileTailTrim(logPath, RUNTIME_LOG_MAX_BYTES);
+    // Append and retention share one lock so an atomic trim cannot replace a
+    // line that landed after the trim snapshot was read.
+    appendLineLocked(damageReportsFile(), JSON.stringify(entry), RUNTIME_LOG_MAX_BYTES);
   } catch (e) { log.warn("logDamageReport failed", e); }
 }
 

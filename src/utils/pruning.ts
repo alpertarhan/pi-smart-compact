@@ -5,7 +5,7 @@
 
 import type { LlmMessage } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
-import { extractText, buildToolCallIndex, nestedToolCallId, type ToolCallIndex } from "./extraction.ts";
+import { commandFailureEvidence, extractText, buildToolCallIndex, nestedToolCallId, type ToolCallIndex } from "./extraction.ts";
 import { estimateTokens } from "./tokens.ts";
 
 export interface PruningResult {
@@ -17,14 +17,12 @@ export interface PruningResult {
   reasons: Array<{ count: number; reason: string }>;
 }
 
-// Pattern for agent acknowledgment messages with no information
-const ACK_RE = /^(?:I'?ll |let me |sure|ok[,.]?|got it|i understand|i see|now i|next,? i|alright|great|perfect|sounds good|i can|i will|checking|looking|right away)/i;
 
 // pi-toolkit auto-context status messages injected every turn
 const PI_STATUS_RE = /^\[pi-auto-context\]/;
 
 // Maximum chars to keep from a tool result output
-import { MAX_TOOL_OUTPUT_CHARS, LIKELY_ERROR_RE, ERROR_SCAN_MAX_LEN } from "../constants.ts";
+import { MAX_TOOL_OUTPUT_CHARS, LIKELY_ERROR_RE } from "../constants.ts";
 import { classifyToolOperation, normalizeToolName } from "../domain/tool-semantics.ts";
 
 function stableArguments(args: Record<string, unknown>): string {
@@ -63,22 +61,28 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   const removedToolCallIds = new Set<string>();
   const reasonMap = new Map<string, number>();
 
-  // ── 1. Identical idempotent access calls: keep only the last ──
+  // ── 1. Identical idempotent access calls within one mutation epoch ──
+  // A successful mutation, delete, or opaque execute call invalidates every
+  // prior access result. Reads on opposite sides of a write are observations
+  // of different states and must never be deduplicated.
   const accessIndices = new Map<string, number[]>();
+  let mutationEpoch = 0;
   for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].role !== "toolResult" || msgs[i].isError) continue;
+    if (msgs[i].role !== "toolResult") continue;
     const tc = tcIdx.get(msgs[i].toolCallId ?? "");
     if (!tc) continue;
     const operation = classifyToolOperation(tc.arguments, tc.name);
-    if (operation !== "read" && operation !== "search" && operation !== "list") continue;
-    const key = normalizeToolName(tc.name) + "\0" + stableArguments(tc.arguments);
-    const arr = accessIndices.get(key) ?? [];
-    arr.push(i);
-    accessIndices.set(key, arr);
+    if (operation === "mutate" || operation === "delete" || operation === "execute") {
+      mutationEpoch++;
+      continue;
+    }
+    if (msgs[i].isError || (operation !== "read" && operation !== "search" && operation !== "list")) continue;
+    const key = mutationEpoch + "\0" + normalizeToolName(tc.name) + "\0" + stableArguments(tc.arguments);
+    const indices = accessIndices.get(key) ?? [];
+    indices.push(i);
+    accessIndices.set(key, indices);
   }
   for (const indices of accessIndices.values()) {
-    // Remove the paired result and only its matching call block. An assistant
-    // message may contain unrelated calls that must survive.
     for (let j = 0; j < indices.length - 1; j++) {
       const toolCallId = msgs[indices[j]].toolCallId ?? "";
       keep.delete(indices[j]);
@@ -86,48 +90,6 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     }
     if (indices.length > 1) {
       reasonMap.set("Duplicate file reads", (reasonMap.get("Duplicate file reads") ?? 0) + indices.length - 1);
-    }
-  }
-
-  // ── 2. Failed → retry → success chains: keep first failure + success only ──
-  const failedToolResults: Array<{ index: number; tool: string; toolCallId: string }> = [];
-  for (let i = 0; i < msgs.length; i++) {
-    if (msgs[i].role !== "toolResult" || !msgs[i].isError) continue;
-    const toolCallId = msgs[i].toolCallId ?? "";
-    const tc = tcIdx.get(toolCallId);
-    failedToolResults.push({ index: i, tool: tc?.name ?? "unknown", toolCallId });
-  }
-  // Group consecutive failures of the same tool
-  let i = 0;
-  while (i < failedToolResults.length) {
-    const tool = failedToolResults[i].tool;
-    let j = i + 1;
-    while (j < failedToolResults.length && failedToolResults[j].tool === tool && failedToolResults[j].index - failedToolResults[j - 1].index < 10) {
-      j++;
-    }
-    // If 3+ consecutive failures of same tool, keep only first and last
-    if (j - i >= 3) {
-      for (let k = i + 1; k < j - 1; k++) {
-        keep.delete(failedToolResults[k].index);
-        if (tcIdx.has(failedToolResults[k].toolCallId)) removedToolCallIds.add(failedToolResults[k].toolCallId);
-      }
-      reasonMap.set("Collapsed error chains", (reasonMap.get("Collapsed error chains") ?? 0) + (j - i - 2));
-    }
-    i = j;
-  }
-
-  // ── 3. Agent acknowledgment messages: no informational content ──
-  for (let idx = 0; idx < msgs.length; idx++) {
-    if (msgs[idx].role !== "assistant") continue;
-    const rawBlocks = msgs[idx].content;
-    const blocks: unknown[] = Array.isArray(rawBlocks) ? rawBlocks : [];
-    // Only consider messages that are pure text with no tool calls
-    const hasToolCall = blocks.some((b: unknown) => isToolCallBlock(b));
-    if (hasToolCall) continue;
-    const text = extractText(msgs[idx].content).trim();
-    if (text.length > 0 && text.length < 100 && ACK_RE.test(text)) {
-      keep.delete(idx);
-      reasonMap.set("Agent acknowledgments", (reasonMap.get("Agent acknowledgments") ?? 0) + 1);
     }
   }
 
@@ -217,20 +179,25 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     }
 
     const text = extractText(keptMessage.content);
-    // Don't truncate tool outputs catalogErrors would actually scan for errors
-    // (short enough to be scanned + containing an error keyword) — truncation
-    // can drop a mid-output error keyword and hide a real error from extraction.
-    const protectFromTruncation = keptMessage.role === "toolResult"
-      && text.length > MAX_TOOL_OUTPUT_CHARS
-      && text.length < ERROR_SCAN_MAX_LEN
-      && LIKELY_ERROR_RE.test(text);
-    if (keptMessage.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS && !protectFromTruncation) {
-      // Split the budget evenly between head and tail. Derived from
-      // MAX_TOOL_OUTPUT_CHARS so future bumps to the constant don't
-      // silently leave the slice sizes out of date.
-      const head = text.slice(0, half);
-      const tail = text.slice(-half);
-      const truncated = head + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n" + tail;
+    if (keptMessage.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS) {
+      const call = ensuredIndex.get(keptMessage.toolCallId ?? "");
+      const executionFailure = Boolean(call
+        && classifyToolOperation(call.arguments, call.name) === "execute"
+        && (/Command exited with code [1-9]\d*\s*$/i.test(text) || LIKELY_ERROR_RE.test(text)));
+      let truncated: string;
+      if (keptMessage.isError || executionFailure) {
+        const edgeBudget = Math.floor(MAX_TOOL_OUTPUT_CHARS / 4);
+        const evidenceBudget = MAX_TOOL_OUTPUT_CHARS - edgeBudget * 2;
+        const evidence = commandFailureEvidence(text, evidenceBudget);
+        truncated = text.slice(0, edgeBudget)
+          + "\n... [error evidence] ...\n" + evidence
+          + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n"
+          + text.slice(-edgeBudget);
+      } else {
+        const head = text.slice(0, half);
+        const tail = text.slice(-half);
+        truncated = head + "\n... [truncated " + (text.length - MAX_TOOL_OUTPUT_CHARS) + " chars] ...\n" + tail;
+      }
       finalMsgs.push({ ...keptMessage, content: [{ type: "text" as const, text: truncated }] });
       prunedTokens += estimateTokens(truncated);
     } else {

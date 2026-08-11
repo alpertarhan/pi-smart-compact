@@ -21,66 +21,35 @@ import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { extractText, TRUNCATE_RE } from "./extraction.ts";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
-import * as log from "./logger.ts";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { asBranchMessage } from "../infra/ai-messages.ts";
 import { sessionsDir as sessionsDirPath } from "../infra/paths.ts";
 // LRU helpers live in a sibling module so they can be unit-tested in
 // isolation and reused by other bounded caches.
 import { lruGet, lruSet } from "./lru.ts";
+import * as log from "./logger.ts";
 
 function getSessionsDir(): string {
   return sessionsDirPath();
 }
 
 /**
- * Maximum bytes we'll read from a session log before bailing out. Real
- * sessions are rarely above a few MB; anything above this cap is almost
- * certainly an orphaned log we'd waste seconds parsing. The cap is generous
- * enough (~50MB) that legitimate long sessions still recover.
+ * Async, bounded-memory JSONL parser. Large active logs are read to EOF:
+ * truncating at a byte cap loses the newest branch IDs and silently defeats
+ * recovery. Awaiting each chunk yields I/O back to the event loop instead of
+ * blocking the agent while preserving exact UTF-8 line boundaries.
  */
-const MAX_LOG_BYTES = 50 * 1024 * 1024;
-
-/**
- * Streaming JSONL parser.
- *
- * The old implementation called `fs.readFileSync(logPath, "utf-8")` and then
- * `split("\n")` over the whole buffer. For a 30MB log this blocks the event
- * loop for ~200-500ms while we wait for V8 to materialize the giant string,
- * the giant array, and then GC them after the map is built. This streaming
- * variant reads at most `chunkSize` bytes at a time and processes line
- * fragments as they arrive, keeping the peak buffer to one line + chunkSize.
- *
- * We deliberately stay sync — the call-site is on the hot path inside
- * `runSmartCompact` and switching to an async generator would force every
- * caller into async, with no real concurrency benefit (we're not waiting on
- * IO; we're capped on parse throughput).
- */
-function* streamJsonlLines(fp: string, chunkSize = 64 * 1024): Generator<string> {
-  let fd: number | null = null;
+async function* streamJsonlLines(file: string, chunkSize = 64 * 1024): AsyncGenerator<string> {
+  const handle = await fs.promises.open(file, "r");
   try {
-    fd = fs.openSync(fp, "r");
-    const buf = Buffer.allocUnsafe(chunkSize);
-    // StringDecoder buffers a multi-byte UTF-8 sequence split across chunk
-    // boundaries instead of emitting U+FFFD. A bare `toString("utf-8")` on a
-    // chunk that ends mid-character corrupts that character, which silently
-    // breaks JSON.parse for the line it lands in — non-ASCII content
-    // (Turkish text is common here) made that a real failure mode.
+    const buffer = Buffer.allocUnsafe(chunkSize);
     const decoder = new StringDecoder("utf8");
     let leftover = "";
-    let totalRead = 0;
     for (;;) {
-      const bytes = fs.readSync(fd, buf, 0, chunkSize, null);
-      if (bytes <= 0) break;
-      totalRead += bytes;
-      if (totalRead > MAX_LOG_BYTES) {
-        log.warn("streamJsonlLines: log file exceeded " + MAX_LOG_BYTES + " bytes, truncating read");
-        break;
-      }
-      // Concatenating the leftover prefix to the new chunk is cheap because
-      // the leftover is at most one line long; we never accumulate the full
-      // file in memory.
-      const data = leftover + decoder.write(buf.subarray(0, bytes));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead <= 0) break;
+      const data = leftover + decoder.write(buffer.subarray(0, bytesRead));
       const lines = data.split("\n");
-      // The last entry may be a partial line; keep it for the next iteration.
       leftover = lines.pop() ?? "";
       for (const line of lines) {
         if (line.length > 0) yield line;
@@ -89,9 +58,7 @@ function* streamJsonlLines(fp: string, chunkSize = 64 * 1024): Generator<string>
     leftover += decoder.end();
     if (leftover.length > 0) yield leftover;
   } finally {
-    if (fd != null) {
-      try { fs.closeSync(fd); } catch (e) { log.debug("streamJsonlLines closeSync failed", e); }
-    }
+    await handle.close().catch(error => log.debug("streamJsonlLines close failed", error));
   }
 }
 
@@ -160,7 +127,7 @@ function getMaxEntries(): number {
 
 
 const logPathCache = new Map<string, { path: string | null; expiresAt: number; home: string }>();
-const messageMapCache = new Map<string, { logPath: string; mtimeMs: number; size: number; map: Map<string, LlmMessage> }>();
+const messageMapCache = new Map<string, { logPath: string; mtimeMs: number; size: number; requestedIds: Set<string>; map: Map<string, LlmMessage> }>();
 
 /** @internal Test-only: drop both module caches between cases. */
 export function __resetSessionLogCachesForTests(): void {
@@ -252,25 +219,31 @@ export function hasTruncatedMessages(msgs: LlmMessage[]): boolean {
  *
  * Returns null if the log cannot be read or contains no usable entries.
  */
-function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | null {
+async function readOriginalMessageMap(
+  sessionId: string,
+  wantedIds: ReadonlySet<string>,
+): Promise<Map<string, LlmMessage> | null> {
   const logPath = findSessionLogFile(sessionId);
   if (!logPath) {
     log.debug("Session log not found for " + sessionId);
     return null;
   }
-
   try {
-    const stat = fs.statSync(logPath);
+    const stat = await fs.promises.stat(logPath);
     const cached = lruGet(messageMapCache, sessionId);
-    if (cached && cached.logPath === logPath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    if (
+      cached
+      && cached.logPath === logPath
+      && cached.mtimeMs === stat.mtimeMs
+      && cached.size === stat.size
+      && Array.from(wantedIds).every(id => cached.requestedIds.has(id))
+    ) {
       return cached.map;
     }
 
-    // Stream lines instead of materializing the whole file. On a 30MB log
-    // this drops the parse pause from ~300ms to ~40ms because we never have
-    // to allocate a single string containing every byte.
     const map = new Map<string, LlmMessage>();
-    for (const line of streamJsonlLines(logPath)) {
+    const remaining = new Set(wantedIds);
+    for await (const line of streamJsonlLines(logPath)) {
       if (!line.trim()) continue;
       let entry: LogEntry;
       try {
@@ -278,82 +251,67 @@ function readOriginalMessageMap(sessionId: string): Map<string, LlmMessage> | nu
       } catch {
         continue;
       }
-      if (entry.type === "message" && entry.id && entry.message) {
-        const normalized = normalizeLogMessage(entry.message, entry.timestamp);
-        if (normalized) map.set(entry.id, normalized);
-      }
+      if (entry.type !== "message" || !entry.id || !remaining.has(entry.id) || !entry.message) continue;
+      remaining.delete(entry.id);
+      const normalized = normalizeLogMessage(entry.message, entry.timestamp);
+      if (normalized) map.set(entry.id, normalized);
+      if (remaining.size === 0) break;
     }
 
-    log.debug("readOriginalMessageMap: " + map.size + " msgs from " + logPath);
-    if (map.size > 0) {
-      lruSet(messageMapCache, sessionId, { logPath, mtimeMs: stat.mtimeMs, size: stat.size, map }, getMaxEntries());
-      return map;
-    }
-    return null;
-  } catch (e) {
-    log.debug("readOriginalMessageMap failed", e);
+    log.debug("readOriginalMessageMap: " + map.size + "/" + wantedIds.size + " requested msgs from " + logPath);
+    lruSet(messageMapCache, sessionId, {
+      logPath,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      requestedIds: new Set(wantedIds),
+      map,
+    }, getMaxEntries());
+    return map;
+  } catch (error) {
+    log.debug("readOriginalMessageMap failed", error);
     return null;
   }
 }
 
-/**
- * Build a fallback LlmMessage from a branch entry's message object.
- * Mirrors the convertToLlm logic used in core.ts.
- */
-function entryToLlm(entry: SessionMessageEntry): LlmMessage {
-  const msg = entry.message as Record<string, unknown>;
-  return {
-    role: (msg?.role as LlmMessage["role"]) ?? "user",
-    content: msg?.content,
-    toolCallId: msg?.toolCallId as string | undefined,
-    isError: msg?.isError as boolean | undefined,
-  };
+export interface ResolvedCompactionMessage {
+  entryId: string;
+  message: LlmMessage;
 }
 
 /**
- * Recover untruncated messages by entry-id mapping.
+ * Recover untruncated messages while preserving the exact entry-id/message
+ * association after `convertToLlm` filters context-excluded branch entries.
  *
- * For every entry in `toCompactEntries` (the branch prefix we intend to
- * compact), look up its `id` in the session log. If found and the log
- * message is not truncated, use the log version; otherwise fall back to
- * the branch entry itself.
- *
- * This guarantees:
- *  - Exact alignment with the current branch (same count, same order).
- *  - No tail-slice misalignment (pivot/branch changes, compacted msgs in
- *    log are irrelevant because we only ask for ids present in toCompact).
- *  - Graceful degradation: if log read fails, returns null so caller can
- *    keep using the branch.
- *
- * @param sessionId         Current session ID.
- * @param toCompactEntries  Branch entries selected for compaction.
- * @returns Array of LlmMessages aligned 1:1 with toCompactEntries, or
- *          null if the log could not be read.
+ * Each returned tuple is in the same domain as the LLM messages. Raw branch
+ * cardinality is deliberately not preserved: entries excluded from provider
+ * context must not shift cache fingerprints for every later message.
  */
-export function resolveCompactionMessages(
+export async function resolveCompactionMessages(
   sessionId: string,
   toCompactEntries: SessionMessageEntry[],
-): LlmMessage[] | null {
-  const logMap = readOriginalMessageMap(sessionId);
+): Promise<ResolvedCompactionMessage[] | null> {
+  const wantedIds = new Set(toCompactEntries.flatMap(entry => entry.id ? [entry.id] : []));
+  const logMap = await readOriginalMessageMap(sessionId, wantedIds);
   if (!logMap) return null;
 
   let restoredCount = 0;
-  const result: LlmMessage[] = [];
+  const result: ResolvedCompactionMessage[] = [];
 
   for (const entry of toCompactEntries) {
-    const logMsg = entry.id ? logMap.get(entry.id) : undefined;
+    if (!entry.id) continue;
+    const converted = convertToLlm([asBranchMessage(entry.message)]) as LlmMessage[];
+    if (!converted.length) continue;
+    const logMsg = logMap.get(entry.id);
     if (logMsg && !hasTruncatedMessages([logMsg])) {
-      result.push(logMsg);
+      result.push({ entryId: entry.id, message: logMsg });
       restoredCount++;
     } else {
-      // Fallback to branch entry (may be truncated, but we tried)
-      result.push(entryToLlm(entry));
+      for (const message of converted) result.push({ entryId: entry.id, message });
     }
   }
 
   if (restoredCount > 0) {
-    log.info("Session log recovery: " + restoredCount + "/" + toCompactEntries.length + " messages restored from log");
+    log.info("Session log recovery: " + restoredCount + "/" + result.length + " LLM messages restored from log");
   }
-
   return result;
 }

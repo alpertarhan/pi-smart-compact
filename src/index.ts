@@ -7,17 +7,18 @@
 import { convertToLlm, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum, type Model, type Api } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { CompactionMode, CompressionProfile, PendingCompaction } from "./types.ts";
-import { modeFromLegacyProfile } from "./app/mode-policy.ts";
-import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS, BUDGET_LIMITS } from "./constants.ts";
-import { loadConfig, extractUserNote, listBackups, readBackupContent, buildRestoreMessage } from "./utils/helpers.ts";
-import { getProviderCaps } from "./utils/tokens.ts";
+import type { PendingCompaction } from "./types.ts";
+import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS, BUDGET_LIMITS, AUTO_TRIGGER_MAX_LLM_CALLS, AUTO_TRIGGER_TIMEOUT_CAP_MS } from "./constants.ts";
+import { listBackups, readConversationBackup, buildRestoreMessage } from "./utils/backups.ts";
+import { loadConfig } from "./utils/helpers.ts";
+import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
 import { appendMetricsSnapshot, readMetricsLog } from "./utils/cache.ts";
 import { buildLocalDashboardInsights, buildMetricsReport, writeMetricsDashboard } from "./ui/metrics-report.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
+import { parseSmartCompactCommand, parseSmartCompactTool } from "./app/smart-compact-input.ts";
 import { clearCompactProgress, notifyAppliedCompaction, showCompactUI, showMetricsDashboardUI, showRestorePicker, showBackupViewer, showRestoreAction, showOpenLoopsUI } from "./ui/overlays.ts";
 import { formatCompactErrorForUi } from "./ui/error-format.ts";
-import { branchEntryIds, resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
+import { boundedBranchLineageIds, branchEntryIds, resolveSessionId, isUnresolvedSessionId } from "./infra/session-identity.ts";
 import { createPendingSlot, type PendingSlot, type ConsumeResult } from "./app/pending-slot.ts";
 import { createSessionRunLock } from "./app/session-run-lock.ts";
 import { commitAppliedCompaction } from "./app/steps/persist.ts";
@@ -28,8 +29,8 @@ import { deriveProjectIdFromCwd } from "./utils/fingerprint.ts";
 import { applyLoopOverrides, loadScopedCompactionState, renderContinuityCapsule, saveCompactionState } from "./utils/state.ts";
 import { createNativeContinuityBridge } from "./app/native-continuity-bridge.ts";
 import {
-  closeContextMemory, formatRecallResults, recallContext, saveContextMemory, type ContextGraphScope,
-  type ContextMemoryKind,
+  closeContextMemory, formatRecallResults, recallContext, saveContextMemory,
+  scheduleCompactionStateIndex, type ContextGraphScope, type ContextMemoryKind,
 } from "./infra/context-graph.ts";
 import { SecretScrubber } from "./domain/scrub.ts";
 
@@ -108,7 +109,9 @@ function resolveGraphScope(ctx: ExtensionContext): ContextGraphScope | null {
   const projectId = deriveProjectIdFromCwd(ctx.cwd);
   const sessionId = resolveSessionId(ctx);
   if (!projectId || isUnresolvedSessionId(sessionId)) return null;
-  const ancestryIds = branchEntryIds(ctx.sessionManager.getBranch() as Array<{ id?: string }>);
+  const ancestryIds = boundedBranchLineageIds(
+    ctx.sessionManager.getBranch() as Array<{ id?: string; parentId?: string | null; type?: string }>,
+  );
   return {
     projectId,
     sessionId,
@@ -252,7 +255,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("smart-compact", {
-    description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [note]",
+    description: "EESV smart compaction v" + VERSION + ". Usage: /smart-compact [model] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
     getArgumentCompletions: (prefix: string) => {
       const m = ["verbose", "debug", "dry-run", "metrics", "dashboard", "restore", "loops", "fast", "balanced", "thorough", "--focus=", "--max-calls=", "--max-input-tokens=", "--max-latency="].filter(o => o.startsWith(prefix)).map(o => ({ value: o, label: o }));
       return m.length ? m : null;
@@ -260,32 +263,21 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       await ctx.waitForIdle();
       try {
-        const tokens = args.trim().split(/\s+/).filter(Boolean);
-        const flags = tokens.map(t => t.toLowerCase());
-        const verbose = flags.includes("verbose") || flags.includes("debug");
-        const dryRun = flags.includes("dry-run");
-        const optionValue = (name: string): string | undefined => tokens.find(token => token.startsWith("--" + name + "="))?.slice(name.length + 3);
-        const focus = optionValue("focus")?.trim() || undefined;
-        const maxCallsRaw = optionValue("max-calls");
-        const maxInputRaw = optionValue("max-input-tokens");
-        const maxLatencyRaw = optionValue("max-latency");
-        const maxLlmCalls = maxCallsRaw == null ? undefined : Number(maxCallsRaw);
-        const maxLlmInputTokens = maxInputRaw == null ? undefined : Number(maxInputRaw);
-        const maxLatencyMs = maxLatencyRaw == null ? undefined : Number(maxLatencyRaw);
-        if (maxLlmCalls !== undefined && (!Number.isInteger(maxLlmCalls) || maxLlmCalls < BUDGET_LIMITS.CALLS.min || maxLlmCalls > BUDGET_LIMITS.CALLS.max)) {
-          ctx.ui.notify("--max-calls must be an integer from " + BUDGET_LIMITS.CALLS.min + " to " + BUDGET_LIMITS.CALLS.max, "error");
+        const knownProviders = new Set(ctx.modelRegistry.getAvailable().map(model => model.provider));
+        const parsedInput = parseSmartCompactCommand(args, token =>
+          /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(token)
+          && Boolean(findModelById(ctx, token) || knownProviders.has(token.split("/")[0])),
+        );
+        if (!parsedInput.ok) {
+          ctx.ui.notify(parsedInput.error, "error");
           return;
         }
-        if (maxLlmInputTokens !== undefined && (!Number.isInteger(maxLlmInputTokens) || maxLlmInputTokens < BUDGET_LIMITS.INPUT_TOKENS.min || maxLlmInputTokens > BUDGET_LIMITS.INPUT_TOKENS.max)) {
-          ctx.ui.notify("--max-input-tokens must be an integer from " + BUDGET_LIMITS.INPUT_TOKENS.min + " to " + BUDGET_LIMITS.INPUT_TOKENS.max, "error");
-          return;
-        }
-        if (maxLatencyMs !== undefined && (!Number.isFinite(maxLatencyMs) || maxLatencyMs < BUDGET_LIMITS.LATENCY_MS.min || maxLatencyMs > BUDGET_LIMITS.LATENCY_MS.max)) {
-          ctx.ui.notify("--max-latency must be " + BUDGET_LIMITS.LATENCY_MS.min + "–" + BUDGET_LIMITS.LATENCY_MS.max + " ms", "error");
-          return;
-        }
-        if (flags.includes("metrics") || flags.includes("dashboard")) {
-          if (flags.includes("dashboard")) {
+        const {
+          modelArg, mode: parsedMode, verbose, dryRun, action, focus, note,
+          maxLlmCalls, maxLlmInputTokens, timeoutMs: maxLatencyMs,
+        } = parsedInput.value;
+        if (action === "metrics" || action === "dashboard") {
+          if (action === "dashboard") {
             const entries = readMetricsLog(200);
             // Dashboard read-only display: a real id when present, an
             // opaque "(no session)" placeholder otherwise. We don't share
@@ -316,44 +308,70 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           }
           return;
         }
-        if (flags.includes("restore")) {
+        if (action === "restore") {
           const backups = listBackups();
           if (!backups.length) { ctx.ui.notify("No smart-compact backups found", "info"); return; }
           const selected = await showRestorePicker(ctx, backups);
           if (!selected) { ctx.ui.notify("Cancelled", "info"); return; }
-          const content = readBackupContent(selected);
-          if (!content) { ctx.ui.notify("Could not read backup: " + selected, "error"); return; }
-          const action = await showRestoreAction(ctx, selected);
-          if (action === "restore") {
-            // The command context exposes a read-only session manager, so we
-            // can't inject into the *current* session. True restore forks from
-            // the current leaf (preserving recent work) and injects the backup
-            // as context via the replacement session's sendMessage.
-            const branch = ctx.sessionManager.getBranch() as Array<{ id?: string }>;
-            const leafId = branch.length ? branch[branch.length - 1].id : undefined;
-            if (!leafId) {
-              ctx.ui.notify("Cannot restore: no session leaf to fork from — showing content instead", "warning");
-              await showBackupViewer(ctx, content, selected);
-              return;
-            }
+          const backup = readConversationBackup(selected);
+          if (!backup) { ctx.ui.notify("Could not read backup: " + selected, "error"); return; }
+          const restoreAction = await showRestoreAction(ctx, selected);
+          if (restoreAction === "view") {
+            await showBackupViewer(ctx, backup.content, selected);
+            return;
+          }
+          if (restoreAction !== "restore") return;
+
+          const estimatedTokens = backup.contextTokens
+            ?? estimateTokens(backup.content, ctx.model?.provider, ctx.model?.id);
+          const contextWindow = ctx.model?.contextWindow ?? 0;
+          if (contextWindow > 0 && estimatedTokens > contextWindow * 0.9) {
+            ctx.ui.notify(
+              "Restore blocked: backup context is about " + estimatedTokens.toLocaleString()
+                + " tokens, above the safe limit for this " + contextWindow.toLocaleString() + "-token model.",
+              "warning",
+            );
+            await showBackupViewer(ctx, backup.content, selected);
+            return;
+          }
+
+          if (backup.branchLeafId) {
             try {
-              const result = await ctx.fork(leafId, {
+              const result = await ctx.fork(backup.branchLeafId, {
+                position: "at",
                 withSession: async (rctx) => {
-                  await rctx.sendMessage(buildRestoreMessage(content, selected), { deliverAs: "nextTurn" });
+                  rctx.ui.notify("Restored the exact pre-compaction branch", "info");
                 },
               });
-              ctx.ui.notify(result.cancelled ? "Restore cancelled" : "Restored backup into a new session", "info");
-            } catch (e) {
-              log.warn("Restore fork failed", e);
-              ctx.ui.notify("Restore failed (" + (e instanceof Error ? e.message : String(e)) + ") — showing content instead", "warning");
-              await showBackupViewer(ctx, content, selected);
+              if (result.cancelled) ctx.ui.notify("Restore cancelled", "info");
+              return;
+            } catch (error) {
+              log.debugError("Exact backup restore fork unavailable", error);
+              if (!/Invalid entry ID for forking/i.test(error instanceof Error ? error.message : String(error))) {
+                ctx.ui.notify("Exact restore failed: " + (error instanceof Error ? error.message : String(error)), "error");
+                return;
+              }
             }
-          } else if (action === "view") {
-            await showBackupViewer(ctx, content, selected);
+          }
+
+          // Legacy backup or a pruned session tree: inject only into a fresh
+          // session. Never append a full pre-compaction transcript to the
+          // compacted leaf, which would duplicate summary + retained context.
+          try {
+            const result = await ctx.newSession({
+              withSession: async (rctx) => {
+                await rctx.sendMessage(buildRestoreMessage(backup.content, selected), { deliverAs: "nextTurn" });
+                rctx.ui.notify("Restored backup into a new session", "info");
+              },
+            });
+            if (result.cancelled) ctx.ui.notify("Restore cancelled", "info");
+          } catch (error) {
+            log.debugError("Backup restore into new session failed", error);
+            ctx.ui.notify("Restore failed: " + (error instanceof Error ? error.message : String(error)), "error");
           }
           return;
         }
-        if (flags.includes("loops")) {
+        if (action === "loops") {
           const projectId = deriveProjectIdFromCwd(ctx.cwd);
           if (!projectId) {
             ctx.ui.notify("Project loops must be managed from a project directory", "warning");
@@ -372,29 +390,31 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           if (!overrides) { ctx.ui.notify("Open-loop manager closed without changes", "info"); return; }
           state.loopOverrides = overrides;
           state.openLoops = applyLoopOverrides(state.openLoops, overrides);
+          const branchHeadId = branchIds.at(-1);
+          if (branchHeadId) {
+            state.scope = {
+              ...state.scope!,
+              branchHeadId,
+              branchAncestryIds: branchIds.slice(-100),
+            };
+          }
           state.updatedAt = Date.now();
-          saveCompactionState(projectId, state);
-          ctx.ui.notify("Open-loop overrides saved", "info");
+          if (!saveCompactionState(projectId, state)) {
+            ctx.ui.notify("Open-loop overrides could not be saved", "error");
+            return;
+          }
+          if (loadConfig().contextGraphEnabled && !scheduleCompactionStateIndex(projectId, state)) {
+            ctx.ui.notify("Open-loop overrides saved, but Smart Recall indexing was not scheduled", "warning");
+          } else {
+            ctx.ui.notify("Open-loop overrides saved", "info");
+          }
           return;
         }
 
-        // A token is a model arg when it resolves in the registry, or when
-        // its provider prefix is a known provider (i.e. a typo'd model id we
-        // must reject loudly rather than let fall through as note text).
-        // Note tokens like "src/auth.ts" have no registered provider prefix
-        // and pass through to extractUserNote untouched.
-        const knownProviders = new Set(ctx.modelRegistry.getAvailable().map(m => m.provider));
-        const modelArg = tokens.find(t =>
-          /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(t) &&
-          (findModelById(ctx, t) || knownProviders.has(t.split("/")[0])));
         const config = loadConfig();
-        const rawMode = tokens.find(t => ["auto", "fast", "balanced", "thorough", "aggressive", "slow"].includes(t));
-        const modeArg = (rawMode === "slow" ? "thorough" : rawMode === "aggressive" ? "fast" : rawMode) as CompactionMode | undefined;
-        if (rawMode === "aggressive") ctx.ui.notify("Aggressive mode is now Fast; using Fast.", "warning");
-        const profileArg = tokens.includes("light") ? "light" as CompressionProfile : undefined;
-        const mode = modeArg ?? (profileArg ? modeFromLegacyProfile(profileArg) : config.mode);
+        const mode = parsedMode ?? config.mode;
 
-        if (!tokens.length) {
+        if (!args.trim()) {
           const usage = ctx.getContextUsage();
           const totalTokens = usage?.tokens ?? 0;
           const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
@@ -425,12 +445,12 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           ctx.ui.notify("Unknown model: " + modelArg + " — check available models", "error");
           return;
         }
-        const { segModel, sumModel, verifyModel } = resolveModels(ctx, explicitModel ?? ctx.model, loadConfig(), Boolean(modelArg));
+        const { segModel, sumModel, verifyModel } = resolveModels(ctx, explicitModel ?? ctx.model, config, Boolean(modelArg));
         if (!sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
-        const note = extractUserNote(args);
+        const userNote = note;
         await runSmartCompact({
           ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, verifyModel: verifyModel ?? sumModel, mode, verbose, dryRun,
-          pendingRef, isRunning, onNativeApplyError, userNote: note, focus, maxLlmCalls, maxLlmInputTokens,
+          pendingRef, isRunning, onNativeApplyError, userNote, focus, maxLlmCalls, maxLlmInputTokens,
           timeoutMs: maxLatencyMs, force: true,
         });
       } catch (error) {
@@ -462,7 +482,10 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       if (!sumModel) return;
       if (!isRunning.isRunning(resolveSessionId(ctx))) {
         const caps = getProviderCaps(sumModel.provider);
-        const effectiveTimeoutMs = Math.round(config.autoTriggerTimeoutMs * caps.timeoutMultiplier);
+        const effectiveTimeoutMs = Math.min(
+          AUTO_TRIGGER_TIMEOUT_CAP_MS,
+          Math.round(config.autoTriggerTimeoutMs * caps.timeoutMultiplier),
+        );
 
         // Outer hard timeout: providers occasionally ignore AbortSignal, so we
         // need a second line of defense that cannot be subverted from inside.
@@ -497,6 +520,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
             pendingRef, isRunning, onNativeApplyError,
             autoTriggered: true,
             overflowRecovery: event.reason === "overflow",
+            maxLlmCalls: Math.min(config.maxLlmCalls, AUTO_TRIGGER_MAX_LLM_CALLS),
             timeoutMs: effectiveTimeoutMs,
             cancellationOut,
           });
@@ -530,9 +554,15 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         return;
       }
       try {
-        commitAppliedCompaction(candidate);
+        const persistenceFailures = await commitAppliedCompaction(candidate);
         clearCompactProgress(ctx);
         notifyAppliedCompaction(ctx, candidate.details, candidate.metricsSnapshot?.runType !== "manual");
+        if (persistenceFailures.length) {
+          ctx.ui.notify(
+            "Compaction applied, but durable persistence was incomplete: " + persistenceFailures.join(", "),
+            "warning",
+          );
+        }
         activateOnlineDamage(candidate);
       } catch (error) {
         clearCompactProgress(ctx);
@@ -622,25 +652,21 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       },
     },
     async execute(_id, params, signal, _onUp, ctx) {
-      const profile = (params.profile === "light" || params.profile === "balanced" || params.profile === "aggressive") ? params.profile : undefined;
-      const mode = params.mode === "slow"
-        ? "thorough"
-        : params.mode === "aggressive"
-          ? "fast"
-          : (["auto", "fast", "balanced", "thorough"] as const).find(value => value === params.mode);
-      const verbose = !!params.verbose;
-      const dryRun = !!params.dry_run;
-      const focus = typeof params.focus === "string" ? params.focus.trim() || undefined : undefined;
-      const maxLlmCalls = typeof params.max_calls === "number" && Number.isInteger(params.max_calls) && params.max_calls >= BUDGET_LIMITS.CALLS.min && params.max_calls <= BUDGET_LIMITS.CALLS.max ? params.max_calls : undefined;
-      const maxLlmInputTokens = typeof params.max_input_tokens === "number" && Number.isInteger(params.max_input_tokens) && params.max_input_tokens >= BUDGET_LIMITS.INPUT_TOKENS.min && params.max_input_tokens <= BUDGET_LIMITS.INPUT_TOKENS.max ? params.max_input_tokens : undefined;
-      const maxLatencyMs = typeof params.max_latency_ms === "number" && params.max_latency_ms >= BUDGET_LIMITS.LATENCY_MS.min && params.max_latency_ms <= BUDGET_LIMITS.LATENCY_MS.max ? params.max_latency_ms : undefined;
-      if (params.report || params.dashboard) {
+      const parsedInput = parseSmartCompactTool(params);
+      if (!parsedInput.ok) {
+        return { content: [{ type: "text", text: "Invalid smart_compact input: " + parsedInput.error }], details: undefined };
+      }
+      const {
+        mode, verbose, dryRun, action, focus,
+        maxLlmCalls, maxLlmInputTokens, timeoutMs: maxLatencyMs,
+      } = parsedInput.value;
+      if (action === "metrics" || action === "dashboard") {
         const report = buildMetricsReport();
-        const fp = params.dashboard ? writeMetricsDashboard() : null;
+        const fp = action === "dashboard" ? writeMetricsDashboard() : null;
         return { content: [{ type: "text", text: report + (fp ? "\n\nDashboard: " + fp : "") }], details: undefined };
       }
       const config = loadConfig();
-      const resolvedMode = mode ?? (profile ? modeFromLegacyProfile(profile) : config.mode);
+      const resolvedMode = mode ?? config.mode;
       const sessionId = resolveSessionId(ctx);
       const existing = pendingRef.peek(sessionId);
       if (!dryRun && existing?.sessionId === sessionId) {
@@ -673,22 +699,26 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         // (b) tool_result referencing a tool_call in a message that no longer exists.
         // Instead, store the summary in pendingRef and let the session_before_compact
         // hook apply it on the next natural compact (or auto-trigger).
-        await runSmartCompact({
+        const outcome = await runSmartCompact({
           ctx, summaryModel: sumModel, segModel: segModel ?? sumModel, verifyModel: verifyModel ?? sumModel, mode: resolvedMode,
           verbose, dryRun, pendingRef, isRunning, onNativeApplyError, autoTriggered: true, skipCompact: true,
           abortSignal: signal, focus, maxLlmCalls, maxLlmInputTokens, timeoutMs: maxLatencyMs,
         });
         const toolSecs = ((Date.now() - toolStart) / 1000).toFixed(1);
-        const staged = pendingRef.peek(sessionId);
-        if (staged?.sessionId === sessionId) {
-          return { content: [{ type: "text", text: "Smart summary prepared (" + resolvedMode + " → " + (staged.details.mode ?? staged.details.profile) + "). Tokens: " + (staged.tokensBefore ?? 0).toLocaleString() + " — summary cached for " + Math.round(PENDING_TTL_MS / 60000) + " min. The next /compact will use this summary automatically." }], details: undefined };
+        if (outcome.kind === "staged" || outcome.kind === "apply-requested") {
+          const staged = outcome.pending;
+          return {
+            content: [{ type: "text", text: "Smart summary prepared (" + resolvedMode + " → " + (staged.details.mode ?? staged.details.profile) + "). Tokens: " + (staged.tokensBefore ?? 0).toLocaleString() + " — cached for " + Math.round(PENDING_TTL_MS / 60000) + " min. The next /compact will use it automatically." }],
+            details: staged.details,
+          };
         }
-        // Dry-run returns before staging, so an empty slot is the *expected*
-        // outcome — not a failure. Report it as such.
-        if (dryRun) {
-          return { content: [{ type: "text", text: "Dry run finished (" + resolvedMode + ", " + toolSecs + "s). Pipeline ran successfully; no summary was staged (dry-run skips staging by design)." }], details: undefined };
+        if (outcome.kind === "dry-run") {
+          return { content: [{ type: "text", text: "Dry run finished (" + resolvedMode + ", " + toolSecs + "s). Pipeline ran successfully; no summary was staged." }], details: outcome.details };
         }
-        return { content: [{ type: "text", text: "Compaction finished (" + resolvedMode + ") but no summary was generated." }], details: undefined };
+        if (outcome.kind === "cancelled") {
+          return { content: [{ type: "text", text: "Smart compact cancelled by " + outcome.source + "; no summary was staged." }], details: undefined };
+        }
+        return { content: [{ type: "text", text: "Smart compact skipped: " + outcome.reason.replace(/-/g, " ") + ". No summary was staged." }], details: undefined };
       } catch (error) {
         log.debugError("Smart compact tool failed", error);
         return { content: [{ type: "text", text: formatCompactErrorForUi(error) }], details: undefined };
@@ -696,5 +726,3 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     },
   });
 }
-
-// extractUserNote is imported from utils/helpers.ts — no local duplicate

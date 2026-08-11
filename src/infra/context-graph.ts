@@ -4,6 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { CompactionState, ContinuityFactKind } from "../types.ts";
 import { contextGraphFile } from "./paths.ts";
+import { ensureDir } from "./fs.ts";
 import { normalizeFactKey } from "../utils/helpers.ts";
 import * as log from "../utils/logger.ts";
 
@@ -137,7 +138,7 @@ function nodeSqliteAdapter(db: NodeSqliteDatabase): SqliteDatabase {
 
 function openDatabase(): SqliteDatabase {
   const fp = contextGraphFile();
-  fs.mkdirSync(path.dirname(fp), { recursive: true });
+  ensureDir(path.dirname(fp));
   let db: SqliteDatabase;
   if ("bun" in process.versions) {
     const { Database } = require("bun:sqlite") as { Database: new (filename: string) => SqliteDatabase };
@@ -513,9 +514,8 @@ export function scheduleCompactionStateIndex(projectId: string, state: Compactio
   if (!sessionId || !branchHeadId || state.scope?.projectId !== projectId) return false;
   const key = projectId + "\0" + sessionId + "\0" + branchHeadId;
   if (!pendingCompactionIndexes.has(key) && pendingCompactionIndexes.size >= MAX_PENDING_COMPACTION_INDEXES) {
-    const oldest = pendingCompactionIndexes.keys().next().value;
-    if (oldest !== undefined) pendingCompactionIndexes.delete(oldest);
-    log.warn("context graph index queue full; oldest derived update was coalesced away");
+    log.warn("context graph index queue full; newest derived update was rejected");
+    return false;
   }
   pendingCompactionIndexes.set(key, { projectId, state });
   armCompactionIndexDrain();

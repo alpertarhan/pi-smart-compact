@@ -148,7 +148,7 @@ describe("pruneRedundant", () => {
     const extraction = extractStructured(result.messages, PROFILES.balanced);
     expect(extraction.modifiedFiles.map(file => file.path)).toContain("c.ts");
     const wrapper = result.messages.find(message => message.role === "assistant" && Array.isArray(message.content))?.content as Array<{ name?: string; arguments?: { tool_uses?: Array<{ id?: string }> } }>;
-    expect(wrapper.flatMap(block => block.arguments?.tool_uses ?? []).map(tool => tool.id)).toEqual(["e1"]);
+    expect(wrapper.flatMap(block => block.arguments?.tool_uses ?? []).map(tool => tool.id)).toEqual(["r1", "e1"]);
   });
 
   it("uses extraction's synthetic nested identity when pruning id-less parallel calls", () => {
@@ -171,18 +171,17 @@ describe("pruneRedundant", () => {
     expect(result.messages.some(message => message.toolCallId === "r2")).toBe(true);
   });
 
-  it("prunes agent acknowledgment messages", () => {
+  it("preserves short assistant messages because they may carry constraints", () => {
     const msgs: LlmMessage[] = [
       makeMsg("user", "fix the bug"),
       makeMsg("assistant", "I'll fix that right away."),
       makeMsg("assistant", "Let me check the file."),
-      makeMsg("assistant", "Sure, I can help."),
+      makeMsg("assistant", "Sure, root cause is a stale cache and auth.ts must not be retried."),
       makeMsg("user", "good"),
     ];
     const result = pruneRedundant(msgs);
-    // At least some ack messages should be pruned
-    expect(result.messages.length).toBeLessThan(msgs.length);
-    expect(result.reasons.some(r => r.reason.includes("acknowledgments"))).toBe(true);
+    expect(result.messages).toEqual(msgs);
+    expect(result.reasons.some(reason => reason.reason.includes("acknowledgments"))).toBe(false);
   });
 
   it("truncates long tool outputs", () => {
@@ -200,6 +199,29 @@ describe("pruneRedundant", () => {
     const text = (toolResult?.content as any[])?.[0]?.text ?? "";
     expect(text.length).toBeLessThan(longOutput.length);
     expect(text).toContain("[truncated");
+  });
+
+  it("preserves a long command's middle failure cause through pruning and extraction", () => {
+    const cause = "FATAL migration failed: duplicate column user_id";
+    const longOutput = "build progress\n" + "x".repeat(2_000) + "\n" + cause
+      + "\n" + "y".repeat(2_000) + "\nCommand exited with code 1";
+    const msgs: LlmMessage[] = [
+      makeMsg("user", "run migrations"),
+      makeAssistantWithToolCall("exec-1", "bash", { command: "bun run migrate" }),
+      makeToolResult("exec-1", longOutput),
+      makeMsg("assistant", "migration failed"),
+      makeMsg("user", "show me the cause"),
+    ];
+
+    const pruned = pruneRedundant(msgs);
+    const retained = pruned.messages.find(message => message.role === "toolResult");
+    const retainedText = (retained?.content as Array<{ text?: string }>)?.[0]?.text ?? "";
+    expect(retainedText).toContain(cause);
+    expect(retainedText.length).toBeLessThan(longOutput.length);
+
+    const extraction = extractStructured(pruned.messages, PROFILES.balanced);
+    expect(extraction.errors).toHaveLength(1);
+    expect(extraction.errors[0].message).toContain(cause);
   });
 
   it("keeps messages with tool calls intact", () => {

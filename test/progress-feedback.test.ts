@@ -52,7 +52,7 @@ describe("semantic compact progress", () => {
     } as any, false);
     expect(calls.at(-1)).toContain("1,000t → planned ~550t / ~600t applied estimate");
     expect(calls.at(-1)).toContain("verified 100/100 coverage (source 11/100, safety fallback)");
-    expect(calls.at(-1)).toContain("0 gaps");
+    expect(calls.at(-1)).toContain("0 remaining gaps");
     expect(calls.at(-1)).not.toContain("actual");
   });
 

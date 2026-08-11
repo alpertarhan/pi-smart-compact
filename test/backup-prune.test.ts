@@ -3,12 +3,11 @@
  *
  * Two contracts to verify:
  *
- *   1. Hot path: `backupConversation` returns synchronously and does NOT
- *      block on directory scan / unlink. The previous implementation could
- *      stall for 20-50ms when the backup directory held >100 files.
+ *   1. Prepare path: `prepareConversationBackup` performs no I/O, so cancelled
+ *      or failed compactions cannot create retention artifacts.
  *
- *   2. Eventual: after the deferred macrotask runs the prune happens and
- *      files over the count cap (or age cap) are removed.
+ *   2. Commit path: the confirmed lifecycle writes atomically, then deferred
+ *      pruning removes files over the count or age cap.
  *
  * The tests use a per-test HOME swap so they don't touch the user's real
  * backups directory.
@@ -18,7 +17,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { backupConversation, resetConfigCache } from "../src/utils/helpers.ts";
+import { commitPreparedConversationBackup, prepareConversationBackup } from "../src/utils/backups.ts";
+import { resetConfigCache } from "../src/utils/helpers.ts";
 import { BACKUP_MAX_FILES } from "../src/constants.ts";
 
 let prevHome: string | undefined;
@@ -46,27 +46,26 @@ function flushDeferred(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 10));
 }
 
-describe("backupConversation hot path", () => {
-  it("returns synchronously even when the directory is full", () => {
-    // Pre-fill the directory with 100 stale backup files. The original
-    // implementation would unlink all of them on the synchronous call path.
+describe("conversation backup lifecycle", () => {
+  it("prepares synchronously without writing, then commits asynchronously", async () => {
     fs.mkdirSync(backupDir, { recursive: true });
     for (let i = 0; i < 100; i++) {
       fs.writeFileSync(path.join(backupDir, "stale-" + i + ".md"), "# Smart Compact Backup\n# Session: old\n\nx");
     }
     const t0 = Date.now();
-    const fp = backupConversation("hello", "sess-test");
+    const prepared = prepareConversationBackup("hello", "sess-test");
     const elapsed = Date.now() - t0;
-    expect(fp).not.toBeNull();
-    // The synchronous portion does one atomic write; anything past ~50ms
-    // means we ran the prune inline. Generous bound to avoid CI flake.
+    expect(prepared).not.toBeNull();
     expect(elapsed).toBeLessThan(100);
+    expect(fs.existsSync(prepared!.path)).toBe(false);
+    expect(await commitPreparedConversationBackup(prepared!)).toBe(prepared!.path);
+    expect(fs.existsSync(prepared!.path)).toBe(true);
   });
 
   it("keeps untrusted session ids inside the backup directory", () => {
-    const fp = backupConversation("hello", "../../outside/session");
-    expect(path.dirname(fp!)).toBe(backupDir);
-    expect(path.basename(fp!)).not.toContain("..");
+    const prepared = prepareConversationBackup("hello", "../../outside/session");
+    expect(path.dirname(prepared!.path)).toBe(backupDir);
+    expect(path.basename(prepared!.path)).not.toContain("..");
   });
 });
 
@@ -85,8 +84,9 @@ describe("deferred prune", () => {
       const t = (now - (total - i) * 1000) / 1000;
       fs.utimesSync(fp, t, t);
     }
-    // Trigger a real backup → schedules the deferred prune.
-    backupConversation("trigger prune", "trigger");
+    const prepared = prepareConversationBackup("trigger prune", "trigger");
+    expect(prepared).not.toBeNull();
+    await commitPreparedConversationBackup(prepared!);
     await flushDeferred();
     // After the deferred prune runs we should be at the cap (or close to it).
     const remainingOwned = fs.readdirSync(backupDir)

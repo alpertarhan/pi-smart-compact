@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { parseExplorationReport, fallbackExplorationReport, shouldExplore, buildExplorationReportFromParsed, exploreConversation } from "../src/phases/explore.ts";
+import { parseExplorationReport, fallbackExplorationReport, shouldExplore, buildExplorationReportFromParsed, executeExplorationTool, exploreConversation } from "../src/phases/explore.ts";
 import { createServices } from "../src/infra/services.ts";
 import { MAX_EXPLORATION_ROUNDS } from "../src/constants.ts";
 import type { LlmMessage } from "../src/types.ts";
@@ -110,6 +110,26 @@ describe("buildExplorationReportFromParsed — boundary normalization", () => {
     const report = buildExplorationReportFromParsed({ mainGoal: 42 }, []);
     expect(report.mainGoal).toBe("");
   });
+  it("canonicalizes fractional indexes, sorts, and deduplicates clamped boundaries", () => {
+    const report = buildExplorationReportFromParsed({
+      boundaries: [
+        { afterIndex: 2.9, topic: "later", priority: "normal", confidence: 1 },
+        { afterIndex: 1.8, topic: "first", priority: "normal", confidence: 1 },
+        { afterIndex: 2.1, topic: "duplicate", priority: "normal", confidence: 1 },
+      ],
+    }, [1, 2, 3, 4, 5].map(() => ({ role: "user", content: "x" })));
+    expect(report.boundaries.map(boundary => boundary.afterIndex)).toEqual([1, 2]);
+  });
+
+  it("bounds tool indexes and rejects empty broad-match arguments", () => {
+    const messages: LlmMessage[] = [
+      { role: "user", content: "alpha" },
+      { role: "toolResult", toolCallId: "1", content: "beta" },
+    ];
+    expect(JSON.parse(executeExplorationTool({ name: "get_message_range", arguments: { start: -10, end: 99.8 } }, messages))).toHaveLength(2);
+    expect(executeExplorationTool({ name: "search_conversation", arguments: { query: "" } }, messages)).toContain("non-empty");
+    expect(executeExplorationTool({ name: "get_file_changes", arguments: { path: "" } }, messages)).toContain("non-empty");
+  });
 });
 
 describe("fallbackExplorationReport", () => {
@@ -169,6 +189,7 @@ describe("tool capability caching", () => {
   } as any;
   const model = { id: "probe-cache", provider: "openai", api: "openai-responses", contextWindow: 128_000, maxTokens: 128_000 } as any;
   const run = async (status: number, message: string) => {
+    const notices: string[] = [];
     const services = createServices({
       llm: {
         complete: async (_model, body) => {
@@ -184,16 +205,27 @@ describe("tool capability caching", () => {
         },
       },
     });
-    await exploreConversation(messages, extraction, model, { apiKey: "k" }, undefined, undefined, undefined, undefined, undefined, services);
-    return services.toolSupport.get(["openai", "openai-responses", "", "probe-cache"].join("\0"), Date.now());
+    await exploreConversation(
+      messages, extraction, model, { apiKey: "k" },
+      undefined, undefined, undefined, undefined,
+      message => { notices.push(message); }, services,
+    );
+    return {
+      cached: services.toolSupport.get(["openai", "openai-responses", "", "probe-cache"].join("\0"), Date.now()),
+      notices,
+    };
   };
 
-  it("does not cache transient probe failures as unsupported", async () => {
-    expect(await run(429, "rate limited")).toBeUndefined();
+  it("classifies a transient rate limit without caching unsupported capability", async () => {
+    const result = await run(429, "rate limited");
+    expect(result.cached).toBeUndefined();
+    expect(result.notices).toContain("Tool probe was rate limited; using direct exploration for this run");
   });
 
-  it("caches an explicit unsupported-tools response", async () => {
-    expect(await run(400, "tools are not supported by this endpoint")).toBe(false);
+  it("caches and accurately reports an explicit unsupported-tools response", async () => {
+    const result = await run(400, "tools are not supported by this endpoint");
+    expect(result.cached).toBe(false);
+    expect(result.notices).toContain("Tool calling is unsupported by this provider; using direct exploration for this run");
   });
 });
 

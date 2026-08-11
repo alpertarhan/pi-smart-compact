@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { listBackups, readBackupContent, resetConfigCache, buildRestoreMessage } from "../src/utils/helpers.ts";
+import { listBackups, readBackupContent, buildRestoreMessage } from "../src/utils/backups.ts";
+import { resetConfigCache } from "../src/utils/helpers.ts";
 
 let prevHome: string | undefined;
 let tmp: string;
@@ -16,6 +17,7 @@ beforeEach(() => {
 afterEach(() => {
   process.env.HOME = prevHome;
   resetConfigCache();
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 function writeBackup(name: string, date: string, session: string, body: string): string {

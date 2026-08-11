@@ -30,53 +30,50 @@ describe("resolveCompactionMessages — Pi jsonl filename format", () => {
     fs.rmSync(TMP_HOME, { recursive: true, force: true });
   });
 
-  it("finds timestamp_sessionId.jsonl format and recovers by entry id", () => {
-    const entries: SessionMessageEntry[] = [
-      { type: "message", id: "entry-0", message: { role: "user", content: "hello" } },
-      { type: "message", id: "entry-1", message: { role: "assistant", content: "hi" } },
-      {
-        type: "message",
-        id: "entry-2",
-        message: { role: "toolResult", toolCallId: "tc1", content: "truncated…✂999" },
-      },
-    ];
-    const result = resolveCompactionMessages("test-session-abc", entries);
-    expect(result).not.toBeNull();
-    expect(result!.length).toBe(3);
-    // entry-2 should be restored from log (original content, not truncated)
-    expect(result![2].content).toBe("large original content here");
-    // entry-0 and entry-1 should also be recovered from log
-    expect(result![0].content).toBe("hello");
-    expect(result![1].content).toBe("hi");
-  });
+  it("finds timestamp_sessionId.jsonl format and recovers by entry id", async () => { const entries: SessionMessageEntry[] = [
+    { type: "message", id: "entry-0", message: { role: "user", content: "hello" } },
+    { type: "message", id: "entry-1", message: { role: "assistant", content: "hi" } },
+    {
+      type: "message",
+      id: "entry-2",
+      message: { role: "toolResult", toolCallId: "tc1", content: "truncated…✂999" },
+    },
+  ];
+  const result = await resolveCompactionMessages("test-session-abc", entries)
+  expect(result).not.toBeNull();
+  expect(result!.length).toBe(3);
+  // entry-2 should be restored from log (original content, not truncated)
+  expect(result![2].entryId).toBe("entry-2");
+  expect(result![2].message.content).toBe("large original content here");
+  // entry-0 and entry-1 should also be recovered from log
+  expect(result![0].message.content).toBe("hello");
+  expect(result![1].message.content).toBe("hi"); });
 
-  it("falls back to branch entry when log id is missing", () => {
-    const entries: SessionMessageEntry[] = [
-      {
-        type: "message",
-        id: "entry-2",
-        message: { role: "toolResult", toolCallId: "tc1", content: "truncated…✂999" },
-      },
-      {
-        type: "message",
-        id: "entry-NEW",
-        message: { role: "user", content: "new message" },
-      },
-    ];
-    const result = resolveCompactionMessages("test-session-abc", entries);
-    expect(result).not.toBeNull();
-    expect(result!.length).toBe(2);
-    // entry-2 recovered from log
-    expect(result![0].content).toBe("large original content here");
-    // entry-NEW not in log → fallback to branch
-    expect(result![1].content).toBe("new message");
-  });
+  it("falls back to branch entry when log id is missing", async () => { const entries: SessionMessageEntry[] = [
+    {
+      type: "message",
+      id: "entry-2",
+      message: { role: "toolResult", toolCallId: "tc1", content: "truncated…✂999" },
+    },
+    {
+      type: "message",
+      id: "entry-NEW",
+      message: { role: "user", content: "new message" },
+    },
+  ];
+  const result = await resolveCompactionMessages("test-session-abc", entries)
+  expect(result).not.toBeNull();
+  expect(result!.length).toBe(2);
+  // entry-2 recovered from log
+  expect(result![0].entryId).toBe("entry-2");
+  expect(result![0].message.content).toBe("large original content here");
+  // entry-NEW not in log → fallback to branch without losing its identity
+  expect(result![1].entryId).toBe("entry-NEW");
+  expect(result![1].message.content).toBe("new message"); });
 
-  it("returns null when log file does not exist", () => {
-    const entries: SessionMessageEntry[] = [
-      { type: "message", id: "x", message: { role: "user", content: "x" } },
-    ];
-    const result = resolveCompactionMessages("nonexistent-session", entries);
-    expect(result).toBeNull();
-  });
+  it("returns null when log file does not exist", async () => { const entries: SessionMessageEntry[] = [
+    { type: "message", id: "x", message: { role: "user", content: "x" } },
+  ];
+  const result = await resolveCompactionMessages("nonexistent-session", entries)
+  expect(result).toBeNull(); });
 });

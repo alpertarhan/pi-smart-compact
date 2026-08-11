@@ -8,6 +8,13 @@ import { afterAll, describe, it, expect, beforeAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { commitAppliedCompaction, persistAppliedState } from "../src/app/steps/persist.ts";
+import { createCompactionCommitStore } from "../src/app/compaction-commit-store.ts";
+import { loadProjectFingerprint } from "../src/utils/fingerprint.ts";
+import { loadCompactionState } from "../src/utils/state.ts";
+import { readMetricsLog } from "../src/utils/cache.ts";
+import { flushCompactionStateIndexes, recallContext } from "../src/infra/context-graph.ts";
+import { VERSION } from "../src/constants.ts";
 
 const originalHome = process.env.HOME;
 let home: string;
@@ -16,7 +23,6 @@ beforeAll(() => {
   process.env.HOME = home;
 });
 afterAll(async () => {
-  const { flushCompactionStateIndexes } = await import("../src/infra/context-graph.ts");
   flushCompactionStateIndexes();
   process.env.HOME = originalHome;
   fs.rmSync(home, { recursive: true, force: true });
@@ -34,13 +40,9 @@ function minimalExtraction() {
 
 describe("persistAppliedState", () => {
   it("writes fingerprint + compaction state only when called for an applied payload", async () => {
-    const { persistAppliedState } = await import("../src/app/steps/persist.ts");
-    const { loadProjectFingerprint } = await import("../src/utils/fingerprint.ts");
-    const { loadCompactionState } = await import("../src/utils/state.ts");
-    const { VERSION } = await import("../src/constants.ts");
 
     const projectId = "test-project-consumed";
-    persistAppliedState({
+    await persistAppliedState({
       runId: "run-applied-1", summary: "## Goal\nx", firstKeptEntryId: "e1", tokensBefore: 100,
       details: {} as never, sessionId: "s1",
       projectId,
@@ -63,11 +65,8 @@ describe("persistAppliedState", () => {
   });
 
   it("indexes an applied scoped state into Smart Recall", async () => {
-    const { persistAppliedState } = await import("../src/app/steps/persist.ts");
-    const { flushCompactionStateIndexes, recallContext } = await import("../src/infra/context-graph.ts");
-    const { VERSION } = await import("../src/constants.ts");
     const projectId = "test-project-graph";
-    persistAppliedState({
+    await persistAppliedState({
       runId: "run-applied-2", summary: "## Goal\nship recall", firstKeptEntryId: "e1", tokensBefore: 100,
       details: {} as never, sessionId: "s-graph", projectId,
       compactionState: {
@@ -84,10 +83,6 @@ describe("persistAppliedState", () => {
   });
 
   it("does not persist a staged candidate before explicit applied commit", async () => {
-    const { createCompactionCommitStore } = await import("../src/app/compaction-commit-store.ts");
-    const { commitAppliedCompaction } = await import("../src/app/steps/persist.ts");
-    const { loadProjectFingerprint } = await import("../src/utils/fingerprint.ts");
-    const { readMetricsLog } = await import("../src/utils/cache.ts");
     const projectId = "test-project-commit-point";
     const candidate = {
       runId: "run-commit-point", sessionId: "s-commit", projectId,
@@ -103,16 +98,52 @@ describe("persistAppliedState", () => {
     expect(loadProjectFingerprint(projectId)).toBeNull();
     expect(readMetricsLog().some(entry => entry.sessionId === "s-commit")).toBe(false);
 
-    commitAppliedCompaction(store.take("run-commit-point", "s-commit")!);
+    await commitAppliedCompaction(store.take("run-commit-point", "s-commit")!);
     expect(loadProjectFingerprint(projectId)?.sessionCount).toBe(1);
     expect(readMetricsLog().filter(entry => entry.sessionId === "s-commit")).toHaveLength(1);
   });
 
+
+  it("writes the prepared backup only at confirmed commit and records complete persistence", async () => {
+    const backupPath = path.join(home, "confirmed-backup.md");
+    const candidate = {
+      runId: "run-backup-confirmed", sessionId: "s-backup", summary: "summary",
+      firstKeptEntryId: "e1", tokensBefore: 10, details: { runId: "run-backup-confirmed" },
+      preparedBackup: { path: backupPath, content: "# Smart Compact Backup\n\nexact" },
+      metricsSnapshot: {
+        totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0,
+        avgLatency: 0, cacheHitRate: 0, status: "success",
+      },
+    } as never;
+    const store = createCompactionCommitStore();
+    store.stage(candidate);
+    expect(fs.existsSync(backupPath)).toBe(false);
+    expect(await commitAppliedCompaction(store.take("run-backup-confirmed", "s-backup")!)).toEqual([]);
+    expect(fs.readFileSync(backupPath, "utf8")).toContain("exact");
+    expect(readMetricsLog().find(entry => entry.sessionId === "s-backup")?.persistenceStatus).toBe("complete");
+  });
+
+  it("surfaces backup persistence failure in return value and telemetry", async () => {
+    const blocker = path.join(home, "not-a-directory");
+    fs.writeFileSync(blocker, "x");
+    const failures = await commitAppliedCompaction({
+      runId: "run-backup-failed", sessionId: "s-backup-failed", summary: "summary",
+      firstKeptEntryId: "e1", tokensBefore: 10, details: { runId: "run-backup-failed" } as never,
+      preparedBackup: { path: path.join(blocker, "backup.md"), content: "exact" },
+      metricsSnapshot: {
+        totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0,
+        avgLatency: 0, cacheHitRate: 0, status: "success",
+      },
+    });
+    expect(failures).toContain("conversation backup");
+    const metric = readMetricsLog().find(entry => entry.sessionId === "s-backup-failed");
+    expect(metric?.persistenceStatus).toBe("partial");
+    expect(metric?.persistenceFailures).toContain("conversation backup");
+  });
   it("is a no-op without projectId (legacy payloads) and never throws", async () => {
-    const { persistAppliedState } = await import("../src/app/steps/persist.ts");
-    expect(() => persistAppliedState({
+    await persistAppliedState({
       runId: "run-applied-3", summary: "x", firstKeptEntryId: "e", tokensBefore: 0,
       details: {} as never, sessionId: "s",
-    })).not.toThrow();
+    });
   });
 });

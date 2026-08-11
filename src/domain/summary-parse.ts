@@ -18,7 +18,8 @@
  * duplicate body lines removed. Unknown sections remain independent.
  */
 
-import { CanonicalSummary, Section, SectionKind, classifyHeading, canonicalHeading } from "./summary-schema.ts";
+import { classifyHeading, canonicalHeading } from "./summary-schema.ts";
+import type { CanonicalSummary, Section, SectionKind } from "./summary-schema.ts";
 
 /** H1/H2 always start sections; H3 starts one only when its kind is recognized. */
 const HEADING_RE = /^(#{1,3})\s+(.+?)\s*$/;

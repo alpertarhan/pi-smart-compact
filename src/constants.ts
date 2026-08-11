@@ -10,12 +10,18 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "8.0.8";
+export const VERSION = "9.0.0";
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.10;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
 /** Space reserved in the window plan for deterministic verification/state sections added after LLM synthesis. */
 export const POST_SUMMARY_RESERVE_RATIO = 0.25;
+/** Maximum number of open-loop records retained in durable continuity state. */
+export const MAX_STATE_OPEN_LOOPS = 25;
+/** Auto compaction must yield to native recovery instead of blocking the host indefinitely. */
+export const AUTO_TRIGGER_TIMEOUT_CAP_MS = 60_000;
+/** Provider-call ceiling for the synchronous session_before_compact hook. */
+export const AUTO_TRIGGER_MAX_LLM_CALLS = 4;
 
 /** Positive per-run bounds shared by CLI and tool arguments; config separately allows 0 as a mode-derived sentinel. */
 export const BUDGET_LIMITS = {
@@ -72,7 +78,7 @@ export const DEFAULT_CONFIG = {
   backupEnabled: true,
   backupDir: "",
   minContextPercent: 60, // Don't compact below this context threshold (tool=97% ≠ context full)
-  requireApproval: false,
+  requireApproval: true,
   scrubSecrets: true,
   scrubPii: false,
   maxLlmCalls: 8,
@@ -110,6 +116,7 @@ export const SINGLE_PASS_PREFIX =
   "## Progress\n### Done\n- [x] [Completed tasks with file references]\n### In Progress\n- [ ] [Current work state]\n### Blocked\n- [Issues]\n" +
   "## Key Decisions\n- **[Decision]**: [Rationale]\n" +
   "## Files Modified\n- [Verified list from deterministic extraction]\n" +
+  "## Files Deleted\n- [Verified deleted paths from deterministic extraction]\n" +
   "## Files Read\n- [Verified list from deterministic extraction]\n" +
   "## Next Steps\n1. [What should happen next]\n" +
   "## Critical Context\n- [Specific data, patterns, info needed to continue]\n- [Error patterns or gotchas]\n" +
@@ -129,6 +136,7 @@ export const BATCH_PROMPT_PREFIX =
   "**Summary**: [2-4 sentences: what happened, errors, code changes with paths]\n" +
   "**Decisions**: [comma-separated, or \"None\"]\n" +
   "**Modified**: [comma-separated paths, or \"None\"]\n" +
+  "**Deleted**: [comma-separated paths, or \"None\"]\n" +
   "**Read**: [comma-separated paths, or \"None\"]\n";
 
 export const BATCH_PROMPT_SUFFIX = "\n{EXTRACTION_CONTEXT}\n\n<segments>\n{TEXT}\n</segments>";
@@ -150,13 +158,14 @@ export const ASSEMBLY_PROMPT_PREFIX =
   "## Progress\n### Done\n- [x] [Completed tasks with file refs]\n### In Progress\n- [ ] [Current work state]\n### Blocked\n- [Issues]\n" +
   "## Key Decisions\n- **[Decision]**: [Rationale]\n" +
   "## Files Modified\n- [Verified deterministic list]\n" +
+  "## Files Deleted\n- [Verified deterministic deleted paths]\n" +
   "## Files Read\n- [Verified deterministic list]\n" +
   "## Next Steps\n1. [What should happen next]\n" +
   "## Critical Context\n- [Data, patterns, info needed]\n" +
   "## Topics Covered\n[Chronological bullets with priority]\n";
 
 export const ASSEMBLY_PROMPT_SUFFIX =
-  "\nIMMUTABLE CONTEXT (verified deterministic data):\n- Key Decisions: {DECISIONS}\n- Files Modified (VERIFIED): {MODIFIED}\n- Files Read (VERIFIED): {READ}\n\n{EXPLORATION_CONTEXT}\n{PREV_CONTEXT}\n\n<summaries>{SUMMARIES}</summaries>";
+  "\nIMMUTABLE CONTEXT (verified deterministic data):\n- Key Decisions: {DECISIONS}\n- Files Modified (VERIFIED): {MODIFIED}\n- Files Read (VERIFIED): {READ}\n- Files Deleted (VERIFIED): {DELETED}\n\n{EXPLORATION_CONTEXT}\n{PREV_CONTEXT}\n\n<summaries>{SUMMARIES}</summaries>";
 
 // ── Session-type-specific prompt instructions ──
 
@@ -174,6 +183,7 @@ export const SECTION_PROGRESS = "## Progress";
 export const SECTION_DECISIONS = "## Key Decisions";
 export const SECTION_FILES_MODIFIED = "## Files Modified";
 export const SECTION_FILES_READ = "## Files Read";
+export const SECTION_FILES_DELETED = "## Files Deleted";
 export const SECTION_NEXT_STEPS = "## Next Steps";
 export const SECTION_CRITICAL_CONTEXT = "## Critical Context";
 export const SECTION_TOPICS = "## Topics Covered";
@@ -200,6 +210,19 @@ export const BACKUP_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 export const FIVE_MINUTES_MS = 5 * 60 * 1000;
 export const ONE_HOUR_MS = 60 * 60 * 1000;
 export const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+export const STATE_SNAPSHOT_MAX_FILES = 64;
+
+/** Bounded summary-domain evidence; newest/highest-value items win. */
+export const EXTRACTION_LIMITS = {
+  MODIFIED_FILES: 120,
+  READ_FILES: 160,
+  DELETED_FILES: 120,
+  ERRORS: 80,
+  DECISIONS: 80,
+  CONSTRAINTS: 80,
+  TIMELINE: 120,
+  MEDIA_ATTACHMENTS: 40,
+} as const;
 export const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ── Extraction-cache filename prefix (paths.ts builds it, cache.ts prunes by it) ──
@@ -270,8 +293,6 @@ export const MAX_TOOL_OUTPUT_CHARS = 800;
 // ── Error detection (shared by pruning + extraction) ──
 /** Shell-output patterns signalling a likely error even in a non-`isError` result. */
 export const LIKELY_ERROR_RE = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i;
-/** catalogErrors only scans outputs shorter than this — pruning must not truncate below it. */
-export const ERROR_SCAN_MAX_LEN = 2000;
 /** How far forward to look for a retry of the same tool after an error. */
 export const ERROR_RETRY_WINDOW = 6;
 /** How far forward to look for that retry's resolving (non-error) result. */

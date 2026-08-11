@@ -19,7 +19,7 @@
 
 import type { TieredRc, ExtractedRc } from "../run-context.ts";
 import { advance, markMeasuredPhase } from "../run-context.ts";
-import type { StructuredExtraction } from "../../types.ts";
+import type { PreparedConversationBackup, StructuredExtraction } from "../../types.ts";
 import { pruneRedundant } from "../../utils/pruning.ts";
 import { extractStructured, buildToolCallIndex, type ToolCallIndex } from "../../utils/extraction.ts";
 import type { PruningResult } from "../../utils/pruning.ts";
@@ -32,9 +32,9 @@ import { getPreviousCompactionContext } from "../../utils/helpers.ts";
 import { isPrefixOf, legacyPrefixMatch } from "../../utils/id-fingerprint.ts";
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { asSerializableMessages } from "../../infra/ai-messages.ts";
-import { backupConversation } from "../../utils/helpers.ts";
+import { prepareConversationBackup } from "../../utils/backups.ts";
 import { loadScopedCompactionState, renderContinuityCapsule } from "../../utils/state.ts";
-import { branchEntryIds } from "../../infra/session-identity.ts";
+import { boundedBranchLineageIds, branchEntryIds } from "../../infra/session-identity.ts";
 
 export function extractWithCache(rc: TieredRc): ExtractedRc {
   const extractStepStart = Date.now();
@@ -48,7 +48,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   const selectedMessages = rc.llmMessages;
   const pruning = pruneRedundant(selectedMessages);
   const currentKeptEntryIds = pruning.keptIndices
-    .map(i => currentEntryIds[i])
+    .map(i => rc.llmEntryIds[i])
     .filter((id): id is string => typeof id === "string");
 
   if (pruning.prunedCount > 0) {
@@ -65,13 +65,23 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   const extractionStart = pruneEnd;
   const convText = serializeConversation(asSerializableMessages(rc.llmMessages));
   const convTokens = rc.estimator.text(convText);
-  let backupPath: string | null = null;
+  let preparedBackup: PreparedConversationBackup | undefined;
   if (rc.config.backupEnabled) {
     const unchanged = pruning.messages.length === selectedMessages.length
       && pruning.messages.every((message, index) => message === selectedMessages[index]);
-    const backupText = unchanged ? convText : serializeConversation(asSerializableMessages(selectedMessages));
-    backupPath = backupConversation(rc.services.scrubber.scrubText(backupText).value, rc.sessionId);
+    // Keep only a deferred source while the candidate awaits native apply.
+    // Large unpruned conversations are serialized and scrubbed exactly once,
+    // after Pi confirms compaction, instead of doubling peak pipeline memory.
+    const materializeBackup = () => {
+      const backupText = unchanged ? convText : serializeConversation(asSerializableMessages(selectedMessages));
+      return rc.services.scrubber.scrubText(backupText).value;
+    };
+    preparedBackup = prepareConversationBackup(materializeBackup, rc.sessionId, {
+      branchLeafId: branchEntryIds(rc.branch as Array<{ id?: string }>).at(-1),
+      contextTokens: rc.totalTokens,
+    }) ?? undefined;
   }
+  const backupPath = preparedBackup?.path ?? null;
   const prevContext = getPreviousCompactionContext(rc.branch);
 
   const cachedExt = loadCachedExtraction(rc.sessionId);
@@ -169,16 +179,19 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     );
   }
   const projectCtx = buildProjectContext(fingerprint);
-  const manager = rc.ctx.sessionManager as { getBranch?: () => readonly { id?: string }[] } | undefined;
-  const fullBranch = manager?.getBranch ? manager.getBranch() : rc.branch as Array<{ id?: string }>;
-  const ancestryIds = branchEntryIds(fullBranch);
+  const manager = rc.ctx.sessionManager as {
+    getBranch?: () => readonly { id?: string; parentId?: string | null; type?: string }[];
+  } | undefined;
+  const fullBranch = manager?.getBranch
+    ? manager.getBranch()
+    : rc.branch as Array<{ id?: string; parentId?: string | null; type?: string }>;
+  const ancestryIds = boundedBranchLineageIds(fullBranch);
   const continuityScope = {
     schemaVersion: 2 as const,
     projectId,
     sessionId: rc.sessionId,
     ...(ancestryIds.length ? {
       branchHeadId: ancestryIds[ancestryIds.length - 1],
-      // ponytail: full lineage grows state with branch length; add compact lineage storage only if measured size becomes material.
       branchAncestryIds: ancestryIds,
     } : {}),
   };
@@ -200,6 +213,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     convText: string;
     convTokens: number;
     backupPath: string | null;
+    preparedBackup?: PreparedConversationBackup;
   };
   out.pruning = pruning;
   out.currentEntryIds = currentEntryIds;
@@ -214,6 +228,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   out.convText = convText;
   out.convTokens = convTokens;
   out.backupPath = backupPath;
+  out.preparedBackup = preparedBackup;
   markMeasuredPhase(out, "extract", extractionStart);
   return advance<TieredRc, ExtractedRc>(out, "_extracted");
 }

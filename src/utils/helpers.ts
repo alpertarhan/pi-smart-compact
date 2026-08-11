@@ -3,13 +3,10 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
 import type { CompactConfig, CompressionProfile, ChunkSummary, LlmChunk, StructuredExtraction, ExplorationReport, SessionType, SessionMessageEntry } from "../types.ts";
 import { DEFAULT_CONFIG, PROFILES, CONFIG_KEY, CONFIG_KEY_ALT, TRUNC } from "../constants.ts";
 import * as log from "./logger.ts";
 import { settingsFile, defaultBackupDir } from "../infra/paths.ts";
-import { atomicWriteFileSync, ensureDir } from "../infra/fs.ts";
 import { flattenToolCallBlock } from "./extraction.ts";
 import { extractToolPath } from "../domain/tool-semantics.ts";
 
@@ -17,6 +14,14 @@ const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const VALID_MODES = ["auto", "fast", "balanced", "thorough"] as const;
 const VALID_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
+const PROFILE_NUMERIC_BOUNDS: Record<(typeof PROFILE_NUMERIC_KEYS)[number], readonly [number, number]> = {
+  summaryBudgetTokens: [256, 100_000],
+  keepRecentTokens: [1_000, 500_000],
+  minChunkTokens: [100, 100_000],
+  maxChunkTokens: [500, 200_000],
+  singlePassMaxTokens: [1_000, 500_000],
+  batchMaxTokens: [1_000, 500_000],
+};
 
 /**
  * Validate user-supplied smart-compact config values.
@@ -93,13 +98,28 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
             delete profileCfg[key];
             continue;
           }
-          if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0 || raw > 1_000_000) {
-            log.warn("smart-compact config: profile '" + profileName + "." + key + "' must be a positive finite number.");
+          const [min, max] = PROFILE_NUMERIC_BOUNDS[key as keyof typeof PROFILE_NUMERIC_BOUNDS];
+          if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < min || raw > max) {
+            log.warn(
+              "smart-compact config: profile '" + profileName + "." + key
+                + "' must be an integer in " + min + "–" + max + ".",
+            );
             delete profileCfg[key];
           }
         }
+        const merged = {
+          ...PROFILES[profileName as CompressionProfile],
+          ...profileCfg,
+        };
+        if (merged.minChunkTokens > merged.maxChunkTokens || merged.maxChunkTokens > merged.batchMaxTokens) {
+          log.warn(
+            "smart-compact config: profile '" + profileName
+              + "' requires minChunkTokens <= maxChunkTokens <= batchMaxTokens; ignoring the override.",
+          );
+          delete profiles[profileName];
       }
     }
+  }
   }
   if ("autoTriggerTimeoutMs" in sc) {
     const v = sc.autoTriggerTimeoutMs;
@@ -196,175 +216,6 @@ export function loadConfig(): CompactConfig {
   }
 }
 
-/**
- * Asynchronous deferred backup pruning.
- *
- * The previous implementation called `pruneOldBackups` synchronously right
- * after every backup write. That works fine when the directory has <20 files,
- * but a long-lived install with 1000+ orphan backups would readdir + statSync
- * every single entry on every compaction — a 20-50ms event-loop block on the
- * hot path. We defer with `setTimeout(0)` so the scan runs on a later
- * event-loop turn after the compaction path yields.
- *
- * Concurrency: a per-process directory flag coalesces local passes. Separate
- * processes may overlap, but pruning only unlinks files carrying our exact
- * backup marker, so duplicate unlink attempts are harmless and foreign files
- * in a custom backup directory are never retention candidates.
- */
-import { BACKUP_MAX_FILES, BACKUP_MAX_AGE_MS } from "../constants.ts";
-
-const BACKUP_MAGIC = "# Smart Compact Backup\n";
-const _pruneInFlight = new Set<string>();
-
-function isOwnedBackupFile(full: string): boolean {
-  let fd: number | undefined;
-  try {
-    if (!fs.lstatSync(full).isFile()) return false;
-    const prefix = Buffer.alloc(Buffer.byteLength(BACKUP_MAGIC));
-    fd = fs.openSync(full, "r");
-    return fs.readSync(fd, prefix, 0, prefix.length, 0) === prefix.length
-      && prefix.toString("utf8") === BACKUP_MAGIC;
-  } catch { return false; }
-  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch { /* best effort */ } }
-}
-
-function prunePass(dir: string): void {
-  try {
-    const entries = fs.readdirSync(dir)
-      .filter(name => name.endsWith(".md"))
-      .map(name => {
-        const full = path.join(dir, name);
-        try { return isOwnedBackupFile(full) ? { full, mtimeMs: fs.statSync(full).mtimeMs } : null; } catch { return null; }
-      })
-      .filter((v): v is { full: string; mtimeMs: number } => v !== null);
-
-    const now = Date.now();
-    const overAge = entries.filter(e => now - e.mtimeMs > BACKUP_MAX_AGE_MS);
-    // Sort newest first so older entries get dropped past the count cap.
-    const sorted = entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const overCount = sorted.slice(BACKUP_MAX_FILES);
-    const toRemove = new Set([...overAge, ...overCount].map(e => e.full));
-    for (const full of toRemove) {
-      try { if (isOwnedBackupFile(full)) fs.unlinkSync(full); }
-      catch (e) { log.debug("prunePass unlink failed", e); }
-    }
-  } catch (e) { log.debug("prunePass scan failed", e); }
-}
-
-/**
- * Queue an asynchronous prune. Returns immediately; the actual scan runs on
- * a later event-loop turn. Multiple queued calls for the same directory
- * collapse to a single pass.
- *
- * `setTimeout(0)`, not `queueMicrotask`: microtasks run before control
- * returns to the event loop, so the readdir+stat scan would still block the
- * same turn that triggered the backup — the exact hot-path stall this
- * deferral exists to avoid. A macrotask lets the compaction pipeline finish
- * first.
- */
-function schedulePruneBackups(dir: string): void {
-  if (_pruneInFlight.has(dir)) return;
-  _pruneInFlight.add(dir);
-  setTimeout(() => {
-    try { prunePass(dir); } finally { _pruneInFlight.delete(dir); }
-  }, 0);
-}
-
-export function backupConversation(convText: string, sessionId: string): string | null {
-  try {
-    const cfg = loadConfig(); if (!cfg.backupEnabled) return null;
-    const dir = cfg.backupDir;
-    ensureDir(dir);
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    const hash = crypto.createHash("sha256").update(convText).digest("hex").slice(0, TRUNC.CONV_HASH);
-    const safeSessionId = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.{2,}/g, "_").slice(0, 80) || "session";
-    const headerSessionId = sessionId.replace(/[\r\n]/g, " ").slice(0, 256);
-    const fp = path.join(dir, safeSessionId + "-" + ts + "-" + hash + ".md");
-    // Atomic write so a crash mid-write never leaves a half-readable backup.
-    atomicWriteFileSync(fp, BACKUP_MAGIC + "# Date: " + new Date().toISOString() + "\n# Session: " + headerSessionId + "\n\n" + convText);
-    // Defer pruning so the hot path returns instantly. Worst case we keep one
-    // extra backup until the next compaction triggers a prune.
-    schedulePruneBackups(dir);
-    return fp;
-  } catch (e) { log.warn("backupConversation failed", e); return null; }
-}
-
-export interface BackupEntry {
-  path: string;
-  sessionId: string;
-  date: string;
-  sizeBytes: number;
-}
-
-/**
- * List recent smart-compact backups (newest first), parsing session + date
- * from each backup's header. Returns [] when the backup dir is absent or
- * unreadable. Backups were previously write-only; this makes them browsable
- * for `/smart-compact restore`.
- */
-export function listBackups(limit = 20): BackupEntry[] {
-  try {
-    const dir = loadConfig().backupDir;
-    if (!fs.existsSync(dir)) return [];
-    const out: BackupEntry[] = [];
-    for (const name of fs.readdirSync(dir)) {
-      if (!name.endsWith(".md")) continue;
-      const full = path.join(dir, name);
-      try {
-        if (!isOwnedBackupFile(full)) continue;
-        const stat = fs.statSync(full);
-        if (!stat.isFile()) continue;
-        const head = fs.readFileSync(full, "utf-8").split("\n").slice(0, TRUNC.BACKUP_PREVIEW_LINES).join("\n");
-        const date = head.match(/^# Date:\s*(.+)$/m)?.[1]?.trim();
-        const session = head.match(/^# Session:\s*(.+)$/m)?.[1]?.trim();
-        out.push({
-          path: full,
-          sessionId: session ?? name,
-          date: date ?? stat.mtime.toISOString(),
-          sizeBytes: stat.size,
-        });
-      } catch { /* skip unreadable backup */ }
-    }
-    out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-    return out.slice(0, limit);
-  } catch (e) { log.warn("listBackups failed", e); return []; }
-}
-
-/**
- * Read a backup's pre-compaction conversation text, stripping the
- * `# Smart Compact Backup` header. Returns null if the file can't be read or
- * the body is empty.
- */
-export function readBackupContent(fp: string): string | null {
-  try {
-    if (!isOwnedBackupFile(fp)) return null;
-    const raw = fs.readFileSync(fp, "utf-8");
-    const lines = raw.split("\n");
-    let i = 0;
-    while (i < lines.length && lines[i].startsWith("#")) i++;
-    if (i < lines.length && lines[i].trim() === "") i++;
-    return lines.slice(i).join("\n").trim() || null;
-  } catch (e) { log.warn("readBackupContent failed", e); return null; }
-}
-
-/**
- * Build the custom-message payload used to re-inject a backup's pre-compaction
- * content when restoring into a new (forked) session. Pure + testable; the
- * fork/sendMessage wiring lives in the `/smart-compact restore` command.
- */
-export function buildRestoreMessage(content: string, source: string): {
-  customType: string;
-  content: string;
-  display: boolean;
-  details: { source: string; restoredAt: number };
-} {
-  return {
-    customType: "smart-compact-restore",
-    content: "# Restored pre-compaction context (smart-compact backup)\nSource: " + source + "\n\n" + content,
-    display: true,
-    details: { source, restoredAt: Date.now() },
-  };
-}
 
 export function getPreviousCompactionContext(branch: unknown[]): string {
   interface BranchEntry { type: string; timestamp?: string; summary?: string; details?: { topics?: string[]; method?: string } }
@@ -582,21 +433,6 @@ export function advancePastToolCallBoundary(msgs: SessionMessageEntry[], keepFro
   return msgs.length;
 }
 
-export function extractUserNote(args: string): string | undefined {
-  const SKIP = new Set(["verbose", "debug", "dry-run", "auto", "light", "balanced", "aggressive", "fast", "thorough", "slow"]);
-  const tokens = args.trim().split(/\s+/).filter(Boolean);
-  // We only want to strip the *first* token if it looks like a
-  // `--flag` / `provider/model` style argument; user notes themselves
-  // routinely contain file paths (e.g. "src/auth.ts" or "fix utils/x").
-  // The earlier `!t.includes("/")` blanket filter was eating those tokens
-  // and silently corrupting the user's steering text.
-  const isOptionToken = (t: string): boolean =>
-    t.startsWith("--") || SKIP.has(t.toLowerCase()) ||
-    // provider/model pattern: one slash, no spaces, slug-y on both sides.
-    /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(t);
-  const nonFlags = tokens.filter(t => !isOptionToken(t));
-  return nonFlags.length > 0 ? nonFlags.join(" ") : undefined;
-}
 
 export function createBatches(chunks: LlmChunk[], maxTokens: number): LlmChunk[][] {
   const batches: LlmChunk[][] = [];
@@ -655,10 +491,11 @@ export function preProcessSummaries(summaries: ChunkSummary[], budgetTokens?: nu
     decisions: [...new Set(summaries.flatMap(s => s.keyDecisions))],
     modified: [...new Set(summaries.flatMap(s => s.filesModified))].sort(),
     read: [...new Set(summaries.flatMap(s => s.filesRead))].sort(),
+    deleted: [...new Set(summaries.flatMap(s => s.filesDeleted ?? []))].sort(),
     text: summaries.map((cs, i) => {
       const budgetHint = topicBudgets?.get(cs.topic);
       const budgetLine = budgetHint ? "\nBudget: ~" + budgetHint + " tokens" : "";
-      return "### Segment " + (i + 1) + ": " + cs.topic + "\nPriority: " + cs.priority + " | msgs " + cs.startIndex + "-" + cs.endIndex + budgetLine + "\n\n" + cs.summary + "\n\nDecisions: " + (cs.keyDecisions.join("; ") || "None") + "\nModified: " + (cs.filesModified.join(", ") || "None") + "\nRead: " + (cs.filesRead.join(", ") || "None");
+      return "### Segment " + (i + 1) + ": " + cs.topic + "\nPriority: " + cs.priority + " | msgs " + cs.startIndex + "-" + cs.endIndex + budgetLine + "\n\n" + cs.summary + "\n\nDecisions: " + (cs.keyDecisions.join("; ") || "None") + "\nModified: " + (cs.filesModified.join(", ") || "None") + "\nRead: " + (cs.filesRead.join(", ") || "None") + "\nDeleted: " + ((cs.filesDeleted ?? []).join(", ") || "None");
     }).join("\n---\n"),
   };
 }
@@ -679,16 +516,28 @@ function renderDeduped<T>(items: readonly T[], keyOf: (item: T) => string, rende
 }
 
 export function buildExtractionContext(extraction: StructuredExtraction, forRange?: { start: number; end: number }): string {
-  const files = forRange ? extraction.modifiedFiles.filter(f => f.lastModifiedIndex >= forRange.start && f.lastModifiedIndex <= forRange.end) : extraction.modifiedFiles;
-  const errors = forRange ? extraction.errors.filter(e => e.index >= forRange.start && e.index <= forRange.end) : extraction.errors;
-  const media = forRange ? (extraction.mediaAttachments ?? []).filter(a => a.index >= forRange.start && a.index <= forRange.end) : (extraction.mediaAttachments ?? []);
+  const inRange = (index: number): boolean => !forRange || (index >= forRange.start && index <= forRange.end);
+  const files = forRange ? extraction.modifiedFiles.filter(f => inRange(f.lastModifiedIndex)) : extraction.modifiedFiles;
+  const readFiles = forRange ? [] : extraction.readFiles;
+  const deletedFiles = forRange ? [] : extraction.deletedFiles;
+  const errors = extraction.errors.filter(error => inRange(error.index));
+  const decisions = extraction.decisions.filter(decision => inRange(decision.index));
+  const constraints = extraction.constraints.filter(constraint => inRange(constraint.index));
+  const media = (extraction.mediaAttachments ?? []).filter(attachment => inRange(attachment.index));
+  const overflow = Object.entries(extraction.evidenceOverflow ?? {})
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([kind, count]) => kind + ": +" + count)
+    .join(", ");
   return [
     "## Deterministic Extraction (verified facts)",
     "Files modified: " + (files.map(f => f.path).join(", ") || "none"),
+    "Files read: " + (readFiles.join(", ") || "none"),
+    "Files deleted: " + (deletedFiles.join(", ") || "none"),
     "Errors: " + (renderDeduped(errors, e => e.tool + ":" + e.message + ":" + e.resolved, e => "[" + e.tool + "] " + e.message.slice(0, TRUNC.SNIPPET) + (e.resolved ? " ✓" : "")) || "none"),
-    "Decisions: " + (renderDeduped(extraction.decisions, d => d.type + ":" + d.summary, d => d.type + ": " + d.summary.slice(0, TRUNC.DECISION_DETAIL)) || "none"),
-    "Constraints: " + (renderDeduped(extraction.constraints, c => c.category + ":" + c.text, c => "[" + c.category + "] " + c.text.slice(0, TRUNC.DECISION_DETAIL)) || "none"),
+    "Decisions: " + (renderDeduped(decisions, d => d.type + ":" + d.summary, d => d.type + ": " + d.summary.slice(0, TRUNC.DECISION_DETAIL)) || "none"),
+    "Constraints: " + (renderDeduped(constraints, c => c.category + ":" + c.text, c => "[" + c.category + "] " + c.text.slice(0, TRUNC.DECISION_DETAIL)) || "none"),
     "Media attachments: " + (media.map(a => a.kind + (a.name ? ":" + a.name : "") + (a.mimeType ? " (" + a.mimeType + ")" : "") + " @msg" + a.index).join("; ") || "none"),
+    "Evidence omitted by safety bounds: " + (overflow || "none"),
   ].join("\n");
 }
 

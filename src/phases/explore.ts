@@ -15,6 +15,7 @@ import * as log from "../utils/logger.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import { getDefaultServices } from "../infra/services.ts";
 import { buildExtractionContext } from "../utils/helpers.ts";
+import { classifyTelemetryFailure } from "../domain/telemetry.ts";
 
 // Production services share bounded provider/model capability knowledge across
 // runs; tests keep isolated service bags. Only an explicit provider rejection
@@ -87,9 +88,14 @@ const EXPLORATION_TOOLS: Tool[] = [
 
 export function executeExplorationTool(call: { name: string; arguments: Record<string, unknown> }, llmMessages: LlmMessage[]): string {
   const args = call.arguments ?? {};
+  const boundedInteger = (value: unknown, fallback: number, min: number, max: number): number =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.max(min, Math.min(max, Math.trunc(value)))
+      : fallback;
   switch (call.name) {
     case "get_message_range": {
-      const s = (args.start as number) ?? 0, e = Math.min((args.end as number) ?? llmMessages.length, llmMessages.length);
+      const s = boundedInteger(args.start, 0, 0, llmMessages.length);
+      const e = boundedInteger(args.end, llmMessages.length, s, llmMessages.length);
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
         preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
@@ -99,6 +105,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
     }
     case "search_conversation": {
       const q = ((args.query as string) ?? "").toLowerCase();
+      if (!q.trim()) return JSON.stringify([{ error: "query must be a non-empty string" }]);
       const matches: { idx: number; m: LlmMessage }[] = [];
       for (let i = 0; i < llmMessages.length && matches.length < 10; i++) {
         const m = llmMessages[i];
@@ -115,11 +122,12 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       })));
     }
     case "get_recent_user_messages": {
-      const count = (args.count as number) ?? 10;
+      const count = boundedInteger(args.count, 10, 1, 50);
       return JSON.stringify(llmMessages.filter((m) => m?.role === "user").slice(-count).map((m) => extractText(m.content)));
     }
     case "get_context_around": {
-      const idx = (args.index as number) ?? 0, radius = (args.radius as number) ?? 5;
+      const idx = boundedInteger(args.index, 0, 0, Math.max(0, llmMessages.length - 1));
+      const radius = boundedInteger(args.radius, 5, 0, 25);
       const s = Math.max(0, idx - radius), e = Math.min(llmMessages.length, idx + radius + 1);
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
@@ -130,6 +138,7 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
     }
     case "get_file_changes": {
       const target = ((args.path as string) ?? "").toLowerCase();
+      if (!target.trim()) return JSON.stringify([{ error: "path must be a non-empty string" }]);
       const results: unknown[] = [];
       for (let i = 0; i < llmMessages.length; i++) {
         const tcs = filterToolCalls(llmMessages[i]?.content);
@@ -159,8 +168,8 @@ export function executeExplorationTool(call: { name: string; arguments: Record<s
       return JSON.stringify(results.slice(0, TRUNC.EXPLORE_RESULTS) || [{ info: "No edits found for: " + args.path }]);
     }
     case "get_error_chain": {
-      const errIdx = (args.index as number) ?? 0;
-      const ctxRadius = (args.context_radius as number) ?? 8;
+      const errIdx = boundedInteger(args.index, 0, 0, Math.max(0, llmMessages.length - 1));
+      const ctxRadius = boundedInteger(args.context_radius, 8, 0, 25);
       const s = Math.max(0, errIdx - ctxRadius), e = Math.min(llmMessages.length, errIdx + ctxRadius + 1);
       return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
@@ -232,13 +241,16 @@ function normalizeBoundaries(raw: unknown, llmLength: number): TopicBoundary[] {
   if (!Array.isArray(raw)) return [];
   const maxIndex = Math.max(0, llmLength - 2);
   return raw
-    .filter((b): b is Record<string, unknown> =>
-      !!b && typeof b === "object" && typeof (b as Record<string, unknown>).afterIndex === "number")
+    .filter((b): b is Record<string, unknown> => {
+      if (!b || typeof b !== "object") return false;
+      const afterIndex = (b as Record<string, unknown>).afterIndex;
+      return typeof afterIndex === "number" && Number.isFinite(afterIndex);
+    })
     .map((b) => {
       const priority = b.priority;
       const confidence = b.confidence;
       return {
-        afterIndex: Math.max(0, Math.min(b.afterIndex as number, maxIndex)),
+        afterIndex: Math.max(0, Math.min(Math.trunc(b.afterIndex as number), maxIndex)),
         topic: String(b.topic ?? "").slice(0, TRUNC.TOPIC_LABEL),
         priority: typeof priority === "string" && (BOUNDARY_PRIORITIES as readonly string[]).includes(priority)
           ? (priority as BoundaryPriority)
@@ -247,7 +259,9 @@ function normalizeBoundaries(raw: unknown, llmLength: number): TopicBoundary[] {
           ? Math.min(1, Math.max(0, confidence))
           : 0.5,
       };
-    });
+    })
+    .sort((left, right) => left.afterIndex - right.afterIndex)
+    .filter((boundary, index, all) => index === 0 || boundary.afterIndex !== all[index - 1].afterIndex);
 }
 
 export function buildExplorationReportFromParsed(parsed: unknown, llmMessages: LlmMessage[]): ExplorationReport {
@@ -433,9 +447,21 @@ export async function exploreConversation(
   } catch (e) {
     // Cache only a definitive capability rejection. Transient/auth failures
     // must be retried by a later run rather than poisoning the shared cache.
-    log.warn("Tool calling probe failed for " + cacheLabel, e);
-    if (explicitlyRejectsTools(e)) toolSupport.set(cacheKey, false, svc.clock.now());
-    if (notify) notify("Tool calling not supported, using direct exploration", "warning");
+    const rejected = explicitlyRejectsTools(e);
+    const failureKind = classifyTelemetryFailure(e);
+    log.debugError("Tool calling probe failed for " + cacheLabel + " (" + failureKind + ")", e);
+    if (rejected) toolSupport.set(cacheKey, false, svc.clock.now());
+    if (notify) {
+      const detail = rejected
+        ? "Tool calling is unsupported by this provider"
+        : failureKind === "rate-limit"
+          ? "Tool probe was rate limited"
+          : failureKind === "authentication"
+            ? "Tool probe authentication failed"
+            : "Tool probe temporarily failed (" + failureKind + ")";
+      notify(detail + "; using direct exploration for this run", "warning");
+    }
+    if (!rejected) supportsTools = false;
   }
 
   const report = await directExploration(llmMessages, extraction, model, auth, prevSummary, userNote, signal, svc);

@@ -9,19 +9,19 @@ import type {
   StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType,
   LoopOverride, ContinuityOverride, ContinuityScope,
 } from "../types.ts";
-import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX } from "../constants.ts";
+import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX, MAX_STATE_OPEN_LOOPS } from "../constants.ts";
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
 import { isCompactionStatusText, isDiagnosticConstraintText, isTransientToolDiagnostic } from "./extraction.ts";
 import * as log from "./logger.ts";
-import { compactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
+import { compactionStateFile, legacyScopedCompactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
 import { parseSummary, findSection, upsertSection, renderSummary, appendToSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 
 function getStatePath(projectId: string, state?: CompactionState): string {
-  return state?.scope?.sessionId
-    ? scopedCompactionStateFile(projectId, state.scope.sessionId)
-    : compactionStateFile(projectId);
+  if (!state?.scope) return compactionStateFile(projectId);
+  if (!state.scope.branchHeadId) throw new Error("Scoped compaction state requires branchHeadId");
+  return scopedCompactionStateFile(projectId, state.scope.sessionId, state.scope.branchHeadId);
 }
 
 function isLegacySearchOutput(text: string): boolean {
@@ -51,7 +51,11 @@ function freshState(fp: string, data: CompactionState | null): CompactionState |
   if (!updatedAt) {
     try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
   }
-  return Date.now() - updatedAt > SEVEN_DAYS_MS ? null : sanitizeCompactionStateEvidence(data);
+  if (Date.now() - updatedAt > SEVEN_DAYS_MS) {
+    try { fs.unlinkSync(fp); } catch (error) { log.debug("stale state cleanup failed", error); }
+    return null;
+  }
+  return sanitizeCompactionStateEvidence(data);
 }
 
 /**
@@ -61,10 +65,14 @@ function freshState(fp: string, data: CompactionState | null): CompactionState |
  * leaves the previous valid state file untouched instead of a truncated JSON
  * blob that would crash the next loadCompactionState parse.
  */
-export function saveCompactionState(projectId: string, state: CompactionState): void {
+export function saveCompactionState(projectId: string, state: CompactionState): boolean {
   try {
     writeJsonSync(getStatePath(projectId, state), sanitizeCompactionStateEvidence(state), true);
-  } catch (e) { log.warn("saveCompactionState failed", e); }
+    return true;
+  } catch (error) {
+    log.warn("saveCompactionState failed", error);
+    return false;
+  }
 }
 
 /**
@@ -76,15 +84,43 @@ export function loadCompactionState(projectId: string): CompactionState | null {
 }
 
 export function loadScopedCompactionState(
-  scope: Pick<ContinuityScope, "projectId" | "sessionId">,
+  scope: Pick<ContinuityScope, "projectId" | "sessionId"> & Partial<Pick<ContinuityScope, "branchHeadId">>,
   branchEntryIds: readonly string[] = [],
 ): CompactionState | null {
-  const fp = scopedCompactionStateFile(scope.projectId, scope.sessionId);
-  const state = freshState(fp, readJsonSync<CompactionState>(fp));
-  if (!state?.scope || state.scope.schemaVersion !== 2) return null;
-  if (state.scope.projectId !== scope.projectId || state.scope.sessionId !== scope.sessionId) return null;
-  if (state.scope.branchHeadId && branchEntryIds.length > 0 && !branchEntryIds.includes(state.scope.branchHeadId)) return null;
-  return state;
+  const ancestry = Array.from(new Set([
+    ...branchEntryIds,
+    ...(scope.branchHeadId ? [scope.branchHeadId] : []),
+  ])).reverse();
+  const valid = (
+    state: CompactionState | null,
+    branchHeadId?: string,
+  ): state is CompactionState & { scope: ContinuityScope & { branchHeadId: string } } =>
+    Boolean(
+      state?.scope?.schemaVersion === 2
+      && state.scope.projectId === scope.projectId
+      && state.scope.sessionId === scope.sessionId
+      && typeof state.scope.branchHeadId === "string"
+      && (!branchHeadId || state.scope.branchHeadId === branchHeadId),
+    );
+
+  for (const branchHeadId of ancestry) {
+    const fp = scopedCompactionStateFile(scope.projectId, scope.sessionId, branchHeadId);
+    const state = freshState(fp, readJsonSync<CompactionState>(fp));
+    if (valid(state, branchHeadId)) return state;
+  }
+
+  // One-time migration from the old session-only snapshot. Remove the file
+  // before creating the same-named directory used by branch snapshots.
+  const legacyPath = legacyScopedCompactionStateFile(scope.projectId, scope.sessionId);
+  const legacy = freshState(legacyPath, readJsonSync<CompactionState>(legacyPath));
+  if (!valid(legacy) || !ancestry.includes(legacy.scope.branchHeadId)) return null;
+  try {
+    fs.unlinkSync(legacyPath);
+    writeJsonSync(getStatePath(scope.projectId, legacy), legacy, true);
+  } catch (error) {
+    log.warn("branch state migration failed", error);
+  }
+  return legacy;
 }
 
 export function applyLoopOverrides(loops: OpenLoop[], overrides: LoopOverride[]): OpenLoop[] {
@@ -233,7 +269,7 @@ function mergeOpenLoops(current: OpenLoop[], previous: OpenLoop[]): OpenLoop[] {
     .sort((a, b) => Number(a.item.status === "resolved") - Number(b.item.status === "resolved")
       || LOOP_PRIORITY[a.item.priority] - LOOP_PRIORITY[b.item.priority]
       || a.order - b.order)
-    .slice(0, 25)
+    .slice(0, MAX_STATE_OPEN_LOOPS)
     .map(({ item }, index) => ({ ...item, id: ID_PREFIX.OPEN_LOOP + (index + 1) }));
 }
 
@@ -318,6 +354,7 @@ export function renderContinuityCapsule(state: CompactionState, maxChars = TRUNC
   for (const item of state.constraints) add("Constraint", item.text);
   for (const item of state.decisions) add("Decision", item.summary + (item.userResponse ? " → " + item.userResponse : ""));
   for (const item of state.unresolvedErrors) add("Unresolved error", item.message);
+  for (const item of state.resolvedErrors.slice(-5)) add("Resolved error", item.message);
   for (const item of state.openLoops.filter(loop => loop.status !== "resolved")) add("Open loop", item.summary);
   for (const item of state.criticalContext) add("Critical", item);
   return lines.length > 1 ? lines.join("\n") : "";

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { acquireLockSync, ensureDir } from "../src/infra/fs.ts";
-import { deriveProjectId, deriveProjectIdFromCwd, findGitRoot, buildProjectContext } from "../src/utils/fingerprint.ts";
+import { deriveProjectId, deriveProjectIdFromCwd, findGitRoot, buildProjectContext, loadProjectFingerprint, saveProjectFingerprint } from "../src/utils/fingerprint.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 const TEST_CWD = ""; // empty cwd forces path-based derivation in tests
@@ -252,7 +252,7 @@ describe("saveProjectFingerprint", () => {
         import fs from "node:fs";
         import { saveProjectFingerprint } from ${JSON.stringify(moduleUrl)};
         fs.writeFileSync(process.env.MARKER, "ready");
-        saveProjectFingerprint(${JSON.stringify(projectId)}, {
+        await saveProjectFingerprint(${JSON.stringify(projectId)}, "session-${index}", {
           modifiedFiles: [{ path: "src/area-${index}/file.ts", toolCalls: 1, lastModifiedIndex: 1 }],
           readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
           mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 1
@@ -281,6 +281,22 @@ describe("saveProjectFingerprint", () => {
     } finally {
       releaseLock();
       await Promise.allSettled(workers.map(worker => worker.process.exited));
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+
+  });
+  it("counts distinct sessions rather than compaction runs", async () => {
+    const previousHome = process.env.HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-fingerprint-session-count-"));
+    process.env.HOME = home;
+    try {
+      const extraction = makeExtraction({ readFiles: ["src/index.ts"] });
+      await saveProjectFingerprint("proj-session-count", "session-a", extraction);
+      await saveProjectFingerprint("proj-session-count", "session-a", extraction);
+      await saveProjectFingerprint("proj-session-count", "session-b", extraction);
+      expect(loadProjectFingerprint("proj-session-count")?.sessionCount).toBe(2);
+    } finally {
+      process.env.HOME = previousHome;
       fs.rmSync(home, { recursive: true, force: true });
     }
   });

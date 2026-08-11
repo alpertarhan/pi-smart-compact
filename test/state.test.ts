@@ -1,4 +1,6 @@
 import { describe, it, expect } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { extractOpenLoops } from "../src/utils/extraction.ts";
 import {
   buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext,
@@ -630,8 +632,7 @@ describe("saveCompactionState / loadCompactionState", () => {
     expect(loaded!.goal).toBe("Round trip test");
     expect(loaded!.decisions.length).toBe(1);
     // Cleanup
-    const fs = require("fs");
-    const p = require("path").join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
+    const p = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
     try { fs.unlinkSync(p); } catch {}
   });
 
@@ -641,9 +642,17 @@ describe("saveCompactionState / loadCompactionState", () => {
       constraints: [{ id: "constraint-1", text: "npm error You do not have permission", category: "prohibition", confidence: 0.8 }],
     }));
     expect(loadCompactionState(testId)?.constraints).toEqual([]);
-    const fs = require("fs");
-    const p = require("path").join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
+    const p = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
     try { fs.unlinkSync(p); } catch {}
+  });
+
+  it("deletes expired state snapshots when they are observed", () => {
+    const testId = "test-stale-" + Date.now();
+    saveCompactionState(testId, makeFullState({ updatedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 }));
+    const file = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
+    expect(fs.existsSync(file)).toBe(true);
+    expect(loadCompactionState(testId)).toBeNull();
+    expect(fs.existsSync(file)).toBe(false);
   });
 
   it("returns null for non-existent state", () => {
@@ -658,12 +667,20 @@ describe("saveCompactionState / loadCompactionState", () => {
       scope: { schemaVersion: 2, projectId, sessionId, branchHeadId: "head-a" },
     });
     saveCompactionState(projectId, state);
+    const sibling = makeFullState({
+      goal: "Sibling goal",
+      scope: { schemaVersion: 2, projectId, sessionId, branchHeadId: "head-b" },
+    });
+    saveCompactionState(projectId, sibling);
 
     expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-a", "new"] )?.goal).toBe("Scoped goal");
     expect(loadScopedCompactionState({ projectId, sessionId: "session-b" }, ["head-a"])).toBeNull();
     expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "other-head"])).toBeNull();
+    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-b"])?.goal).toBe("Sibling goal");
+    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-a"])?.goal).toBe("Scoped goal");
     expect(loadCompactionState(projectId)).toBeNull();
-    try { require("fs").unlinkSync(scopedCompactionStateFile(projectId, sessionId)); } catch {}
+    try { fs.unlinkSync(scopedCompactionStateFile(projectId, sessionId, "head-a")); } catch {}
+    try { fs.unlinkSync(scopedCompactionStateFile(projectId, sessionId, "head-b")); } catch {}
   });
 
   it("removes a carried fact only through an explicit continuity override", () => {

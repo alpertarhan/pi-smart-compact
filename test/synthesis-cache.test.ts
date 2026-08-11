@@ -6,8 +6,11 @@ import {
 
 const rc = (sessionId: string, entries = ["a"], mode = "balanced") => ({
   sessionId, projectId: "project", currentKeptEntryIds: entries, prevContext: "previous",
-  mode, profile: "balanced", modelLabel: "openai/test",
-  segModel: { provider: "openai", id: "segmenter" },
+  convText: entries.join("|"), projectCtx: "project context",
+  mode, requestedMode: mode, profile: "balanced", modelLabel: "openai/test",
+  summaryModel: { provider: "openai", id: "test", api: "responses", baseUrl: "https://summary.example" },
+  segModel: { provider: "openai", id: "segmenter", api: "responses", baseUrl: "https://segment.example" },
+  verifyModel: { provider: "openai", id: "verifier", api: "responses", baseUrl: "https://verify.example" },
   profileCfg: { summaryBudgetTokens: 6_000, keepRecentTokens: 20_000, minChunkTokens: 4_000, maxChunkTokens: 20_000, singlePassMaxTokens: 20_000, batchMaxTokens: 60_000 },
   config: {
     focusWeighting: true, zeroCallEnabled: true,
@@ -43,7 +46,20 @@ describe("synthesis cache", () => {
     const differentRetention = rc("s1");
     differentRetention.profileCfg.keepRecentTokens++;
     expect(getCachedSynthesis(synthesisCacheKey(differentRetention), 101)).toBeNull();
+    const differentBudget = rc("s1");
+    differentBudget.maxLlmCalls = 1;
+    expect(getCachedSynthesis(synthesisCacheKey(differentBudget), 101)).toBeNull();
+    const differentTimeout = rc("s1");
+    differentTimeout.timeoutMs = 5_000;
+    expect(getCachedSynthesis(synthesisCacheKey(differentTimeout), 101)).toBeNull();
   });
+  it("invalidates when content changes under stable entry ids", () => {
+    const first = rc("s1");
+    const second = rc("s1");
+    second.convText = "different recovered content";
+    expect(synthesisCacheKey(first)).not.toBe(synthesisCacheKey(second));
+  });
+
 
   it("separates differing focus even when focus weighting is disabled", () => {
     const first = rc("s1");
@@ -59,12 +75,36 @@ describe("synthesis cache", () => {
     const key = batchCacheKey({ model: "x", text: "chunk" });
     setCachedBatch(key, [{
       topic: "t", startIndex: 0, endIndex: 1, summary: "s", keyDecisions: ["d"],
-      filesModified: [], filesRead: [], priority: "normal",
+      filesModified: [], filesRead: [], filesDeleted: [], priority: "normal",
     }]);
     const first = getCachedBatch(key)!;
     first[0].keyDecisions.push("mutated");
     expect(getCachedBatch(key)?.[0].keyDecisions).toEqual(["d"]);
   });
+  it("does not share nested full-synthesis cache values", () => {
+    setCachedSynthesis("deep", {
+      finalSummary: "## Goal\nCached",
+      method: "eesv",
+      summaries: [{
+        topic: "t", startIndex: 0, endIndex: 1, summary: "s", keyDecisions: ["d"],
+        filesModified: ["a.ts"], filesRead: [], filesDeleted: [], priority: "normal",
+      }],
+      explorationReport: {
+        boundaries: [{ afterIndex: 0, topic: "t", priority: "normal", confidence: 1 }],
+        mainGoal: "g", sessionType: "implementation", enrichedConstraints: ["c"],
+        crossReferences: ["x"], statusAssessment: { done: ["d"], inProgress: [], blocked: [] },
+        criticalContext: ["critical"], keyDecisions: ["decision"],
+      },
+      explorationRounds: 1,
+      chunkCount: 1,
+    } as any);
+    const first = getCachedSynthesis("deep")!;
+    first.summaries[0].keyDecisions.push("mutated");
+    first.explorationReport!.boundaries[0].topic = "mutated";
+    expect(getCachedSynthesis("deep")!.summaries[0].keyDecisions).toEqual(["d"]);
+    expect(getCachedSynthesis("deep")!.explorationReport!.boundaries[0].topic).toBe("t");
+  });
+
 
   it("expires and remains bounded", () => {
     for (let index = 0; index < 20; index++) {
