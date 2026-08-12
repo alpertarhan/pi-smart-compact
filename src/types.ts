@@ -279,6 +279,8 @@ export interface PendingCompaction {
   runId: string;
   summary: string;
   firstKeptEntryId: string;
+  /** Branch head that produced this summary; must still be in active ancestry. */
+  originBranchHeadId: string;
   tokensBefore: number;
   details: SmartCompactDetails;
   /** Complete metrics payload, appended only after Pi emits session_compact. */
@@ -369,11 +371,13 @@ export interface MediaAttachment {
 }
 export interface ExtractionEvidenceOverflow {
   modifiedFiles?: number;
+  referencedFiles?: number;
   readFiles?: number;
   deletedFiles?: number;
   errors?: number;
   decisions?: number;
   constraints?: number;
+  topics?: number;
   timeline?: number;
   mediaAttachments?: number;
 }
@@ -529,6 +533,8 @@ export interface ContinuityScope {
 /** Structured machine-readable compaction state */
 export interface CompactionState {
   goal: string | null;
+  /** Deterministic extraction identity; unlike `goal`, never stores an LLM paraphrase. */
+  goalKey?: string;
   decisions: Array<{ id: string; summary: string; userResponse?: string; type: "explicit" | "implicit" }>;
   constraints: Array<{ id: string; text: string; category: "requirement" | "preference" | "prohibition"; confidence: number }>;
   modifiedFiles: string[];

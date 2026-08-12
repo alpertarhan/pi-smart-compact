@@ -11,7 +11,7 @@ import type { PendingCompaction } from "./types.ts";
 import { VERSION, MIN_TOKEN_THRESHOLD, CONFIG_KEY, CONFIG_KEY_ALT, FIVE_MINUTES_MS, BUDGET_LIMITS, AUTO_TRIGGER_MAX_LLM_CALLS, AUTO_TRIGGER_TIMEOUT_CAP_MS } from "./constants.ts";
 import { listBackups, readConversationBackup, buildRestoreMessage } from "./utils/backups.ts";
 import { loadConfig } from "./utils/helpers.ts";
-import { estimateTokens, getProviderCaps } from "./utils/tokens.ts";
+import { estimateTokens, getProviderCaps, safeContextPercent } from "./utils/tokens.ts";
 import { appendMetricsSnapshot, readMetricsLog } from "./utils/cache.ts";
 import { buildLocalDashboardInsights, buildMetricsReport, writeMetricsDashboard } from "./ui/metrics-report.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
@@ -47,10 +47,21 @@ import { SecretScrubber } from "./domain/scrub.ts";
  */
 function unwrapConsumed(result: ConsumeResult, ctx: ExtensionContext): PendingCompaction | null {
   switch (result.kind) {
-    case "ok":
-      // Consumption only stages a candidate. Pi can still abort or fail after
-      // this hook; durable commit happens on the correlated session_compact.
+    case "ok": {
+      // Same-session is necessary but insufficient: a fork can retain the
+      // session id while moving to a sibling branch. Both producer provenance
+      // and the replacement boundary must remain in active ancestry.
+      const activeEntryIds = new Set(branchEntryIds(
+        ctx.sessionManager.getBranch() as Array<{ id?: unknown }>,
+      ));
+      if (!activeEntryIds.has(result.pending.originBranchHeadId)
+        || !activeEntryIds.has(result.pending.firstKeptEntryId)) {
+        log.warn("Discarding pending smart compaction prepared for a divergent branch");
+        ctx.ui.notify("Divergent-branch pending smart compaction discarded", "warning");
+        return null;
+      }
       return result.pending;
+    }
     case "empty":
       return null;
     case "expired":
@@ -134,7 +145,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   const recordApplyFailure = (pending: PendingCompaction, reason: CommitDiscardReason): void => {
     if (!pending.metricsSnapshot) return;
     const cancelled = reason === "aborted" || reason === "shutdown";
-    appendMetricsSnapshot(pending.sessionId, {
+    void appendMetricsSnapshot(pending.sessionId, {
       ...pending.metricsSnapshot,
       status: cancelled ? "cancelled" : "error",
       failureKind: cancelled ? "cancelled" : reason === "evicted" ? "internal" : "persistence",
@@ -264,10 +275,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       await ctx.waitForIdle();
       try {
         const knownProviders = new Set(ctx.modelRegistry.getAvailable().map(model => model.provider));
-        const parsedInput = parseSmartCompactCommand(args, token =>
-          /^[a-z0-9_.-]+\/[a-z0-9_.:-]+$/i.test(token)
-          && Boolean(findModelById(ctx, token) || knownProviders.has(token.split("/")[0])),
-        );
+        const parsedInput = parseSmartCompactCommand(args, token => {
+          const [provider, ...modelPath] = token.split("/");
+          return /^[a-z0-9_.-]+$/i.test(provider)
+            && modelPath.length > 0
+            && modelPath.every(segment => /^[a-z0-9_.:-]+$/i.test(segment))
+            && Boolean(findModelById(ctx, token) || knownProviders.has(provider));
+        });
         if (!parsedInput.ok) {
           ctx.ui.notify(parsedInput.error, "error");
           return;
@@ -417,7 +431,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         if (!args.trim()) {
           const usage = ctx.getContextUsage();
           const totalTokens = usage?.tokens ?? 0;
-          const pct = ctx.model && totalTokens ? Math.round((totalTokens / ctx.model.contextWindow) * 100) : 0;
+          const pct = Math.round(safeContextPercent(totalTokens, ctx.model?.contextWindow));
           const cur = ctx.model;
           const initialRoutes = resolveModels(ctx, cur, config);
           if (!initialRoutes.sumModel) { ctx.ui.notify("Could not resolve model", "error"); return; }
@@ -474,7 +488,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       // Threshold is advisory during overflow recovery: Pi already has a
       // rejected provider turn to rescue, even if model metadata understates
       // the backend's effective limit.
-      const pct = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
+      const pct = safeContextPercent(totalTokens, ctx.model?.contextWindow);
       if (event.reason !== "overflow" && pct < config.minContextPercent) return;
       const cur = ctx.model;
       if (!cur) return;
@@ -522,6 +536,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
             overflowRecovery: event.reason === "overflow",
             maxLlmCalls: Math.min(config.maxLlmCalls, AUTO_TRIGGER_MAX_LLM_CALLS),
             timeoutMs: effectiveTimeoutMs,
+            abortSignal: event.signal,
             cancellationOut,
           });
         } catch (err) {
@@ -676,13 +691,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       // Check context usage — skip if not enough tokens or context too small
       const usage = ctx.getContextUsage?.();
       const totalTokens = usage?.tokens ?? 0;
-      const rawPct = ctx.model && totalTokens ? (totalTokens / ctx.model.contextWindow) * 100 : 0;
-      const pct = Math.round(rawPct);
+      const contextPercent = safeContextPercent(totalTokens, ctx.model?.contextWindow);
+      const pct = Math.round(contextPercent);
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
         return { content: [{ type: "text", text: "Context is not large enough for compaction (" + totalTokens.toLocaleString() + " tokens, " + pct + "%). No action needed." }], details: undefined };
       }
       // Guard: don't compact if context is below threshold — tool=97% doesn't mean context is full
-      if (rawPct < config.minContextPercent) {
+      if (contextPercent < config.minContextPercent) {
         return { content: [{ type: "text", text: "Context is only " + pct + "% full (" + totalTokens.toLocaleString() + " tokens). Compaction is not needed yet. The tool=97% in status means tool output ratio, NOT context usage." }], details: undefined };
       }
 

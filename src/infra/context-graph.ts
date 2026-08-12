@@ -14,7 +14,7 @@ const MAX_MANUAL_NODES = 500;
 const MAX_SESSION_NODES = 256;
 const MAX_QUERY_CANDIDATES = 80;
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1_000;
-const CONTEXT_GRAPH_SCHEMA_VERSION = 1;
+const CONTEXT_GRAPH_SCHEMA_VERSION = 2;
 
 export type ContextMemoryKind =
   | "goal" | "decision" | "constraint" | "error" | "loop"
@@ -117,6 +117,25 @@ interface NodeRow {
 
 interface EdgeRow { from_id: string; to_id: string; weight: number; }
 
+function bunSqliteAdapter(db: Pick<SqliteDatabase, "exec" | "query" | "close">): SqliteDatabase {
+  return {
+    exec: sql => db.exec(sql),
+    query: sql => db.query(sql),
+    transaction: fn => ((...args: never[]) => {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const result = fn(...args);
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* preserve the original failure */ }
+        throw error;
+      }
+    }) as typeof fn,
+    close: () => db.close(),
+  };
+}
+
 function nodeSqliteAdapter(db: NodeSqliteDatabase): SqliteDatabase {
   return {
     exec: sql => db.exec(sql),
@@ -142,7 +161,7 @@ function openDatabase(): SqliteDatabase {
   let db: SqliteDatabase;
   if ("bun" in process.versions) {
     const { Database } = require("bun:sqlite") as { Database: new (filename: string) => SqliteDatabase };
-    db = new Database(fp);
+    db = bunSqliteAdapter(new Database(fp));
   } else {
     const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (filename: string) => NodeSqliteDatabase };
     db = nodeSqliteAdapter(new DatabaseSync(fp));
@@ -168,6 +187,8 @@ function openDatabase(): SqliteDatabase {
     );
     CREATE INDEX IF NOT EXISTS context_nodes_project_status
       ON context_nodes(project_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS context_nodes_lineage
+      ON context_nodes(project_id, session_id, source, branch_head_id, kind, fact_key, updated_at DESC);
     CREATE TABLE IF NOT EXISTS context_edges (
       project_id TEXT NOT NULL,
       from_id TEXT NOT NULL REFERENCES context_nodes(id) ON DELETE CASCADE,
@@ -184,7 +205,8 @@ function openDatabase(): SqliteDatabase {
     );
   `);
   const version = db.query("PRAGMA user_version").get() as { user_version: number } | null;
-  if (Number(version?.user_version ?? 0) < CONTEXT_GRAPH_SCHEMA_VERSION) {
+  const schemaVersion = Number(version?.user_version ?? 0);
+  if (schemaVersion < 1) {
     db.transaction(() => {
       db.exec(`
         DROP INDEX IF EXISTS context_nodes_fact;
@@ -193,6 +215,17 @@ function openDatabase(): SqliteDatabase {
         DELETE FROM context_nodes WHERE source = 'compaction';
         CREATE UNIQUE INDEX context_nodes_fact
           ON context_nodes(project_id, session_id, kind, fact_key, COALESCE(branch_head_id, ''));
+        PRAGMA user_version = 1;
+      `);
+    })();
+  }
+  if (schemaVersion < 2) {
+    db.transaction(() => {
+      db.exec(`
+        DELETE FROM context_nodes_fts;
+        INSERT INTO context_nodes_fts(rowid, node_id, title, content, kind)
+          SELECT rowid, id, title, content, kind FROM context_nodes
+          WHERE status = 'active' AND kind NOT IN ('project', 'session');
         PRAGMA user_version = ${CONTEXT_GRAPH_SCHEMA_VERSION};
       `);
     })();
@@ -208,11 +241,20 @@ function factKey(text: string): string {
   return normalizeFactKey(text) || text.trim().toLowerCase();
 }
 
+function removeFtsNode(db: SqliteDatabase, nodeId: string): void {
+  db.query(`
+    DELETE FROM context_nodes_fts
+    WHERE rowid = (SELECT rowid FROM context_nodes WHERE id = ?)
+  `).run(nodeId);
+}
+
 function syncFts(db: SqliteDatabase, node: GraphNode): void {
-  db.query("DELETE FROM context_nodes_fts WHERE node_id = ?").run(node.id);
+  const row = db.query("SELECT rowid FROM context_nodes WHERE id = ?").get(node.id) as { rowid: number } | null;
+  if (!row) return;
+  db.query("DELETE FROM context_nodes_fts WHERE rowid = ?").run(row.rowid);
   if (node.status === "active" && node.kind !== "project" && node.kind !== "session") {
-    db.query("INSERT INTO context_nodes_fts(node_id, title, content, kind) VALUES (?, ?, ?, ?)")
-      .run(node.id, node.title, node.content, node.kind);
+    db.query("INSERT INTO context_nodes_fts(rowid, node_id, title, content, kind) VALUES (?, ?, ?, ?, ?)")
+      .run(row.rowid, node.id, node.title, node.content, node.kind);
   }
 }
 
@@ -301,17 +343,21 @@ function branchLineage(scope: ContextGraphScope): string[] {
 function lineageFactRows(
   db: SqliteDatabase, scope: ContextGraphScope, kind?: string, key?: string,
 ): NodeRow[] {
-  const lineage = new Set(branchLineage(scope));
-  const rows = db.query(`
+  const lineage = branchLineage(scope);
+  const params: unknown[] = [scope.projectId, scope.sessionId];
+  let branchClause = "AND branch_head_id IS NULL";
+  if (lineage.length > 0) {
+    branchClause = "AND branch_head_id IN (" + lineage.map(() => "?").join(",") + ")";
+    params.push(...lineage);
+  }
+  if (kind) params.push(kind);
+  if (key) params.push(key);
+  return db.query(`
     SELECT * FROM context_nodes
     WHERE project_id = ? AND session_id = ? AND source = 'compaction'
-      ${kind ? "AND kind = ?" : ""} ${key ? "AND fact_key = ?" : ""}
-  `).all(scope.projectId, scope.sessionId, ...(kind ? [kind] : []), ...(key ? [key] : [])) as NodeRow[];
-  return rows.filter(row => lineage.size > 0
-    ? Boolean(row.branch_head_id && lineage.has(row.branch_head_id))
-    : row.branch_head_id == null);
+      ${branchClause} ${kind ? "AND kind = ?" : ""} ${key ? "AND fact_key = ?" : ""}
+  `).all(...params) as NodeRow[];
 }
-
 function latestLineageFact(
   db: SqliteDatabase, scope: ContextGraphScope, kind: string, key: string,
 ): NodeRow | null {
@@ -385,10 +431,9 @@ function pruneProject(db: SqliteDatabase, projectId: string): void {
     ORDER BY CASE WHEN status = 'active' THEN 1 ELSE 0 END, updated_at ASC
     LIMIT ?
   `).all(projectId, excess) as Array<{ id: string }> : [];
-  const removeFts = db.query("DELETE FROM context_nodes_fts WHERE node_id = ?");
   const removeNode = db.query("DELETE FROM context_nodes WHERE id = ?");
   for (const victim of victims) {
-    removeFts.run(victim.id);
+    removeFtsNode(db, victim.id);
     removeNode.run(victim.id);
   }
 
@@ -402,6 +447,10 @@ function pruneProject(db: SqliteDatabase, projectId: string): void {
   for (const session of staleSessions) removeNode.run(session.id);
 }
 
+// A synchronous drain borrows one connection across queued states; direct
+// callers still own and close their database immediately.
+let activeCompactionIndexDatabase: SqliteDatabase | null = null;
+
 /** Persist a scoped compaction state into the project context graph. Best-effort. */
 export function indexCompactionState(projectId: string, state: CompactionState): boolean {
   const sessionId = state.scope?.sessionId;
@@ -413,8 +462,9 @@ export function indexCompactionState(projectId: string, state: CompactionState):
     branchEntryIds: state.scope.branchAncestryIds,
   };
   let db: SqliteDatabase | null = null;
+  const ownsDatabase = activeCompactionIndexDatabase === null;
   try {
-    db = openDatabase();
+    db = activeCompactionIndexDatabase ?? openDatabase();
     const transaction = db.transaction(() => {
       const now = Date.now();
       const projectNode = makeNode({ ...scope, sessionId: "*", branchHeadId: undefined }, "project", "Project", projectId, { confidence: 1 });
@@ -484,7 +534,9 @@ export function indexCompactionState(projectId: string, state: CompactionState):
     log.warn("indexCompactionState failed", error);
     return false;
   } finally {
-    try { db?.close(); } catch { /* best effort */ }
+    if (ownsDatabase) {
+      try { db?.close(); } catch { /* best effort */ }
+    }
   }
 }
 
@@ -496,7 +548,17 @@ function drainCompactionIndexes(): void {
   compactionIndexTimer = null;
   const jobs = [...pendingCompactionIndexes.values()];
   pendingCompactionIndexes.clear();
-  for (const job of jobs) indexCompactionState(job.projectId, job.state);
+  let db: SqliteDatabase | null = null;
+  try {
+    db = openDatabase();
+    activeCompactionIndexDatabase = db;
+    for (const job of jobs) indexCompactionState(job.projectId, job.state);
+  } catch (error) {
+    log.warn("context graph index drain failed", error);
+  } finally {
+    activeCompactionIndexDatabase = null;
+    try { db?.close(); } catch { /* best effort */ }
+  }
   if (pendingCompactionIndexes.size) armCompactionIndexDrain();
 }
 
@@ -513,8 +575,9 @@ export function scheduleCompactionStateIndex(projectId: string, state: Compactio
   const branchHeadId = state.scope?.branchHeadId;
   if (!sessionId || !branchHeadId || state.scope?.projectId !== projectId) return false;
   const key = projectId + "\0" + sessionId + "\0" + branchHeadId;
-  if (!pendingCompactionIndexes.has(key) && pendingCompactionIndexes.size >= MAX_PENDING_COMPACTION_INDEXES) {
-    log.warn("context graph index queue full; newest derived update was rejected");
+  if (pendingCompactionIndexes.has(key)) pendingCompactionIndexes.delete(key);
+  if (pendingCompactionIndexes.size >= MAX_PENDING_COMPACTION_INDEXES) {
+    log.warn("context graph index queue full; new derived update was rejected");
     return false;
   }
   pendingCompactionIndexes.set(key, { projectId, state });
@@ -548,8 +611,7 @@ export function closeContextMemory(
         UPDATE context_nodes SET status = ?, updated_at = ?
         WHERE project_id = ? AND kind = ? AND fact_key = ? AND source = 'manual' AND status = 'active'
       `).run(status, Date.now(), projectId, kind, factKey(content));
-      const remove = db!.query("DELETE FROM context_nodes_fts WHERE node_id = ?");
-      for (const row of rows) remove.run(row.id);
+      for (const row of rows) removeFtsNode(db!, row.id);
     });
     transaction();
     return rows.length;
@@ -592,10 +654,9 @@ export function saveContextMemory(scope: ContextGraphScope, memory: Omit<SavedCo
         ...duplicates.flatMap(item => parsePaths(item.related_paths)),
       ])).slice(0, 20);
       upsertNode(db!, node, true);
-      const removeFts = db!.query("DELETE FROM context_nodes_fts WHERE node_id = ?");
       const removeNode = db!.query("DELETE FROM context_nodes WHERE id = ?");
       for (const duplicate of duplicates) {
-        removeFts.run(duplicate.id);
+        removeFtsNode(db!, duplicate.id);
         removeNode.run(duplicate.id);
       }
       for (const file of relatedPaths) {
@@ -621,7 +682,7 @@ function searchRows(db: SqliteDatabase, projectId: string, terms: string[]): Nod
   try {
     return db.query(`
       SELECT n.* FROM context_nodes_fts f
-      JOIN context_nodes n ON n.id = f.node_id
+      JOIN context_nodes n ON n.rowid = f.rowid
       WHERE context_nodes_fts MATCH ? AND n.project_id = ? AND n.status = 'active'
         AND n.kind NOT IN ('project', 'session')
       ORDER BY bm25(context_nodes_fts, 0.0, 3.0, 1.0, 0.5)

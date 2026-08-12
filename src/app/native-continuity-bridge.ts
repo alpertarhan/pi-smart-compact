@@ -32,6 +32,15 @@ function sameScope(a: NativeContinuityScope, b: NativeContinuityScope): boolean 
   return a.projectId === b.projectId && a.sessionId === b.sessionId && a.branchHeadId === b.branchHeadId;
 }
 
+function boundedContinuityText(text: string): string {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= MAX_TEXT_BYTES) return text;
+  const marker = Buffer.from("\n… [continuity truncated from " + bytes.length + " bytes]\n");
+  let end = Math.max(0, MAX_TEXT_BYTES - marker.length);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return Buffer.concat([bytes.subarray(0, end), marker]).toString("utf8");
+}
+
 export function createNativeContinuityBridge(opts: {
   ttlMs?: number;
   maxEntries?: number;
@@ -98,13 +107,14 @@ export function createNativeContinuityBridge(opts: {
 
   return {
     stage(scope, text) {
-      if (!validScope(scope) || !text.trim() || Buffer.byteLength(text) > MAX_TEXT_BYTES) return;
+      if (!validScope(scope) || !text.trim()) return;
+      const boundedText = boundedContinuityText(text);
       try {
         locked(() => {
           const target = fileFor(scope);
           try { fs.unlinkSync(target); } catch { /* replace or absent */ }
           prune(1);
-          const entry: Entry = { schemaVersion: 1, scope, text, createdAt: now() };
+          const entry: Entry = { schemaVersion: 1, scope, text: boundedText, createdAt: now() };
           atomicWriteFileSync(target, JSON.stringify(entry));
           try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
         });

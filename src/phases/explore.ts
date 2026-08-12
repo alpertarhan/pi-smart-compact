@@ -6,7 +6,7 @@ import type { Model, Api, ToolCall, TextContent, Message, Tool, ProviderHeaders 
 import { Type } from "typebox";
 import type { LlmMessage, StructuredExtraction, ExplorationReport, TopicBoundary } from "../types.ts";
 import { getToolCallNames, filterToolCalls } from "../utils/type-guards.ts";
-import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS, TRUNC } from "../constants.ts";
+import { COMPACT_SYSTEM_PREFIX, EXPLORER_SYSTEM_PROMPT, MAX_EXPLORATION_ROUNDS, MAX_EXPLORER_OUTPUT_CHARS, TRUNC } from "../constants.ts";
 import { extractText, extractMainGoal, extractStructured } from "../utils/extraction.ts";
 import { classifyTool } from "../domain/tool-semantics.ts";
 import { trackedComplete } from "../utils/cache.ts";
@@ -16,6 +16,7 @@ import type { SmartCompactServices } from "../infra/services.ts";
 import { getDefaultServices } from "../infra/services.ts";
 import { buildExtractionContext } from "../utils/helpers.ts";
 import { classifyTelemetryFailure } from "../domain/telemetry.ts";
+import { SecretScrubber } from "../domain/scrub.ts";
 
 // Production services share bounded provider/model capability knowledge across
 // runs; tests keep isolated service bags. Only an explicit provider rejection
@@ -86,100 +87,165 @@ const EXPLORATION_TOOLS: Tool[] = [
   },
 ];
 
-export function executeExplorationTool(call: { name: string; arguments: Record<string, unknown> }, llmMessages: LlmMessage[]): string {
+function boundedExplorationValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return value.length > TRUNC.PREVIEW_XL ? value.slice(0, TRUNC.PREVIEW_XL) + "…" : value;
+  }
+  if (value == null || typeof value !== "object") return value;
+  if (depth >= 3) return "[bounded]";
+  if (Array.isArray(value)) return value.slice(0, 50).map(item => boundedExplorationValue(item, depth + 1));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, 16)
+      .map(([key, item]) => [key, boundedExplorationValue(item, depth + 1)]),
+  );
+}
+
+function serializeExplorationResult(value: unknown, scrubber: SecretScrubber): string {
+  const safe = boundedExplorationValue(scrubber.scrubValue(value).value);
+  const serialized = JSON.stringify(safe);
+  if (serialized.length <= MAX_EXPLORER_OUTPUT_CHARS) return serialized;
+
+  let excerptChars = Math.max(0, Math.floor((MAX_EXPLORER_OUTPUT_CHARS - 160) / 2));
+  for (;;) {
+    const result = JSON.stringify({
+      truncated: true,
+      originalChars: serialized.length,
+      head: serialized.slice(0, excerptChars),
+      tail: serialized.slice(-excerptChars),
+    });
+    if (result.length <= MAX_EXPLORER_OUTPUT_CHARS) return result;
+    if (excerptChars === 0) return JSON.stringify({ truncated: true, originalChars: serialized.length });
+    excerptChars = Math.max(0, excerptChars - Math.max(1, result.length - MAX_EXPLORER_OUTPUT_CHARS));
+  }
+}
+
+export function executeExplorationTool(
+  call: { name: string; arguments: Record<string, unknown> },
+  llmMessages: LlmMessage[],
+  scrubber = new SecretScrubber(),
+): string {
   const args = call.arguments ?? {};
   const boundedInteger = (value: unknown, fallback: number, min: number, max: number): number =>
     typeof value === "number" && Number.isFinite(value)
       ? Math.max(min, Math.min(max, Math.trunc(value)))
       : fallback;
+  let output: unknown;
   switch (call.name) {
     case "get_message_range": {
       const s = boundedInteger(args.start, 0, 0, llmMessages.length);
       const e = boundedInteger(args.end, llmMessages.length, s, llmMessages.length);
-      return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
+      output = llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
         preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
         toolCalls: getToolCallNames(m?.content),
         isError: m?.isError,
-      })));
+      }));
+      break;
     }
     case "search_conversation": {
-      const q = ((args.query as string) ?? "").toLowerCase();
-      if (!q.trim()) return JSON.stringify([{ error: "query must be a non-empty string" }]);
+      const q = typeof args.query === "string" ? args.query.toLowerCase().trim() : "";
+      if (!q) {
+        output = [{ error: "query must be a non-empty string" }];
+        break;
+      }
       const matches: { idx: number; m: LlmMessage }[] = [];
       for (let i = 0; i < llmMessages.length && matches.length < 10; i++) {
         const m = llmMessages[i];
         const text = extractText(m?.content).toLowerCase();
-        if (text.includes(q)) { matches.push({ idx: i, m }); continue; }
-        // Also check tool call arguments for file paths
-        const tcs = filterToolCalls(m?.content);
-        if (tcs.some(tc => JSON.stringify(tc.arguments).toLowerCase().includes(q))) {
+        if (text.includes(q)) {
           matches.push({ idx: i, m });
+          continue;
         }
+        let argumentsMatch = false;
+        for (const tc of filterToolCalls(m?.content)) {
+          const stack: Array<{ value: unknown; depth: number }> = [{ value: tc.arguments, depth: 0 }];
+          let inspected = 0;
+          while (stack.length && inspected++ < 64 && !argumentsMatch) {
+            const current = stack.pop()!;
+            if (typeof current.value === "string") {
+              argumentsMatch = current.value.slice(0, 2_000).toLowerCase().includes(q);
+            } else if (current.value && typeof current.value === "object" && current.depth < 3) {
+              const values = Array.isArray(current.value)
+                ? current.value.slice(0, 16)
+                : Object.values(current.value as Record<string, unknown>).slice(0, 16);
+              for (const value of values) stack.push({ value, depth: current.depth + 1 });
+            }
+          }
+          if (argumentsMatch) break;
+        }
+        if (argumentsMatch) matches.push({ idx: i, m });
       }
-      return JSON.stringify(matches.map(({ idx, m }) => ({
+      output = matches.map(({ idx, m }) => ({
         idx, role: m?.role, preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
-      })));
+      }));
+      break;
     }
     case "get_recent_user_messages": {
       const count = boundedInteger(args.count, 10, 1, 50);
-      return JSON.stringify(llmMessages.filter((m) => m?.role === "user").slice(-count).map((m) => extractText(m.content)));
+      output = llmMessages
+        .filter((m) => m?.role === "user")
+        .slice(-count)
+        .map((m) => extractText(m.content).slice(0, TRUNC.PREVIEW_XL));
+      break;
     }
     case "get_context_around": {
       const idx = boundedInteger(args.index, 0, 0, Math.max(0, llmMessages.length - 1));
       const radius = boundedInteger(args.radius, 5, 0, 25);
       const s = Math.max(0, idx - radius), e = Math.min(llmMessages.length, idx + radius + 1);
-      return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
+      output = llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
         text: extractText(m?.content).slice(0, TRUNC.DETAIL),
         toolCalls: getToolCallNames(m?.content),
         isError: m?.isError,
-      })));
+      }));
+      break;
     }
     case "get_file_changes": {
-      const target = ((args.path as string) ?? "").toLowerCase();
-      if (!target.trim()) return JSON.stringify([{ error: "path must be a non-empty string" }]);
+      const target = typeof args.path === "string" ? args.path.toLowerCase().trim() : "";
+      if (!target) {
+        output = [{ error: "path must be a non-empty string" }];
+        break;
+      }
       const results: unknown[] = [];
-      for (let i = 0; i < llmMessages.length; i++) {
-        const tcs = filterToolCalls(llmMessages[i]?.content);
-        for (const block of tcs) {
-          // Look up file path fields by name rather than stringifying the
-          // whole block: JSON.stringify doesn't guarantee key ordering, and
-          // values that happen to contain the target substring (e.g. inside
-          // a `content` field of a `write` call) would otherwise produce
-          // false positives.
+      for (let i = 0; i < llmMessages.length && results.length < TRUNC.EXPLORE_RESULTS; i++) {
+        for (const block of filterToolCalls(llmMessages[i]?.content)) {
           const a = (block.arguments ?? {}) as Record<string, unknown>;
           const fileFields = [a.path, a.file, a.filePath, a.file_path]
-            .filter((v): v is string => typeof v === "string").map(v => v.toLowerCase());
-          const matchesPath = fileFields.some(f => f.includes(target));
-          // Classify by argument shape, not name — see domain/tool-semantics.ts.
-          if (classifyTool(block.arguments) === "mutates" && matchesPath) {
-            // Surgical edits (oldText/newText/edits/patch) carry small, useful
-            // args; full-file writes carry large content, so omit args to keep
-            // the exploration result compact.
-            const surgical = a.oldText != null || a.newText != null || a.edits != null || a.patch != null;
-            const preview = extractText(llmMessages[i]?.content).slice(0, TRUNC.PREVIEW_LONG);
-            results.push(surgical
-              ? { idx: i, role: "assistant", toolCall: block.name ?? "mutates", args: block.arguments, preview }
-              : { idx: i, role: "assistant", toolCall: block.name ?? "mutates", preview });
-          }
+            .filter((value): value is string => typeof value === "string")
+            .map(value => value.toLowerCase());
+          if (classifyTool(block.arguments) !== "mutates" || !fileFields.some(file => file.includes(target))) continue;
+
+          const preview = extractText(llmMessages[i]?.content).slice(0, TRUNC.PREVIEW_LONG);
+          const surgicalKeys = ["path", "file", "filePath", "file_path", "oldText", "newText", "edits", "patch"] as const;
+          const argsPreview = Object.fromEntries(
+            surgicalKeys.filter(key => a[key] !== undefined).map(key => [key, a[key]]),
+          );
+          const surgical = a.oldText != null || a.newText != null || a.edits != null || a.patch != null;
+          results.push(surgical
+            ? { idx: i, role: "assistant", toolCall: block.name ?? "mutates", args: argsPreview, preview }
+            : { idx: i, role: "assistant", toolCall: block.name ?? "mutates", preview });
         }
       }
-      return JSON.stringify(results.slice(0, TRUNC.EXPLORE_RESULTS) || [{ info: "No edits found for: " + args.path }]);
+      output = results.length ? results : [{ info: "No edits found for: " + args.path }];
+      break;
     }
     case "get_error_chain": {
       const errIdx = boundedInteger(args.index, 0, 0, Math.max(0, llmMessages.length - 1));
       const ctxRadius = boundedInteger(args.context_radius, 8, 0, 25);
       const s = Math.max(0, errIdx - ctxRadius), e = Math.min(llmMessages.length, errIdx + ctxRadius + 1);
-      return JSON.stringify(llmMessages.slice(s, e).map((m, i) => ({
+      output = llmMessages.slice(s, e).map((m, i) => ({
         idx: s + i, role: m?.role,
         text: extractText(m?.content).slice(0, TRUNC.PREVIEW_XL),
         isError: m?.isError,
         toolCalls: getToolCallNames(m?.content),
-      })));
+      }));
+      break;
     }
-    default: return "Unknown tool: " + call.name;
+    default:
+      output = { error: "Unknown tool: " + call.name };
   }
+  return serializeExplorationResult(output, scrubber);
 }
 
 export function parseExplorationReport(text: string, llmMessages: LlmMessage[]): ExplorationReport {
@@ -378,7 +444,7 @@ export async function exploreConversation(
         probeResp,
       ];
       for (const tc of toolCalls) {
-        const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages);
+        const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages, svc.scrubber);
         messages.push({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: [{ type: "text", text: result }], isError: false, timestamp: Date.now() });
       }
 
@@ -410,7 +476,7 @@ export async function exploreConversation(
 
         messages.push(response);
         for (const tc of nextToolCalls) {
-          const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages);
+          const result = executeExplorationTool({ name: tc.name, arguments: tc.arguments }, llmMessages, svc.scrubber);
           messages.push({ role: "toolResult", toolCallId: tc.id, toolName: tc.name, content: [{ type: "text", text: result }], isError: false, timestamp: Date.now() });
         }
       }

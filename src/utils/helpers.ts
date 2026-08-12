@@ -9,6 +9,7 @@ import * as log from "./logger.ts";
 import { settingsFile, defaultBackupDir } from "../infra/paths.ts";
 import { flattenToolCallBlock } from "./extraction.ts";
 import { extractToolPath } from "../domain/tool-semantics.ts";
+import { isRecord } from "./type-guards.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const VALID_MODES = ["auto", "fast", "balanced", "thorough"] as const;
@@ -326,22 +327,14 @@ export function smartKeepBoundary(
  * Handles top-level toolCall blocks and nested multi_tool_use.parallel wrappers.
  */
 function collectToolCallIds(blocks: unknown[], msgIndex: number, out: Map<string, number>): void {
-  for (const b of blocks) {
-    const block = b as Record<string, unknown>;
-    if (block?.type === "toolCall") {
-      if (typeof block.id === "string") {
-        out.set(block.id, msgIndex);
-      }
-      // Flatten nested tool calls inside multi_tool_use.parallel
-      const args = block.arguments as Record<string, unknown> | undefined;
-      if (block.name === "multi_tool_use.parallel" && args && Array.isArray(args.tool_uses)) {
-        for (const nested of args.tool_uses as unknown[]) {
-          const n = nested as Record<string, unknown>;
-          if (typeof n.id === "string") {
-            out.set(n.id, msgIndex);
-          }
-        }
-      }
+  for (const block of blocks) {
+    if (!isRecord(block) || block.type !== "toolCall") continue;
+    if (typeof block.id === "string") out.set(block.id, msgIndex);
+    // Flatten nested tool calls inside multi_tool_use.parallel.
+    const args = block.arguments;
+    if (block.name !== "multi_tool_use.parallel" || !isRecord(args) || !Array.isArray(args.tool_uses)) continue;
+    for (const nested of args.tool_uses) {
+      if (isRecord(nested) && typeof nested.id === "string") out.set(nested.id, msgIndex);
     }
   }
 }
@@ -356,21 +349,25 @@ function collectToolCallIds(blocks: unknown[], msgIndex: number, out: Map<string
  * Also handles multi_tool_use.parallel wrappers where the actual tool call IDs are nested
  * inside arguments.tool_uses rather than on the wrapper block itself.
  */
-function toolCallIndexMap(msgs: SessionMessageEntry[]): Map<string, number> {
+export type ToolCallBoundaryIndex = ReadonlyMap<string, number>;
+
+export function buildToolCallBoundaryIndex(msgs: SessionMessageEntry[]): ToolCallBoundaryIndex {
   const map = new Map<string, number>();
   for (let i = 0; i < msgs.length; i++) {
-    const m = msgs[i].message as Record<string, unknown>;
-    if (m?.role !== "assistant") continue;
-    const blocks = Array.isArray(m?.content) ? m.content : [];
+    const message = msgs[i].message;
+    if (!isRecord(message) || message.role !== "assistant") continue;
+    const blocks = Array.isArray(message.content) ? message.content : [];
     collectToolCallIds(blocks, i, map);
   }
   return map;
 }
 
-export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
+export function guardToolCallBoundary(
+  msgs: SessionMessageEntry[],
+  keepFrom: number,
+  tcMap: ToolCallBoundaryIndex = buildToolCallBoundaryIndex(msgs),
+): number {
   if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
-
-  const tcMap = toolCallIndexMap(msgs);
   let adjusted = keepFrom;
   let changed = true;
   // Bound the transitive walk. Each iteration MUST shrink `adjusted` (we
@@ -389,9 +386,9 @@ export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: num
     }
     changed = false;
     for (let i = adjusted; i < msgs.length; i++) {
-      const m = msgs[i].message as Record<string, unknown>;
-      if (m?.role !== "toolResult") continue;
-      const tcId = m?.toolCallId as string | undefined;
+      const message = msgs[i].message;
+      if (!isRecord(message) || message.role !== "toolResult") continue;
+      const tcId = typeof message.toolCallId === "string" ? message.toolCallId : undefined;
       if (!tcId) continue;
       const tcIdx = tcMap.get(tcId);
       if (tcIdx !== undefined && tcIdx < adjusted) {
@@ -410,17 +407,19 @@ export function guardToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: num
  * would exceed the retention target. Returns msgs.length when no later kept
  * message exists; callers can then retain the pair or reject the plan.
  */
-export function advancePastToolCallBoundary(msgs: SessionMessageEntry[], keepFrom: number): number {
+export function advancePastToolCallBoundary(
+  msgs: SessionMessageEntry[],
+  keepFrom: number,
+  tcMap: ToolCallBoundaryIndex = buildToolCallBoundaryIndex(msgs),
+): number {
   if (keepFrom <= 0 || keepFrom >= msgs.length) return keepFrom;
-
-  const tcMap = toolCallIndexMap(msgs);
   let adjusted = keepFrom;
   for (let iter = 0; iter <= msgs.length; iter++) {
     let next = adjusted;
     for (let i = adjusted; i < msgs.length; i++) {
-      const m = msgs[i].message as Record<string, unknown>;
-      if (m?.role !== "toolResult") continue;
-      const tcIdx = typeof m.toolCallId === "string" ? tcMap.get(m.toolCallId) : undefined;
+      const message = msgs[i].message;
+      if (!isRecord(message) || message.role !== "toolResult") continue;
+      const tcIdx = typeof message.toolCallId === "string" ? tcMap.get(message.toolCallId) : undefined;
       if ((i === adjusted && tcIdx === undefined) || (tcIdx !== undefined && tcIdx < adjusted)) {
         next = i + 1;
         break;

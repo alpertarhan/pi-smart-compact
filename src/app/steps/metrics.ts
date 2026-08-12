@@ -16,7 +16,7 @@
  */
 
 import type { RcBase, StatedRc } from "../run-context.ts";
-import type { MetricsSnapshot, VerificationGap } from "../../types.ts";
+import type { CompactionMode, MetricsSnapshot, VerificationGap } from "../../types.ts";
 import { aggregateProviderRoutes } from "../../domain/provider-evaluation.ts";
 import { classifyTelemetryFailure } from "../../domain/telemetry.ts";
 import { VERSION } from "../../constants.ts";
@@ -102,8 +102,8 @@ export function buildSuccessMetrics(
   };
 }
 
-export function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run" | "cancelled"): void {
-  appendMetricsSnapshot(rc.sessionId, buildSuccessMetrics(rc, status));
+export async function recordSuccessMetrics(rc: StatedRc, status: "success" | "dry-run" | "cancelled"): Promise<void> {
+  await appendMetricsSnapshot(rc.sessionId, buildSuccessMetrics(rc, status));
   const ecs = getExtractionCacheStats(rc.services);
   const ms = getMetricsSummary(rc.services);
   if (status === "success" && ms.totalCalls > 0) {
@@ -134,14 +134,14 @@ export interface FailureSummaryFields {
   totalTokens?: number;
   methodForMetrics?: string;
   profile: string;
-  mode?: import("../../types.ts").CompactionMode;
+  mode?: CompactionMode;
 }
 
-export function recordFailureMetrics(
+export async function recordFailureMetrics(
   rc: RcBase | StatedRc,
   err: unknown,
   fields: FailureSummaryFields,
-): void {
+): Promise<void> {
   const releaseChannel = (rc as RcBase & { config?: { telemetryChannel?: "stable" | "canary" } }).config?.telemetryChannel
     ?? loadConfig().telemetryChannel;
   const failureKind = classifyTelemetryFailure(err, rc.cancellation.timedOut);
@@ -169,7 +169,7 @@ export function recordFailureMetrics(
   const verificationScore = typeof gate?.score === "number" && Number.isFinite(gate.score) ? gate.score : undefined;
   const initialVerificationScore = typeof gate?.initialScore === "number" && Number.isFinite(gate.initialScore) ? gate.initialScore : undefined;
   const verificationGaps = typeof gate?.gapCount === "number" && Number.isInteger(gate.gapCount) && gate.gapCount >= 0 ? gate.gapCount : undefined;
-  appendMetricsLog(fields.sessionId ?? "unknown", {
+  await appendMetricsLog(fields.sessionId ?? "unknown", {
     runId: rc.runId,
     metricsSchemaVersion: 2,
     version: VERSION,

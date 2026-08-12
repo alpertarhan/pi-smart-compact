@@ -31,10 +31,11 @@ import { deriveProjectId, findGitRoot, loadProjectFingerprint, buildProjectConte
 import { getPreviousCompactionContext } from "../../utils/helpers.ts";
 import { isPrefixOf, legacyPrefixMatch } from "../../utils/id-fingerprint.ts";
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
-import { asSerializableMessages } from "../../infra/ai-messages.ts";
+import { asSerializableMessages, scrubLlmMessages } from "../../infra/ai-messages.ts";
 import { prepareConversationBackup } from "../../utils/backups.ts";
 import { loadScopedCompactionState, renderContinuityCapsule } from "../../utils/state.ts";
 import { boundedBranchLineageIds, branchEntryIds } from "../../infra/session-identity.ts";
+import { EXTRACTION_LIMITS } from "../../constants.ts";
 
 export function extractWithCache(rc: TieredRc): ExtractedRc {
   const extractStepStart = Date.now();
@@ -47,6 +48,8 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   // extractors to reuse.
   const selectedMessages = rc.llmMessages;
   const pruning = pruneRedundant(selectedMessages);
+  const pruningUnchanged = pruning.messages.length === selectedMessages.length
+    && pruning.messages.every((message, index) => message === selectedMessages[index]);
   const currentKeptEntryIds = pruning.keptIndices
     .map(i => rc.llmEntryIds[i])
     .filter((id): id is string => typeof id === "string");
@@ -58,22 +61,26 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
       "info",
     );
   }
-  rc.llmMessages = pruning.messages;
+  const scrubbedMessages = scrubLlmMessages(pruning.messages, rc.services.scrubber);
+  pruning.messages = scrubbedMessages;
+  rc.llmMessages = scrubbedMessages;
   const pruneEnd = Date.now();
   markMeasuredPhase(rc, "prune", extractStepStart, pruneEnd);
 
   const extractionStart = pruneEnd;
-  const convText = serializeConversation(asSerializableMessages(rc.llmMessages));
+  const convText = rc.services.scrubber.scrubText(
+    serializeConversation(asSerializableMessages(rc.llmMessages)),
+  ).value;
   const convTokens = rc.estimator.text(convText);
   let preparedBackup: PreparedConversationBackup | undefined;
   if (rc.config.backupEnabled) {
-    const unchanged = pruning.messages.length === selectedMessages.length
-      && pruning.messages.every((message, index) => message === selectedMessages[index]);
     // Keep only a deferred source while the candidate awaits native apply.
-    // Large unpruned conversations are serialized and scrubbed exactly once,
-    // after Pi confirms compaction, instead of doubling peak pipeline memory.
+    // Large unpruned conversations are serialized only after Pi confirms
+    // compaction; structured redaction still runs before that serialization.
     const materializeBackup = () => {
-      const backupText = unchanged ? convText : serializeConversation(asSerializableMessages(selectedMessages));
+      if (pruningUnchanged) return convText;
+      const safeMessages = scrubLlmMessages(selectedMessages, rc.services.scrubber);
+      const backupText = serializeConversation(asSerializableMessages(safeMessages));
       return rc.services.scrubber.scrubText(backupText).value;
     };
     preparedBackup = prepareConversationBackup(materializeBackup, rc.sessionId, {
@@ -95,6 +102,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   //   * Legacy: full `entryIds` / `keptEntryIds` arrays from older versions.
   // We accept either so an in-place upgrade doesn't lose every running cache.
   let cacheUsable = false;
+  let cacheExact = false;
   let keptCount = 0;
   if (cachedExt) {
     const hasNewFp = !!(cachedExt.keptEntryIdsFp && cachedExt.entryIdsFp);
@@ -111,14 +119,27 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
       : (cachedExt.keptEntryIds?.length ?? 0);
 
     if (hasNewFp || hasLegacy) {
-      cacheUsable = branchPrefixMatch && prunedPrefixMatch &&
-        cachedExt.messageCount === keptCount &&
-        cachedExt.messageCount < rc.llmMessages.length;
+      const boundedCacheShape =
+        cachedExt.extraction.modifiedFiles.length <= EXTRACTION_LIMITS.MODIFIED_FILES
+        && (cachedExt.extraction.referencedFiles?.length ?? 0) <= EXTRACTION_LIMITS.REFERENCED_FILES
+        && cachedExt.extraction.readFiles.length <= EXTRACTION_LIMITS.READ_FILES
+        && cachedExt.extraction.deletedFiles.length <= EXTRACTION_LIMITS.DELETED_FILES
+        && cachedExt.extraction.errors.length <= EXTRACTION_LIMITS.ERRORS
+        && cachedExt.extraction.decisions.length <= EXTRACTION_LIMITS.DECISIONS
+        && cachedExt.extraction.constraints.length <= EXTRACTION_LIMITS.CONSTRAINTS
+        && cachedExt.extraction.topics.length <= EXTRACTION_LIMITS.TOPICS
+        && cachedExt.extraction.timeline.length <= EXTRACTION_LIMITS.TIMELINE
+        && (cachedExt.extraction.mediaAttachments?.length ?? 0) <= EXTRACTION_LIMITS.MEDIA_ATTACHMENTS;
+      cacheUsable = branchPrefixMatch && prunedPrefixMatch && boundedCacheShape
+        && cachedExt.messageCount === keptCount
+        && cachedExt.messageCount <= rc.llmMessages.length;
+      cacheExact = cacheUsable && cachedExt.messageCount === rc.llmMessages.length;
       if (!cacheUsable) {
         missReason = !branchPrefixMatch ? "entry-prefix-mismatch"
           : !prunedPrefixMatch ? "pruned-prefix-changed"
-            : cachedExt.messageCount !== keptCount ? "cache-shape-mismatch"
-              : "no-new-pruned-messages";
+            : !boundedCacheShape ? "cache-evidence-unbounded"
+              : cachedExt.messageCount !== keptCount ? "cache-shape-mismatch"
+                : "cache-domain-ahead";
       }
     } else {
       missReason = "legacy-no-kept-entryids";
@@ -127,21 +148,26 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   }
 
   if (cacheUsable && cachedExt) {
-    const newMsgs = rc.llmMessages.slice(cachedExt.messageCount);
-    // Index over the suffix only — we can't reuse prunedTcIdx because its
-    // msgIndex values are absolute, while extractStructured against `newMsgs`
-    // expects offsets relative to newMsgs[0].
-    const deltaTcIdx = buildToolCallIndex(newMsgs);
-    const delta = extractStructured(newMsgs, rc.profileCfg, deltaTcIdx);
-    extraction = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx);
-    rc.notify(
-      "Phase 1 Incremental: " + cachedExt.messageCount + " cached + " + newMsgs.length + " new pruned messages",
-      "info",
-    );
-    rc.vlog(
-      "Incremental extraction — cached pruned messages: " + cachedExt.messageCount +
-        ", current pruned: " + rc.llmMessages.length,
-    );
+    if (cacheExact) {
+      extraction = cachedExt.extraction;
+      rc.notify("Phase 1 Cached: exact pruned conversation reused", "info");
+      rc.vlog("Exact extraction cache hit — " + cachedExt.messageCount + " pruned messages");
+    } else {
+      const newMsgs = rc.llmMessages.slice(cachedExt.messageCount);
+      // Index over the suffix only: its msgIndex values are relative to
+      // `newMsgs`, then mergeExtractions offsets every evidence position.
+      const deltaTcIdx = buildToolCallIndex(newMsgs);
+      const delta = extractStructured(newMsgs, rc.profileCfg, deltaTcIdx);
+      extraction = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx);
+      rc.notify(
+        "Phase 1 Incremental: " + cachedExt.messageCount + " cached + " + newMsgs.length + " new pruned messages",
+        "info",
+      );
+      rc.vlog(
+        "Incremental extraction — cached pruned messages: " + cachedExt.messageCount +
+          ", current pruned: " + rc.llmMessages.length,
+      );
+    }
     missReason = undefined;
     recordExtractionCacheHit(rc.services);
   } else {

@@ -11,14 +11,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { LLMCallMetric, StructuredExtraction, CachedExtraction, CacheAwareOptions, CompactMetricsEntry, LlmMessage } from "../types.ts";
+import type { LLMCallMetric, StructuredExtraction, ExtractionEvidenceOverflow, CachedExtraction, CacheAwareOptions, CompactMetricsEntry, LlmMessage } from "../types.ts";
 import { flattenToolCallBlock, isTransientToolDiagnostic, type ToolCallIndex } from "./extraction.ts";
 import { estimateTokens, calibrateFromResponse, getProviderCaps } from "./tokens.ts";
 import * as log from "./logger.ts";
 import type { Model, Api, AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { extractionCacheFile, metricsLogFile } from "../infra/paths.ts";
-import { appendLineLocked, readJsonSync, writeJsonSync } from "../infra/fs.ts";
-import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX, RUNTIME_LOG_MAX_BYTES, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW } from "../constants.ts";
+import { appendLineLockedAsync, readJsonSync, writeJsonSync } from "../infra/fs.ts";
+import { ONE_HOUR_MS, SEVEN_DAYS_MS, EXTRACTION_CACHE_PREFIX, RUNTIME_LOG_MAX_BYTES, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW, EXTRACTION_LIMITS } from "../constants.ts";
 import { buildEntryIdFingerprint } from "./id-fingerprint.ts";
 import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 import { toolOperationSignature } from "../domain/tool-semantics.ts";
@@ -331,6 +331,32 @@ export function reconcileCachedErrors(
   });
 }
 
+interface BoundedEvidence<T> {
+  values: T[];
+  dropped: number;
+}
+
+function boundedTail<T>(items: T[], limit: number): BoundedEvidence<T> {
+  const dropped = Math.max(0, items.length - limit);
+  return { values: dropped ? items.slice(-limit) : items, dropped };
+}
+
+/** Keep the most recent occurrence of every identity while bounding memory. */
+function recentUnique(items: string[], limit: number): BoundedEvidence<string> {
+  const seen = new Set<string>();
+  const newestFirst: string[] = [];
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (seen.has(item)) continue;
+    seen.add(item);
+    if (newestFirst.length < limit) newestFirst.push(item);
+  }
+  return {
+    values: newestFirst.reverse(),
+    dropped: Math.max(0, seen.size - limit),
+  };
+}
+
 export function mergeExtractions(
   base: StructuredExtraction,
   delta: StructuredExtraction,
@@ -338,93 +364,143 @@ export function mergeExtractions(
   deltaMessages: LlmMessage[] = [],
   deltaToolCalls: ToolCallIndex = new Map(),
 ): StructuredExtraction {
-  // ── Offset every index-bearing field in delta ──
-  const offsetErrors = delta.errors.map(e => ({ ...e, index: e.index + baseMsgCount }));
-  const offsetDecisions = delta.decisions.map(d => ({ ...d, index: d.index + baseMsgCount }));
-  const offsetConstraints = delta.constraints.map(c => ({ ...c, index: c.index + baseMsgCount }));
-  const offsetTopics = delta.topics.map(t => ({
-    ...t,
-    startIndex: t.startIndex + baseMsgCount,
-    endIndex: t.endIndex + baseMsgCount,
+  // Offset every index-bearing field in the suffix into the cached domain.
+  const offsetErrors = delta.errors.map(error => ({ ...error, index: error.index + baseMsgCount }));
+  const offsetDecisions = delta.decisions.map(decision => ({ ...decision, index: decision.index + baseMsgCount }));
+  const offsetConstraints = delta.constraints.map(constraint => ({ ...constraint, index: constraint.index + baseMsgCount }));
+  const offsetTopics = delta.topics.map(topic => ({
+    ...topic,
+    startIndex: topic.startIndex + baseMsgCount,
+    endIndex: topic.endIndex + baseMsgCount,
   }));
-  const offsetTimeline = delta.timeline.map(t => ({ ...t, index: t.index + baseMsgCount }));
-  const offsetModifiedFiles = delta.modifiedFiles.map(f => ({
-    ...f,
-    lastModifiedIndex: f.lastModifiedIndex + baseMsgCount,
+  const offsetTimeline = delta.timeline.map(event => ({ ...event, index: event.index + baseMsgCount }));
+  const offsetModifiedFiles = delta.modifiedFiles.map(file => ({
+    ...file,
+    lastModifiedIndex: file.lastModifiedIndex + baseMsgCount,
   }));
-  const offsetMedia = (delta.mediaAttachments ?? []).map(a => ({ ...a, index: a.index + baseMsgCount }));
+  const offsetMedia = (delta.mediaAttachments ?? []).map(attachment => ({
+    ...attachment,
+    index: attachment.index + baseMsgCount,
+  }));
 
   const modified = new Map(base.modifiedFiles.map(file => [file.path, { ...file }]));
   for (const file of offsetModifiedFiles) {
     const previous = modified.get(file.path);
     modified.set(file.path, previous
-      ? { ...file, toolCalls: previous.toolCalls + file.toolCalls, lastModifiedIndex: Math.max(previous.lastModifiedIndex, file.lastModifiedIndex) }
+      ? {
+          ...file,
+          toolCalls: previous.toolCalls + file.toolCalls,
+          lastModifiedIndex: Math.max(previous.lastModifiedIndex, file.lastModifiedIndex),
+        }
       : file);
   }
   const deltaPresent = new Set([...offsetModifiedFiles.map(file => file.path), ...delta.readFiles]);
   const deltaDeleted = new Set(delta.deletedFiles);
   for (const file of deltaDeleted) modified.delete(file);
-  const readFiles = new Set([...base.readFiles, ...delta.readFiles]);
-  for (const file of deltaDeleted) readFiles.delete(file);
-  const deletedFiles = new Set([...base.deletedFiles, ...delta.deletedFiles]);
-  for (const file of deltaPresent) deletedFiles.delete(file);
 
+  const modifiedFiles = boundedTail(
+    [...modified.values()].sort((a, b) => a.lastModifiedIndex - b.lastModifiedIndex),
+    EXTRACTION_LIMITS.MODIFIED_FILES,
+  );
+  const readFiles = recentUnique(
+    [...base.readFiles, ...delta.readFiles].filter(file => !deltaDeleted.has(file)),
+    EXTRACTION_LIMITS.READ_FILES,
+  );
+  const deletedFiles = recentUnique(
+    [...base.deletedFiles, ...delta.deletedFiles].filter(file => !deltaPresent.has(file)),
+    EXTRACTION_LIMITS.DELETED_FILES,
+  );
+  const referencedFiles = recentUnique(
+    [...(base.referencedFiles ?? []), ...(delta.referencedFiles ?? [])],
+    EXTRACTION_LIMITS.REFERENCED_FILES,
+  );
+  const mediaAttachments = boundedTail(
+    [...(base.mediaAttachments ?? []), ...offsetMedia],
+    EXTRACTION_LIMITS.MEDIA_ATTACHMENTS,
+  );
   const reconciledBaseErrors = reconcileCachedErrors(base.errors, deltaMessages, deltaToolCalls, baseMsgCount);
-  const mergedErrors = [...reconciledBaseErrors, ...offsetErrors]
-    .filter(error => !isTransientToolDiagnostic(error.message));
+  const errors = boundedTail(
+    [...reconciledBaseErrors, ...offsetErrors].filter(error => !isTransientToolDiagnostic(error.message)),
+    EXTRACTION_LIMITS.ERRORS,
+  );
+  const decisions = boundedTail([...base.decisions, ...offsetDecisions], EXTRACTION_LIMITS.DECISIONS);
+  const constraints = boundedTail([...base.constraints, ...offsetConstraints], EXTRACTION_LIMITS.CONSTRAINTS);
+  const topics = boundedTail([...base.topics, ...offsetTopics], EXTRACTION_LIMITS.TOPICS);
+  const timeline = boundedTail([...base.timeline, ...offsetTimeline], EXTRACTION_LIMITS.TIMELINE);
+
+  const dropped: Partial<Record<keyof ExtractionEvidenceOverflow, number>> = {
+    modifiedFiles: modifiedFiles.dropped,
+    referencedFiles: referencedFiles.dropped,
+    readFiles: readFiles.dropped,
+    deletedFiles: deletedFiles.dropped,
+    errors: errors.dropped,
+    decisions: decisions.dropped,
+    constraints: constraints.dropped,
+    topics: topics.dropped,
+    timeline: timeline.dropped,
+    mediaAttachments: mediaAttachments.dropped,
+  };
+  const evidenceOverflow: ExtractionEvidenceOverflow = {};
+  for (const key of Object.keys(dropped) as Array<keyof ExtractionEvidenceOverflow>) {
+    const total = (base.evidenceOverflow?.[key] ?? 0)
+      + (delta.evidenceOverflow?.[key] ?? 0)
+      + (dropped[key] ?? 0);
+    if (total > 0) Object.assign(evidenceOverflow, { [key]: total });
+  }
 
   return {
-    modifiedFiles: [...modified.values()],
-    readFiles: [...readFiles],
-    deletedFiles: [...deletedFiles],
-    referencedFiles: [...new Set([...(base.referencedFiles ?? []), ...(delta.referencedFiles ?? [])])].slice(0, 200),
-    mediaAttachments: [...(base.mediaAttachments ?? []), ...offsetMedia],
-    errors: mergedErrors,
-    decisions: [...base.decisions, ...offsetDecisions],
-    constraints: [...base.constraints, ...offsetConstraints],
-    topics: [...base.topics, ...offsetTopics],
-    timeline: [...base.timeline, ...offsetTimeline],
-    // The latest substantive user request is the active goal; a suffix with no
-    // real request (tool-only work or an acknowledgement) leaves the base intact.
+    modifiedFiles: modifiedFiles.values,
+    readFiles: readFiles.values,
+    deletedFiles: deletedFiles.values,
+    referencedFiles: referencedFiles.values,
+    mediaAttachments: mediaAttachments.values,
+    errors: errors.values,
+    decisions: decisions.values,
+    constraints: constraints.values,
+    topics: topics.values,
+    timeline: timeline.values,
     mainGoal: delta.mainGoal ?? base.mainGoal,
-    // "last N" must span the cache boundary: the suffix alone is incomplete
-    // when it carries fewer than N user messages / errors.
     lastUserMessages: [...base.lastUserMessages, ...delta.lastUserMessages].slice(-5),
-    lastErrors: mergedErrors.filter(error => !error.resolved).map(error => error.message).slice(-3),
+    lastErrors: errors.values.filter(error => !error.resolved).map(error => error.message).slice(-3),
     messageCount: baseMsgCount + delta.messageCount,
+    ...(Object.keys(evidenceOverflow).length ? { evidenceOverflow } : {}),
   };
 }
 
 // ── Metrics log ──
 /** Extended metrics entry including pipeline context for regression detection. */
-function appendMetricsEntry(entry: CompactMetricsEntry): void {
+async function appendMetricsEntry(entry: CompactMetricsEntry): Promise<void> {
   const logPath = metricsLogFile();
-  appendLineLocked(logPath, JSON.stringify(entry), RUNTIME_LOG_MAX_BYTES);
+  await appendLineLockedAsync(logPath, JSON.stringify(entry), RUNTIME_LOG_MAX_BYTES);
 }
 
 /** Append a fully materialized payload after an external lifecycle commits. */
-export function appendMetricsSnapshot(
+export async function appendMetricsSnapshot(
   sessionId: string,
   snapshot: Omit<CompactMetricsEntry, "ts" | "sessionId">,
-): void {
+): Promise<void> {
   try {
-    appendMetricsEntry({ ts: new Date().toISOString(), sessionId, ...snapshot });
-  } catch (e) { log.warn("appendMetricsSnapshot failed", e); }
+    await appendMetricsEntry({ ts: new Date().toISOString(), sessionId, ...snapshot });
+  } catch (error) {
+    log.warn("appendMetricsSnapshot failed", error);
+  }
 }
 
-export function appendMetricsLog(
+export async function appendMetricsLog(
   sessionId: string,
   extra: Partial<Omit<CompactMetricsEntry, "ts" | "sessionId" | "totalCalls" | "totalInput" | "totalOutput" | "totalCacheHit" | "totalCacheWrite" | "avgLatency" | "cacheHitRate">> | undefined,
   services: SmartCompactServices,
-): void {
+): Promise<void> {
   try {
-    appendMetricsEntry({
+    await appendMetricsEntry({
       ts: new Date().toISOString(),
       sessionId,
       ...getMetricsSummary(services),
       ...extra,
     });
-  } catch (e) { log.warn("appendMetricsLog failed", e); }
+  } catch (error) {
+    log.warn("appendMetricsLog failed", error);
+  }
 }
 
 /**
@@ -456,8 +532,8 @@ export function readMetricsLog(limit = 100): CompactMetricsEntry[] {
     const fd = fs.openSync(logPath, "r");
     try {
       const buf = Buffer.alloc(wantBytes);
-      fs.readSync(fd, buf, 0, wantBytes, startPos);
-      let text = buf.toString("utf8");
+      const bytesRead = fs.readSync(fd, buf, 0, wantBytes, startPos);
+      let text = buf.subarray(0, bytesRead).toString("utf8");
       // Drop the (potentially) partial first line when we didn't start at
       // byte 0; otherwise we'd half-parse it and emit a corrupt warning.
       if (startPos > 0) {

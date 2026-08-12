@@ -51,6 +51,7 @@ export function parseSummary(markdown: string): CanonicalSummary {
   let currentHeading = "";
   let currentKind: SectionKind = "unknown";
   let bodyLines: string[] = [];
+  let fence: { marker: "`" | "~"; length: number } | null = null;
   let started = false;
 
   const flush = () => {
@@ -62,17 +63,31 @@ export function parseSummary(markdown: string): CanonicalSummary {
   };
 
   for (const line of lines) {
-    const m = line.match(HEADING_RE);
-    if (m) {
-      const kind = classifyHeading(m[2]);
-      if (m[1].length <= 2 || kind !== "unknown") {
-        flush();
-        // Normalize heading depth while preserving the model's label.
-        currentHeading = "## " + m[2].trim();
-        currentKind = kind;
-        bodyLines = [];
-        started = true;
-        continue;
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0] as "`" | "~";
+      const markerLength = fenceMatch[1].length;
+      if (!fence) {
+        fence = { marker, length: markerLength };
+      } else if (marker === fence.marker && markerLength >= fence.length && !fenceMatch[2].trim()) {
+        fence = null;
+      }
+      if (started) bodyLines.push(line);
+      continue;
+    }
+    if (!fence) {
+      const heading = line.match(HEADING_RE);
+      if (heading) {
+        const kind = classifyHeading(heading[2]);
+        if (heading[1].length <= 2 || kind !== "unknown") {
+          flush();
+          // Normalize heading depth while preserving the model's label.
+          currentHeading = "## " + heading[2].trim();
+          currentKind = kind;
+          bodyLines = [];
+          started = true;
+          continue;
+        }
       }
     }
     if (started) bodyLines.push(line);

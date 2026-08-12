@@ -28,6 +28,7 @@ import type { CompactionMode, CompressionProfile } from "../types.ts";
 import { MODE_POLICIES, modeFromLegacyProfile, resolveMode } from "./mode-policy.ts";
 import { clearCompactProgress, showProgressOverlay, showResultScreen } from "../ui/overlays.ts";
 import * as log from "../utils/logger.ts";
+import { safeContextPercent } from "../utils/tokens.ts";
 
 import type {
   Notifier, RcBase, PendingRef, StatedRc,
@@ -131,7 +132,11 @@ function makeBase(opts: SmartCompactOptions): RcBase {
   const vlog = (msg: string) => { if (opts.verbose) log.info(msg); };
   const pipelineStart = Date.now();
   const requestedMode = opts.mode ?? modeFromLegacyProfile(opts.profile ?? "balanced");
-  const contextPercent = opts.ctx.getContextUsage()?.percent ?? 0;
+  const usage = opts.ctx.getContextUsage();
+  const reportedPercent = usage?.percent;
+  const contextPercent = Number.isFinite(reportedPercent) && (reportedPercent ?? 0) >= 0
+    ? reportedPercent as number
+    : safeContextPercent(usage?.tokens, opts.ctx.model?.contextWindow);
   const mode = resolveMode(requestedMode, contextPercent);
   const profile = opts.mode ? MODE_POLICIES[mode].profile : (opts.profile ?? MODE_POLICIES[mode].profile);
   return {
@@ -287,7 +292,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
     markPhase(stated, "state");
 
     if (stated.flags.dryRun) {
-      recordSuccessMetrics(stated, "dry-run");
+      await recordSuccessMetrics(stated, "dry-run");
       stated.ctx.ui.notify(
         "DRY RUN (" + stated.method + ", " + stated.mode + ") — " +
           stated.toCompact.length + " msgs, " + stated.llmCalls + " calls",
@@ -326,7 +331,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
       }
       if (decision !== "apply") {
         stated.pendingRef.clear(stated.sessionId);
-        recordSuccessMetrics(stated, "cancelled");
+        await recordSuccessMetrics(stated, "cancelled");
         stated.ctx.ui.notify("Compaction cancelled — current conversation unchanged", "info");
         return { kind: "cancelled", source: "user" };
       }
@@ -360,7 +365,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
     // The failure path may run before any step has populated stage data, so
     // we collect the few fields we need into a small bag. recordFailureMetrics
     // takes either a StatedRc (best case) or the partial bag.
-    recordFailureMetrics(finalRc ?? base, err, failureSummaryFields);
+    await recordFailureMetrics(finalRc ?? base, err, failureSummaryFields);
     throw err;
   } finally {
     opts.abortSignal?.removeEventListener("abort", abortFromHost);

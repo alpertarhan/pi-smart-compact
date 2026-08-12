@@ -5,11 +5,12 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import type {
   StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType,
   LoopOverride, ContinuityOverride, ContinuityScope,
 } from "../types.ts";
-import { VERSION, SEVEN_DAYS_MS, TRUNC, ID_PREFIX, MAX_STATE_OPEN_LOOPS } from "../constants.ts";
+import { VERSION, SEVEN_DAYS_MS, STATE_SNAPSHOT_MAX_FILES, TRUNC, ID_PREFIX, MAX_STATE_OPEN_LOOPS } from "../constants.ts";
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
 import { isCompactionStatusText, isDiagnosticConstraintText, isTransientToolDiagnostic } from "./extraction.ts";
 import * as log from "./logger.ts";
@@ -58,6 +59,26 @@ function freshState(fp: string, data: CompactionState | null): CompactionState |
   return sanitizeCompactionStateEvidence(data);
 }
 
+function pruneScopedStateSnapshots(target: string): void {
+  try {
+    const dir = path.dirname(target);
+    const snapshots = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith(".json"))
+      .map(entry => {
+        const file = path.join(dir, entry.name);
+        return { file, mtimeMs: fs.statSync(file).mtimeMs };
+      })
+      .filter(entry => entry.file !== target)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs || b.file.localeCompare(a.file));
+    for (const snapshot of snapshots.slice(Math.max(0, STATE_SNAPSHOT_MAX_FILES - 1))) {
+      try { fs.unlinkSync(snapshot.file); }
+      catch (error) { log.debug("state snapshot cleanup failed", error); }
+    }
+  } catch (error) {
+    log.debug("state snapshot retention failed", error);
+  }
+}
+
 /**
  * Persist compaction state for cross-compaction tracking.
  *
@@ -67,7 +88,9 @@ function freshState(fp: string, data: CompactionState | null): CompactionState |
  */
 export function saveCompactionState(projectId: string, state: CompactionState): boolean {
   try {
-    writeJsonSync(getStatePath(projectId, state), sanitizeCompactionStateEvidence(state), true);
+    const target = getStatePath(projectId, state);
+    writeJsonSync(target, sanitizeCompactionStateEvidence(state), true);
+    if (state.scope) pruneScopedStateSnapshots(target);
     return true;
   } catch (error) {
     log.warn("saveCompactionState failed", error);
@@ -87,6 +110,15 @@ export function loadScopedCompactionState(
   scope: Pick<ContinuityScope, "projectId" | "sessionId"> & Partial<Pick<ContinuityScope, "branchHeadId">>,
   branchEntryIds: readonly string[] = [],
 ): CompactionState | null {
+  const snapshotProbe = scopedCompactionStateFile(scope.projectId, scope.sessionId, "__snapshot__");
+  let availableSnapshots = new Set<string>();
+  try {
+    availableSnapshots = new Set(fs.readdirSync(path.dirname(snapshotProbe), { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith(".json"))
+      .map(entry => entry.name));
+  } catch {
+    // No branch snapshot directory yet; legacy migration below may still apply.
+  }
   const ancestry = Array.from(new Set([
     ...branchEntryIds,
     ...(scope.branchHeadId ? [scope.branchHeadId] : []),
@@ -105,6 +137,7 @@ export function loadScopedCompactionState(
 
   for (const branchHeadId of ancestry) {
     const fp = scopedCompactionStateFile(scope.projectId, scope.sessionId, branchHeadId);
+    if (!availableSnapshots.has(path.basename(fp))) continue;
     const state = freshState(fp, readJsonSync<CompactionState>(fp));
     if (valid(state, branchHeadId)) return state;
   }
@@ -205,6 +238,7 @@ export function buildCompactionState(
 
   return {
     goal: extraction.mainGoal,
+    goalKey: extraction.mainGoal ? normalizeFactKey(extraction.mainGoal) : undefined,
     decisions: extraction.decisions.map(d => ({
       id: ID_PREFIX.DECISION + (++decisionId),
       summary: d.summary.slice(0, TRUNC.DECISION_SUMMARY),
@@ -305,12 +339,19 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
     15,
   ).map((item, index) => ({ ...item, id: ID_PREFIX.ERROR + (index + 1) }));
   const openLoops = mergeOpenLoops(activeCurrent.openLoops, activePrevious.openLoops);
-  const oldGoal = activePrevious.goal && activeCurrent.goal && normalizeFactKey(activePrevious.goal) !== normalizeFactKey(activeCurrent.goal)
+  const currentGoalKey = activeCurrent.goalKey
+    ?? (activeCurrent.goal ? normalizeFactKey(activeCurrent.goal) : "");
+  const previousGoalKey = activePrevious.goalKey
+    ?? (activePrevious.goal ? normalizeFactKey(activePrevious.goal) : "");
+  const oldGoal = previousGoalKey && currentGoalKey && previousGoalKey !== currentGoalKey
     ? ["Previous goal: " + activePrevious.goal]
     : [];
   return applyContinuityOverrides({
     ...activeCurrent,
     goal: activeCurrent.goal ?? activePrevious.goal,
+    goalKey: activeCurrent.goal
+      ? currentGoalKey || undefined
+      : (activePrevious.goalKey ?? previousGoalKey) || undefined,
     decisions,
     constraints,
     modifiedFiles: mergeBy(
@@ -463,8 +504,11 @@ export function computeDelta(prev: CompactionState, current: CompactionState): C
     .filter(e => !prevErrorMsgs.has(normalizeFactKey(e.message)))
     .map(e => e.message);
 
-  // Goal change
-  const goalChanged = prev.goal !== current.goal && prev.goal !== null && current.goal !== null;
+  const previousGoalKey = prev.goalKey ?? (prev.goal ? normalizeFactKey(prev.goal) : "");
+  const currentGoalKey = current.goalKey ?? (current.goal ? normalizeFactKey(current.goal) : "");
+  const goalChanged = Boolean(
+    previousGoalKey && currentGoalKey && previousGoalKey !== currentGoalKey,
+  );
 
   return {
     newDecisions, removedDecisions,

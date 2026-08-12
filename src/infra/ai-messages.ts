@@ -18,6 +18,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import type { LlmMessage } from "../types.ts";
+import type { SecretScrubber } from "../domain/scrub.ts";
 
 /**
  * Upcast a raw branch entry's `message` to a `Message` for `convertToLlm`.
@@ -43,4 +44,12 @@ export function asBranchMessage(message: unknown): Message {
  */
 export function asSerializableMessages(msgs: LlmMessage[]): Message[] {
   return msgs as unknown as Message[];
+}
+
+/**
+ * Clone and structurally redact messages before any host serializer flattens
+ * secret-bearing argument keys into ordinary text.
+ */
+export function scrubLlmMessages(msgs: LlmMessage[], scrubber: SecretScrubber): LlmMessage[] {
+  return scrubber.scrubValue(msgs).value;
 }

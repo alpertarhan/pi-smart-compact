@@ -1,11 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { PROFILES } from "../constants.ts";
-import type { CompactConfig, EffectiveCompactionMode, LlmMessage, ProfileConfig, SessionMessageEntry } from "../types.ts";
+import type { CompactConfig, EffectiveCompactionMode, LlmMessage, ProfileConfig, ProviderCapabilities, SessionMessageEntry } from "../types.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { computeToolCharPercentage } from "../utils/helpers.ts";
 import { readRecentDamageScores } from "../utils/damage.ts";
-import { getProviderCaps, makeTokenEstimator, type TokenCalibrationStore, type TokenEstimator } from "../utils/tokens.ts";
+import { getProviderCaps, makeTokenEstimator, safeContextPercent, type TokenCalibrationStore, type TokenEstimator } from "../utils/tokens.ts";
 import { MODE_POLICIES } from "./mode-policy.ts";
 import type { CompactionWindowPlan } from "./run-context.ts";
 import { estimateFinalSummaryAllowance, planCompactionWindow } from "./steps/window.ts";
@@ -21,7 +21,7 @@ export function preflightDamageMedian(cwd: string, config: CompactConfig): numbe
 export interface PreparedPreflightProfile {
   profileCfg: ProfileConfig;
   estimator: TokenEstimator;
-  providerCaps: ReturnType<typeof getProviderCaps>;
+  providerCaps: ProviderCapabilities;
   adapted: boolean;
   damageMedian: number;
 }
@@ -99,8 +99,9 @@ export function prepareManualPreflightContext(
   );
   const totalTokens = ctx.getContextUsage()?.tokens ?? 0;
   const modelContextWindow = ctx.model?.contextWindow;
-  const contextWindowTokens = modelContextWindow ?? 0;
-  const contextPercent = contextWindowTokens > 0 ? totalTokens / contextWindowTokens * 100 : 0;
+  const contextWindowTokens = Number.isFinite(modelContextWindow) && (modelContextWindow ?? 0) > 0
+    ? modelContextWindow as number : 0;
+  const contextPercent = safeContextPercent(totalTokens, modelContextWindow);
   const toolPercent = computeToolCharPercentage(branch);
   const overflowedContext = contextWindowTokens > 0 && totalTokens > contextWindowTokens;
   const estimator = makeTokenEstimator(summaryModel.provider, summaryModel.id, tokenCalibration);

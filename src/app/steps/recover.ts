@@ -24,7 +24,7 @@ export async function recoverSessionLog(rc: WindowedRc): Promise<RecoveredRc> {
   });
 
   if (hasTruncatedMessages(resolved.map(item => item.message))) {
-    const fromLog = await resolveCompactionMessages(rc.sessionId, rc.toCompact);
+    const fromLog = await resolveCompactionMessages(rc.sessionId, rc.toCompact, rc.ctx.cwd);
     if (fromLog) {
       resolved = fromLog;
       rc.notify("Using untruncated session log (" + resolved.length + " msgs)", "info");

@@ -194,6 +194,49 @@ export function appendLineLocked(target: string, line: string, maxBytes?: number
   }
 }
 
+/** Async append/retention variant for event-loop-sensitive telemetry paths. */
+export async function appendLineLockedAsync(target: string, line: string, maxBytes?: number): Promise<void> {
+  await ensureDirAsync(path.dirname(target));
+  const payload = Buffer.from(line.endsWith("\n") ? line : line + "\n");
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)) {
+    throw new Error("maxBytes must be a positive safe integer");
+  }
+  if (maxBytes !== undefined && payload.length > maxBytes) {
+    throw new Error("Log entry exceeds retention cap for " + target);
+  }
+  const release = await acquireLock(target);
+  try {
+    let stat: Awaited<ReturnType<typeof fsp.stat>> | null = null;
+    try {
+      stat = await fsp.stat(target);
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+    }
+    if (maxBytes !== undefined && stat && stat.size + payload.length > maxBytes) {
+      const retainedLength = Math.min(stat.size, Math.max(0, maxBytes - payload.length));
+      const buffer = Buffer.allocUnsafe(retainedLength);
+      if (retainedLength > 0) {
+        const handle = await fsp.open(target, "r");
+        try {
+          await handle.read(buffer, 0, retainedLength, stat.size - retainedLength);
+        } finally {
+          await handle.close();
+        }
+      }
+      let tail = buffer.toString("utf8");
+      if (retainedLength < stat.size) {
+        const firstNewline = tail.indexOf("\n");
+        tail = firstNewline >= 0 ? tail.slice(firstNewline + 1) : "";
+      }
+      await atomicWriteFile(target, tail);
+    }
+    await fsp.appendFile(target, payload, { mode: 0o600 });
+    await fsp.chmod(target, 0o600);
+  } finally {
+    release();
+  }
+}
+
 /** Read the newest valid JSONL records without loading an entire bounded log. */
 export function readJsonlTail<T>(target: string, limit: number, maxBytes = 512 * 1024): T[] {
   if (limit <= 0 || !fs.existsSync(target)) return [];

@@ -111,6 +111,13 @@ export function getProviderCaps(provider: string): ProviderCapabilities {
   return DEFAULT_CAPS;
 }
 
+/** Finite context usage percentage; invalid/unknown window metadata is 0%. */
+export function safeContextPercent(totalTokens: number | null | undefined, contextWindow: number | null | undefined): number {
+  if (!Number.isFinite(totalTokens) || !Number.isFinite(contextWindow)) return 0;
+  if ((totalTokens ?? 0) <= 0 || (contextWindow ?? 0) <= 0) return 0;
+  return (totalTokens as number) / (contextWindow as number) * 100;
+}
+
 /**
  * Bounded per-(provider,model) calibration factors smoothed by EMA.
  * Provider/model tokenization is process-wide knowledge rather than session
