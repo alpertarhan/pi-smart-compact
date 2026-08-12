@@ -51,9 +51,11 @@ words such as `fast`, `balanced`, and paths such as `src/auth.ts` remain note
 content. Use `--note=...` or `--` when the boundary should be explicit. Invalid
 tool modes and budgets return an error instead of silently using defaults.
 
-At 60% context usage by default, the extension also participates in Pi's native
-compaction flow. Long-running agents can call `smart_compact`, `smart_recall`,
-and `smart_save_memory` directly.
+By default, at 60% context usage the extension participates when Pi starts its
+native compaction flow. Set `autoTriggerStrategy` to `settled` to additionally
+request that same host flow after an idle agent run crosses the pressure gate.
+Long-running agents can also call `smart_compact`, `smart_recall`, and
+`smart_save_memory` directly.
 
 > [!IMPORTANT]
 > The tool path only stages a verified pending summary for Pi's next natural
@@ -377,6 +379,7 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
     "summaryThinkingLevel": "minimal",
     "segmentationThinkingLevel": "minimal",
     "autoTrigger": true,
+    "autoTriggerStrategy": "native-hook",
     "minContextPercent": 60,
     "backupEnabled": true,
     "scrubSecrets": true,
@@ -396,6 +399,27 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
   }
 }
 ```
+
+`native-hook` preserves the existing passive behavior. The opt-in proactive
+strategy is:
+
+```json
+{
+  "smartCompact": {
+    "autoTrigger": true,
+    "autoTriggerStrategy": "settled",
+    "minContextPercent": 80
+  }
+}
+```
+
+`settled` requires a Pi host that emits `agent_settled`; the release boundary is
+verified against Pi 0.84.0 and 0.84.1.
+The settled handler never runs EESV or mutates pending state itself: after
+checking finite context pressure, idle/queue state, per-session in-flight
+deduplication, and cooldown, it asks Pi to compact. The existing
+`session_before_compact` and correlated `session_compact` handlers still own
+summary generation, cancellation, apply, and durable commit.
 
 ### Per-phase reasoning
 
@@ -447,8 +471,9 @@ the run fails closed before staging or apply.
 | `verificationModel` | `string \| null` | `null` | Optional explicit model for LLM verification repair |
 | `summaryThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for synthesis and repair; provider default when null |
 | `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for exploration; provider default when null |
-| `autoTrigger` | `boolean` | `true` | Participate in Pi's native compact hook |
-| `autoTriggerTimeoutMs` | `number` | `120000` | Requested auto cancellation deadline; the synchronous hook clamps it to 60s and four LLM calls, shows live phase progress, then safely unwinds to native recovery |
+| `autoTrigger` | `boolean` | `true` | Allow smart compaction in Pi's native hook and the selected trigger strategy |
+| `autoTriggerStrategy` | `native-hook \| settled` | `native-hook` | `settled` additionally requests Pi's normal compact flow after an idle high-pressure agent run; verified with Pi 0.84.0+ |
+| `autoTriggerTimeoutMs` | `number` | `120000` | Requested auto cancellation deadline; the host hook clamps it to 60s and four LLM calls, shows live phase progress, then safely unwinds to native recovery |
 | `minContextPercent` | `number` | `60` | Auto/tool context gate; manual `/smart-compact` warns and bypasses it |
 | `backupEnabled` | `boolean` | `true` | Prepare a scrubbed pre-compaction backup; write it only after confirmed apply |
 | `backupDir` | `string` | `~/.pi/agent/compact-backups` | Empty config value uses this path |

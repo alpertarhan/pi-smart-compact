@@ -99,7 +99,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
   }
 
   const failure = verificationFailureMessage(verification);
-  if (failure) throw new VerificationGateError(verification, initialScore);
+  if (failure) throw new VerificationGateError(verification, initialScore, "post-synthesis");
   showProgressOverlay(rc.ctx, {
     phase: 4, phaseName: "Verify", detail: "Passed " + verification.score + "/100 · 0 unresolved gaps",
     explorationRounds: rc.explorationRounds,

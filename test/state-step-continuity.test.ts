@@ -71,7 +71,8 @@ describe("buildState continuity integration", () => {
       topics: [], timeline: [], mainGoal: "Release", lastUserMessages: [], lastErrors: [], messageCount: 2,
     };
     const services = createServices();
-    expect(() => buildState({
+    try {
+      buildState({
       extraction,
       finalSummary: "## Goal\nRelease\n## Constraints & Preferences\n- Must publish stable now\n## Progress\n- working\n## Critical Context\n- none",
       projectId, continuityScope: { schemaVersion: 2, projectId, sessionId: "s", branchHeadId: "b" }, previousState: previous,
@@ -88,7 +89,14 @@ describe("buildState continuity integration", () => {
       backupPath: null, verified: true, verificationGaps: [], verificationScore: 100,
       verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
       explorationRounds: 0, modelLabel: "openai/test", notify: () => {},
-    } as any)).toThrow("Verification gate rejected summary");
+      } as any);
+      throw new Error("expected VerificationGateError");
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: "VerificationGateError",
+        stage: "post-state",
+      });
+    }
   });
 
   it("rejects an oversized verified final state before details can exist", () => {

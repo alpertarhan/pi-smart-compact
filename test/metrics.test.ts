@@ -96,7 +96,8 @@ describe("metrics reporting", () => {
     const svc = services.createServices();
     const error = Object.assign(new Error("Verification gate rejected summary: secret evidence"), {
       name: "VerificationGateError", score: 92, initialScore: 64, gapCount: 3,
-      gapKinds: ["inconsistency", "fabricated-file", "unsupported-claim"],
+      stage: "post-synthesis",
+      gapKinds: ["missing-read-file", "missing-deleted-file", "inconsistency", "not-a-real-gap", "toString"],
     });
     await recordFailureMetrics({
       services: svc,
@@ -110,7 +111,8 @@ describe("metrics reporting", () => {
     expect(entry).toMatchObject({
       failureKind: "verification", verificationScore: 92, initialVerificationScore: 64,
       verificationGaps: 3, remainingVerificationGaps: 3,
-      verificationGapKinds: ["inconsistency", "fabricated-file", "unsupported-claim"],
+      verificationGapKinds: ["missing-read-file", "missing-deleted-file", "inconsistency"],
+      verificationStage: "post-synthesis",
     });
     expect(JSON.stringify(entry)).not.toContain("secret evidence");
   });

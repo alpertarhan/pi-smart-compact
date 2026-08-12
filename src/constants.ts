@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "9.1.0";
+export const VERSION = "9.2.0";
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.10;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
@@ -22,6 +22,8 @@ export const MAX_STATE_OPEN_LOOPS = 25;
 export const AUTO_TRIGGER_TIMEOUT_CAP_MS = 60_000;
 /** Provider-call ceiling for the synchronous session_before_compact hook. */
 export const AUTO_TRIGGER_MAX_LLM_CALLS = 4;
+/** Suppress proactive settled-trigger churn after any confirmed compaction. */
+export const SETTLED_TRIGGER_COOLDOWN_MS = 10 * 60_000;
 
 /** Positive per-run bounds shared by CLI and tool arguments; config separately allows 0 as a mode-derived sentinel. */
 export const BUDGET_LIMITS = {
@@ -74,6 +76,7 @@ export const DEFAULT_CONFIG = {
   summaryThinkingLevel: "minimal" as const,
   segmentationThinkingLevel: "minimal" as const,
   autoTrigger: true,
+  autoTriggerStrategy: "native-hook" as const,
   autoTriggerTimeoutMs: 120000,
   backupEnabled: true,
   backupDir: "",

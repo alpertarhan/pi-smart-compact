@@ -16,7 +16,7 @@
  */
 
 import type { RcBase, StatedRc } from "../run-context.ts";
-import type { CompactionMode, MetricsSnapshot, VerificationGap } from "../../types.ts";
+import type { CompactionMode, MetricsSnapshot, VerificationGap, VerificationGateStage } from "../../types.ts";
 import { aggregateProviderRoutes } from "../../domain/provider-evaluation.ts";
 import { classifyTelemetryFailure } from "../../domain/telemetry.ts";
 import { VERSION } from "../../constants.ts";
@@ -25,6 +25,21 @@ import {
   appendMetricsLog, appendMetricsSnapshot, getMetricsSummary, getExtractionCacheStats,
   effectivePromptInputTokens,
 } from "../../utils/cache.ts";
+
+const KNOWN_VERIFICATION_GAP_KINDS = {
+  "missing-section": true,
+  "missing-file": true,
+  "missing-read-file": true,
+  "missing-deleted-file": true,
+  "missing-error": true,
+  "missing-constraint": true,
+  "missing-decision": true,
+  "missing-goal": true,
+  "fabricated-file": true,
+  "inconsistency": true,
+  "missing-open-loops": true,
+  "unsupported-claim": true,
+} as const satisfies Record<VerificationGap["kind"], true>;
 
 function runType(rc: RcBase): "manual" | "auto" | "tool" {
   return rc.flags.skipCompact ? "tool" : rc.flags.autoTriggered ? "auto" : "manual";
@@ -147,7 +162,7 @@ export async function recordFailureMetrics(
   const failureKind = classifyTelemetryFailure(err, rc.cancellation.timedOut);
   const gate = err && typeof err === "object"
     ? err as {
-      score?: unknown; initialScore?: unknown; gapCount?: unknown; gapKinds?: unknown;
+      score?: unknown; initialScore?: unknown; gapCount?: unknown; gapKinds?: unknown; stage?: unknown;
       plannedAfterTokens?: unknown; plannedSavedTokens?: unknown; plannedYield?: unknown;
       estimatedAfterTokens?: unknown; estimatedSavedTokens?: unknown; estimatedYield?: unknown;
       retainedTailTokens?: unknown; summaryTokens?: unknown; summaryBudgetTokens?: unknown;
@@ -159,13 +174,12 @@ export async function recordFailureMetrics(
   const relaxedSoftBoundaries = Array.isArray(gate?.relaxedSoftBoundaries)
     ? gate.relaxedSoftBoundaries.filter((kind): kind is "recent-user-turn" | "anchor" | "topical" => typeof kind === "string" && softKinds.has(kind))
     : undefined;
-  const knownGapKinds = new Set<VerificationGap["kind"]>([
-    "missing-section", "missing-file", "missing-error", "missing-constraint", "missing-decision",
-    "missing-goal", "fabricated-file", "inconsistency", "missing-open-loops", "unsupported-claim",
-  ]);
   const gapKinds = Array.isArray(gate?.gapKinds)
-    ? gate.gapKinds.filter((kind): kind is VerificationGap["kind"] => typeof kind === "string" && knownGapKinds.has(kind as VerificationGap["kind"]))
+    ? gate.gapKinds.filter((kind): kind is VerificationGap["kind"] =>
+      typeof kind === "string" && Object.hasOwn(KNOWN_VERIFICATION_GAP_KINDS, kind))
     : undefined;
+  const verificationStage: VerificationGateStage | undefined =
+    gate?.stage === "post-synthesis" || gate?.stage === "post-state" ? gate.stage : undefined;
   const verificationScore = typeof gate?.score === "number" && Number.isFinite(gate.score) ? gate.score : undefined;
   const initialVerificationScore = typeof gate?.initialScore === "number" && Number.isFinite(gate.initialScore) ? gate.initialScore : undefined;
   const verificationGaps = typeof gate?.gapCount === "number" && Number.isInteger(gate.gapCount) && gate.gapCount >= 0 ? gate.gapCount : undefined;
@@ -205,6 +219,7 @@ export async function recordFailureMetrics(
     verificationGaps,
     remainingVerificationGaps: verificationGaps,
     verificationGapKinds: gapKinds,
+    verificationStage,
     phaseTimings: rc.phaseTimings,
     durationMs: Date.now() - rc.pipelineStart,
   }, rc.services);

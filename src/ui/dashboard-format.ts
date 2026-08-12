@@ -69,6 +69,7 @@ export function formatRunDetails(entry: CompactMetricsEntry | undefined, title: 
     lines.push("Repair: deterministic " + (entry.deterministicPatchCount ?? 0) + " | LLM " + (entry.llmPatched ? "yes" : "no") + " | quality floor " + (entry.qualityFloorUsed ? "yes" : "no"));
   }
   if (entry.failureKind) lines.push("Failure kind: " + entry.failureKind);
+  if (entry.verificationStage) lines.push("Verification gate: " + entry.verificationStage);
   if (entry.extractionCacheMissReason) lines.push("Extraction miss reason: " + entry.extractionCacheMissReason);
   if (entry.fallbackReason) lines.push("Reason: " + entry.fallbackReason);
   if (entry.phaseTimings?.length) {

@@ -23,12 +23,21 @@ section is about lifecycle.
 | --- | --- |
 | `/smart-compact` | Manual command. Explainable target-first preflight or direct args. Bypasses the adaptive pressure gate, not yield/verification gates. |
 | `session_before_compact` | Auto hook. Returns/stages a pending summary or runs under pressure; durable commit waits for matching `session_compact`. |
+| `agent_settled` | Opt-in pressure monitor. Requests `ctx.compact()` only; it never runs EESV or consumes/stages pending state. |
 | `smart_compact` tool | Agent-callable. Prepares a pending summary; never compacts mid-turn. |
 | `smart_recall` tool | Searches only the current project's bounded context graph; same session/branch ranks first. |
 | `smart_save_memory` tool | Persists one explicit user-confirmed project fact after secret/PII scrubbing. |
 
 A short-lived pending compaction is staged in the [`PendingSlot`](#pending-compaction-slot)
 and handed to Pi when compaction is applied.
+
+With `autoTriggerStrategy: "settled"`, the idle hook applies finite
+token/percentage, queue, in-flight, and per-session cooldown guards, then asks
+Pi for a normal host compaction. Pi re-enters `session_before_compact`, which
+reuses an already tool-staged summary or runs EESV exactly once under the
+host's signal and timeout. The matching `session_compact` event remains the
+only durable commit authority. This keeps proactive triggering out of the
+pending/commit state machine and preserves branch-provenance checks.
 
 ### Host dependency boundary
 
@@ -206,6 +215,11 @@ prose is never an input to the quality floor.
 Final verification runs again after continuity injection. The final scalar is
 reported as repaired **verification coverage**, alongside the pre-repair source
 score and fallback provenance; it is not labeled as raw synthesis quality.
+Verification failures retain only exhaustive content-free gap kinds and the
+rejecting gate (`post-synthesis` or `post-state`) in local telemetry. Summary
+evidence is never copied into failure metrics. Both gates remain mandatory:
+summary-derived continuity fields cannot become evidence for their own initial
+verification.
 Polarity checks are symmetric: adding negation to a positive fact is rejected
 just as removing negation from a prohibition is. Unresolved-error source
 snippets and fallback-rendered evidence share `summaryEvidenceLine()`, so
@@ -420,7 +434,7 @@ The code is organized into six layers, each with a single responsibility.
 
 | File | Responsibility |
 | --- | --- |
-| `src/index.ts` | extension registration, command parsing, auto-trigger hook |
+| `src/index.ts` | extension registration, command parsing, and host lifecycle hooks |
 | `src/constants.ts` | version, thresholds, prompts, config keys |
 | `src/types.ts` | shared types and discriminated unions |
 | `domain/provider-evaluation.ts` | advisory provider scenario matrix and route telemetry aggregation |
@@ -434,6 +448,7 @@ The code is organized into six layers, each with a single responsibility.
 | `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
 | `app/mode-policy.ts` | Auto selector and finite Fast/Balanced/Thorough policies; legacy Aggressive maps to Fast |
 | `app/pending-slot.ts` | encapsulated pending-compaction state cell |
+| `app/settled-auto-trigger.ts` | guarded proactive host compact requests; no EESV or pending-state ownership |
 | `app/steps/prepare.ts` | resolve config, provider caps, budgets, and cancellation; stage auth resolves lazily |
 | `app/steps/window.ts` | pick the prefix using provider-calibrated synthesis and deterministic post-processing bounds |
 | `app/steps/recover.ts` | recover full content for log-truncated messages |

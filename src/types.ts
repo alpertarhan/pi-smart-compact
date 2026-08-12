@@ -12,6 +12,7 @@ export type CompressionProfile = "light" | "balanced" | "aggressive";
 export type EffectiveCompactionMode = "fast" | "balanced" | "thorough";
 /** `aggressive` is accepted only as a legacy input and resolves to Fast. */
 export type CompactionMode = "auto" | EffectiveCompactionMode | "aggressive";
+export type AutoTriggerStrategy = "native-hook" | "settled";
 
 export interface ProfileConfig {
   summaryBudgetTokens: number;
@@ -33,6 +34,8 @@ export interface CompactConfig {
   summaryThinkingLevel: ThinkingLevel | null;
   segmentationThinkingLevel: ThinkingLevel | null;
   autoTrigger: boolean;
+  /** Native hook participation, or an opt-in proactive request after an idle agent run. */
+  autoTriggerStrategy: AutoTriggerStrategy;
   autoTriggerTimeoutMs: number;
   backupEnabled: boolean;
   backupDir: string;
@@ -112,6 +115,8 @@ export type TelemetryFailureKind =
   | "cancelled" | "timeout" | "rate-limit" | "authentication"
   | "budget" | "output-limit" | "provider" | "persistence"
   | "validation" | "verification" | "yield" | "internal";
+export type VerificationGateStage = "post-synthesis" | "post-state";
+
 
 export interface CompactMetricsEntry {
   ts: string;
@@ -170,6 +175,8 @@ export interface CompactMetricsEntry {
   remainingVerificationGaps?: number;
   /** Content-free kinds retained when verification fails before state commit. */
   verificationGapKinds?: VerificationGap["kind"][];
+  /** Which fail-closed gate rejected the candidate; no summary content is retained. */
+  verificationStage?: VerificationGateStage;
   phaseTimings?: PipelinePhaseTiming[];
   durationMs?: number;
   redactions?: number;

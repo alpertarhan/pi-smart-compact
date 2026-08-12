@@ -140,7 +140,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
     remainingGaps: postVerification.gaps,
   };
   const failure = verificationFailureMessage(postVerification);
-  if (failure) throw new VerificationGateError(postVerification, postInitialScore);
+  if (failure) throw new VerificationGateError(postVerification, postInitialScore, "post-state");
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
