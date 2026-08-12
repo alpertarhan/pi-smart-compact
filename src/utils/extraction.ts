@@ -8,7 +8,7 @@ import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_RETRY_WINDOW, ERR
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles } from "./file-needles.ts";
-import { classifyToolOperation, extractToolPath, sameToolOperation, toolOperationSignature } from "../domain/tool-semantics.ts";
+import { classifyToolOperation, extractShellFileOperations, extractToolPath, sameToolOperation, toolOperationSignature } from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
 import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 
@@ -108,7 +108,7 @@ export function extractMediaAttachments(msgs: LlmMessage[]): MediaAttachment[] {
   return out;
 }
 
-export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
+export function buildToolCallIndex(msgs: readonly LlmMessage[]): ToolCallIndex {
   const idx = new Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>();
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
@@ -135,21 +135,46 @@ export function buildToolCallIndex(msgs: LlmMessage[]): ToolCallIndex {
   return idx;
 }
 
-export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modified: StructuredExtraction["modifiedFiles"]; read: string[]; deleted: string[] } {
+export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): {
+  modified: StructuredExtraction["modifiedFiles"];
+  read: string[];
+  deleted: string[];
+  referenced: string[];
+} {
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const modMap = new Map<string, { toolCalls: number; lastIdx: number }>();
-  const readSet = new Set<string>();
-  const delSet = new Set<string>();
+  const readAt = new Map<string, number>();
+  const deletedAt = new Map<string, number>();
+  const referencedAt = new Map<string, number>();
 
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
+    for (const ref of extractFileRefs((JSON.stringify(m.content) ?? "").replace(/\\[nrt]/g, " "))) {
+      referencedAt.set(ref, i);
+    }
     if (m.role !== "toolResult" || m.isError) continue;
     const tc = tcIdx.get(m.toolCallId ?? "");
     if (!tc) continue;
+    const operation = classifyToolOperation(tc.arguments, tc.name);
+    if (operation === "execute") {
+      const resultText = extractText(m.content);
+      if (hasCommandFailureSignal(resultText)) continue;
+      const shell = extractShellFileOperations(tc.arguments);
+      for (const file of shell.modified) {
+        const existing = modMap.get(file);
+        modMap.set(file, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
+        deletedAt.delete(file);
+      }
+      for (const file of shell.deleted) {
+        deletedAt.set(file, i);
+        modMap.delete(file);
+        readAt.delete(file);
+      }
+      continue;
+    }
+
     const filePath = extractToolPath(tc.arguments);
     if (!filePath) continue;
-
-    const operation = classifyToolOperation(tc.arguments, tc.name);
     if (operation === "mutate") {
       // pi-toolkit truncation hides whether a write was a no-op, so a truncated
       // result is treated as modified (safe default); otherwise skip true no-ops.
@@ -157,23 +182,25 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): { modi
       if (isTruncated(resultText) || !NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
         modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
-        delSet.delete(filePath);
+        deletedAt.delete(filePath);
       }
     } else if (operation === "delete") {
-      delSet.add(filePath);
+      deletedAt.set(filePath, i);
       modMap.delete(filePath);
-      readSet.delete(filePath);
+      readAt.delete(filePath);
     } else if (operation === "read" || operation === "search" || operation === "list") {
-      // A successful access proves the path is present now. Never infer a
-      // deletion from source/search prose merely containing "removed".
-      readSet.add(filePath);
-      delSet.delete(filePath);
+      // A successful access proves the path is present now. Record the latest
+      // access index so tail caps preserve recently re-read files.
+      readAt.set(filePath, i);
+      deletedAt.delete(filePath);
     }
   }
 
   return {
     modified: [...modMap.entries()].map(([p, d]) => ({ path: p, toolCalls: d.toolCalls, lastModifiedIndex: d.lastIdx })),
-    read: [...readSet], deleted: [...delSet],
+    read: [...readAt.entries()].sort((a, b) => a[1] - b[1]).map(([file]) => file),
+    deleted: [...deletedAt.entries()].sort((a, b) => a[1] - b[1]).map(([file]) => file),
+    referenced: [...referencedAt.entries()].sort((a, b) => a[1] - b[1]).map(([file]) => file),
   };
 }
 
@@ -485,6 +512,15 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
   return null;
 }
 
+const FOLLOWUP_COMPLETION_RE = /\b(?:done|completed?|finished|implemented|fixed|resolved|updated|added|removed|shipped|tamamland[ıi]|tamamlad[ıi]m|bitti|[çc][öo]z[üu]ld[üu])\b/iu;
+const NEGATED_COMPLETION_RE = /\b(?:not|isn['’]?t|wasn['’]?t|hen[üu]z|de[ğg]il)\b.{0,20}\b(?:done|complete|finished|fixed|resolved|bitti)\b/iu;
+const FOLLOWUP_TOKEN_STOP: Readonly<Record<string, true>> = {
+  next: true, step: true, thing: true, todo: true, action: true, item: true,
+  follow: true, still: true, need: true, have: true, gotta: true,
+  eklenecek: true, duzeltilecek: true, düzeltilecek: true, gerekiyor: true,
+  yapalim: true, yapalım: true, kaldi: true, kaldı: true,
+};
+
 /** Extract open loops — unresolved tasks from the conversation */
 export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtraction): OpenLoop[] {
   const loops: OpenLoop[] = [];
@@ -590,6 +626,28 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
       });
     }
   }
+  // A follow-up is closed only by later, task-specific completion evidence in
+  // the same user turn. Generic "done" text cannot retire an unrelated loop.
+  for (const loop of loops) {
+    if (loop.type !== "follow-up" || loop.sourceIndex == null) continue;
+    const taskTokens = (loop.summary.toLowerCase().match(/[\p{L}\p{N}_-]{4,}/gu) ?? [])
+      .filter(token => !FOLLOWUP_TOKEN_STOP[token]);
+    if (!taskTokens.length) continue;
+    const end = Math.min(msgs.length, loop.sourceIndex + 50);
+    for (let index = loop.sourceIndex + 1; index < end; index++) {
+      const message = msgs[index];
+      if (message?.role === "user") break;
+      if (message?.role !== "assistant") continue;
+      const response = extractText(message.content);
+      const normalized = response.toLowerCase();
+      if (!FOLLOWUP_COMPLETION_RE.test(response) || NEGATED_COMPLETION_RE.test(response)) continue;
+      if (taskTokens.some(token => normalized.includes(token))) {
+        loop.status = "resolved";
+        break;
+      }
+    }
+  }
+
 
   return loops;
 }
@@ -623,29 +681,32 @@ export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomp
   const errors = recent(allErrors, EXTRACTION_LIMITS.ERRORS);
   const decisions = recent(allDecisions, EXTRACTION_LIMITS.DECISIONS);
   const constraints = recent(allConstraints, EXTRACTION_LIMITS.CONSTRAINTS);
+  const boundedTopics = recent(topics, EXTRACTION_LIMITS.TOPICS);
   const timeline = recent(allTimeline, EXTRACTION_LIMITS.TIMELINE);
   const mediaAttachments = recent(allMediaAttachments, EXTRACTION_LIMITS.MEDIA_ATTACHMENTS);
+  const allReferencedFiles = tracked.referenced;
+  const referencedFiles = recent(allReferencedFiles, EXTRACTION_LIMITS.REFERENCED_FILES);
   const overflow = {
     modifiedFiles: tracked.modified.length - modifiedFiles.length,
+    referencedFiles: allReferencedFiles.length - referencedFiles.length,
     readFiles: tracked.read.length - readFiles.length,
     deletedFiles: tracked.deleted.length - deletedFiles.length,
     errors: allErrors.length - errors.length,
     decisions: allDecisions.length - decisions.length,
     constraints: allConstraints.length - constraints.length,
+    topics: topics.length - boundedTopics.length,
     timeline: allTimeline.length - timeline.length,
     mediaAttachments: allMediaAttachments.length - mediaAttachments.length,
   };
   const evidenceOverflow = Object.fromEntries(
     Object.entries(overflow).filter(([, count]) => count > 0),
   );
-  const referencedFiles = Array.from(new Set(msgs
-    .flatMap(message => extractFileRefs((JSON.stringify(message.content) ?? "").replace(/\\[nrt]/g, " "))))).slice(0, 200);
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs.filter(m => m.role === "user").slice(-5).map(m => extractText(m.content));
   const lastErrors = errors.slice(-3).map(e => e.message);
   return {
     modifiedFiles, readFiles, deletedFiles, referencedFiles,
-    errors, decisions, constraints, topics, timeline, mediaAttachments,
+    errors, decisions, constraints, topics: boundedTopics, timeline, mediaAttachments,
     mainGoal, lastUserMessages, lastErrors, messageCount: msgs.length,
     ...(Object.keys(evidenceOverflow).length ? { evidenceOverflow } : {}),
   };

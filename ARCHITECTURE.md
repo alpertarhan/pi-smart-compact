@@ -213,11 +213,11 @@ Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 
 ## EESV hardening and control surfaces
 
-- **Canonical summary IR** accepts recognized H1/H2/H3 headings, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
-- **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Provenance is persisted and shown before optional approval.
+- **Canonical summary IR** accepts recognized H1/H2/H3 headings outside fenced code, preserves Progress subsections, and merges duplicate canonical kinds before state mutation.
+- **Typed verification gaps** drive mandatory deterministic repair; collision-aware path needles prevent basename cross-satisfaction. Tool/file provenance and normalized semantic evidence are indexed once per verification pass, and truncated or delimiter-incomplete LLM patches are rejected. Provenance is persisted and shown before optional approval.
 - **Fine tool semantics** separate read/search/list/mutate/delete/execute operations. Pruning deduplicates only identical idempotent access signatures.
 - **Unified token planning** uses a run-bound estimator with bounded process-shared provider/model calibration, counts structured tool-call arguments, preserves an adaptive recent tail, targets mode-specific post-compaction headroom, reserves bounded deterministic post-summary state sections, clamps every provider request to the model's advertised output limit, and reserves/reconciles every request against aggregate prompt/output-token caps. Missing provider usage is estimated conservatively. Tool exchanges remain atomic; oversized result bodies are head/tail bounded only for synthesis after full deterministic extraction.
-- **Security boundaries** scrub high-confidence secrets before provider calls and durable cache/backup/state writes; PII scrubbing is opt-in. Backups remain in memory until confirmed apply.
+- **Security boundaries** recursively scrub structured messages before host serialization or provider calls, redact secret-bearing primitive values, and scrub plus hard-cap exploration tool feedback. PII scrubbing is opt-in. Backups remain unmaterialized until confirmed apply.
 - **Policy controls** include focus weighting, exact call/latency budgets, default fail-closed manual approval, online damage monitoring, and persisted open-loop overrides. Interactive review time is outside the pipeline deadline.
 - **Release gates** (`bun run gate`, `bun run bench`) cover adversarial parser, verification, tool, cache, budget, scrub and damage fixtures plus bounded p95 regressions for extraction, pruning, chunking, summary parsing, and path matching.
 
@@ -249,36 +249,41 @@ leaving one content-free safe-fallback notice in the UI.
 | `CompactionState` | `utils/state.ts` | immutable project/session/branch-head snapshots; descendants resolve the newest matching ancestor and siblings never overwrite each other |
 | Continuity Ledger | `utils/state.ts` | prior facts carry forward until positive resolution evidence or an explicit override; goal shifts become non-destructive breadcrumbs |
 | Cross-compaction delta | `utils/state.ts` | "Changes Since Last Compaction" section |
-| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | bounded SHA-256 prefix fingerprint + tail; safe only when the pruned prefix still matches |
+| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | bounded SHA-256 prefix fingerprint + tail; an exact pruned-payload match is reused directly, while incremental reuse is allowed only when the pruned prefix still matches |
 | Synthesis cache | `infra/synthesis-cache.ts` | behavior key includes normalized focus, route, mode, profile limits, run-level call/input/latency limits, and reasoning |
-| Session-log recovery | `utils/session-log.ts` | async bounded-memory JSONL scan with event-loop yields; bypasses pi-toolkit truncation by entry-id mapping without dropping late active-branch IDs at a fixed byte cap |
+| Session-log recovery | `utils/session-log.ts` | async bounded-memory JSONL scan with event-loop yields and a bounded path cache; bypasses pi-toolkit truncation by entry-id mapping without dropping late active-branch IDs at a fixed byte cap |
 | Project fingerprint | `utils/fingerprint.ts` | locked read/merge/write; language/framework/key dirs stay bounded and `sessionCount` tracks distinct hashed session identities |
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
 | Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 non-structural nodes per project |
 
 Apply-confirmed verified state is queued and duplicate updates coalesce only
-for the exact project/session/branch head, then indexed on the next event-loop
-turn so SQLite work is not part of the native
-compaction hook's latency. `infra/context-graph.ts` adapts the same synchronous
-query/transaction contract to `bun:sqlite` in Bun tests and `node:sqlite`
-`DatabaseSync` in Pi's Node runtime; the packed release audit exercises both.
-The referenced queue timer survives extension
+for the exact project/session/branch head. Replacing an existing key refreshes
+that pending value even at capacity; a divergent 65th key is rejected rather
+than evicting accepted work. The next event-loop turn drains the accepted
+batch through one reused SQLite connection, so connection setup and graph work
+are not part of the native compaction hook's latency.
+`infra/context-graph.ts` adapts the same fail-closed transaction contract to
+`bun:sqlite` in Bun tests and `node:sqlite` `DatabaseSync` in Pi's Node runtime;
+the packed release audit exercises both. The queue timer survives extension
 shutdown/reload in the process; graph data is derived and a later cumulative
-state safely supersedes a missed update after a hard process kill. Fact occurrences are branch-head scoped; state, recall, and resolution use the
+state safely supersedes a missed update after a hard process kill. Fact
+occurrences are branch-head scoped; state, recall, and resolution use the
 complete host-visible branch ancestry before equivalent facts are deduplicated.
 Schema v1 preserves user-confirmed manual memory but resets older derived
 compaction nodes once so sibling branches cannot inherit a last-writer identity.
-Recall starts from FTS5 lexical matches, expands one hop
-through file-reference edges, then applies session, branch, fact-kind,
-confidence, recency, and explicit-memory weights. Exact equivalent facts are
-deduplicated before bounded output. Resolved/superseded state is removed from
-the active FTS index; another project's rows are never eligible.
+Recall starts from FTS5 lexical matches whose rowids are the owning
+`context_nodes` rowids, expands one hop through file-reference edges, then
+applies session, branch, fact-kind, confidence, recency, and explicit-memory
+weights. Exact equivalent facts are deduplicated before bounded output.
+Resolved/superseded state is removed from the active FTS index; another
+project's rows are never eligible.
 
 **Important retention limits:** pending in-memory compaction 5 min · exploration
 tool-support cache 1 h / 128 routes · token calibration 128 routes · extraction
-cache 1 h · compaction state 7 d · context graph 2,000 non-structural fact nodes
-and 500 active manual memories per project · remediation hints 7 d · metrics and damage
-JSONL logs 5 MiB each.
+cache 1 h · compaction state 7 d / 64 snapshots · context graph 2,000
+non-structural fact nodes, 64 pending branch-head updates, and 500 active manual
+memories per project · remediation hints 7 d · metrics and damage JSONL logs
+5 MiB each · one exploration tool result 12,000 characters.
 
 ## Concurrency & safety model
 
@@ -296,30 +301,35 @@ loop). `consume()` returns a discriminated result:
 | `ok` | fresh payload for this session |
 | `empty` | nothing staged |
 | `expired` | older than the 5-minute TTL |
-| `mismatch` | staged by a **different** session (cross-session leak guard) |
+| `mismatch` | staged by a different session, project, or non-ancestor branch head |
 
 Session identity comes from [`infra/session-identity.ts`](./src/infra/session-identity.ts):
 a real id when the host exposes one, otherwise a per-call unforgeable
-`unresolved:<uuid>` — two unresolved sessions can never collide.
+`unresolved:<uuid>` — two unresolved sessions can never collide. Apply also
+requires the staged branch head to be the current head or one of its visible
+ancestors, so navigation to a sibling branch cannot consume stale payload.
 
 ### Cancellation deadlines
 
-Some providers ignore `AbortSignal`. The auto-trigger therefore uses a shared
-[`ExternalCancellation`](./src/app/run-smart-compact.ts) handle as a second line
-of defense: an outer `setTimeout` fires `abort()` and sets `timedOut`, and every
-side-effect gate in the orchestrator checks that flag before writing state or
-applying compaction. The caller waits for safe pipeline unwind; no unsafe
-`Promise.race` hard return can leave work running past the hook lifecycle.
+Automatic compaction combines the host event's `AbortSignal` with its own
+deadline through a shared [`ExternalCancellation`](./src/app/run-smart-compact.ts)
+handle. Either source calls `abort()`, and every side-effect gate in the
+orchestrator checks the shared state before writing or applying compaction.
+The caller waits for safe pipeline unwind; no unsafe `Promise.race` hard return
+can leave work running past the hook lifecycle.
 
 ### Filesystem & concurrency
 
 JSON/text cache writes use [`src/infra/fs.ts`](./src/infra/fs.ts): private
 artifact directories are 0700 and files are 0600; atomic temp-file + rename
 prevents half-truncated readers but intentionally does not claim fsync/power-loss
-durability. Append/trim operations use a `mkdir`-based cross-process lock and
-fail closed if ownership cannot be acquired, so sessions cannot interleave
-bytes. SQLite supplies its own WAL durability. Native continuity handoffs are
-one-shot, bounded, and keyed by project + session + branch head.
+durability. Append/trim operations run asynchronously, yield before synchronous
+filesystem work, and hold a `mkdir`-based cross-process lock for the complete
+transaction. Lock ownership is reclaimed by atomic rename, never by deleting a
+possibly renewed lease in place. Sessions therefore cannot interleave bytes or
+steal a live successor's lock. SQLite supplies its own WAL durability. Native
+continuity handoffs are one-shot, bounded, and keyed by project + session +
+branch head.
 
 ## Provider awareness
 
@@ -332,7 +342,7 @@ drives pipeline behavior:
 | --- | --- |
 | `maxOutputTokens` | caps synthesis / patch budgets |
 | `supportsTools` (`true \| false \| "probe"`) | exploration tool-call probing |
-| `concurrencyLimit` | batch synthesis wave scheduling |
+| `concurrencyLimit` | bounded batch-synthesis worker-pool width |
 | `cacheStrategy` | prompt-cache retention per call |
 | `timeoutMultiplier` | auto-trigger hard-timeout headroom |
 | `singlePassTokenMultiplier` | single-pass vs chunked threshold |
@@ -460,14 +470,14 @@ All external-world interaction.
 
 | File | Responsibility |
 | --- | --- |
-| `infra/fs.ts` | atomic writes, advisory locks |
+| `infra/fs.ts` | atomic writes, advisory locks, and yielding async append/trim |
 | `infra/paths.ts` | canonical cache/session/backup paths |
 | `infra/git.ts` | cached git-root discovery |
 | `infra/clock.ts` | injectable wall clock |
 | `infra/llm-client.ts` | LLM seam, custom-Codex wire cap, and ChatGPT Codex stream watchdog |
 | `infra/services.ts` | per-run services container |
 | `infra/session-identity.ts` | robust session-id resolution with opaque `unresolved:` fallback |
-| `infra/ai-messages.ts` | boundary adapters between `LlmMessage` and pi-ai `Message` |
+| `infra/ai-messages.ts` | validated message upcasts and recursive pre-serialization redaction |
 
 ### Utility layer (`src/utils/`)
 

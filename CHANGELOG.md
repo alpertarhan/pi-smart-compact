@@ -1,5 +1,22 @@
 # Changelog
 
+## [9.1.0] - 2026-08-11
+
+### Fixed
+
+- Provider-bound messages are recursively redacted before host serialization, secret-bearing object keys redact non-string primitive values, and exploration tool results are redacted and hard-capped before re-entering model context.
+- Native apply now requires matching project/session branch ancestry, automatic hooks forward host cancellation into the shared abort path, stale run-lock leases are reclaimed atomically, and retained state snapshots are capped.
+- Incremental extraction preserves bounded evidence and exact cache payloads; shell mutation tracking covers explicit literal targets without treating arbitrary command text as paths.
+- Canonical summary parsing ignores headings inside fenced code, verifier patches reject truncation and unclosed fences, file-operation provenance is indexed once, and exact done-file checks no longer accept path collisions.
+- Stable normalized goal identities prevent paraphrase-only goal shifts, and task-specific completion evidence can close completed follow-up loops without generic acknowledgements doing so.
+- Zero/invalid context-window metadata follows one safe percentage policy, metrics tail reads honor the actual byte count, and nested `provider/model` identifiers are accepted by command and tool routing.
+
+### Performance
+
+- Window planning and extraction reuse token, tool-call, and referenced-file indexes; exact pruned extraction cache hits bypass recomputation.
+- Batch synthesis uses a bounded worker pool, session-log path discovery is cached, metrics appends yield off the event loop, state ancestry lookup is filename-indexed, and pending-slot newest lookup is constant-time.
+- Context-graph FTS rowids match their content rows, queued same-branch updates refresh in place, SQLite transactions share fail-closed rollback semantics, and one connection is reused per drain.
+
 ## [9.0.0] - 2026-08-09
 
 ### Changed

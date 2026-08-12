@@ -307,27 +307,26 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
         generationFallbacks.push((totalBatches - batchCallLimit) + " synthesis batch budget fallback(s)");
       }
       let completed = totalBatches - batchCallLimit;
-      for (let wave = 0; wave < batchCallLimit; wave += concurrency) {
-        if (rc.services.budget.reason()) {
-          for (let index = wave; index < totalBatches; index++) {
-            results[index] = batches[index].map(chunk => failedChunkSummary(chunk));
-          }
-          rc.notify("Synthesis budget reached · remaining batches use deterministic fallback", "info");
-          cacheable = false;
-          generationFallbacks.push("synthesis budget exhausted during batch wave");
-          break;
-        }
-        const waveBatches = batches.slice(wave, Math.min(wave + concurrency, batchCallLimit));
-        const wavePromises = waveBatches.map(async (batch, i) => {
-          const idx = wave + i;
-          try {
-            results[idx] = await summarizeBatch(
-              batch, extraction, rc.summaryModel, summaryAuth, rc.cancellation.signal, rc.services,
-              batchOutputLimit(rc.mode, batch.length, rc.providerCaps.maxOutputTokens), rc.sessionId,
-            );
-          } catch (err) {
-            errors[idx] = err instanceof Error ? err : new Error(String(err));
-            results[idx] = batch.map(ch => failedChunkSummary(ch));
+      let nextBatch = 0;
+      let budgetStopped = false;
+      const runWorker = async (): Promise<void> => {
+        while (true) {
+          const idx = nextBatch++;
+          if (idx >= batchCallLimit) return;
+          if (budgetStopped || rc.services.budget.reason()) {
+            budgetStopped = true;
+            results[idx] = batches[idx].map(chunk => failedChunkSummary(chunk));
+          } else {
+            try {
+              const batch = batches[idx];
+              results[idx] = await summarizeBatch(
+                batch, extraction, rc.summaryModel, summaryAuth, rc.cancellation.signal, rc.services,
+                batchOutputLimit(rc.mode, batch.length, rc.providerCaps.maxOutputTokens), rc.sessionId,
+              );
+            } catch (err) {
+              errors[idx] = err instanceof Error ? err : new Error(String(err));
+              results[idx] = batches[idx].map(chunk => failedChunkSummary(chunk));
+            }
           }
           completed++;
           showProgressOverlay(rc.ctx, {
@@ -336,8 +335,14 @@ export async function summarizeConversation(rc: ExtractedRc): Promise<Synthesize
             model: rc.modelLabel, profile: rc.profile, extraction, explorationRounds,
             totalBatches, currentBatch: completed,
           });
-        });
-        await Promise.all(wavePromises);
+        }
+      };
+      const workerCount = Math.max(1, Math.min(concurrency, batchCallLimit));
+      await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+      if (budgetStopped) {
+        rc.notify("Synthesis budget reached · remaining batches use deterministic fallback", "info");
+        cacheable = false;
+        generationFallbacks.push("synthesis budget exhausted during batch pool");
       }
       for (const r of results) if (r) summaries.push(...r);
       const failedBatches = errors.filter(Boolean);

@@ -6,10 +6,11 @@ import type {
 import { advance } from "../run-context.ts";
 import type { EffectiveCompactionMode, LlmMessage, ProfileConfig, ProviderCapabilities, SessionMessageEntry } from "../../types.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
-import { advancePastToolCallBoundary, guardToolCallBoundary, smartKeepBoundaryCandidates } from "../../utils/helpers.ts";
+import { advancePastToolCallBoundary, buildToolCallBoundaryIndex, guardToolCallBoundary, smartKeepBoundaryCandidates } from "../../utils/helpers.ts";
 import { resolveSessionId } from "../../infra/session-identity.ts";
 import { MAX_STATE_OPEN_LOOPS, MIN_COMPACTION_SAVING_RATIO, POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../../constants.ts";
-import type { TokenEstimator } from "../../utils/tokens.ts";
+import { safeContextPercent, type TokenEstimator } from "../../utils/tokens.ts";
+import { isRecord } from "../../utils/type-guards.ts";
 
 export type { CompactionWindowPlan } from "../run-context.ts";
 
@@ -62,7 +63,12 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
     msgs, branch, messageTokens, totalTokens, modelContextWindow, mode, profileCfg, force, overflowedContext,
     finalSummaryAllowanceTokens,
   } = input;
-  const allMessageTokens = messageTokens.reduce((sum, tokens) => sum + tokens, 0);
+  const tokenPrefix = new Array<number>(messageTokens.length + 1);
+  tokenPrefix[0] = 0;
+  for (let index = 0; index < messageTokens.length; index++) {
+    tokenPrefix[index + 1] = tokenPrefix[index] + messageTokens[index];
+  }
+  const allMessageTokens = tokenPrefix[messageTokens.length];
   // Host usage can include system prompt, tool schemas, images, and provider
   // accounting that are absent from our message estimator. Treat any positive
   // remainder as uncompactable fixed context. Scaling message estimates up to
@@ -101,25 +107,31 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
   }
 
   const relaxedSoftBoundaries: RelaxedSoftBoundary[] = [];
-  const retainedAt = (from: number) => Math.round(messageTokens.slice(from).reduce((sum, tokens) => sum + tokens, 0) * messageScale);
+  const retainedAt = (from: number) => Math.round((allMessageTokens - tokenPrefix[from]) * messageScale);
+  const toolCallIndex = buildToolCallBoundaryIndex(msgs);
   // Message boundaries can overshoot the token ceiling by one message; that
   // baseline is the tightest plan this pipeline can represent.
   const effectiveRetentionCeiling = Math.max(retentionCeiling, retainedAt(keepFrom));
   let hardBoundaryAdjusted = false;
   const trySoftBoundary = (kind: RelaxedSoftBoundary, candidate: number | undefined) => {
     if (candidate === undefined || candidate >= keepFrom) return;
-    const guarded = guardToolCallBoundary(msgs, candidate);
+    const guarded = guardToolCallBoundary(msgs, candidate, toolCallIndex);
     if (retainedAt(guarded) <= effectiveRetentionCeiling) {
       keepFrom = guarded;
       hardBoundaryAdjusted ||= guarded !== candidate;
     } else relaxedSoftBoundaries.push(kind);
   };
 
-  const users = msgs
-    .map((entry, index) => ({ index, role: (entry.message as { role?: string })?.role }))
-    .filter(entry => entry.role === "user");
-  const protectedUser = users.at(users.length >= 2 ? -2 : -1);
-  trySoftBoundary("recent-user-turn", protectedUser?.index);
+  let userOrdinal = 0;
+  let protectedUserIndex: number | undefined;
+  for (let index = msgs.length - 1; index >= 0; index--) {
+    const message = msgs[index].message;
+    if (!isRecord(message) || message.role !== "user") continue;
+    userOrdinal++;
+    protectedUserIndex = index;
+    if (userOrdinal === 2) break;
+  }
+  trySoftBoundary("recent-user-turn", protectedUserIndex);
 
   const anchor = smartKeepBoundaryCandidates(msgs, keepFrom, branch).find(candidate => candidate.kind === "anchor");
   trySoftBoundary("anchor", anchor?.keepFrom);
@@ -127,15 +139,15 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
   trySoftBoundary("topical", topical?.keepFrom);
 
   const boundaryBeforeHardGuard = keepFrom;
-  const backwardBoundary = guardToolCallBoundary(msgs, keepFrom);
+  const backwardBoundary = guardToolCallBoundary(msgs, keepFrom, toolCallIndex);
   const forwardBoundary = retainedAt(backwardBoundary) > effectiveRetentionCeiling
-    ? advancePastToolCallBoundary(msgs, keepFrom)
+    ? advancePastToolCallBoundary(msgs, keepFrom, toolCallIndex)
     : keepFrom;
   keepFrom = forwardBoundary > keepFrom && forwardBoundary < msgs.length && retainedAt(forwardBoundary) <= effectiveRetentionCeiling
     ? forwardBoundary
     : backwardBoundary;
   hardBoundaryAdjusted ||= keepFrom !== boundaryBeforeHardGuard;
-  const compactTokens = Math.round(messageTokens.slice(0, keepFrom).reduce((sum, tokens) => sum + tokens, 0) * messageScale);
+  const compactTokens = Math.round(tokenPrefix[keepFrom] * messageScale);
   const retainedTokens = retainedAt(keepFrom);
   const projectedAfterTokens = fixedContextTokens + retainedTokens + finalSummaryAllowance;
   const projectedSavedTokens = Math.max(0, totalTokens - projectedAfterTokens);
@@ -145,7 +157,8 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
     : fixedContextTokens + effectiveRetentionCeiling + finalSummaryAllowance;
 
   let reason: CompactionPlanReason = "viable";
-  if ((msgs[keepFrom]?.message as { role?: string } | undefined)?.role === "toolResult") reason = "unsafe-tool-boundary";
+  const firstKeptMessage = msgs[keepFrom]?.message;
+  if (isRecord(firstKeptMessage) && firstKeptMessage.role === "toolResult") reason = "unsafe-tool-boundary";
   else if (keepFrom <= 0) reason = "no-eligible-prefix";
   else if (retainedTokens > effectiveRetentionCeiling) reason = "retention-target-exceeded";
   else if (!force && modelContextWindow && projectedAfterTokens > targetAfterTokens) reason = "mode-target-not-met";
@@ -183,7 +196,9 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
   }
 
   const mode = rc.mode ?? (rc.profile ? modeFromLegacyProfile(rc.profile) : "balanced");
-  const overflowedContext = !!rc.flags.overflowRecovery || (!!rc.ctx.model && totalTokens > rc.ctx.model.contextWindow);
+  const modelContextWindow = rc.ctx.model?.contextWindow;
+  const overflowedContext = !!rc.flags.overflowRecovery
+    || (Number.isFinite(modelContextWindow) && (modelContextWindow ?? 0) > 0 && totalTokens > (modelContextWindow as number));
   const plan = planCompactionWindow({
     msgs,
     branch: branch as unknown[],
@@ -213,7 +228,7 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
     );
   }
 
-  const contextPercent = rc.ctx.model && totalTokens ? totalTokens / rc.ctx.model.contextWindow * 100 : 0;
+  const contextPercent = safeContextPercent(totalTokens, modelContextWindow);
   if (rc.flags.force && rc.config.minContextPercent > 0 && contextPercent < rc.config.minContextPercent) {
     rc.notify(
       "Manual compaction override at " + Math.round(contextPercent) + "% (" + totalTokens.toLocaleString() +

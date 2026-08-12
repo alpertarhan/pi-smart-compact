@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { CompactConfig } from "../src/types.ts";
 import { DEFAULT_CONFIG } from "../src/constants.ts";
-import { resolveModels } from "../src/index.ts";
+import { findModelById, resolveModels } from "../src/index.ts";
 
 // Minimal mock: resolveModels only touches modelRegistry.find,
 // modelRegistry.getAvailable and ctx.model, so we cast a stub.
@@ -78,4 +78,10 @@ describe("resolveModels precedence", () => {
       sumModel: OPENAI, segModel: OPENAI, verifyModel: OPENAI,
     });
   });
+  it("preserves slashes inside nested provider model identifiers", () => {
+    const nested = mkModel("openrouter", "google/gemini-2.5-pro");
+    const ctx = mkCtx({ models: [nested], session: nested });
+    expect(findModelById(ctx, "openrouter/google/gemini-2.5-pro")).toBe(nested);
+  });
+
 });

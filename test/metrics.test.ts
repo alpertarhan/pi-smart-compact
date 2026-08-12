@@ -24,10 +24,10 @@ describe("metrics reporting", () => {
     home = await loadWithHome();
   });
 
-  it("writes and summarizes profile/provider comparisons", () => {
+  it("writes and summarizes profile/provider comparisons", async () => {
     const svc = services.createServices();
-    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", model: "openai/gpt", method: "single-pass", status: "success", durationMs: 1000, tokensSaved: 5000, verificationScore: 95 }, svc);
-    cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", model: "anthropic/claude", method: "eesv", status: "timeout", durationMs: 2000, tokensSaved: 9000, verificationScore: 90 }, svc);
+    await cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", model: "openai/gpt", method: "single-pass", status: "success", durationMs: 1000, tokensSaved: 5000, verificationScore: 95 }, svc);
+    await cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", model: "anthropic/claude", method: "eesv", status: "timeout", durationMs: 2000, tokensSaved: 9000, verificationScore: 90 }, svc);
     const report = metricsReport.buildMetricsReport(cache.readMetricsLog());
     expect(report).toContain("Profile comparison");
     expect(report).toContain("balanced: n=1");
@@ -74,9 +74,9 @@ describe("metrics reporting", () => {
     expect(snapshot.providerRoutes?.find(route => route.stage === "verify")?.qualityScore).toBeUndefined();
   });
 
-  it("persists schema-v2 failure taxonomy without error text", () => {
+  it("persists schema-v2 failure taxonomy without error text", async () => {
     const svc = services.createServices();
-    recordFailureMetrics({
+    await recordFailureMetrics({
       services: svc,
       cancellation: { timedOut: false },
       flags: { autoTriggered: true },
@@ -92,13 +92,13 @@ describe("metrics reporting", () => {
     expect(JSON.stringify(entry)).not.toContain("secret provider body");
   });
 
-  it("persists content-free verification diagnostics for pre-state failures", () => {
+  it("persists content-free verification diagnostics for pre-state failures", async () => {
     const svc = services.createServices();
     const error = Object.assign(new Error("Verification gate rejected summary: secret evidence"), {
       name: "VerificationGateError", score: 92, initialScore: 64, gapCount: 3,
       gapKinds: ["inconsistency", "fabricated-file", "unsupported-claim"],
     });
-    recordFailureMetrics({
+    await recordFailureMetrics({
       services: svc,
       cancellation: { timedOut: false },
       flags: { autoTriggered: false },
@@ -115,7 +115,7 @@ describe("metrics reporting", () => {
     expect(JSON.stringify(entry)).not.toContain("secret evidence");
   });
 
-  it("persists content-free yield-gate diagnostics without summary text", () => {
+  it("persists content-free yield-gate diagnostics without summary text", async () => {
     const svc = services.createServices();
     const error = Object.assign(new Error("Final summary estimate misses target"), {
       name: "YieldGateError", plannedAfterTokens: 500, plannedSavedTokens: 500, plannedYield: 0.5,
@@ -123,7 +123,7 @@ describe("metrics reporting", () => {
       retainedTailTokens: 400, summaryTokens: 300, summaryBudgetTokens: 100,
       targetAfterTokens: 600, relaxedSoftBoundaries: ["anchor"], hardBoundaryAdjusted: true,
     });
-    recordFailureMetrics({
+    await recordFailureMetrics({
       services: svc, cancellation: { timedOut: false }, flags: { autoTriggered: false },
       summaryModel: { provider: "openai", id: "gpt" }, profile: "balanced", mode: "balanced",
       modelLabel: "openai/gpt", pipelineStart: Date.now(),
@@ -136,8 +136,8 @@ describe("metrics reporting", () => {
     expect(JSON.stringify(entry)).not.toContain("Final summary estimate");
   });
 
-  it("writes a local html dashboard", () => {
-    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success", durationMs: 1000 }, services.createServices());
+  it("writes a local html dashboard", async () => {
+    await cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success", durationMs: 1000 }, services.createServices());
     const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
     expect(fp).toBeTruthy();
     expect(fs.existsSync(fp!)).toBe(true);
@@ -148,10 +148,10 @@ describe("metrics reporting", () => {
     expect(html).toContain("Quality drilldown");
   });
 
-  it("renders >=85 Data Confidence, canary deltas, and stage provider evidence", () => {
+  it("renders >=85 Data Confidence, canary deltas, and stage provider evidence", async () => {
     const svc = services.createServices();
     for (let index = 0; index < 40; index++) {
-      cache.appendMetricsLog("trust-" + index, {
+      await cache.appendMetricsLog("trust-" + index, {
         runId: "run-dashboard-" + index,
         metricsSchemaVersion: 2, version: VERSION, releaseChannel: index < 20 ? "stable" : "canary",
         status: "success", provider: "openai", model: "openai/gpt", method: "eesv",
@@ -207,18 +207,41 @@ describe("metrics reporting", () => {
     expect(summary.cacheHitRate).toBeCloseTo(40_000 / 110_000);
   });
 
-  it("skips corrupt jsonl rows instead of dropping all metrics", () => {
+  it("skips corrupt jsonl rows instead of dropping all metrics", async () => {
     const svc = services.createServices();
-    cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success" }, svc);
+    await cache.appendMetricsLog("s1", { profile: "balanced", provider: "openai", status: "success" }, svc);
     const logPath = path.join(home, ".pi", "agent", ".cache", "compact-metrics.jsonl");
     fs.appendFileSync(logPath, "{not-json}\n");
-    cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", status: "error" }, svc);
+    await cache.appendMetricsLog("s2", { profile: "aggressive", provider: "anthropic", status: "error" }, svc);
     const entries = cache.readMetricsLog();
     expect(entries.map(e => e.sessionId)).toEqual(["s1", "s2"]);
   });
 
-  it("escapes dashboard table values", () => {
-    cache.appendMetricsLog("s1", { profile: "<script>alert(1)</script>", provider: "openai", status: "success" }, services.createServices());
+  it("honors readSync bytesRead when the metrics file shrinks during a tail read", () => {
+    const logPath = path.join(home, ".pi", "agent", ".cache", "compact-metrics.jsonl");
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.writeFileSync(logPath, "x".repeat(128));
+    const payload = Buffer.from('{"ts":"now","sessionId":"short-read"}\n');
+    const originalReadSync = fs.readSync;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(fs, "readSync");
+    Object.defineProperty(fs, "readSync", {
+      configurable: true,
+      writable: true,
+      value: (_fd: number, buffer: Buffer) => {
+        payload.copy(buffer);
+        return payload.length;
+      },
+    });
+    try {
+      expect(cache.readMetricsLog().map(entry => entry.sessionId)).toEqual(["short-read"]);
+    } finally {
+      if (originalDescriptor) Object.defineProperty(fs, "readSync", originalDescriptor);
+      else Object.defineProperty(fs, "readSync", { configurable: true, writable: true, value: originalReadSync });
+    }
+  });
+
+  it("escapes dashboard table values", async () => {
+    await cache.appendMetricsLog("s1", { profile: "<script>alert(1)</script>", provider: "openai", status: "success" }, services.createServices());
     const fp = metricsReport.writeMetricsDashboard(cache.readMetricsLog());
     const html = fs.readFileSync(fp!, "utf8");
     expect(html).not.toContain("<script>alert(1)</script>");

@@ -5,7 +5,7 @@
  * boundary; repair logic switches on `kind` and never reparses its own prose.
  */
 
-import type { Model, Api, ProviderHeaders } from "@earendil-works/pi-ai";
+import type { Model, Api, ProviderHeaders, TextContent } from "@earendil-works/pi-ai";
 import type { CompactionState, StructuredExtraction, VerificationGap, VerificationResult, LlmMessage } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, LIKELY_ERROR_RE, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
@@ -17,6 +17,8 @@ import * as log from "../utils/logger.ts";
 import { parseSummary, findSection, appendToSection, renderSummary, summaryEvidenceLine, upsertSection } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
+import { classifyToolOperation, extractToolPath, normalizeToolName, type ToolOperation } from "../domain/tool-semantics.ts";
+import { lruGet, lruSet } from "../utils/lru.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 export interface VerificationEvidence {
   sourceMessages?: readonly LlmMessage[];
@@ -45,9 +47,44 @@ function classifyOutcomeClaim(claim: string): "test" | "build" | "release" | "er
   return "generic";
 }
 
+interface SuccessfulToolEvidence {
+  name: string;
+  operation: ToolOperation;
+  command: string;
+  path?: string;
+  result: string;
+}
+
+const successfulToolEvidenceCache = new WeakMap<readonly LlmMessage[], SuccessfulToolEvidence[]>();
+
+function successfulToolEvidence(messages: readonly LlmMessage[]): SuccessfulToolEvidence[] {
+  const cached = successfulToolEvidenceCache.get(messages);
+  if (cached) return cached;
+  const toolCalls = buildToolCallIndex(messages);
+  const evidence: SuccessfulToolEvidence[] = [];
+  for (const message of messages) {
+    if (message.role !== "toolResult" || message.isError) continue;
+    const call = toolCalls.get(message.toolCallId ?? "");
+    if (!call) continue;
+    const result = extractText(message.content).slice(0, 8_000);
+    if (!result.trim() || LIKELY_ERROR_RE.test(result)) continue;
+    const command = [call.arguments.command, call.arguments.cmd, call.arguments.script]
+      .find((value): value is string => typeof value === "string") ?? "";
+    evidence.push({
+      name: normalizeToolName(call.name),
+      operation: classifyToolOperation(call.arguments, call.name),
+      command,
+      path: extractToolPath(call.arguments),
+      result,
+    });
+  }
+  successfulToolEvidenceCache.set(messages, evidence);
+  return evidence;
+}
+
 function successfulToolSupportsClaim(
   claim: string,
-  messages: readonly LlmMessage[],
+  tools: readonly SuccessfulToolEvidence[],
   extraction: StructuredExtraction,
 ): boolean {
   const shape = semanticShape(claim);
@@ -56,23 +93,31 @@ function successfulToolSupportsClaim(
     && hasSemanticEvidence(claim, error.message))) return true;
   if (category === "file" && extraction.modifiedFiles.some(file => claim.toLowerCase().includes(file.path.toLowerCase()))) return true;
 
-  // Positive outcome claims require host/tool evidence. Assistant prose is an
-  // untrusted assertion even when it repeats the claim exactly.
-  for (const message of messages) {
-    if (message.role !== "toolResult" || message.isError) continue;
-    const bounded = extractText(message.content).slice(0, 8_000);
-    if (!bounded.trim() || LIKELY_ERROR_RE.test(bounded)) continue;
-    if (hasSemanticEvidence(claim, bounded)) return true;
-    const lower = bounded.toLowerCase();
+  // A result can prove only the operation that produced it. This rejects, for
+  // example, "All tests passed" text returned by a read/search tool.
+  for (const tool of tools) {
+    const operationText = tool.name + " " + tool.command;
+    const operationSupports = category === "test"
+      ? /\b(?:test|tests|pytest|jest|vitest|mocha|rspec)\b/i.test(operationText)
+      : category === "build"
+        ? /\b(?:build|compile|typecheck|tsc|check)\b/i.test(operationText)
+        : category === "release"
+          ? /\b(?:deploy|publish|release)\b/i.test(operationText)
+          : category === "file"
+            ? tool.operation === "mutate" || tool.operation === "delete"
+            : category === "error"
+              ? tool.operation === "execute" || tool.operation === "mutate" || tool.operation === "delete"
+              : tool.operation !== "read" && tool.operation !== "search" && tool.operation !== "list";
+    if (!operationSupports) continue;
+    if (hasSemanticEvidence(claim, tool.result)) return true;
+    const lower = tool.result.toLowerCase();
     if (category === "test" && /\b\d+\s+(?:tests?\s+)?pass(?:ed)?\b/.test(lower)
       && !/\b(?:fail(?:ed|ures?)?|errors?)\s*[:=]?\s*[1-9]\d*\b/.test(lower)) return true;
-    if (category === "build" && /\b(?:build|compile|typecheck)\b/.test(lower)
-      && /\b(?:succeeded|successful|passed|exit(?:ed)?\s+(?:code\s+)?0)\b/.test(lower)) return true;
-    if (category === "release" && /\b(?:publish|release|deploy)\b/.test(lower)
-      && /\b(?:succeeded|successful|completed|published|deployed|released)\b/.test(lower)) return true;
+    if (category === "build" && /\b(?:succeeded|successful|passed|exit(?:ed)?\s+(?:code\s+)?0)\b/.test(lower)) return true;
+    if (category === "release" && /\b(?:succeeded|successful|completed|published|deployed|released)\b/.test(lower)) return true;
     if (category === "error" && shape.concepts.length > 0
       && /\b(?:fixed|resolved|passed|succeeded|successful)\b/.test(lower)
-      && hasSemanticEvidence(claim, bounded)) return true;
+      && hasSemanticEvidence(claim, tool.result)) return true;
   }
   return false;
 }
@@ -166,10 +211,27 @@ function semanticTokens(text: string): string[] {
     .filter(token => token.length > 2);
 }
 
-function evidenceFragments(text: string): string[] {
-  const fragments = text.split(/\r?\n/).flatMap(line => [line, ...line.split(/[.;]/)])
-    .map(part => part.replace(/^\s*[-*\d.)]+\s*/, "").trim()).filter(Boolean);
-  return Array.from(new Set(fragments));
+interface SemanticShape {
+  sourceTokens: string[];
+  concepts: string[];
+  anchor: string;
+  negative: boolean;
+  conditional: boolean;
+}
+
+const semanticShapeCache = new Map<string, SemanticShape>();
+const semanticFragmentCache = new Map<string, string[][]>();
+
+function semanticFragments(text: string): string[][] {
+  const cached = lruGet(semanticFragmentCache, text);
+  if (cached) return cached;
+  const fragments = Array.from(new Set(text.split(/\r?\n/)
+    .flatMap(line => [line, ...line.split(/[.;]/)])
+    .map(part => part.replace(/^\s*[-*\d.)]+\s*/, "").trim())
+    .filter(Boolean)))
+    .map(semanticTokens);
+  lruSet(semanticFragmentCache, text, fragments, 256);
+  return fragments;
 }
 
 function hasNearbyMarker(tokens: string[], anchor: string, markers: Set<string>): boolean {
@@ -204,9 +266,9 @@ function hasEffectiveTargetNegation(tokens: string[], anchor: string): boolean {
 }
 
 /** Conservative deterministic semantic evidence for goals/constraints/decisions. */
-function semanticShape(source: string): {
-  sourceTokens: string[]; concepts: string[]; anchor: string; negative: boolean; conditional: boolean;
-} {
+function semanticShape(source: string): SemanticShape {
+  const cached = lruGet(semanticShapeCache, source);
+  if (cached) return cached;
   const sourceTokens = semanticTokens(source);
   const concepts = Array.from(new Set(sourceTokens.filter(token =>
     !/^\d+$/.test(token)
@@ -215,15 +277,16 @@ function semanticShape(source: string): {
   const negative = sourceTokens.some(token => NEGATION_MARKERS.has(token));
   const conditional = sourceTokens.some(token => CONDITION_MARKERS.has(token));
   const anchor = concepts.find(concept => hasNearbyMarker(sourceTokens, concept, NEGATION_MARKERS)) ?? concepts[0] ?? "";
-  return { sourceTokens, concepts, anchor, negative, conditional };
+  const shape = { sourceTokens, concepts, anchor, negative, conditional };
+  lruSet(semanticShapeCache, source, shape, 512);
+  return shape;
 }
 
 function hasSemanticEvidence(source: string, target: string): boolean {
   const { sourceTokens, concepts, anchor, negative, conditional } = semanticShape(source);
   if (!concepts.length) return true;
   const required = Math.min(concepts.length, Math.max(1, Math.ceil(concepts.length * 0.6)));
-  return evidenceFragments(target).some(fragment => {
-    const tokens = semanticTokens(fragment);
+  return semanticFragments(target).some(tokens => {
     const overlap = concepts.filter(concept => tokens.includes(concept)).length;
     if (overlap < required) return false;
     const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
@@ -246,8 +309,7 @@ function hasSemanticContradiction(source: string, target: string): boolean {
   const { sourceTokens, concepts, anchor, negative, conditional } = semanticShape(source);
   if (!anchor) return false;
   const required = Math.min(concepts.length, Math.max(1, Math.ceil(concepts.length * 0.6)));
-  return evidenceFragments(target).some(fragment => {
-    const tokens = semanticTokens(fragment);
+  return semanticFragments(target).some(tokens => {
     if (!tokens.includes(anchor)) return false;
     const overlap = concepts.filter(concept => tokens.includes(concept)).length;
     // Sharing a generic anchor such as "release" or "file" is not enough:
@@ -454,15 +516,17 @@ export function verifySummary(
       gaps.push({ kind: "inconsistency", detail: "blocked-none: Blocked says none despite unresolved errors" });
       score -= 12;
     }
+    const doneRefs = new Set(extractFileRefs(doneSection).map(normalizePath));
     for (const file of extraction.modifiedFiles) {
-      const basename = file.path.split("/").pop() ?? "";
-      if (!doneSection.toLowerCase().includes(basename.toLowerCase())) continue;
+      const uniqueNeedles = buildUniquePathNeedles(file.path, modifiedPaths);
+      if (!uniqueNeedles.some(needle => doneRefs.has(normalizePath(needle)))) continue;
       const unresolved = unresolvedEvidence.find(error => {
         const firstLine = error.message.split(/\r?\n/, 1)[0] ?? "";
-        return extractFileRefs(firstLine).some(ref => isKnownPathReference(ref, [file.path]));
+        const errorRefs = extractFileRefs(firstLine).map(normalizePath);
+        return uniqueNeedles.some(needle => errorRefs.includes(normalizePath(needle)));
       });
       if (unresolved) {
-        gaps.push({ kind: "inconsistency", detail: basename + " marked Done but has unresolved error" });
+        gaps.push({ kind: "inconsistency", detail: file.path + " marked Done but has unresolved error" });
         score -= 5;
       }
     }
@@ -486,8 +550,9 @@ export function verifySummary(
     score -= 5;
   }
   if (evidence.sourceMessages) {
+    const tools = successfulToolEvidence(evidence.sourceMessages);
     for (const claim of outcomeClaims(summary)) {
-      if (!successfulToolSupportsClaim(claim, evidence.sourceMessages, extraction)) {
+      if (!successfulToolSupportsClaim(claim, tools, extraction)) {
         gaps.push({ kind: "unsupported-claim", claim });
         score -= 20;
       }
@@ -607,6 +672,34 @@ export function patchDeterministic(
   return renderSummary(canonical, { canonicalHeadings: true });
 }
 
+function hasUnclosedMarkdownFence(markdown: string): boolean {
+  let open: { marker: "`" | "~"; length: number } | null = null;
+  for (const line of markdown.split(/\r?\n/)) {
+    const match = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+    if (!match) continue;
+    const marker = match[1][0] as "`" | "~";
+    if (!open) {
+      open = { marker, length: match[1].length };
+    } else if (marker === open.marker && match[1].length >= open.length && !match[2].trim()) {
+      open = null;
+    }
+  }
+  return open !== null;
+}
+
+function patchResponseIsTruncated(patched: string, stopReason: unknown): boolean {
+  const reason = String(stopReason ?? "");
+  return /(?:length|truncat|max(?:imum)?[_ -]?(?:output[_ -]?)?tokens?|token[_ -]?limit)/i.test(reason)
+    || /…✂\d+\s*$/.test(patched)
+    || hasUnclosedMarkdownFence(patched);
+}
+
+function sectionIdentity(section: CanonicalSummary["sections"][number]): string {
+  return section.kind === "unknown"
+    ? "unknown:" + section.heading.trim().toLowerCase()
+    : section.kind;
+}
+
 export async function patchSummary(
   summary: string, gaps: VerificationGap[],
   model: Model<Api>, auth: { apiKey: string; headers?: ProviderHeaders }, signal?: AbortSignal,
@@ -623,8 +716,15 @@ export async function patchSummary(
       systemPrompt: COMPACT_SYSTEM_PREFIX,
       messages: [{ role: "user" as const, content: [{ type: "text" as const, text: patchPrompt }], timestamp: Date.now() }],
     }, { apiKey: auth.apiKey, headers: auth.headers, maxTokens, signal }, services);
-    const patched = response.content.filter((content): content is import("@earendil-works/pi-ai").TextContent => content.type === "text").map(content => content.text).join("\n").trim();
-    return patched.startsWith("##") ? patched : summary;
+    const patched = response.content.filter((content): content is TextContent => content.type === "text")
+      .map(content => content.text).join("\n").trim();
+    if (!patched.startsWith("##") || patchResponseIsTruncated(patched, response.stopReason)) return summary;
+    const originalSections = parseSummary(summary).sections;
+    const patchedSections = parseSummary(patched).sections;
+    const patchedBodies = new Map(patchedSections.map(section => [sectionIdentity(section), section.body.trim()]));
+    const preserved = originalSections.every(section =>
+      !section.body.trim() || Boolean(patchedBodies.get(sectionIdentity(section))));
+    return preserved ? patched : summary;
   } catch (error) {
     log.debug("patchSummary LLM failed", error);
     return summary;

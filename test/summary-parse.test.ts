@@ -50,6 +50,15 @@ describe("parseSummary", () => {
     const parsed = parseSummary("## Some Other Heading\nbody");
     expect(parsed.sections[0].kind).toBe("unknown");
   });
+  it("treats headings inside fenced code as section body text", () => {
+    const parsed = parseSummary(
+      "## Goal\nPreserve parser evidence\n```md\n## Progress\n- not a real section\n```\n## Progress\n- real progress\n",
+    );
+    expect(parsed.sections.map(section => section.kind)).toEqual(["goal", "progress"]);
+    expect(findSection(parsed, "goal")?.body).toContain("## Progress");
+    expect(findSection(parsed, "progress")?.body).toBe("- real progress");
+  });
+
 });
 
 describe("findSection / hasSection", () => {

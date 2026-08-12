@@ -35,6 +35,7 @@ import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../../infra/ai-messages.ts";
 import { clearCompactProgress } from "../../ui/overlays.ts";
 import { formatCompactErrorForUi } from "../../ui/error-format.ts";
+import { branchEntryIds } from "../../infra/session-identity.ts";
 
 import * as log from "../../utils/logger.ts";
 
@@ -68,7 +69,7 @@ export async function commitAppliedCompaction(pending: PendingCompaction): Promi
   const failures = await persistAppliedState(pending);
   if (pending.preparedBackup && !await commitPreparedConversationBackup(pending.preparedBackup)) failures.push("conversation backup");
   if (!pending.metricsSnapshot) return failures;
-  appendMetricsSnapshot(pending.sessionId, {
+  await appendMetricsSnapshot(pending.sessionId, {
     ...pending.metricsSnapshot,
     persistenceStatus: failures.length ? "partial" : "complete",
     persistenceFailures: failures.length ? failures : undefined,
@@ -124,13 +125,16 @@ export function runDamageDetection(rc: RunContext): void {
  * step decides otherwise).
  */
 export function stagePendingCompaction(rc: RunContext, metricsSnapshot?: MetricsSnapshot): PendingCompaction {
-  // All four fields are guaranteed by StatedRc, so the previous `!` casts go
-  // away. If a future refactor reorders steps the type system will catch it
-  // here instead of failing at runtime with a `Cannot read property` error.
+  // The producing branch head is immutable provenance. The consumer rejects
+  // this payload unless both it and the kept-entry boundary remain in the
+  // active branch ancestry.
+  const originBranchHeadId = branchEntryIds(rc.branch as Array<{ id?: unknown }>).at(-1);
+  if (!originBranchHeadId) throw new Error("Pending compaction requires an identifiable branch head");
   const pending: PendingCompaction = {
     runId: rc.runId,
     summary: rc.finalSummary,
     firstKeptEntryId: rc.firstKeptId,
+    originBranchHeadId,
     tokensBefore: rc.totalTokens,
     details: rc.details,
     metricsSnapshot,
@@ -163,7 +167,7 @@ export function applyCompaction(rc: StatedRc): void {
       rc.pendingRef.clear(rc.sessionId);
       const handled = rc.onNativeApplyError?.(rc.runId, e) ?? false;
       if (!handled) {
-        recordFailureMetrics(rc, e, {
+        void recordFailureMetrics(rc, e, {
           sessionId: rc.sessionId, tier: rc.tier, contextPercent: rc.contextPercent,
           toolPercent: rc.toolPercent, totalTokens: rc.totalTokens,
           methodForMetrics: rc.method, profile: rc.profile, mode: rc.mode,

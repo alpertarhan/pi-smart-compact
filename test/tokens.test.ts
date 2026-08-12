@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { estimateTokens, calibrateFromResponse, getProviderCaps, makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
+import { estimateTokens, calibrateFromResponse, getProviderCaps, makeTokenEstimator, safeContextPercent, TokenCalibrationStore } from "../src/utils/tokens.ts";
 
 describe("estimateTokens", () => {
   it("estimates based on char length", () => {
@@ -121,5 +121,15 @@ describe("getProviderCaps", () => {
       expect(["native", "metadata-only"]).toContain(caps.multimodal);
       expect(["anthropic", "openai", "none"]).toContain(caps.cacheStrategy);
     }
+  });
+});
+
+describe("safeContextPercent", () => {
+  it("returns a finite zero for missing or invalid context-window metadata", () => {
+    expect(safeContextPercent(50_000, undefined)).toBe(0);
+    expect(safeContextPercent(50_000, null)).toBe(0);
+    expect(safeContextPercent(50_000, 0)).toBe(0);
+    expect(safeContextPercent(Number.NaN, 100_000)).toBe(0);
+    expect(safeContextPercent(50_000, 100_000)).toBe(50);
   });
 });

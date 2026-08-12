@@ -64,11 +64,13 @@ function mergeFindings(target: Map<string, number>, findings: RedactionFinding[]
   for (const finding of findings) target.set(finding.kind, (target.get(finding.kind) ?? 0) + finding.count);
 }
 
-const SECRET_KEY_NAMES = new Set([
-  "api_key", "apikey", "access_token", "auth_token", "authorization",
-  "password", "passwd", "secret", "secret_key", "secret_access_key",
-  "client_secret", "private_key", "database_url", "connection_string",
-]);
+const SECRET_KEY_NAMES: Readonly<Record<string, true>> = {
+  api_key: true, apikey: true, access_token: true, auth_token: true, authorization: true,
+  password: true, passwd: true, secret: true, secret_key: true, secret_access_key: true,
+  client_secret: true, private_key: true, database_url: true, connection_string: true,
+  token: true, refresh_token: true, session_token: true, credential: true, credentials: true,
+  cookie: true, set_cookie: true, otp: true, one_time_password: true, pin: true, passcode: true,
+};
 
 function normalizeObjectKey(key: string): string {
   return key
@@ -80,8 +82,8 @@ function normalizeObjectKey(key: string): string {
 
 function isSecretBearingKey(key: string): boolean {
   const normalized = normalizeObjectKey(key);
-  if (SECRET_KEY_NAMES.has(normalized)) return true;
-  return /(?:^|_)(?:api_key|access_token|auth_token|password|passwd|secret_access_key|client_secret|private_key)(?:_|$)/.test(normalized);
+  if (SECRET_KEY_NAMES[normalized]) return true;
+  return /(?:^|_)(?:api_key|access_token|auth_token|password|passwd|secret_access_key|client_secret|private_key|refresh_token|session_token|one_time_password|passcode)(?:_|$)/.test(normalized);
 }
 
 /** Run-scoped scrubber used at LLM, cache, backup and persistence boundaries. */
@@ -133,7 +135,8 @@ export class SecretScrubber {
       const output: Record<string, unknown> = {};
       seen.set(value, output);
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        if (this.secretsEnabled && isSecretBearingKey(key) && typeof item === "string" && item.length > 0) {
+        const carriesSecret = typeof item === "string" ? item.length > 0 : item != null;
+        if (this.secretsEnabled && isSecretBearingKey(key) && carriesSecret) {
           output[key] = "[REDACTED:credential]";
           recordCredential();
         } else {

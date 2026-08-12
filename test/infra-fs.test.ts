@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
-  atomicWriteFile, atomicWriteFileSync, appendLineLocked, readJsonSync, writeJsonSync,
+  atomicWriteFile, atomicWriteFileSync, appendLineLocked, appendLineLockedAsync, readJsonSync, writeJsonSync,
   ensureDir, acquireLockSync, trimFileTailLocked,
 } from "../src/infra/fs.ts";
 
@@ -103,6 +103,15 @@ describe("appendLineLocked", () => {
   it("fails closed instead of appending through a non-directory parent", () => {
     expect(() => appendLineLocked(path.join("/dev/null", "log.jsonl"), "unsafe")).toThrow();
   });
+  it("serializes concurrent asynchronous appends into complete JSONL records", async () => {
+    const target = path.join(tmp, "async-log.jsonl");
+    await Promise.all(Array.from({ length: 20 }, (_, index) =>
+      appendLineLockedAsync(target, JSON.stringify({ index }))));
+    const records = fs.readFileSync(target, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(records.map(record => record.index).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 20 }, (_, index) => index));
+  });
+
 });
 
   it("keeps post-trim records from concurrent processes", async () => {

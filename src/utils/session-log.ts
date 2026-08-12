@@ -135,6 +135,22 @@ export function __resetSessionLogCachesForTests(): void {
   messageMapCache.clear();
 }
 
+function sessionDirectoryForCwd(cwd: string): string {
+  const safeCwd = path.resolve(cwd).replace(/^[/\\]/, "").replace(/[:/\\]/g, "-");
+  return path.join(getSessionsDir(), "--" + safeCwd + "--");
+}
+
+function findLogInDirectory(directory: string, sessionId: string): string | null {
+  if (!fs.existsSync(directory)) return null;
+  if (/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+    const exact = path.join(directory, sessionId + ".jsonl");
+    if (fs.existsSync(exact)) return exact;
+  }
+  const match = fs.readdirSync(directory, { withFileTypes: true })
+    .find(entry => entry.isFile() && entry.name.endsWith("_" + sessionId + ".jsonl"));
+  return match ? path.join(directory, match.name) : null;
+}
+
 /**
  * Find the session .jsonl log file for a given session ID.
  *
@@ -142,37 +158,36 @@ export function __resetSessionLogCachesForTests(): void {
  * with filenames like 2026-05-19T12-34-56_abc123.jsonl.
  * We try the bare id first, then the glob suffix pattern.
  */
-function findSessionLogFile(sessionId: string): string | null {
+function findSessionLogFile(sessionId: string, cwd?: string): string | null {
   const home = process.env.HOME ?? "/tmp";
   const now = Date.now();
-  const remember = (path: string | null) => {
-    lruSet(logPathCache, sessionId, { path, expiresAt: now + LOG_PATH_CACHE_TTL_MS, home }, getMaxEntries());
-    return path;
+  const directDirectory = cwd ? sessionDirectoryForCwd(cwd) : null;
+  const cacheKey = sessionId + "\0" + (directDirectory ?? "*");
+  const remember = (foundPath: string | null) => {
+    lruSet(logPathCache, cacheKey, { path: foundPath, expiresAt: now + LOG_PATH_CACHE_TTL_MS, home }, getMaxEntries());
+    return foundPath;
   };
 
   try {
-    const cached = lruGet(logPathCache, sessionId);
+    const cached = lruGet(logPathCache, cacheKey);
     if (cached && cached.home === home && cached.expiresAt > now) return cached.path;
 
     const sessionsDir = getSessionsDir();
     if (!fs.existsSync(sessionsDir)) return remember(null);
-
-    for (const subdir of fs.readdirSync(sessionsDir)) {
-      const subdirPath = path.join(sessionsDir, subdir);
-      const stat = fs.statSync(subdirPath);
-      if (!stat.isDirectory()) continue;
-
-      // Try exact match first (future / alternative layout)
-      const exact = path.join(subdirPath, sessionId + ".jsonl");
-      if (fs.existsSync(exact)) return remember(exact);
-
-      // Try glob suffix: *_<sessionId>.jsonl
-      const files = fs.readdirSync(subdirPath);
-      const match = files.find(f => f.endsWith("_" + sessionId + ".jsonl"));
-      if (match) return remember(path.join(subdirPath, match));
+    if (directDirectory) {
+      const direct = findLogInDirectory(directDirectory, sessionId);
+      if (direct) return remember(direct);
     }
-  } catch (e) {
-    log.debug("findSessionLogFile failed", e);
+
+    for (const subdir of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
+      if (!subdir.isDirectory()) continue;
+      const subdirPath = path.join(sessionsDir, subdir.name);
+      if (subdirPath === directDirectory) continue;
+      const found = findLogInDirectory(subdirPath, sessionId);
+      if (found) return remember(found);
+    }
+  } catch (error) {
+    log.debug("findSessionLogFile failed", error);
   }
   return remember(null);
 }
@@ -222,8 +237,9 @@ export function hasTruncatedMessages(msgs: LlmMessage[]): boolean {
 async function readOriginalMessageMap(
   sessionId: string,
   wantedIds: ReadonlySet<string>,
+  cwd?: string,
 ): Promise<Map<string, LlmMessage> | null> {
-  const logPath = findSessionLogFile(sessionId);
+  const logPath = findSessionLogFile(sessionId, cwd);
   if (!logPath) {
     log.debug("Session log not found for " + sessionId);
     return null;
@@ -289,9 +305,10 @@ export interface ResolvedCompactionMessage {
 export async function resolveCompactionMessages(
   sessionId: string,
   toCompactEntries: SessionMessageEntry[],
+  cwd?: string,
 ): Promise<ResolvedCompactionMessage[] | null> {
   const wantedIds = new Set(toCompactEntries.flatMap(entry => entry.id ? [entry.id] : []));
-  const logMap = await readOriginalMessageMap(sessionId, wantedIds);
+  const logMap = await readOriginalMessageMap(sessionId, wantedIds, cwd);
   if (!logMap) return null;
 
   let restoredCount = 0;

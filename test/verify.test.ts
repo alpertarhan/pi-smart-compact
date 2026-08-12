@@ -1,9 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { verifySummary, patchDeterministic, repairSummaryDeterministically, formatVerificationGap } from "../src/phases/verify.ts";
+import { verifySummary, patchDeterministic, repairSummaryDeterministically, formatVerificationGap, patchSummary } from "../src/phases/verify.ts";
 import { verifyAndPatch } from "../src/app/steps/verify.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
   return {
@@ -570,6 +571,31 @@ describe("verifyAndPatch", () => {
       expect(result.verificationProvenance.deterministicPatched).toHaveLength(1);
       expect(result.verificationScore).toBe(100);
     }
+  });
+});
+
+describe("patchSummary", () => {
+  it("rejects an otherwise plausible verifier patch with an unclosed Markdown fence", async () => {
+    const original = "## Goal\nBuild auth\n## Progress\n- working\n## Critical Context\n- stable";
+    // Minimal in-process provider fixture; patchSummary reads only content, usage, and stopReason.
+    const response = {
+      role: "assistant",
+      content: [{ type: "text", text: "## Goal\nBuild auth\n## Progress\n- fixed\n```ts\nconst incomplete = true;" }],
+      usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+      stopReason: "endTurn",
+    } as unknown as AssistantMessage;
+    const services = createServices({ llm: { complete: async () => response } });
+    // Minimal model fixture; routing only needs provider/id/context metadata.
+    const model = { provider: "openai", id: "verifier", contextWindow: 128_000 } as unknown as Model<Api>;
+    const patched = await patchSummary(
+      original,
+      [{ kind: "missing-section", section: "files-modified" }],
+      model,
+      { apiKey: "test" },
+      undefined,
+      services,
+    );
+    expect(patched).toBe(original);
   });
 });
 

@@ -44,6 +44,8 @@ import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/constants.ts";
 import { commitPreparedConversationBackup } from "../src/utils/backups.ts";
+import { saveCachedExtraction } from "../src/utils/cache.ts";
+import { extractionCacheFile } from "../src/infra/paths.ts";
 
 /**
  * Build a TieredRc with the minimum fields synthesizeConversation +
@@ -162,18 +164,56 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(ancestry.at(-1)).toBe("entry-1001");
   });
 
-  it("skips backup serialization and scrubbing when backups are disabled", () => {
+  it("reuses the exact pruned extraction instead of recomputing full history", () => {
+    const messages = [userMsg("Preserve exact cache evidence"), assistantMsg("Working on it")];
+    const sessionId = "exact-cache-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    try {
+      const firstRc = makeTieredRc(messages);
+      firstRc.sessionId = sessionId;
+      const first = extractWithCache(firstRc);
+      const cached = { ...first.extraction, mainGoal: "Exact cached extraction sentinel" };
+      saveCachedExtraction(
+        sessionId,
+        cached,
+        first.llmMessages.length,
+        first.currentEntryIds[0],
+        first.currentEntryIds.at(-1),
+        first.currentEntryIds,
+        first.currentKeptEntryIds,
+      );
+
+      const notices: string[] = [];
+      const secondRc = makeTieredRc(messages);
+      secondRc.sessionId = sessionId;
+      secondRc.notify = message => { notices.push(message); };
+      const second = extractWithCache(secondRc);
+
+      expect(second.extraction.mainGoal).toBe("Exact cached extraction sentinel");
+      expect(second.services.extractionCacheStats.snapshot().hits).toBe(1);
+      expect(notices).toContain("Phase 1 Cached: exact pruned conversation reused");
+    } finally {
+      try { fs.unlinkSync(extractionCacheFile(sessionId)); } catch {}
+    }
+  });
+
+  it("skips backup materialization while preserving mandatory extraction scrubbing", () => {
     const tiered = makeTieredRc([
       userMsg("Start"), assistantMsg("I'll be pruned"), userMsg("Continue"),
       assistantMsg("Substantive evidence"), userMsg("Finish"),
     ]);
+    const scrubber = tiered.services.scrubber;
+    let textScrubs = 0;
+    let valueScrubs = 0;
+    // Instrument the existing scrubber without changing its boundary behavior.
     tiered.services.scrubber = {
-      scrubText: () => { throw new Error("backup scrub should not run"); },
-      scrubValue: <T>(value: T) => ({ value, findings: [] }),
-      count: () => 0,
-    } as any;
+      scrubText: (text: string) => { textScrubs++; return scrubber.scrubText(text); },
+      scrubValue: <T>(value: T) => { valueScrubs++; return scrubber.scrubValue(value); },
+      count: () => scrubber.count(),
+    } as unknown as typeof tiered.services.scrubber;
 
     expect(extractWithCache(tiered).backupPath).toBeNull();
+    expect(textScrubs).toBe(1);
+    expect(valueScrubs).toBeGreaterThanOrEqual(2);
   });
 
   it("backs up the full selected span while synthesis keeps substantive assistant evidence", async () => {
@@ -197,7 +237,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
       userMsg("Continue"), assistantMsg("Substantive synthesis evidence"), userMsg("Finish"),
     ];
     let request = "";
-    setLlmClient({ complete: async (...args: any[]) => {
+    setLlmClient({ complete: async (...args: Parameters<LlmClient["complete"]>) => {
       request = JSON.stringify(args);
       return makeSummaryResponse("## Goal\nPreserve evidence\n## Progress\n### Done\n- done\n### In Progress\n- none\n### Blocked\n- none\n## Critical Context\n- context");
     } });
@@ -207,6 +247,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
       tiered.config.backupEnabled = true;
       const scrubber = tiered.services.scrubber;
       let backupScrubs = 0;
+      // Instrument only text scrubbing; the production scrubber still performs every redaction.
       tiered.services.scrubber = {
         scrubText: (text: string) => {
           backupScrubs++;
@@ -214,16 +255,16 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
         },
         scrubValue: <T>(value: T) => scrubber.scrubValue(value),
         count: () => scrubber.count(),
-      } as any;
+      } as unknown as typeof tiered.services.scrubber;
       const extracted = extractWithCache(tiered);
       expect(extracted.convText).toContain(removedEvidence);
       expect(extracted.convText).not.toContain(truncatedEvidence);
       expect(fs.existsSync(extracted.backupPath!)).toBe(false);
       expect(extracted.preparedBackup?.content).toBeUndefined();
       expect(extracted.preparedBackup?.materialize).toBeFunction();
-      expect(backupScrubs).toBe(0);
-      await commitPreparedConversationBackup(extracted.preparedBackup!);
       expect(backupScrubs).toBe(1);
+      await commitPreparedConversationBackup(extracted.preparedBackup!);
+      expect(backupScrubs).toBe(2);
       expect(fs.readFileSync(extracted.backupPath!, "utf8")).toContain(truncatedEvidence);
       await summarizeConversation(extracted);
       expect(request).toContain(removedEvidence);

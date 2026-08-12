@@ -3,14 +3,19 @@
  * Extracted from types.ts to keep type definitions pure.
  */
 
+/** Narrow an unknown object before reading keyed fields. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 /** Type guard for text content blocks */
 export function isTextBlock(c: unknown): c is { type: "text"; text: string } {
-  return typeof c === "object" && c !== null && (c as { type?: string }).type === "text" && typeof (c as { text?: unknown }).text === "string";
+  return isRecord(c) && c.type === "text" && typeof c.text === "string";
 }
 
 /** Type guard for tool call content blocks */
 export function isToolCallBlock(c: unknown): c is { type: "toolCall"; id?: string; name: string; arguments: Record<string, unknown> } {
-  return typeof c === "object" && c !== null && (c as { type?: string }).type === "toolCall" && typeof (c as { name?: unknown }).name === "string";
+  return isRecord(c) && c.type === "toolCall" && typeof c.name === "string" && isRecord(c.arguments);
 }
 
 /** Get tool call names from unknown content */

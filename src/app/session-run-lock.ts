@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Cell } from "../types.ts";
 import { runLocksDir } from "../infra/paths.ts";
+import { ONE_HOUR_MS } from "../constants.ts";
 
 export interface SessionRunLock extends Cell<boolean> {
   acquire(sessionId: string): boolean;
@@ -13,7 +14,7 @@ export interface SessionRunLock extends Cell<boolean> {
   size(): number;
 }
 
-interface FileLease { file: string; token: string; }
+interface FileLease { file: string; token: string; heartbeat?: NodeJS.Timeout; }
 interface RunLease { session?: FileLease; slot?: FileLease; }
 
 function processAlive(pid: number): boolean {
@@ -39,7 +40,18 @@ function acquireFileLease(file: string, staleMs: number): FileLease | null {
         try { fs.unlinkSync(file); } catch { /* best effort */ }
         throw error;
       } finally { fs.closeSync(fd); }
-      return { file, token };
+      const lease: FileLease = { file, token };
+      lease.heartbeat = setInterval(() => {
+        if (readLease(file)?.token !== token) {
+          if (lease.heartbeat) clearInterval(lease.heartbeat);
+          lease.heartbeat = undefined;
+          return;
+        }
+        try { fs.utimesSync(file, new Date(), new Date()); }
+        catch { /* release or another process won */ }
+      }, Math.max(10_000, Math.floor(staleMs / 3)));
+      lease.heartbeat.unref();
+      return lease;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       return null;
@@ -47,19 +59,35 @@ function acquireFileLease(file: string, staleMs: number): FileLease | null {
   };
   const first = create();
   if (first) return first;
+
   const current = readLease(file);
-  let observedAt = Number(current?.createdAt ?? 0);
-  if (!observedAt) {
-    try { observedAt = fs.statSync(file).mtimeMs; } catch { return null; }
-  }
+  let observedStat: fs.Stats;
+  try { observedStat = fs.statSync(file); } catch { return null; }
+  const observedAt = Math.max(Number(current?.createdAt ?? 0), observedStat.mtimeMs);
   const age = Date.now() - observedAt;
-  if ((current?.pid && processAlive(current.pid)) || age <= staleMs) return null;
+  const livePidCeiling = Math.max(ONE_HOUR_MS, staleMs * 4);
+  if (age <= staleMs || (current?.pid && processAlive(current.pid) && age <= livePidCeiling)) return null;
+
+  // Re-read both logical ownership and inode metadata immediately before
+  // reclaim. A release/reacquire that changed either must never be unlinked.
+  const latest = readLease(file);
+  let latestStat: fs.Stats;
+  try { latestStat = fs.statSync(file); } catch { return null; }
+  const latestAt = Math.max(Number(latest?.createdAt ?? 0), latestStat.mtimeMs);
+  const latestAge = Date.now() - latestAt;
+  if (latestAge <= staleMs || (latest?.pid && processAlive(latest.pid) && latestAge <= livePidCeiling)) return null;
+  if (current?.token
+    ? latest?.token !== current.token
+    : latestStat.dev !== observedStat.dev || latestStat.ino !== observedStat.ino
+      || latestStat.size !== observedStat.size || latestStat.mtimeMs !== observedStat.mtimeMs) return null;
   try { fs.unlinkSync(file); } catch { return null; }
   return create();
 }
 
 function releaseFileLease(lease?: FileLease): void {
   if (!lease) return;
+  clearInterval(lease.heartbeat);
+  lease.heartbeat = undefined;
   const current = readLease(lease.file);
   if (current?.token !== lease.token) return;
   try { fs.unlinkSync(lease.file); } catch { /* already removed */ }

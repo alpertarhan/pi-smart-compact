@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "9.0.0";
+export const VERSION = "9.1.0";
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.10;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
@@ -220,8 +220,10 @@ export const EXTRACTION_LIMITS = {
   ERRORS: 80,
   DECISIONS: 80,
   CONSTRAINTS: 80,
+  TOPICS: 80,
   TIMELINE: 120,
   MEDIA_ATTACHMENTS: 40,
+  REFERENCED_FILES: 200,
 } as const;
 export const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -289,6 +291,8 @@ export const DAMAGE_RECENT_MSG_WINDOW = 15;
 
 // ── Pruning ──
 export const MAX_TOOL_OUTPUT_CHARS = 800;
+/** Provider-visible output from one exploration tool invocation. */
+export const MAX_EXPLORER_OUTPUT_CHARS = 12_000;
 
 // ── Error detection (shared by pruning + extraction) ──
 /** Shell-output patterns signalling a likely error even in a non-`isError` result. */

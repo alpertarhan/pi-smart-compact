@@ -56,7 +56,38 @@ function fitChunkBudget(messages: LlmMessage[], maxTokens: number, estimator: To
     if (!changed) break;
     estimate = estimateChunkTokens(fitted, estimator);
   }
-  return fitted;
+  if (estimate <= maxTokens) return fitted;
+
+  // Last-resort postcondition for a single giant assistant/tool-call payload
+  // or a delayed tool-result span whose structural overhead cannot be split.
+  const rendered = fitted.map(renderBatchMessage).join("\n");
+  const marker = "[…chunk evidence hard-bounded for synthesis…]";
+  const candidate = (chars: number): LlmMessage[] => {
+    if (chars <= 0) return [{ role: "user", content: marker }];
+    const head = Math.ceil(chars * 0.6);
+    return [{
+      role: "user",
+      content: rendered.slice(0, head) + "\n" + marker + "\n" + rendered.slice(-(chars - head)),
+    }];
+  };
+  let best = candidate(0);
+  if (estimateChunkTokens(best, estimator) > maxTokens) {
+    if (estimateChunkTokens([], estimator) <= maxTokens) return [];
+    throw new RangeError("Token estimator cannot represent a chunk within maxChunkTokens");
+  }
+  let low = 0;
+  let high = rendered.length;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const next = candidate(middle);
+    if (estimateChunkTokens(next, estimator) <= maxTokens) {
+      best = next;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
 }
 
 function extendThroughToolResults(messages: LlmMessage[], start: number, proposedEnd: number): number {
@@ -82,7 +113,9 @@ function splitOversizedChunk(ch: LlmChunk, maxTokens: number, estimator: TokenEs
   if (ch.tokenEstimate <= maxTokens) return [ch];
   if (ch.messages.length <= 1) {
     const messages = fitChunkBudget(ch.messages, maxTokens, estimator);
-    return [{ ...ch, tokenEstimate: estimateChunkTokens(messages, estimator), messages }];
+    const tokenEstimate = estimateChunkTokens(messages, estimator);
+    if (tokenEstimate > maxTokens) throw new RangeError("Chunk budget postcondition failed");
+    return [{ ...ch, tokenEstimate, messages }];
   }
   const parts: LlmChunk[] = [];
   let start = 0;
@@ -97,11 +130,13 @@ function splitOversizedChunk(ch: LlmChunk, maxTokens: number, estimator: TokenEs
     }
     const end = extendThroughToolResults(ch.messages, start, proposedEnd);
     const messages = fitChunkBudget(ch.messages.slice(start, end), maxTokens, estimator);
+    const tokenEstimate = estimateChunkTokens(messages, estimator);
+    if (tokenEstimate > maxTokens) throw new RangeError("Chunk budget postcondition failed");
     parts.push({
       ...ch,
       startIndex: ch.startIndex + start,
       endIndex: ch.startIndex + end - 1,
-      tokenEstimate: estimateChunkTokens(messages, estimator),
+      tokenEstimate,
       messages,
     });
     start = end;

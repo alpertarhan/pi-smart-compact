@@ -32,57 +32,69 @@ interface PendingEntry {
 export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
   const ttlMs = opts.ttlMs;
   const now = opts.now ?? Date.now;
-  const maxEntries = Math.max(1, opts.maxEntries ?? 16);
+  const maxEntries = Math.max(1, opts.maxEntries ?? 64);
   const entries = new Map<string, PendingEntry>();
+  let newestSessionId: string | null = null;
 
-  const prune = () => {
-    const timestamp = now();
-    for (const [sessionId, entry] of entries) {
-      if (timestamp - entry.createdAt > ttlMs) entries.delete(sessionId);
-    }
+  const refreshNewest = (): void => {
+    newestSessionId = null;
+    for (const sessionId of entries.keys()) newestSessionId = sessionId;
   };
-
-  const newest = (): PendingEntry | undefined => {
-    let result: PendingEntry | undefined;
-    for (const entry of entries.values()) {
-      if (!result || entry.createdAt >= result.createdAt) result = entry;
+  const deleteEntry = (sessionId: string): void => {
+    if (!entries.delete(sessionId)) return;
+    if (newestSessionId === sessionId) refreshNewest();
+  };
+  const prune = (): void => {
+    const current = now();
+    let removedNewest = false;
+    for (const [sessionId, entry] of entries) {
+      if (current - entry.createdAt <= ttlMs) continue;
+      entries.delete(sessionId);
+      if (newestSessionId === sessionId) removedNewest = true;
     }
-    return result;
+    if (removedNewest) refreshNewest();
   };
 
   return {
     set(pending): void {
       prune();
+      // Reinsert overwrites at the newest position.
       entries.delete(pending.sessionId);
-      while (entries.size >= maxEntries) {
-        const oldestSession = entries.keys().next().value as string | undefined;
-        if (!oldestSession) break;
-        entries.delete(oldestSession);
-      }
       entries.set(pending.sessionId, { value: pending, createdAt: now() });
+      newestSessionId = pending.sessionId;
+      while (entries.size > maxEntries) {
+        const oldest = entries.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        deleteEntry(oldest);
+      }
     },
 
     consume(ctx): ConsumeResult {
       const currentSessionId = resolveSessionId(ctx);
       const entry = entries.get(currentSessionId);
-      if (!entry) {
-        const other = entries.values().next().value as PendingEntry | undefined;
-        return other
-          ? { kind: "mismatch", expected: other.value.sessionId, actual: currentSessionId }
-          : { kind: "empty" };
+      if (entry) {
+        const ageMs = now() - entry.createdAt;
+        if (ageMs > ttlMs) {
+          deleteEntry(currentSessionId);
+          prune();
+          return { kind: "expired", ageMs };
+        }
+        deleteEntry(currentSessionId);
+        return { kind: "ok", pending: entry.value };
       }
-      const ageMs = now() - entry.createdAt;
-      if (ageMs > ttlMs) {
-        entries.delete(currentSessionId);
-        return { kind: "expired", ageMs };
-      }
-      entries.delete(currentSessionId);
-      return { kind: "ok", pending: entry.value };
+      prune();
+      const other = newestSessionId == null ? undefined : entries.get(newestSessionId);
+      return other
+        ? { kind: "mismatch", expected: other.value.sessionId, actual: currentSessionId }
+        : { kind: "empty" };
     },
 
     clear(sessionId): void {
-      if (sessionId) entries.delete(sessionId);
-      else entries.clear();
+      if (sessionId) deleteEntry(sessionId);
+      else {
+        entries.clear();
+        newestSessionId = null;
+      }
     },
 
     isPresent(sessionId): boolean {
@@ -92,9 +104,15 @@ export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
 
     peek(sessionId): Readonly<PendingCompaction> | null {
       prune();
-      return (sessionId ? entries.get(sessionId) : newest())?.value ?? null;
+      const entry = sessionId
+        ? entries.get(sessionId)
+        : newestSessionId == null ? undefined : entries.get(newestSessionId);
+      return entry?.value ?? null;
     },
 
-    size(): number { prune(); return entries.size; },
+    size(): number {
+      prune();
+      return entries.size;
+    },
   };
 }

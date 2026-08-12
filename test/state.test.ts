@@ -11,6 +11,7 @@ import {
 } from "../src/utils/state.ts";
 import { scopedCompactionStateFile } from "../src/infra/paths.ts";
 import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport, CompactionState } from "../src/types.ts";
+import { STATE_SNAPSHOT_MAX_FILES } from "../src/constants.ts";
 
 function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
   return {
@@ -60,6 +61,27 @@ describe("extractOpenLoops", () => {
     ];
     const loops = extractOpenLoops(msgs, extraction);
     expect(loops.some(l => l.type === "follow-up")).toBe(true);
+  });
+
+  it("closes only task-specific follow-ups with positive completion evidence", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const resolved = extractOpenLoops([
+      { role: "user", content: "next step is to add regression tests" },
+      { role: "assistant", content: "Added the regression tests and they pass." },
+    ], extraction).find(loop => loop.type === "follow-up");
+    expect(resolved?.status).toBe("resolved");
+
+    const unrelated = extractOpenLoops([
+      { role: "user", content: "next step is to add regression tests" },
+      { role: "assistant", content: "Documentation is done." },
+    ], extraction).find(loop => loop.type === "follow-up");
+    expect(unrelated?.status).toBe("open");
+
+    const negated = extractOpenLoops([
+      { role: "user", content: "next step is to add regression tests" },
+      { role: "assistant", content: "The regression tests are not done." },
+    ], extraction).find(loop => loop.type === "follow-up");
+    expect(negated?.status).toBe("open");
   });
 
   it("uses actual iteration indexes for repeated message object references", () => {
@@ -517,6 +539,15 @@ describe("computeDelta", () => {
     expect(delta.previousGoal).toBe("Build API");
   });
 
+  it("uses normalized goal identity instead of formatting-sensitive text equality", () => {
+    const delta = computeDelta(
+      makeFullState({ goal: "Build API" }),
+      makeFullState({ goal: "  build   api  " }),
+    );
+    expect(delta.goalChanged).toBe(false);
+    expect(delta.previousGoal).toBeNull();
+  });
+
   it("returns empty delta for identical states", () => {
     const state = makeFullState({
       decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
@@ -654,6 +685,26 @@ describe("saveCompactionState / loadCompactionState", () => {
     expect(loadCompactionState(testId)).toBeNull();
     expect(fs.existsSync(file)).toBe(false);
   });
+
+  it("bounds immutable branch snapshots per session", () => {
+    const projectId = "retention-" + Date.now();
+    const sessionId = "session-retention";
+    const sample = scopedCompactionStateFile(projectId, sessionId, "head-0");
+    const projectDir = path.dirname(path.dirname(sample));
+    try {
+      for (let index = 0; index < STATE_SNAPSHOT_MAX_FILES + 3; index++) {
+        expect(saveCompactionState(projectId, makeFullState({
+          scope: { schemaVersion: 2, projectId, sessionId, branchHeadId: "head-" + index },
+        }))).toBe(true);
+      }
+      const snapshots = fs.readdirSync(path.dirname(sample)).filter(file => file.endsWith(".json"));
+      expect(snapshots).toHaveLength(STATE_SNAPSHOT_MAX_FILES);
+      expect(snapshots).toContain("head-" + (STATE_SNAPSHOT_MAX_FILES + 2) + ".json");
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
 
   it("returns null for non-existent state", () => {
     expect(loadCompactionState("nonexistent-" + Date.now())).toBeNull();
