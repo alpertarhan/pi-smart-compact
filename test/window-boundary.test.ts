@@ -168,6 +168,82 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(plan.reason).toBe("viable");
   });
 
+  it("summarizes non-portable tool exchanges out of the live provider tail", () => {
+    const wrapperId = "parallel-wrapper";
+    const branch = [
+      messageEntry("old-user", null, { role: "user", content: [{ type: "text", text: "old context" }] }),
+      messageEntry("read-call", "old-user", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/a.ts" } }],
+      }),
+      messageEntry("read-result", "read-call", {
+        role: "toolResult", toolCallId: "read-1", toolName: "read", content: [{ type: "text", text: "source" }],
+      }),
+      messageEntry("wrapper-call", "read-result", {
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: wrapperId,
+          name: "multi_tool_use.parallel",
+          arguments: { tool_uses: [{ id: "nested-1", recipient_name: "functions.read", parameters: { path: "src/a.ts" } }] },
+        }],
+      }),
+      messageEntry("wrapper-result", "wrapper-call", {
+        role: "toolResult", toolCallId: wrapperId, toolName: "multi_tool_use.parallel", content: [{ type: "text", text: "done" }],
+      }),
+      messageEntry("safe-user", "wrapper-result", { role: "user", content: [{ type: "text", text: "continue safely" }] }),
+      messageEntry("safe-answer", "safe-user", { role: "assistant", content: [{ type: "text", text: "ready" }] }),
+    ];
+    const rc = makePreparedRc(branch, 800);
+    rc.profileCfg.summaryBudgetTokens = 10;
+
+    const plan = planCompactionWindow({
+      msgs: branch,
+      branch,
+      messageTokens: [1_000, 300, 300, 100, 100, 100, 100],
+      totalTokens: 2_000,
+      modelContextWindow: 10_000,
+      mode: "thorough",
+      profileCfg: rc.profileCfg,
+      force: true,
+      overflowedContext: false,
+    });
+
+    expect(plan.keepFrom).toBe(5);
+    expect(plan.hardBoundaryAdjusted).toBeTrue();
+    expect(plan.reason).toBe("viable");
+  });
+
+  it("fails closed when no message remains after a non-portable tool exchange", () => {
+    const branch = [
+      messageEntry("old-user", null, { role: "user", content: [{ type: "text", text: "old context" }] }),
+      messageEntry("wrapper-call", "old-user", {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "wrapper", name: "multi_tool_use.parallel", arguments: {} }],
+      }),
+      messageEntry("wrapper-result", "wrapper-call", {
+        role: "toolResult", toolCallId: "wrapper", toolName: "multi_tool_use.parallel", content: [{ type: "text", text: "done" }],
+      }),
+    ];
+    const rc = makePreparedRc(branch, 200);
+    rc.profileCfg.summaryBudgetTokens = 10;
+
+    const plan = planCompactionWindow({
+      msgs: branch,
+      branch,
+      messageTokens: [1_000, 100, 100],
+      totalTokens: 1_200,
+      modelContextWindow: 10_000,
+      mode: "thorough",
+      profileCfg: rc.profileCfg,
+      force: true,
+      overflowedContext: false,
+    });
+
+    expect(plan.viable).toBeFalse();
+    expect(plan.reason).toBe("unsafe-tool-boundary");
+  });
+
   it("counts large tool-call arguments in the recent-tail budget", () => {
     const branch: SessionMessageEntry[] = [];
     for (let i = 0; i < 100; i++) {

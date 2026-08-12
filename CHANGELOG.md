@@ -1,5 +1,11 @@
 # Changelog
 
+## [9.2.1-rc.0] - 2026-08-11
+
+### Fixed
+
+- Retained tails now summarize complete historical tool exchanges whose names are not portable across providers, preventing dotted wrapper or MCP names from making the first post-compaction turn fail provider validation.
+
 ## [9.2.0] - 2026-08-11
 
 ### Added
