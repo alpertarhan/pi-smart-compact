@@ -147,9 +147,12 @@ The same pure planner powers manual preflight and execution. A soft boundary is
 recorded as relaxed rather than silently overriding the target. Long turns may
 be summarized through their older prefix; if the nominal cut lands inside a
 tool exchange, the planner either retains the complete pair within budget or
-advances past it so the complete exchange is summarized. If no safe hard
-boundary can meet the target, automatic/tool runs normally return control to
-Pi's native compactor before any LLM call. An already-overflowed context is
+advances past it so the complete exchange is summarized. It also advances past
+complete historical exchanges whose tool names violate the portable provider
+contract; this keeps model switches from exposing an unsendable raw tail. If no
+provider-safe hard boundary can meet the target, automatic/tool runs normally
+return control to Pi's native compactor before any LLM call. An
+already-overflowed context is
 the safety exception: measured usage is mapped across active messages and EESV
 keeps chunked recovery instead of sending an oversized one-shot prompt to
 native summarization. Manual runs use the profile's absolute adaptive tail, so

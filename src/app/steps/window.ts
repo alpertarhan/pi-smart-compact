@@ -33,7 +33,7 @@ export function compactionPlanReasonText(reason: CompactionPlanReason): string {
   switch (reason) {
     case "viable": return "safe window and useful estimated saving";
     case "no-eligible-prefix": return "no older prefix is available";
-    case "unsafe-tool-boundary": return "no complete tool-call boundary is available";
+    case "unsafe-tool-boundary": return "no provider-safe complete tool-call boundary is available";
     case "retention-target-exceeded": return "a complete tool pair exceeds the tail target";
     case "mode-target-not-met": return "the estimated result misses this preset's target";
     case "insufficient-projected-saving": return "estimated saving is below 10%";
@@ -58,6 +58,51 @@ export function estimateFinalSummaryAllowance(
     + Math.ceil(profileCfg.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO);
   return Math.max(legacyFloor, calibratedOutput + calibratedPostProcessing);
 }
+const PORTABLE_TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Retained messages are sent to the active provider verbatim by Pi. Historical
+ * wrapper/MCP names may contain dots or namespace separators that some
+ * providers reject before the next turn starts. Summarize the whole offending
+ * exchange instead of leaving an unusable live tail.
+ */
+function advancePastNonPortableToolExchanges(
+  msgs: SessionMessageEntry[],
+  keepFrom: number,
+  toolCallIndex: ReadonlyMap<string, number>,
+): number {
+  if (keepFrom < 0 || keepFrom >= msgs.length) return keepFrom;
+  const exchangeEnds = new Map<number, number>();
+  for (let index = keepFrom; index < msgs.length; index++) {
+    const message = msgs[index].message;
+    if (!isRecord(message) || message.role !== "toolResult" || typeof message.toolCallId !== "string") continue;
+    const callIndex = toolCallIndex.get(message.toolCallId);
+    if (callIndex === undefined || callIndex < keepFrom) continue;
+    exchangeEnds.set(callIndex, Math.max(exchangeEnds.get(callIndex) ?? 0, index + 1));
+  }
+
+  let adjusted = keepFrom;
+  for (let index = keepFrom; index < msgs.length; index++) {
+    const message = msgs[index].message;
+    if (!isRecord(message)) continue;
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      const nonPortable = message.content.some(block =>
+        isRecord(block)
+        && block.type === "toolCall"
+        && (typeof block.name !== "string" || !PORTABLE_TOOL_NAME_RE.test(block.name)),
+      );
+      if (nonPortable) adjusted = Math.max(adjusted, exchangeEnds.get(index) ?? index + 1);
+    } else if (
+      message.role === "toolResult"
+      && typeof message.toolName === "string"
+      && !PORTABLE_TOOL_NAME_RE.test(message.toolName)
+    ) {
+      adjusted = Math.max(adjusted, index + 1);
+    }
+  }
+  return adjusted;
+}
+
 export function planCompactionWindow(input: CompactionWindowPlanInput): CompactionWindowPlan {
   const {
     msgs, branch, messageTokens, totalTokens, modelContextWindow, mode, profileCfg, force, overflowedContext,
@@ -147,6 +192,12 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
     ? forwardBoundary
     : backwardBoundary;
   hardBoundaryAdjusted ||= keepFrom !== boundaryBeforeHardGuard;
+  const providerSafeBoundary = advancePastNonPortableToolExchanges(msgs, keepFrom, toolCallIndex);
+  const nonPortableTailBlocked = providerSafeBoundary >= msgs.length;
+  if (!nonPortableTailBlocked && providerSafeBoundary > keepFrom) {
+    keepFrom = providerSafeBoundary;
+    hardBoundaryAdjusted = true;
+  }
   const compactTokens = Math.round(tokenPrefix[keepFrom] * messageScale);
   const retainedTokens = retainedAt(keepFrom);
   const projectedAfterTokens = fixedContextTokens + retainedTokens + finalSummaryAllowance;
@@ -158,7 +209,7 @@ export function planCompactionWindow(input: CompactionWindowPlanInput): Compacti
 
   let reason: CompactionPlanReason = "viable";
   const firstKeptMessage = msgs[keepFrom]?.message;
-  if (isRecord(firstKeptMessage) && firstKeptMessage.role === "toolResult") reason = "unsafe-tool-boundary";
+  if (nonPortableTailBlocked || (isRecord(firstKeptMessage) && firstKeptMessage.role === "toolResult")) reason = "unsafe-tool-boundary";
   else if (keepFrom <= 0) reason = "no-eligible-prefix";
   else if (retainedTokens > effectiveRetentionCeiling) reason = "retention-target-exceeded";
   else if (!force && modelContextWindow && projectedAfterTokens > targetAfterTokens) reason = "mode-target-not-met";

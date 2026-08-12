@@ -168,8 +168,10 @@ and reports final success only after Pi confirms the matching
 `session_compact` run ID. A single long user turn may be
 split at a safe message boundary: its older prefix is verified into the summary
 while the budgeted working tail stays raw. Tool exchanges remain complete
-call/result pairs; oversized result evidence is head/tail bounded only in the
-synthesis prompt after deterministic extraction has consumed the full input.
+call/result pairs. Historical exchanges with names outside the portable
+provider contract are summarized instead of leaving an unusable raw tail;
+oversized result evidence is head/tail bounded only in the synthesis prompt
+after deterministic extraction has consumed the full input.
 If Verify, yield, provider, or native apply fails, the UI shows one bounded actionable line without evidence text or a
 JavaScript stack. A successful `100/100` is labeled **verification coverage**;
 the source score and deterministic/LLM/fallback provenance remain visible so
@@ -448,11 +450,14 @@ Automatic and tool-triggered runs operate on Pi's current active context, not
 the append-only session history. A same-session staged summary is reused, the
 exploration loop is limited to three rounds, provider and outer retries are
 disabled, and every mode has finite call plus aggregate prompt-token budgets.
-Complete tool-call/result pairs are the hard window boundary. Recent user
-turns, pi-toolkit checkpoints, and topical grouping are soft and may expand the
-raw tail only while remaining inside the selected budget. Automatic/tool runs
-normally return to Pi's native compactor without an LLM call when a hard
-boundary cannot meet the target. Overflow is the safety exception: EESV keeps
+Complete tool-call/result pairs are the hard window boundary. Provider-incompatible
+historical tool names move the boundary past their complete exchanges so a
+provider switch cannot leave an unsendable raw tail. Recent user turns,
+pi-toolkit checkpoints, and topical grouping are soft and may expand the raw
+tail only while remaining inside the selected budget. Automatic/tool runs
+normally return to Pi's native compactor without an LLM call when no
+provider-safe hard boundary can meet the target. Overflow is the safety
+exception: EESV keeps
 chunked recovery rather than resending an oversized one-shot prompt to native
 compaction. Manual `/smart-compact` uses an absolute adaptive tail rather than
 a percentage of a large model window. A plan below 10% projected savings never
