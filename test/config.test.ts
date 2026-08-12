@@ -68,6 +68,18 @@ describe("validateSmartCompactConfig", () => {
     expect("autoTrigger" in sc).toBe(false);
   });
 
+  it("validates the opt-in settled auto-trigger strategy", () => {
+    expect(DEFAULT_CONFIG.autoTriggerStrategy).toBe("native-hook");
+    for (const strategy of ["native-hook", "settled"]) {
+      const valid: Record<string, unknown> = { autoTriggerStrategy: strategy };
+      validateSmartCompactConfig(valid);
+      expect(valid.autoTriggerStrategy).toBe(strategy);
+    }
+    const invalid: Record<string, unknown> = { autoTriggerStrategy: "background" };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.autoTriggerStrategy).toBeUndefined();
+  });
+
   it("deletes invalid autoTriggerTimeoutMs (string)", () => {
     const sc = { autoTriggerTimeoutMs: "45000" };
     validateSmartCompactConfig(sc);

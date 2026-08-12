@@ -535,7 +535,7 @@ describe("verifyAndPatch", () => {
     const extraction = makeExtraction({
       constraints: [{ index: 1, text: "Must publish stable now", category: "requirement", confidence: 1 }],
     });
-    await expect(verifyAndPatch({
+    const rejection = verifyAndPatch({
       finalSummary: "## Goal\nRelease\n## Constraints & Preferences\n- undecided\n## Progress\n- working\n## Critical Context\n- none",
       extraction,
       summaries: [],
@@ -551,7 +551,11 @@ describe("verifyAndPatch", () => {
       flags: { autoTriggered: true },
       notify: (message: string, type: string) => { if (type === "error") uiErrors.push(message); },
       vlog: () => {},
-    } as any)).rejects.toThrow("Verification gate rejected summary");
+    } as any);
+    await expect(rejection).rejects.toMatchObject({
+      name: "VerificationGateError",
+      stage: "post-synthesis",
+    });
     expect(uiErrors).toEqual([]);
   });
 

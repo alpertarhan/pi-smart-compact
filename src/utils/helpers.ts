@@ -13,6 +13,7 @@ import { isRecord } from "./type-guards.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const VALID_MODES = ["auto", "fast", "balanced", "thorough"] as const;
+const VALID_AUTO_TRIGGER_STRATEGIES = ["native-hook", "settled"] as const;
 const VALID_THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const PROFILE_NUMERIC_KEYS = ["summaryBudgetTokens", "keepRecentTokens", "minChunkTokens", "maxChunkTokens", "singlePassMaxTokens", "batchMaxTokens"] as const;
 const PROFILE_NUMERIC_BOUNDS: Record<(typeof PROFILE_NUMERIC_KEYS)[number], readonly [number, number]> = {
@@ -51,6 +52,14 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
   if ("autoTrigger" in sc && typeof sc.autoTrigger !== "boolean") {
     log.warn("smart-compact config: autoTrigger must be boolean, got " + typeof sc.autoTrigger);
     delete sc.autoTrigger;
+  }
+  if ("autoTriggerStrategy" in sc
+    && !(VALID_AUTO_TRIGGER_STRATEGIES as readonly unknown[]).includes(sc.autoTriggerStrategy)) {
+    log.warn(
+      "smart-compact config: autoTriggerStrategy must be native-hook|settled, got "
+        + String(sc.autoTriggerStrategy) + ". Using default '" + DEFAULT_CONFIG.autoTriggerStrategy + "'.",
+    );
+    delete sc.autoTriggerStrategy;
   }
   if ("backupEnabled" in sc && typeof sc.backupEnabled !== "boolean") {
     log.warn("smart-compact config: backupEnabled must be boolean, got " + typeof sc.backupEnabled);

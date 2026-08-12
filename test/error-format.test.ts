@@ -12,11 +12,12 @@ describe("bounded Smart Compact error UX", () => {
         { kind: "missing-error", message: "SECRET_EVIDENCE\n" + "x".repeat(2_000) },
         { kind: "missing-file", path: "private/path.ts" },
       ],
-    }, 18);
+    }, 18, "post-synthesis");
 
     const text = formatCompactErrorForUi(error);
 
     expect(text).toContain("42/100, 2 unresolved gaps");
+    expect(text).toContain("post-synthesis gate");
     expect(text).toContain("missing-error, missing-file");
     expect(text).not.toContain("SECRET_EVIDENCE");
     expect(text).not.toContain("private/path.ts");

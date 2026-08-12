@@ -6,7 +6,7 @@
  */
 
 import type { Model, Api, ProviderHeaders, TextContent } from "@earendil-works/pi-ai";
-import type { CompactionState, StructuredExtraction, VerificationGap, VerificationResult, LlmMessage } from "../types.ts";
+import type { CompactionState, StructuredExtraction, VerificationGap, VerificationGateStage, VerificationResult, LlmMessage } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, LIKELY_ERROR_RE, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
@@ -167,13 +167,15 @@ export class VerificationGateError extends Error {
   readonly score: number;
   readonly initialScore: number;
   readonly gapKinds: VerificationGap["kind"][];
+  readonly stage: VerificationGateStage;
   readonly gapCount: number;
 
-  constructor(result: VerificationResult, initialScore: number) {
+  constructor(result: VerificationResult, initialScore: number, stage: VerificationGateStage) {
     super(verificationFailureMessage(result) ?? "Verification gate rejected summary");
     this.name = "VerificationGateError";
     this.score = result.score;
     this.initialScore = initialScore;
+    this.stage = stage;
     this.gapKinds = Array.from(new Set(result.gaps.map(gap => gap.kind)));
     this.gapCount = result.gaps.length;
   }

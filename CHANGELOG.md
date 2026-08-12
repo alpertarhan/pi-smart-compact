@@ -1,5 +1,16 @@
 # Changelog
 
+## [9.2.0] - 2026-08-11
+
+### Added
+
+- `autoTriggerStrategy: "settled"` can proactively request Pi's normal compact flow after an idle high-pressure agent run. The opt-in handler is session-scoped, queue-aware, deduplicated, and cooled down; it never runs EESV or mutates pending/commit state outside the correlated host lifecycle.
+
+### Fixed
+
+- Settled-triggered compaction reuses tool-staged summaries or runs the existing `session_before_compact` pipeline exactly once, preserving host cancellation, branch provenance, bounded auto budgets, native fallback, and apply-confirmed persistence.
+- Verification failures now record the rejecting `post-synthesis` or `post-state` gate and every typed content-free gap kind, including missing read/deleted files. Invalid and prototype-inherited values are rejected; summary evidence remains absent from telemetry.
+
 ## [9.1.0] - 2026-08-11
 
 ### Fixed

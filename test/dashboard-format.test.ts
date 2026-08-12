@@ -55,11 +55,13 @@ describe("dashboard format helpers", () => {
     const lines = formatRunDetails(entry({
       version: "8.0.0", releaseChannel: "canary", initialVerificationScore: 80,
       deterministicPatchCount: 2, qualityFloorUsed: true, remainingVerificationGaps: 0,
+      verificationStage: "post-state",
       providerRoutes: [{ stage: "verify", provider: "anthropic", model: "v", calls: 1, successes: 1, avgLatencyMs: 10, inputTokens: 10, outputTokens: 2 }],
     }), "Latest run details").join("\n");
     expect(lines).toContain("Version/channel: 8.0.0 / canary");
     expect(lines).toContain("Routes: verify=anthropic/v");
     expect(lines).toContain("quality floor yes");
+    expect(lines).toContain("Verification gate: post-state");
   });
 
   it("uses compact latest-run menu descriptions", () => {

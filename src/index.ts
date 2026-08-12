@@ -28,6 +28,7 @@ import * as log from "./utils/logger.ts";
 import { deriveProjectIdFromCwd } from "./utils/fingerprint.ts";
 import { applyLoopOverrides, loadScopedCompactionState, renderContinuityCapsule, saveCompactionState } from "./utils/state.ts";
 import { createNativeContinuityBridge } from "./app/native-continuity-bridge.ts";
+import { createSettledAutoTrigger } from "./app/settled-auto-trigger.ts";
 import {
   closeContextMemory, formatRecallResults, recallContext, saveContextMemory,
   scheduleCompactionStateIndex, type ContextGraphScope, type ContextMemoryKind,
@@ -139,6 +140,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   const pendingRef: PendingSlot = createPendingSlot({ ttlMs: PENDING_TTL_MS });
   const isRunning = createSessionRunLock();
   const damageMonitor = new OnlineDamageMonitor();
+  const settledAutoTrigger = createSettledAutoTrigger();
   // Filesystem-backed, one-shot handoff survives extension reloads/process
   // restarts while project/session/branch scope prevents sibling leakage.
   const nativeContinuity = createNativeContinuityBridge();
@@ -474,6 +476,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     },
   });
 
+  pi.on("agent_settled", async (_event, ctx) => {
+    try {
+      await settledAutoTrigger.request(ctx, loadConfig());
+    } catch (error) {
+      log.debugError("Settled smart compact trigger stopped", error);
+    }
+  });
+
   pi.on("session_before_compact", async (event, ctx) => {
     const consumed = unwrapConsumed(pendingRef.consume(ctx), ctx);
     if (consumed && stageForNativeApply(consumed, event.signal)) {
@@ -558,6 +568,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
 
   pi.on("session_compact", async (event, ctx) => {
     const sessionId = resolveSessionId(ctx);
+    settledAutoTrigger.noteCompaction(sessionId);
     if (event.fromExtension) {
       const details = event.compactionEntry.details as { runId?: unknown } | undefined;
       const runId = typeof details?.runId === "string" ? details.runId : null;
@@ -638,6 +649,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     damageMonitor.clear(sessionId);
     pendingRef.clear(sessionId);
     commitCandidates.clearSession(sessionId, "shutdown");
+    settledAutoTrigger.clear(sessionId);
     // Native continuity is deliberately not cleared here: shutdown/reload is
     // the process gap the branch-scoped filesystem handoff must survive.
   });
