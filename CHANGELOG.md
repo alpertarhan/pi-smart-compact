@@ -1,5 +1,11 @@
 # Changelog
 
+## [9.3.1] - 2026-08-15
+
+### Fixed
+
+- **Windows / GUI launches resolve `~/.pi/agent` correctly.** `home()` fell back to `"/tmp"` whenever `HOME` was unset — which is every Windows launch (Windows uses `USERPROFILE`, not `HOME`) and GUI launches that strip the environment. Settings, caches, run-locks, and backups were silently routed to `C:\tmp\.pi\agent`, so `settings.json` configuration (mode, models, thresholds, everything under `smartCompact`) was invisible to the extension. The fallback is now `os.homedir()`, matching how the pi host itself resolves its agent directory. The duplicated pattern in the session-log reader was unified onto the same helper (also fixing its path cache key).
+
 ## [9.3.0] - 2026-08-15
 
 ### Added
