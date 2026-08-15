@@ -87,7 +87,7 @@ as a **state machine of branded intersection types**. Each step accepts the
 previous stage type and returns the next, so reordering or skipping a step is a
 **compile-time error**, not a runtime crash:
 
-```
+```text
 RcBase
   → PreparedRc      (after prepare)
   → WindowedRc      (after window)
@@ -537,7 +537,7 @@ The architecture intentionally biases toward safety:
 - hallucinated file-reference detection
 - stateful tracking of open loops and cross-compaction deltas
 - tool-driven compaction never compacts mid-turn
-- summaries preserve exact file paths and identifiers where possible
+- summaries preserve exact file paths and identifiers where possible; saturated file lists use budgeted path tails plus collision-checked digests while scoped state retains full paths
 - the recent tail stays live outside the compacted region
 
 ## Extending the system

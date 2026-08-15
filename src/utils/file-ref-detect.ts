@@ -66,6 +66,14 @@ export function isLikelyFileRef(candidate: string): boolean {
  * classification.
  */
 export function extractFileRefs(summary: string): string[] {
-  const candidates = summary.match(FILE_REF_CANDIDATE_RE) ?? [];
-  return candidates.filter(isLikelyFileRef);
+  const matcher = new RegExp(FILE_REF_CANDIDATE_RE.source, FILE_REF_CANDIDATE_RE.flags);
+  const refs: string[] = [];
+  for (const match of summary.matchAll(matcher)) {
+    // `Foo.Application/Services` is a directory path, not a file named
+    // `Foo.Application`. A separator immediately after the regex match proves
+    // the candidate was only a dotted directory prefix.
+    if (/[\\/]/.test(summary[(match.index ?? 0) + match[0].length] ?? "")) continue;
+    if (isLikelyFileRef(match[0])) refs.push(match[0]);
+  }
+  return refs;
 }
