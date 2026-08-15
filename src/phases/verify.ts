@@ -515,8 +515,24 @@ const SEMANTIC_STOP = new Set([
 	"olmadan",
 ]);
 
+// Turkish suffix stripping (coarse): unifies common inflections so a
+// constraint "dosyayı sil" still matches a summary "dosyası silindi".
+// Longest first; the ≥4-char stem guard also protects short English words
+// ("code", "side") from the 2-letter suffixes.
+const TR_SUFFIXES = [
+	"ları", "leri", "ının", "inin", "unun", "ünün", "ında", "inde", "unda", "ünde", "mış", "miş", "muş", "müş",
+	"lar", "ler", "ını", "ini", "unu", "ünü", "ına", "ine", "una", "üne", "dan", "den", "tan", "ten",
+	"dır", "dir", "dur", "dür", "tır", "tir", "tur", "tür", "yor", "mak", "mek",
+	"da", "de", "ta", "te", "dı", "di", "du", "dü", "tı", "ti", "tu", "tü", "ın", "in", "un", "ün", "sa", "se",
+] as const;
+
 function stemToken(token: string): string {
 	const lower = token.toLocaleLowerCase();
+	for (const suffix of TR_SUFFIXES) {
+		if (lower.length >= 4 + suffix.length && lower.endsWith(suffix)) {
+			return lower.slice(0, -suffix.length);
+		}
+	}
 	if (lower.length > 6 && lower.endsWith("ing")) return lower.slice(0, -3);
 	if (lower.length > 5 && lower.endsWith("ed")) return lower.slice(0, -2);
 	if (lower.length > 5 && lower.endsWith("es")) return lower.slice(0, -2);

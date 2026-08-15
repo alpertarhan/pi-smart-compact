@@ -487,6 +487,31 @@ describe("buildToolCallIndex — multi_tool_use.parallel", () => {
     expect(topics.some(t => t.type === "implementation")).toBe(true);
   });
 
+  it("does not split segments on generic basename churn across packages", () => {
+    const pc = { ...PC, minChunkTokens: 10 };
+    const write = (path: string, id: string): LlmMessage => ({
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: "write", arguments: { path, content: "x" } }],
+    });
+    const genericChurn: LlmMessage[] = [
+      { role: "user", content: "start working on the packages now" },
+      write("/packages/a/index.ts", "w1"),
+      { role: "toolResult", toolCallId: "w1", content: "ok" },
+      write("/packages/b/index.ts", "w2"),
+      { role: "toolResult", toolCallId: "w2", content: "ok" },
+    ];
+    expect(segmentTopicsHeuristic(genericChurn, pc)).toHaveLength(1);
+
+    const realShift: LlmMessage[] = [
+      { role: "user", content: "start working on the packages now" },
+      write("/packages/a/auth.ts", "w1"),
+      { role: "toolResult", toolCallId: "w1", content: "ok" },
+      write("/packages/b/settings.ts", "w2"),
+      { role: "toolResult", toolCallId: "w2", content: "ok" },
+    ];
+    expect(segmentTopicsHeuristic(realShift, pc)).toHaveLength(2);
+  });
+
   it("detects retry and resolution inside multi_tool_use.parallel", () => {
     const msgs: LlmMessage[] = [
       {

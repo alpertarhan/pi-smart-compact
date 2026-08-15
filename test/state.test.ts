@@ -132,6 +132,32 @@ describe("extractOpenLoops", () => {
     expect(loops[0].id).toBe("loop-1");
     expect(loops[1].id).toBe("loop-2");
   });
+
+  it("does not drop an unrelated follow-up located near an error loop", () => {
+    const extraction = makeExtraction({
+      errors: [{ index: 3, tool: "bash", message: "build failed in webpack bundle step", retryAttempted: false, resolved: false }],
+    });
+    const unrelated = extractOpenLoops([
+      { role: "user", content: "next step: we still need to add the login page" },
+    ], extraction);
+    expect(unrelated.some(l => l.type === "follow-up")).toBe(true);
+
+    const related = extractOpenLoops([
+      { role: "user", content: "still need to fix the build failed in webpack bundle step error" },
+    ], extraction);
+    expect(related.some(l => l.type === "follow-up")).toBe(false);
+  });
+
+  it("retires follow-ups completed after an ack-only nudge", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const loops = extractOpenLoops([
+      { role: "user", content: "next step is to add the migration script" },
+      { role: "assistant", content: "Looking into it." },
+      { role: "user", content: "devam et" },
+      { role: "assistant", content: "The migration script is added and verified." },
+    ], extraction);
+    expect(loops.find(l => l.type === "follow-up")?.status).toBe("resolved");
+  });
 });
 
 describe("loop overrides", () => {
@@ -141,7 +167,7 @@ describe("loop overrides", () => {
   ];
 
   it("applies status and priority overrides", () => {
-    let overrides = upsertLoopOverride([], loops[0], { status: "resolved", priority: "critical" });
+    const overrides = upsertLoopOverride([], loops[0], { status: "resolved", priority: "critical" });
     const result = applyLoopOverrides(loops, overrides);
     expect(result[0].status).toBe("resolved");
     expect(result[0].priority).toBe("critical");
@@ -308,6 +334,33 @@ describe("continuity state", () => {
     expect(merged.openLoops.map(item => item.summary)).toContain("fix auth test");
   });
 
+  it("resolves a bugfix loop once its error appears in resolvedErrors", () => {
+    const errorMessage = "test failed in auth.ts with exit code 1";
+    const previous = makeFullState({
+      goal: "Ship auth",
+      unresolvedErrors: [{ id: "error-1", message: errorMessage, tool: "bash", files: ["auth.ts"] }],
+      openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: errorMessage.slice(0, 40), files: ["auth.ts"] }],
+    });
+    const merged = mergeCompactionStates(previous, makeFullState({
+      goal: null,
+      resolvedErrors: [{ id: "error-r1", message: errorMessage, tool: "bash" }],
+    }));
+    const loop = merged.openLoops.find(item => item.summary === errorMessage.slice(0, 40));
+    expect(loop?.status).toBe("resolved");
+    expect(merged.unresolvedErrors.map(item => item.message)).not.toContain(errorMessage);
+  });
+
+  it("keeps at most the latest Previous goal breadcrumb", () => {
+    const previous = makeFullState({
+      goal: "Build parser",
+      criticalContext: ["Previous goal: Write the docs", "Real durable fact"],
+    });
+    const merged = mergeCompactionStates(previous, makeFullState({ goal: "Ship the API" }));
+    const breadcrumbs = merged.criticalContext.filter(line => line.startsWith("Previous goal: "));
+    expect(breadcrumbs).toEqual(["Previous goal: Build parser"]);
+    expect(merged.criticalContext).toContain("Real durable fact");
+  });
+
   it("caps the first state and budgets active loops before resolved history", () => {
     const first = mergeCompactionStates(null, makeFullState({
       openLoops: Array.from({ length: 80 }, (_, index) => ({
@@ -382,7 +435,10 @@ describe("continuity state", () => {
     const nextCompaction = mergeCompactionStates(merged, makeFullState({ goal: "Also add a regression test" }));
     expect(nextCompaction.unresolvedErrors.map(error => error.message)).toContain("old release test failed");
     expect(nextCompaction.resolvedErrors).toEqual([]);
-    expect(nextCompaction.criticalContext.filter(item => item === "Previous goal: Ship the old release")).toHaveLength(1);
+    // Goal breadcrumbs are transient: they live exactly one compaction cycle.
+    // A stable goal drops the stale "Previous goal" line so real critical
+    // context keeps its slot budget.
+    expect(nextCompaction.criticalContext.filter(item => item === "Previous goal: Ship the old release")).toHaveLength(0);
   });
 
   it("uses current file evidence to resolve prior deletion/presence status", () => {

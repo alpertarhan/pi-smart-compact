@@ -58,7 +58,7 @@
     "telemetry-report": "bun run dist/telemetry-report.js",
     "compat:pi": "bun run scripts/check-pi-compat.ts",
     "release:audit": "bun run scripts/release-audit.ts",
-    "release:check": "bun run typecheck && bun test && bun run gate && bun run bench && bun run build && bun run release:audit",
+    "release:check": "bun run typecheck && bun test && bun run gate && bun run bench && bun run build && bun run release:audit && bun run compat:pi latest",
     "typecheck": "bun x tsc --noEmit && bun x tsc -p tsconfig.scripts.json",
     "prepublishOnly": "bun run release:check"
   },

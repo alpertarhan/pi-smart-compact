@@ -328,6 +328,21 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
   const currentPresent = new Set([...activeCurrent.modifiedFiles, ...activeCurrent.readFiles].map(normalizeFactKey));
   const currentDeleted = new Set(activeCurrent.deletedFiles.map(normalizeFactKey));
   const resolvedKeys = new Set(activeCurrent.resolvedErrors.map(error => normalizeFactKey(error.message)));
+  // A bugfix loop dies with its error: when the error text now shows up in
+  // resolvedErrors, the loop recorded from it is resolved too. Loop summaries
+  // are truncated error messages, so a resolved key that *starts with* the
+  // loop's normalized summary also retires it (full message ⊃ truncated slice).
+  // Without this, a loop outlives its error forever and verify re-injects it
+  // into every summary ("no unresolved errors" + zombie loop = contradiction).
+  const isResolvedLoop = (loop: OpenLoop): boolean => {
+    if (loop.type !== "bugfix" || loop.status !== "open") return false;
+    const summaryKey = normalizeFactKey(loop.summary);
+    if (summaryKey.length < 16) return false; // too short to prefix-match safely
+    for (const key of resolvedKeys) {
+      if (key === summaryKey || (key.length > summaryKey.length && key.startsWith(summaryKey))) return true;
+    }
+    return false;
+  };
   const decisions = mergeBy(activeCurrent.decisions, activePrevious.decisions, item => normalizeFactKey(item.summary), 30)
     .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
   const constraints = mergeBy(activeCurrent.constraints, activePrevious.constraints, item => normalizeFactKey(item.text), 30)
@@ -338,13 +353,23 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
     item => normalizeFactKey(item.message),
     15,
   ).map((item, index) => ({ ...item, id: ID_PREFIX.ERROR + (index + 1) }));
-  const openLoops = mergeOpenLoops(activeCurrent.openLoops, activePrevious.openLoops);
+  const openLoops = mergeOpenLoops(
+    activeCurrent.openLoops,
+    activePrevious.openLoops.map(loop => (isResolvedLoop(loop) ? { ...loop, status: "resolved" } : loop)),
+  );
   const currentGoalKey = activeCurrent.goalKey
     ?? (activeCurrent.goal ? normalizeFactKey(activeCurrent.goal) : "");
   const previousGoalKey = activePrevious.goalKey
     ?? (activePrevious.goal ? normalizeFactKey(activePrevious.goal) : "");
+  // "Previous goal:" lines are transient breadcrumbs, not durable facts: strip
+  // stale ones from the previous context so at most the LATEST one survives
+  // (a plain mergeBy would accumulate up to 20 stale goals and starve real
+  // critical context). ponytail: goal identity is still "last user message";
+  // if drift matters later, extraction needs a real goal tracker.
+  const PREV_GOAL_PREFIX = "Previous goal: ";
+  const durablePreviousContext = activePrevious.criticalContext.filter(line => !line.startsWith(PREV_GOAL_PREFIX));
   const oldGoal = previousGoalKey && currentGoalKey && previousGoalKey !== currentGoalKey
-    ? ["Previous goal: " + activePrevious.goal]
+    ? [PREV_GOAL_PREFIX + activePrevious.goal]
     : [];
   return applyContinuityOverrides({
     ...activeCurrent,
@@ -376,7 +401,7 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
     factOverrides,
     topics: mergeBy(activeCurrent.topics, activePrevious.topics, item => normalizeFactKey(item.title), 30),
     nextActions: mergeBy(activeCurrent.nextActions, activePrevious.nextActions, normalizeFactKey, 15),
-    criticalContext: mergeBy([...oldGoal, ...activeCurrent.criticalContext], activePrevious.criticalContext, normalizeFactKey, 20),
+    criticalContext: mergeBy([...oldGoal, ...activeCurrent.criticalContext], durablePreviousContext, normalizeFactKey, 20),
     updatedAt: Date.now(),
   }, factOverrides);
 }

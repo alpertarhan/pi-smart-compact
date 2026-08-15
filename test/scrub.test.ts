@@ -66,6 +66,43 @@ describe("SecretScrubber", () => {
     expect(result.messages[0].content[0].arguments.token).toContain("REDACTED");
     expect(source.messages[0].content[0].arguments.token).toContain("ghp_");
   });
+
+  it("does not redact non-string or short values under secret-bearing keys", () => {
+    const result = new SecretScrubber(true, false).scrubValue({
+      pin: { x: 1, y: 2 },
+      token: { parser: true },
+      password: 12345678,
+      access_token: "short",
+    });
+    expect(result.value).toEqual({
+      pin: { x: 1, y: 2 },
+      token: { parser: true },
+      password: 12345678,
+      access_token: "short",
+    });
+    expect(result.findings.length).toBe(0);
+  });
+
+  it("still redacts long string values under secret-bearing keys", () => {
+    const result = new SecretScrubber(true, false).scrubValue({
+      access_token: "abcdefghijklmnopqrstuvwxyz123456",
+    });
+    expect((result.value as Record<string, string>).access_token).toBe("[REDACTED:credential]");
+  });
+
+  it("spares dotted env references from the credential regex", () => {
+    const kept = new SecretScrubber(true, false).scrubText("token: process.env.API_KEY").value;
+    expect(kept).toBe("token: process.env.API_KEY");
+    const redacted = new SecretScrubber(true, false).scrubText("access_token: abcdefghijklmnopqrstuvwxyz123456").value;
+    expect(redacted).toContain("[REDACTED:credential]");
+  });
+
+  it("payment-card counts only Luhn-valid numbers", () => {
+    const timestamp = new SecretScrubber(false, true).scrubText("at 1739570400000 ms");
+    expect(timestamp.findings.some(finding => finding.kind === "payment-card")).toBe(false);
+    const card = new SecretScrubber(false, true).scrubText("card 4111111111111119 x, 4111111111111111 y");
+    expect(card.findings.find(finding => finding.kind === "payment-card")?.count).toBe(1);
+  });
 });
 
 describe("trackedComplete secret boundary", () => {

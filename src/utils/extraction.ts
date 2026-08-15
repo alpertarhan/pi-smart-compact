@@ -7,7 +7,8 @@ import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop, MediaAt
 import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW, TRUNC, ID_PREFIX, TUNING, EXTRACTION_LIMITS } from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
-import { buildPathNeedles } from "./file-needles.ts";
+import { buildPathNeedles, GENERIC_BASENAMES } from "./file-needles.ts";
+import { normalizeFactKey } from "./helpers.ts";
 import { classifyToolOperation, extractShellFileOperations, extractToolPath, sameToolOperation, toolOperationSignature } from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
 import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
@@ -302,12 +303,12 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
       for (let k = j + 1; k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW); k++) {
         const result = msgs[k];
         if (result?.role !== "toolResult" || result.isError) continue;
-        const resolved = retryTool.id != null
-          ? result.toolCallId === retryTool.id
-          : (() => {
+        const resolved = retryTool.id == null
+          ? (() => {
             const resultCall = tcIdx.get(result.toolCallId ?? "");
             return Boolean(resultCall && sameToolOperation(retryTool, resultCall));
-          })();
+          })()
+          : result.toolCallId === retryTool.id;
         if (resolved) {
           err.resolved = true;
           break;
@@ -392,6 +393,14 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
 }
 
 export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, maxSegs = 20, _tcIdx?: ToolCallIndex): StructuredExtraction["topics"] {
+  // Generic basenames (index.ts & friends) change on nearly every tool call
+  // in a monorepo and shred segmentation into micro-segments. Only a basename
+  // specific enough to identify one file is a real shift signal.
+  const shiftBasename = (filePath: string | null | undefined): string | null => {
+    if (!filePath) return null;
+    const base = path.basename(filePath);
+    return GENERIC_BASENAMES.has(base.toLowerCase()) ? null : base;
+  };
   const topics: StructuredExtraction["topics"] = [];
   let startIdx = 0, tokenAcc = 0, lastFile: string | null = null, errAcc = 0;
   let currentType: StructuredExtraction["topics"][0]["type"] = "exploration";
@@ -406,7 +415,7 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
       ? (Array.isArray(message.content) ? message.content : []).flatMap(flattenToolCallBlock)
       : [];
     const nextFile = tools.map(tool => extractToolPath(tool.arguments)).find((value): value is string => Boolean(value));
-    const nextBasename = nextFile ? path.basename(nextFile) : null;
+    const nextBasename = shiftBasename(nextFile);
     const closesActiveTool = message.role === "toolResult"
       && (tcIdx.get(message.toolCallId ?? "")?.msgIndex ?? -1) >= startIdx;
     const fileShift = Boolean(lastFile && nextBasename && nextBasename !== lastFile);
@@ -438,7 +447,7 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
     for (const tool of tools) {
       const filePath = extractToolPath(tool.arguments);
       if (filePath) {
-        lastFile = path.basename(filePath);
+        lastFile = shiftBasename(filePath) ?? lastFile;
         currentPrimaryFile = filePath;
       }
       const operation = classifyToolOperation(tool.arguments, tool.name);
@@ -558,6 +567,15 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   }
 
   // ── 2. User "next step" / follow-up patterns → follow-up loops ──
+  // Proximity alone conflates unrelated work: a genuine new task phrased
+  // within 5 messages of an error loop was silently dropped. Require content
+  // kinship as well before treating a nearby loop as a duplicate.
+  const isNearbyDuplicate = (existing: { sourceIndex?: number | null; summary: string }, text: string, index: number): boolean => {
+    if (Math.abs((existing.sourceIndex ?? 0) - index) >= 5) return false;
+    const existingKey = normalizeFactKey(existing.summary);
+    const textKey = normalizeFactKey(text);
+    return existingKey === textKey || existingKey.includes(textKey) || textKey.includes(existingKey);
+  };
   // Match English + Turkish follow-up cues; allow both ASCII-only and diacritic spellings
   // because users mix the two and we never want to miss an open loop.
   const FOLLOWUP_RE = /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|yapalim|yapalım|yapmamiz|yapmamız|gerekiyor|eklenecek|düzeltilecek|duzeltilecek|bitmedi|kaldi|kaldı)/iu;
@@ -568,7 +586,7 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
     if (txt.length < 10 || txt.startsWith("/")) continue;
     if (FOLLOWUP_RE.test(txt)) {
       // Avoid duplicates with errors
-      const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
+      const isDup = loops.some(l => isNearbyDuplicate(l, txt, idx));
       if (!isDup) {
         loops.push({
           id: ID_PREFIX.OPEN_LOOP + (++loopId),
@@ -595,7 +613,7 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
     const txt = extractText(msg.content);
     if (txt.length < 10 || txt.startsWith("/")) continue;
     if (BLOCKED_RE.test(txt)) {
-      const isDup = loops.some(l => Math.abs((l.sourceIndex ?? 0) - idx) < 5);
+      const isDup = loops.some(l => isNearbyDuplicate(l, txt, idx));
       if (!isDup) {
         loops.push({
           id: ID_PREFIX.OPEN_LOOP + (++loopId),
@@ -610,22 +628,9 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
     }
   }
 
-  // ── 4. Pending tool retries → retry loops ──
-  for (const err of extraction.errors.filter(e => e.retryAttempted && !e.resolved)) {
-    // Only add if not already captured as bugfix
-    const exists = loops.some(l => l.type === "bugfix" && l.sourceIndex === err.index);
-    if (!exists) {
-      loops.push({
-        id: ID_PREFIX.OPEN_LOOP + (++loopId),
-        type: "retry",
-        priority: "high",
-        status: "open",
-        summary: "Retried but unresolved: " + err.message.slice(0, TRUNC.SNIPPET),
-        files: [],
-        sourceIndex: err.index,
-      });
-    }
-  }
+  // (Errors that were retried and stayed unresolved are already emitted as
+  // bugfix loops by section 1 — the former "retry" branch here was unreachable
+  // dead code: its exists-check could never be false.)
   // A follow-up is closed only by later, task-specific completion evidence in
   // the same user turn. Generic "done" text cannot retire an unrelated loop.
   for (const loop of loops) {
@@ -636,7 +641,14 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
     const end = Math.min(msgs.length, loop.sourceIndex + 50);
     for (let index = loop.sourceIndex + 1; index < end; index++) {
       const message = msgs[index];
-      if (message?.role === "user") break;
+      if (message?.role === "user") {
+        // Ack-only nudges ("devam et", "ok", "go ahead") continue the same
+        // request rather than supersede it; scanning past them retires loops
+        // whose completion lands one user turn later.
+        const turn = extractText(message.content);
+        if (turn.length < 10 || ACK_ONLY_RE.test(turn)) continue;
+        break;
+      }
       if (message?.role !== "assistant") continue;
       const response = extractText(message.content);
       const normalized = response.toLowerCase();

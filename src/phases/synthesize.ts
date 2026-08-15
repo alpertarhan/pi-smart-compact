@@ -64,7 +64,7 @@ function boundedToolArgs(value: unknown, depth = 0): unknown {
 }
 
 /** The exact per-message representation used by batch prompts and planning. */
-export function renderBatchMessage(message: LlmMessage): string {
+function renderBatchMessage(message: LlmMessage): string {
 	const content = extractText(message.content).slice(0, TRUNC.PREVIEW_XL);
 	const toolCalls = filterToolCalls(message.content)
 		.map(

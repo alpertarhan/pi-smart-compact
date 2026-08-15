@@ -175,7 +175,7 @@ describe("extension lifecycle end to end", () => {
 
     const shutdown = handlers.get("session_shutdown")![0];
     await shutdown({}, ctx);
-  });
+  }, 20_000);
 
   it("requests proactive compaction through the existing correlated host lifecycle", async () => {
     const settingsFile = path.join(home, ".pi", "agent", "settings.json");

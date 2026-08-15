@@ -478,6 +478,20 @@ Build
 		).toBe(false);
 	});
 
+	it("treats Turkish inflected restatement as constraint evidence", () => {
+		const extraction = makeExtraction({
+			constraints: [
+				{ index: 2, text: "tabloları günlük yedekle", category: "requirement", confidence: 1 },
+			],
+		});
+		const summary =
+			"## Goal\nBackup\n## Progress\n- working\n## Constraints & Preferences\n- tablolar günlük olarak yedeklenir\n## Critical Context\n- stable";
+		const result = verifySummary(summary, extraction);
+		expect(
+			result.gaps.some((gap) => gap.kind === "missing-constraint"),
+		).toBe(false);
+	});
+
 	it("rejects inverted prohibition and conditional semantics", () => {
 		const extraction = makeExtraction({
 			mainGoal: "Release only after explicit approval",

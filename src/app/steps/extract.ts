@@ -81,7 +81,18 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
       if (pruningUnchanged) return convText;
       const safeMessages = scrubLlmMessages(selectedMessages, rc.services.scrubber);
       const backupText = serializeConversation(asSerializableMessages(safeMessages));
-      return rc.services.scrubber.scrubText(backupText).value;
+      const scrubbed = rc.services.scrubber.scrubText(backupText);
+      // Scrub false-positives permanently damage the backup (a restore brings
+      // back redacted text) — surface redactions so the user can review.
+      if (scrubbed.findings.length > 0) {
+        rc.notify(
+          "Backup written with redactions (" +
+            scrubbed.findings.map(f => f.count + "x " + f.kind).join(", ") +
+            ") — restore will lack that data",
+          "info",
+        );
+      }
+      return scrubbed.value;
     };
     preparedBackup = prepareConversationBackup(materializeBackup, rc.sessionId, {
       branchLeafId: branchEntryIds(rc.branch as Array<{ id?: string }>).at(-1),
@@ -135,11 +146,11 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
         && cachedExt.messageCount <= rc.llmMessages.length;
       cacheExact = cacheUsable && cachedExt.messageCount === rc.llmMessages.length;
       if (!cacheUsable) {
-        missReason = !branchPrefixMatch ? "entry-prefix-mismatch"
-          : !prunedPrefixMatch ? "pruned-prefix-changed"
-            : !boundedCacheShape ? "cache-evidence-unbounded"
-              : cachedExt.messageCount !== keptCount ? "cache-shape-mismatch"
-                : "cache-domain-ahead";
+        missReason = branchPrefixMatch ? prunedPrefixMatch ? boundedCacheShape ? cachedExt.messageCount === keptCount ? "cache-domain-ahead"
+                : "cache-shape-mismatch"
+              : "cache-evidence-unbounded"
+            : "pruned-prefix-changed"
+          : "entry-prefix-mismatch";
       }
     } else {
       missReason = "legacy-no-kept-entryids";

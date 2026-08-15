@@ -42,7 +42,7 @@ export function summaryEvidenceLine(value: string, maxLength: number): string {
 }
 
 /** Lossless Markdown-safe representation for one path. */
-export function summaryPathLine(value: string): string {
+function summaryPathLine(value: string): string {
 	return JSON.stringify(value);
 }
 

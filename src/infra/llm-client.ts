@@ -27,6 +27,7 @@ import type {
   Model, Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream,
   Context, ProviderStreamOptions, SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { getProviderCaps } from "../utils/tokens.ts";
 
 // pi-ai 0.80 moved the completers to the `/compat` subpath. They are resolved
 // with dynamic imports rather than static ones:
@@ -131,10 +132,18 @@ function assertSuccessful(message: AssistantMessage): AssistantMessage {
 export async function withProviderDeadline(
   opts: LlmCompleteOptions,
   invoke: (bounded: LlmCompleteOptions) => Promise<AssistantMessage>,
+  modelId?: string,
 ): Promise<AssistantMessage> {
   if (opts.signal?.aborted) throw new Error("LLM request aborted before dispatch");
   const controller = new AbortController();
-  const watchdogMs = resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs);
+  // Scale the base watchdog by the provider's timeout profile: slow providers
+  // (timeoutMultiplier > 1) were cut at the raw [15s, 90s] window and silently
+  // degraded to deterministic fallback summaries. An explicitly configured
+  // watchdog value is never scaled.
+  const multiplier = modelId && !((opts.codexWatchdogMs ?? 0) > 0)
+    ? getProviderCaps(modelId).timeoutMultiplier
+    : 1;
+  const watchdogMs = Math.round(resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs) * multiplier);
   const abort = Promise.withResolvers<never>();
   const abortFromCaller = () => {
     controller.abort(opts.signal?.reason);
@@ -215,7 +224,7 @@ export const rawLlmClient: LlmClient = {
         ? await (await resolveComplete())(model, body, bounded as ProviderStreamOptions)
         : await (await resolveCompleteSimple())(model, body, bounded);
       return assertSuccessful(response);
-    });
+    }, model.id);
   },
 };
 

@@ -297,9 +297,6 @@ export const TRUNC = {
 	FINGERPRINT_SEG: 2,
 } as const;
 
-// ── Truncation lengths used by damage paths ──
-export const DAMAGE_RECENT_MSG_WINDOW = 15;
-
 // ── Pruning ──
 export const MAX_TOOL_OUTPUT_CHARS = 800;
 /** Provider-visible output from one exploration tool invocation. */
@@ -323,12 +320,6 @@ export const METRICS_BUFFER_MAX = 200;
 // Append-only runtime JSONL logs are tail-read and capped on disk. Five MiB
 // keeps thousands of recent runs without allowing years of silent growth.
 export const RUNTIME_LOG_MAX_BYTES = 5 * 1024 * 1024;
-
-// ── Damage detection window ──
-export const DAMAGE_LOOKBACK_MSGS = 15;
-
-// ── Damage report regex slicing ──
-export const VERIFICATION_GAP_SNIPPET_LEN = 80;
 
 // ── Config keys ──
 export const CONFIG_KEY = "smartCompact";
