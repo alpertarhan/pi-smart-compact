@@ -15,7 +15,11 @@ interface Pattern {
 }
 
 const SECRET_PATTERNS: Pattern[] = [
-  { kind: "private-key", regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g },
+  {
+    kind: "private-key",
+    regex:
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  },
   { kind: "aws-access-key", regex: /\bAKIA[0-9A-Z]{16}\b/g },
   { kind: "google-api-key", regex: /\bAIza[0-9A-Za-z_-]{30,}\b/g },
   { kind: "stripe-key", regex: /\b[rs]k_(?:live|test)_[0-9A-Za-z]{16,}\b/g },
@@ -24,8 +28,15 @@ const SECRET_PATTERNS: Pattern[] = [
   { kind: "github-token", regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g },
   { kind: "api-key", regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/g },
   { kind: "slack-token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
-  { kind: "jwt", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
-  { kind: "bearer-token", regex: /\bBearer\s+[A-Za-z0-9._~+\/-]{12,}=*/gi, replacement: () => "Bearer [REDACTED:bearer-token]" },
+  {
+    kind: "jwt",
+    regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+  },
+  {
+    kind: "bearer-token",
+    regex: /\bBearer\s+[A-Za-z0-9._~+/-]{12,}=*/gi,
+    replacement: () => "Bearer [REDACTED:bearer-token]",
+  },
   {
     kind: "connection-password",
     regex: /\b([a-z][a-z0-9+.-]*:\/\/[^:\s/@]+:)[^@\s/]+(@)/gi,
@@ -33,14 +44,47 @@ const SECRET_PATTERNS: Pattern[] = [
   },
   {
     kind: "credential",
-    regex: /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+)*)\s*([:=])\s*["']?([^\s"']{16,})["']?/gi,
-    replacement: (name, separator) => name + separator + "[REDACTED:credential]",
+    regex:
+      /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+)*)\s*([:=])\s*["']?([^\s"']{16,})["']?/gi,
+    replacement: (name, separator, value, match) =>
+      // `token: process.env.API_KEY` is a reference, not a literal secret.
+      // Multi-segment dotted identifier chains are env/config refs; real
+      // secrets are opaque single runs and essentially never dotted.
+      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value)
+        ? match
+        : name + separator + "[REDACTED:credential]",
   },
 ];
 
+/** Standard mod-10 check with a same-digit guard for padded placeholders. */
+function passesLuhn(candidate: string): boolean {
+  const digits = candidate.replace(/\D/g, "");
+  if (digits.length < 13 || digits.length > 19) return false;
+  if (/^(\d)\1+$/.test(digits)) return false;
+  let sum = 0,
+    double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (double) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
 const PII_PATTERNS: Pattern[] = [
   { kind: "email", regex: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi },
-  { kind: "payment-card", regex: /\b(?:\d[ -]*?){13,19}\b/g },
+  {
+    kind: "payment-card",
+    regex: /\b(?:\d[ -]*?){13,19}\b/g,
+    // 13-19 digit runs are usually timestamps/IDs, not cards: only Luhn-valid
+    // numbers are redacted so epoch timestamps survive PII scrubbing.
+    replacement: (candidate) =>
+      passesLuhn(candidate) ? "[REDACTED:payment-card]" : candidate,
+  },
   { kind: "phone", regex: /(?<![\w.])(?:\+?\d[\d ()-]{8,}\d)(?![\w.])/g },
 ];
 
@@ -49,27 +93,59 @@ function redact(text: string, patterns: Pattern[]): ScrubResult<string> {
   let value = text;
   for (const pattern of patterns) {
     value = value.replace(pattern.regex, (...args: unknown[]) => {
-      counts.set(pattern.kind, (counts.get(pattern.kind) ?? 0) + 1);
+      const match = String(args[0]);
+      let replacement = "[REDACTED:" + pattern.kind + "]";
       if (pattern.replacement) {
         const groups = args.slice(1, -2).map(String);
-        return pattern.replacement(...groups);
+        // Trailing full-match argument lets replacements without capture groups
+        // (payment-card) receive the candidate, and lets "spared" replacements
+        // return the exact original text (whitespace intact).
+        replacement = pattern.replacement(...groups, match);
       }
-      return "[REDACTED:" + pattern.kind + "]";
+      if (replacement === match) return match; // candidate rejected (e.g. Luhn fail): keep, don't count
+      counts.set(pattern.kind, (counts.get(pattern.kind) ?? 0) + 1);
+      return replacement;
     });
   }
-  return { value, findings: [...counts].map(([kind, count]) => ({ kind, count })) };
+  return {
+    value,
+    findings: [...counts].map(([kind, count]) => ({ kind, count })),
+  };
 }
 
-function mergeFindings(target: Map<string, number>, findings: RedactionFinding[]): void {
-  for (const finding of findings) target.set(finding.kind, (target.get(finding.kind) ?? 0) + finding.count);
+function mergeFindings(
+  target: Map<string, number>,
+  findings: RedactionFinding[],
+): void {
+  for (const finding of findings)
+    target.set(finding.kind, (target.get(finding.kind) ?? 0) + finding.count);
 }
 
 const SECRET_KEY_NAMES: Readonly<Record<string, true>> = {
-  api_key: true, apikey: true, access_token: true, auth_token: true, authorization: true,
-  password: true, passwd: true, secret: true, secret_key: true, secret_access_key: true,
-  client_secret: true, private_key: true, database_url: true, connection_string: true,
-  token: true, refresh_token: true, session_token: true, credential: true, credentials: true,
-  cookie: true, set_cookie: true, otp: true, one_time_password: true, pin: true, passcode: true,
+  api_key: true,
+  apikey: true,
+  access_token: true,
+  auth_token: true,
+  authorization: true,
+  password: true,
+  passwd: true,
+  secret: true,
+  secret_key: true,
+  secret_access_key: true,
+  client_secret: true,
+  private_key: true,
+  database_url: true,
+  connection_string: true,
+  token: true,
+  refresh_token: true,
+  session_token: true,
+  credential: true,
+  credentials: true,
+  cookie: true,
+  set_cookie: true,
+  otp: true,
+  one_time_password: true,
+  passcode: true,
 };
 
 function normalizeObjectKey(key: string): string {
@@ -83,14 +159,19 @@ function normalizeObjectKey(key: string): string {
 function isSecretBearingKey(key: string): boolean {
   const normalized = normalizeObjectKey(key);
   if (SECRET_KEY_NAMES[normalized]) return true;
-  return /(?:^|_)(?:api_key|access_token|auth_token|password|passwd|secret_access_key|client_secret|private_key|refresh_token|session_token|one_time_password|passcode)(?:_|$)/.test(normalized);
+  return /(?:^|_)(?:api_key|access_token|auth_token|password|passwd|secret_access_key|client_secret|private_key|refresh_token|session_token|one_time_password|passcode)(?:_|$)/.test(
+    normalized,
+  );
 }
 
 /** Run-scoped scrubber used at LLM, cache, backup and persistence boundaries. */
 export class SecretScrubber {
   private total = 0;
 
-  constructor(private readonly secretsEnabled = true, private readonly piiEnabled = false) {}
+  constructor(
+    private readonly secretsEnabled = true,
+    private readonly piiEnabled = false,
+  ) {}
 
   scrubText(text: string): ScrubResult<string> {
     let value = text;
@@ -134,8 +215,13 @@ export class SecretScrubber {
       }
       const output: Record<string, unknown> = {};
       seen.set(value, output);
-      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        const carriesSecret = typeof item === "string" ? item.length > 0 : item != null;
+      for (const [key, item] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
+        // Secret values are long opaque strings. Numbers, booleans and nested
+        // objects are configuration shapes (map pins, parser options) —
+        // redacting those corrupts ground truth and backups irreversibly.
+        const carriesSecret = typeof item === "string" && item.length >= 8;
         if (this.secretsEnabled && isSecretBearingKey(key) && carriesSecret) {
           output[key] = "[REDACTED:credential]";
           recordCredential();
@@ -146,8 +232,13 @@ export class SecretScrubber {
       return output;
     };
     const value = visit(input) as T;
-    return { value, findings: [...findings].map(([kind, count]) => ({ kind, count })) };
+    return {
+      value,
+      findings: [...findings].map(([kind, count]) => ({ kind, count })),
+    };
   }
 
-  count(): number { return this.total; }
+  count(): number {
+    return this.total;
+  }
 }

@@ -122,6 +122,24 @@ describe("extractFileRefs — integration", () => {
     expect(refs).toEqual([]);
   });
 
+  it("does not truncate dotted directories before an extensionless child", () => {
+    for (const path of [
+      "/repo/src/Foo.Application/Implementations",
+      "/repo/src/Foo.Infrastructure/Dockerfile",
+      "/repo/.terraform/providers/registry.terraform.io/hashicorp/aws/current",
+      "C:\\repo\\src\\Foo.Application\\Dockerfile",
+    ]) {
+      expect(extractFileRefs(path)).toEqual([]);
+    }
+  });
+
+  it("still extracts complete files nested under dotted directories", () => {
+    expect(extractFileRefs("/repo/src/Foo.Application/Services/AuthHandler.cs"))
+      .toEqual(["/repo/src/Foo.Application/Services/AuthHandler.cs"]);
+    expect(extractFileRefs("/repo/src/Foo.Infrastructure/Directory.Build.props"))
+      .toEqual(["/repo/src/Foo.Infrastructure/Directory.Build.props"]);
+  });
+
   it("returns an empty array when no candidates exist", () => {
     expect(extractFileRefs("plain prose without file references")).toEqual([]);
   });
