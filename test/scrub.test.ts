@@ -20,7 +20,9 @@ describe("SecretScrubber", () => {
   });
 
   it("does not redact benign short lookalikes", () => {
-    const result = new SecretScrubber(true, false).scrubText("sk-example and token=userToken and version 7.20.0").value;
+    const result = new SecretScrubber(true, false).scrubText(
+      "sk-example and token=userToken and version 7.20.0",
+    ).value;
     expect(result).toBe("sk-example and token=userToken and version 7.20.0");
   });
 
@@ -37,7 +39,9 @@ describe("SecretScrubber", () => {
     expect(value).not.toContain("sk_live_");
     expect(value).not.toContain(google);
     expect(value).not.toContain("SuperSecretPassword123");
-    expect(value).toContain("postgres://admin:[REDACTED:password]@db.example/app");
+    expect(value).toContain(
+      "postgres://admin:[REDACTED:password]@db.example/app",
+    );
   });
 
   it("uses object keys as secret evidence without redacting token counters", () => {
@@ -56,12 +60,27 @@ describe("SecretScrubber", () => {
 
   it("keeps PII disabled by default and supports opt-in", () => {
     const text = "Contact dev@example.com";
-    expect(new SecretScrubber(true, false).scrubText(text).value).toContain("dev@example.com");
-    expect(new SecretScrubber(true, true).scrubText(text).value).not.toContain("dev@example.com");
+    expect(new SecretScrubber(true, false).scrubText(text).value).toContain(
+      "dev@example.com",
+    );
+    expect(new SecretScrubber(true, true).scrubText(text).value).not.toContain(
+      "dev@example.com",
+    );
   });
 
   it("scrubs nested tool-call arguments without mutating the source", () => {
-    const source = { messages: [{ content: [{ type: "toolCall", arguments: { token: "ghp_abcdefghijklmnopqrstuvwxyz1234567890" } }] }] };
+    const source = {
+      messages: [
+        {
+          content: [
+            {
+              type: "toolCall",
+              arguments: { token: "ghp_abcdefghijklmnopqrstuvwxyz1234567890" },
+            },
+          ],
+        },
+      ],
+    };
     const result = new SecretScrubber().scrubValue(source).value;
     expect(result.messages[0].content[0].arguments.token).toContain("REDACTED");
     expect(source.messages[0].content[0].arguments.token).toContain("ghp_");
@@ -87,21 +106,35 @@ describe("SecretScrubber", () => {
     const result = new SecretScrubber(true, false).scrubValue({
       access_token: "abcdefghijklmnopqrstuvwxyz123456",
     });
-    expect((result.value as Record<string, string>).access_token).toBe("[REDACTED:credential]");
+    expect((result.value as Record<string, string>).access_token).toBe(
+      "[REDACTED:credential]",
+    );
   });
 
   it("spares dotted env references from the credential regex", () => {
-    const kept = new SecretScrubber(true, false).scrubText("token: process.env.API_KEY").value;
+    const kept = new SecretScrubber(true, false).scrubText(
+      "token: process.env.API_KEY",
+    ).value;
     expect(kept).toBe("token: process.env.API_KEY");
-    const redacted = new SecretScrubber(true, false).scrubText("access_token: abcdefghijklmnopqrstuvwxyz123456").value;
+    const redacted = new SecretScrubber(true, false).scrubText(
+      "access_token: abcdefghijklmnopqrstuvwxyz123456",
+    ).value;
     expect(redacted).toContain("[REDACTED:credential]");
   });
 
   it("payment-card counts only Luhn-valid numbers", () => {
-    const timestamp = new SecretScrubber(false, true).scrubText("at 1739570400000 ms");
-    expect(timestamp.findings.some(finding => finding.kind === "payment-card")).toBe(false);
-    const card = new SecretScrubber(false, true).scrubText("card 4111111111111119 x, 4111111111111111 y");
-    expect(card.findings.find(finding => finding.kind === "payment-card")?.count).toBe(1);
+    const timestamp = new SecretScrubber(false, true).scrubText(
+      "at 1739570400000 ms",
+    );
+    expect(
+      timestamp.findings.some((finding) => finding.kind === "payment-card"),
+    ).toBe(false);
+    const card = new SecretScrubber(false, true).scrubText(
+      "card 4111111111111119 x, 4111111111111111 y",
+    );
+    expect(
+      card.findings.find((finding) => finding.kind === "payment-card")?.count,
+    ).toBe(1);
   });
 });
 
@@ -113,14 +146,28 @@ describe("trackedComplete secret boundary", () => {
       llm: {
         complete: async (_model, context) => {
           observed = JSON.stringify(context);
-          return { role: "assistant", content: [{ type: "text", text: "ok" }], usage: { input: 1, output: 1 }, stopReason: "stop" } as any;
+          return {
+            role: "assistant",
+            content: [{ type: "text", text: "ok" }],
+            usage: { input: 1, output: 1 },
+            stopReason: "stop",
+          } as any;
         },
       },
     });
     await trackedComplete(
       "single-pass",
       { id: "test", provider: "openai" } as any,
-      { messages: [{ role: "user", content: [{ type: "text", text: "token=abcdefghijklmnopqrstuvwxyz123456" }] }] } as any,
+      {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "token=abcdefghijklmnopqrstuvwxyz123456" },
+            ],
+          },
+        ],
+      } as any,
       {},
       services,
     );

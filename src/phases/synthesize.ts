@@ -414,14 +414,12 @@ export async function singlePassCompact(
 	);
 	const summary = resp.content
 		.filter(
-			(c): c is import("@earendil-works/pi-ai").TextContent =>
-				c.type === "text",
+			(c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text",
 		)
 		.map((c) => c.text)
 		.join("\n")
 		.trim();
-	if (!summary.startsWith("##"))
-		throw new Error("Single-pass malformed output");
+	if (!summary.startsWith("##")) throw new Error("Single-pass malformed output");
 	return { summary, llmCalls: 1 };
 }
 
@@ -526,8 +524,7 @@ export async function summarizeBatch(
 	);
 	const output = resp.content
 		.filter(
-			(c): c is import("@earendil-works/pi-ai").TextContent =>
-				c.type === "text",
+			(c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text",
 		)
 		.map((c) => c.text)
 		.join("\n");
@@ -677,18 +674,14 @@ export async function assembleLLM(
 		{
 			apiKey: auth.apiKey,
 			headers: auth.headers,
-			maxTokens: Math.min(
-				budget,
-				getProviderCaps(model.provider).maxOutputTokens,
-			),
+			maxTokens: Math.min(budget, getProviderCaps(model.provider).maxOutputTokens),
 			signal,
 		},
 		services,
 	);
 	return resp.content
 		.filter(
-			(c): c is import("@earendil-works/pi-ai").TextContent =>
-				c.type === "text",
+			(c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text",
 		)
 		.map((c) => c.text)
 		.join("\n")
@@ -763,8 +756,7 @@ export function assembleFallback(
 			TRUNC.PREVIEW,
 		) || "Continue from the latest preserved context.";
 	const goal =
-		safe(extraction.mainGoal ?? "", TRUNC.DETAIL) ||
-		"Continue the current task.";
+		safe(extraction.mainGoal ?? "", TRUNC.DETAIL) || "Continue the current task.";
 	const overflow = Object.entries(extraction.evidenceOverflow ?? {})
 		.filter(([, count]) => typeof count === "number" && count > 0)
 		.map(
@@ -835,10 +827,7 @@ export function assembleFallback(
 				})
 			: extraction.topics.map(
 					(topic, index) =>
-						"- Topic " +
-						(index + 1) +
-						": " +
-						safe(topic.primaryFile ?? topic.type),
+						"- Topic " + (index + 1) + ": " + safe(topic.primaryFile ?? topic.type),
 				)),
 	].join("\n");
 }

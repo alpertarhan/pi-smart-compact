@@ -183,9 +183,7 @@ function classifyOutcomeClaim(
 	if (/\btests?\b|\btestler?\b/.test(lower)) return "test";
 	if (/\bbuild\b|\bcompil(?:e|ed|ation)\b|\btypecheck\b/.test(lower))
 		return "build";
-	if (
-		/\bdeploy(?:ed|ment)?\b|\bpublish(?:ed)?\b|\breleas(?:e|ed)\b/.test(lower)
-	)
+	if (/\bdeploy(?:ed|ment)?\b|\bpublish(?:ed)?\b|\breleas(?:e|ed)\b/.test(lower))
 		return "release";
 	if (/\bbug\b|\bissue\b|\berror\b|\bfail(?:ed|ure)?\b|\bhata\b/.test(lower))
 		return "error";
@@ -225,10 +223,7 @@ function sourceSupportsFileReference(
 		while (index >= 0) {
 			const before = text[index - 1] ?? "";
 			const after = text[index + needle.length] ?? "";
-			if (
-				(!before || !/[\w.-]/.test(before)) &&
-				(!after || !/[\w.-]/.test(after))
-			)
+			if ((!before || !/[\w.-]/.test(before)) && (!after || !/[\w.-]/.test(after)))
 				return true;
 			index = text.indexOf(needle, index + 1);
 		}
@@ -293,9 +288,7 @@ function successfulToolSupportsClaim(
 		const operationText = tool.name + " " + tool.command;
 		const operationSupports =
 			category === "test"
-				? /\b(?:test|tests|pytest|jest|vitest|mocha|rspec)\b/i.test(
-						operationText,
-					)
+				? /\b(?:test|tests|pytest|jest|vitest|mocha|rspec)\b/i.test(operationText)
 				: category === "build"
 					? /\b(?:build|compile|typecheck|tsc|check)\b/i.test(operationText)
 					: category === "release"
@@ -320,9 +313,7 @@ function successfulToolSupportsClaim(
 			return true;
 		if (
 			category === "build" &&
-			/\b(?:succeeded|successful|passed|exit(?:ed)?\s+(?:code\s+)?0)\b/.test(
-				lower,
-			)
+			/\b(?:succeeded|successful|passed|exit(?:ed)?\s+(?:code\s+)?0)\b/.test(lower)
 		)
 			return true;
 		if (
@@ -380,9 +371,8 @@ export function formatVerificationGap(gap: VerificationGap): string {
 			return "Missing deleted file: " + gap.path;
 		case "missing-error":
 			return (
-				(gap.resolved
-					? "Missing resolved error history: "
-					: "Missing error: ") + gap.message.slice(0, TRUNC.SNIPPET)
+				(gap.resolved ? "Missing resolved error history: " : "Missing error: ") +
+				gap.message.slice(0, TRUNC.SNIPPET)
 			);
 		case "missing-constraint":
 			return "Missing constraint: " + gap.text.slice(0, TRUNC.TOPIC_LABEL);
@@ -437,8 +427,7 @@ export class VerificationGateError extends Error {
 		stage: VerificationGateStage,
 	) {
 		super(
-			verificationFailureMessage(result) ??
-				"Verification gate rejected summary",
+			verificationFailureMessage(result) ?? "Verification gate rejected summary",
 		);
 		this.name = "VerificationGateError";
 		this.score = result.score;
@@ -520,10 +509,63 @@ const SEMANTIC_STOP = new Set([
 // Longest first; the ≥4-char stem guard also protects short English words
 // ("code", "side") from the 2-letter suffixes.
 const TR_SUFFIXES = [
-	"ları", "leri", "ının", "inin", "unun", "ünün", "ında", "inde", "unda", "ünde", "mış", "miş", "muş", "müş",
-	"lar", "ler", "ını", "ini", "unu", "ünü", "ına", "ine", "una", "üne", "dan", "den", "tan", "ten",
-	"dır", "dir", "dur", "dür", "tır", "tir", "tur", "tür", "yor", "mak", "mek",
-	"da", "de", "ta", "te", "dı", "di", "du", "dü", "tı", "ti", "tu", "tü", "ın", "in", "un", "ün", "sa", "se",
+	"ları",
+	"leri",
+	"ının",
+	"inin",
+	"unun",
+	"ünün",
+	"ında",
+	"inde",
+	"unda",
+	"ünde",
+	"mış",
+	"miş",
+	"muş",
+	"müş",
+	"lar",
+	"ler",
+	"ını",
+	"ini",
+	"unu",
+	"ünü",
+	"ına",
+	"ine",
+	"una",
+	"üne",
+	"dan",
+	"den",
+	"tan",
+	"ten",
+	"dır",
+	"dir",
+	"dur",
+	"dür",
+	"tır",
+	"tir",
+	"tur",
+	"tür",
+	"yor",
+	"mak",
+	"mek",
+	"da",
+	"de",
+	"ta",
+	"te",
+	"dı",
+	"di",
+	"du",
+	"dü",
+	"tı",
+	"ti",
+	"tu",
+	"tü",
+	"ın",
+	"in",
+	"un",
+	"ün",
+	"sa",
+	"se",
 ] as const;
 
 function stemToken(token: string): string {
@@ -647,9 +689,7 @@ function semanticShape(source: string): SemanticShape {
 		),
 	);
 	const negative = sourceTokens.some((token) => NEGATION_MARKERS.has(token));
-	const conditional = sourceTokens.some((token) =>
-		CONDITION_MARKERS.has(token),
-	);
+	const conditional = sourceTokens.some((token) => CONDITION_MARKERS.has(token));
 	const anchor =
 		concepts.find((concept) =>
 			hasNearbyMarker(sourceTokens, concept, NEGATION_MARKERS),
@@ -670,9 +710,7 @@ function hasSemanticEvidence(source: string, target: string): boolean {
 		Math.max(1, Math.ceil(concepts.length * 0.6)),
 	);
 	return semanticFragments(target).some((tokens) => {
-		const overlap = concepts.filter((concept) =>
-			tokens.includes(concept),
-		).length;
+		const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
 		if (overlap < required) return false;
 		const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
 		if (negative && !targetNegative) {
@@ -705,9 +743,7 @@ function hasSemanticContradiction(source: string, target: string): boolean {
 	);
 	return semanticFragments(target).some((tokens) => {
 		if (!tokens.includes(anchor)) return false;
-		const overlap = concepts.filter((concept) =>
-			tokens.includes(concept),
-		).length;
+		const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
 		// Sharing a generic anchor such as "release" or "file" is not enough:
 		// another constraint in the same section must overlap the actual concepts.
 		if (overlap < required) return false;
@@ -903,10 +939,7 @@ export function verifySummary(
 	}
 	for (const file of readPaths) {
 		const display = pathEvidence.get(file);
-		if (
-			display &&
-			!hasListedPath(readListed, file, display, normalizedOwners)
-		) {
+		if (display && !hasListedPath(readListed, file, display, normalizedOwners)) {
 			gaps.push({ kind: "missing-read-file", path: file });
 		}
 	}
@@ -1098,8 +1131,8 @@ export function verifySummary(
 
 	const unresolvedCount =
 		unresolvedEvidence.length +
-		(continuity?.openLoops.filter((loop) => loop.status !== "resolved")
-			.length ?? 0);
+		(continuity?.openLoops.filter((loop) => loop.status !== "resolved").length ??
+			0);
 	if (
 		unresolvedCount >= 1 &&
 		!findSection(parsed, "open-loops") &&
@@ -1190,9 +1223,7 @@ export function patchDeterministic(
 		const replacement = Array.from(
 			new Set([
 				...blockedItems,
-				...existing.filter(
-					(line, index) => line.trim() && !noneIndexes.has(index),
-				),
+				...existing.filter((line, index) => line.trim() && !noneIndexes.has(index)),
 			]),
 		);
 		lines.splice(start + 1, end - start - 1, ...replacement);
@@ -1315,8 +1346,7 @@ export function patchDeterministic(
 							.filter((line) => {
 								if (!/^\s*[-*]\s+/.test(line)) return true;
 								const matches = extractFileRefs(line).some(
-									(ref) =>
-										ref.replace(/\\/g, "/").toLowerCase() === normalizedRef,
+									(ref) => ref.replace(/\\/g, "/").toLowerCase() === normalizedRef,
 								);
 								return !matches;
 							})

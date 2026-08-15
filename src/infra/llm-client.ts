@@ -24,8 +24,14 @@
  */
 
 import type {
-  Model, Api, AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream,
-  Context, ProviderStreamOptions, SimpleStreamOptions,
+  Model,
+  Api,
+  AssistantMessage,
+  AssistantMessageEvent,
+  AssistantMessageEventStream,
+  Context,
+  ProviderStreamOptions,
+  SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { getProviderCaps } from "../utils/tokens.ts";
 
@@ -42,9 +48,19 @@ import { getProviderCaps } from "../utils/tokens.ts";
 //    `/compat` directly. It runs on first use (never at module load), so a
 //    resolution hiccup can never break extension loading, and test fakes that
 //    inject their own client via setLlmClient never trigger it.
-type CompleteFn<TOptions> = (model: Model<Api>, body: Context, opts: TOptions) => Promise<AssistantMessage>;
-type StreamFn<TOptions> = (model: Model<Api>, body: Context, opts: TOptions) => AssistantMessageEventStream;
-export type LlmCompleteOptions = SimpleStreamOptions & { codexWatchdogMs?: number };
+type CompleteFn<TOptions> = (
+  model: Model<Api>,
+  body: Context,
+  opts: TOptions,
+) => Promise<AssistantMessage>;
+type StreamFn<TOptions> = (
+  model: Model<Api>,
+  body: Context,
+  opts: TOptions,
+) => AssistantMessageEventStream;
+export type LlmCompleteOptions = SimpleStreamOptions & {
+  codexWatchdogMs?: number;
+};
 
 let _complete: CompleteFn<ProviderStreamOptions> | null = null;
 let _completeSimple: CompleteFn<SimpleStreamOptions> | null = null;
@@ -55,16 +71,22 @@ async function resolveComplete(): Promise<CompleteFn<ProviderStreamOptions>> {
   if (_complete) return _complete;
   const mod = await import("@earendil-works/pi-ai/compat");
   const fn = mod.complete;
-  if (typeof fn !== "function") throw new Error("smart-compact: pi-ai /compat did not export complete()");
+  if (typeof fn !== "function")
+    throw new Error("smart-compact: pi-ai /compat did not export complete()");
   _complete = fn;
   return fn;
 }
 
-async function resolveCompleteSimple(): Promise<CompleteFn<SimpleStreamOptions>> {
+async function resolveCompleteSimple(): Promise<
+  CompleteFn<SimpleStreamOptions>
+> {
   if (_completeSimple) return _completeSimple;
   const mod = await import("@earendil-works/pi-ai/compat");
   const fn = mod.completeSimple;
-  if (typeof fn !== "function") throw new Error("smart-compact: pi-ai /compat did not export completeSimple()");
+  if (typeof fn !== "function")
+    throw new Error(
+      "smart-compact: pi-ai /compat did not export completeSimple()",
+    );
   _completeSimple = fn;
   return fn;
 }
@@ -72,7 +94,8 @@ async function resolveCompleteSimple(): Promise<CompleteFn<SimpleStreamOptions>>
 async function resolveStream(): Promise<StreamFn<ProviderStreamOptions>> {
   if (_stream) return _stream;
   const mod = await import("@earendil-works/pi-ai/compat");
-  if (typeof mod.stream !== "function") throw new Error("smart-compact: pi-ai /compat did not export stream()");
+  if (typeof mod.stream !== "function")
+    throw new Error("smart-compact: pi-ai /compat did not export stream()");
   _stream = mod.stream;
   return _stream;
 }
@@ -80,13 +103,20 @@ async function resolveStream(): Promise<StreamFn<ProviderStreamOptions>> {
 async function resolveStreamSimple(): Promise<StreamFn<SimpleStreamOptions>> {
   if (_streamSimple) return _streamSimple;
   const mod = await import("@earendil-works/pi-ai/compat");
-  if (typeof mod.streamSimple !== "function") throw new Error("smart-compact: pi-ai /compat did not export streamSimple()");
+  if (typeof mod.streamSimple !== "function")
+    throw new Error(
+      "smart-compact: pi-ai /compat did not export streamSimple()",
+    );
   _streamSimple = mod.streamSimple;
   return _streamSimple;
 }
 
 export interface LlmClient {
-  complete(model: Model<Api>, body: Context, opts: LlmCompleteOptions): Promise<AssistantMessage>;
+  complete(
+    model: Model<Api>,
+    body: Context,
+    opts: LlmCompleteOptions,
+  ): Promise<AssistantMessage>;
 }
 
 export function isChatGptCodex(model: Model<Api>): boolean {
@@ -95,8 +125,16 @@ export function isChatGptCodex(model: Model<Api>): boolean {
 }
 
 /** ChatGPT rejects wire token caps; OpenAI-compatible custom Codex endpoints may accept them. */
-export function withCodexWireLimit(model: Model<Api>, opts: LlmCompleteOptions): LlmCompleteOptions {
-  if (model.api !== "openai-codex-responses" || isChatGptCodex(model) || !opts.maxTokens) return opts;
+export function withCodexWireLimit(
+  model: Model<Api>,
+  opts: LlmCompleteOptions,
+): LlmCompleteOptions {
+  if (
+    model.api !== "openai-codex-responses" ||
+    isChatGptCodex(model) ||
+    !opts.maxTokens
+  )
+    return opts;
   const previous = opts.onPayload;
   return {
     ...opts,
@@ -104,19 +142,29 @@ export function withCodexWireLimit(model: Model<Api>, opts: LlmCompleteOptions):
       const transformed = await previous?.(payload, requestModel);
       const body = transformed ?? payload;
       return body && typeof body === "object"
-        ? { ...(body as Record<string, unknown>), max_output_tokens: opts.maxTokens }
+        ? {
+            ...(body as Record<string, unknown>),
+            max_output_tokens: opts.maxTokens,
+          }
         : body;
     },
   };
 }
 
-export function resolveCodexWatchdogMs(maxTokens: number | undefined, configuredMs = 0): number {
+export function resolveCodexWatchdogMs(
+  maxTokens: number | undefined,
+  configuredMs = 0,
+): number {
   if (configuredMs > 0) return configuredMs;
   return Math.min(90_000, Math.max(15_000, 10_000 + (maxTokens ?? 4_096) * 8));
 }
 
 function streamedChars(event: AssistantMessageEvent): number {
-  if ((event.type === "text_delta" || event.type === "thinking_delta" || event.type === "toolcall_delta")) {
+  if (
+    event.type === "text_delta" ||
+    event.type === "thinking_delta" ||
+    event.type === "toolcall_delta"
+  ) {
     return event.delta.length;
   }
   return 0;
@@ -134,16 +182,20 @@ export async function withProviderDeadline(
   invoke: (bounded: LlmCompleteOptions) => Promise<AssistantMessage>,
   modelId?: string,
 ): Promise<AssistantMessage> {
-  if (opts.signal?.aborted) throw new Error("LLM request aborted before dispatch");
+  if (opts.signal?.aborted)
+    throw new Error("LLM request aborted before dispatch");
   const controller = new AbortController();
   // Scale the base watchdog by the provider's timeout profile: slow providers
   // (timeoutMultiplier > 1) were cut at the raw [15s, 90s] window and silently
   // degraded to deterministic fallback summaries. An explicitly configured
   // watchdog value is never scaled.
-  const multiplier = modelId && !((opts.codexWatchdogMs ?? 0) > 0)
-    ? getProviderCaps(modelId).timeoutMultiplier
-    : 1;
-  const watchdogMs = Math.round(resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs) * multiplier);
+  const multiplier =
+    modelId && !((opts.codexWatchdogMs ?? 0) > 0)
+      ? getProviderCaps(modelId).timeoutMultiplier
+      : 1;
+  const watchdogMs = Math.round(
+    resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs) * multiplier,
+  );
   const abort = Promise.withResolvers<never>();
   const abortFromCaller = () => {
     controller.abort(opts.signal?.reason);
@@ -153,7 +205,11 @@ export async function withProviderDeadline(
   const timeout = Promise.withResolvers<never>();
   const timer = setTimeout(() => {
     controller.abort("provider-watchdog");
-    timeout.reject(new Error("Provider watchdog stopped generation after " + watchdogMs + "ms"));
+    timeout.reject(
+      new Error(
+        "Provider watchdog stopped generation after " + watchdogMs + "ms",
+      ),
+    );
   }, watchdogMs);
   if (typeof timer === "object" && "unref" in timer) timer.unref();
   try {
@@ -168,12 +224,16 @@ export async function withProviderDeadline(
   }
 }
 
-
 async function completeChatGptCodex(
-  model: Model<Api>, body: Context, opts: LlmCompleteOptions,
+  model: Model<Api>,
+  body: Context,
+  opts: LlmCompleteOptions,
 ): Promise<AssistantMessage> {
   const controller = new AbortController();
-  const watchdogMs = resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs);
+  const watchdogMs = resolveCodexWatchdogMs(
+    opts.maxTokens,
+    opts.codexWatchdogMs,
+  );
   let watchdogReason: "time" | "visible-output" | null = null;
   let visibleChars = 0;
   const abortFromCaller = () => controller.abort(opts.signal?.reason);
@@ -187,13 +247,18 @@ async function completeChatGptCodex(
 
   try {
     const limited = { ...opts, signal: controller.signal };
-    const events = opts.reasoning === undefined
-      ? (await resolveStream())(model, body, limited as ProviderStreamOptions)
-      : (await resolveStreamSimple())(model, body, limited);
+    const events =
+      opts.reasoning === undefined
+        ? (await resolveStream())(model, body, limited as ProviderStreamOptions)
+        : (await resolveStreamSimple())(model, body, limited);
     let final: AssistantMessage | undefined;
     for await (const event of events) {
       visibleChars += streamedChars(event);
-      if (!watchdogReason && opts.maxTokens && visibleChars > opts.maxTokens * 3) {
+      if (
+        !watchdogReason &&
+        opts.maxTokens &&
+        visibleChars > opts.maxTokens * 3
+      ) {
         watchdogReason = "visible-output";
         controller.abort("codex-visible-output-cap");
       }
@@ -202,8 +267,13 @@ async function completeChatGptCodex(
     }
     if (watchdogReason) {
       throw new Error(
-        "Codex " + watchdogReason + " watchdog stopped generation after " +
-        watchdogMs + "ms / " + visibleChars + " streamed chars",
+        "Codex " +
+          watchdogReason +
+          " watchdog stopped generation after " +
+          watchdogMs +
+          "ms / " +
+          visibleChars +
+          " streamed chars",
       );
     }
     if (!final) throw new Error("Codex stream ended without a final message");
@@ -218,13 +288,23 @@ async function completeChatGptCodex(
 export const rawLlmClient: LlmClient = {
   complete: async (model, body, originalOpts) => {
     const opts = withCodexWireLimit(model, originalOpts);
-    return withProviderDeadline(opts, async bounded => {
-      if (isChatGptCodex(model)) return completeChatGptCodex(model, body, bounded);
-      const response = bounded.reasoning === undefined
-        ? await (await resolveComplete())(model, body, bounded as ProviderStreamOptions)
-        : await (await resolveCompleteSimple())(model, body, bounded);
-      return assertSuccessful(response);
-    }, model.id);
+    return withProviderDeadline(
+      opts,
+      async (bounded) => {
+        if (isChatGptCodex(model))
+          return completeChatGptCodex(model, body, bounded);
+        const response =
+          bounded.reasoning === undefined
+            ? await (await resolveComplete())(
+                model,
+                body,
+                bounded as ProviderStreamOptions,
+              )
+            : await (await resolveCompleteSimple())(model, body, bounded);
+        return assertSuccessful(response);
+      },
+      model.id,
+    );
   },
 };
 

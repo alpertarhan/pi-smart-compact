@@ -3,13 +3,36 @@
  */
 
 import path from "node:path";
-import type { LlmMessage, ProfileConfig, StructuredExtraction, OpenLoop, MediaAttachment } from "../types.ts";
-import { NO_OP_RE, SHIFT_RE, CHOICE_RE, LIKELY_ERROR_RE, ERROR_RETRY_WINDOW, ERROR_RESOLVE_WINDOW, TRUNC, ID_PREFIX, TUNING, EXTRACTION_LIMITS } from "../constants.ts";
+import type {
+  LlmMessage,
+  ProfileConfig,
+  StructuredExtraction,
+  OpenLoop,
+  MediaAttachment,
+} from "../types.ts";
+import {
+  NO_OP_RE,
+  SHIFT_RE,
+  CHOICE_RE,
+  LIKELY_ERROR_RE,
+  ERROR_RETRY_WINDOW,
+  ERROR_RESOLVE_WINDOW,
+  TRUNC,
+  ID_PREFIX,
+  TUNING,
+  EXTRACTION_LIMITS,
+} from "../constants.ts";
 import { estimateTokens } from "./tokens.ts";
 import { isToolCallBlock, isTextBlock } from "../utils/type-guards.ts";
 import { buildPathNeedles, GENERIC_BASENAMES } from "./file-needles.ts";
 import { normalizeFactKey } from "./helpers.ts";
-import { classifyToolOperation, extractShellFileOperations, extractToolPath, sameToolOperation, toolOperationSignature } from "../domain/tool-semantics.ts";
+import {
+  classifyToolOperation,
+  extractShellFileOperations,
+  extractToolPath,
+  sameToolOperation,
+  toolOperationSignature,
+} from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
 import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 
@@ -21,7 +44,10 @@ export function isTruncated(content: unknown): boolean {
 }
 
 /** Reusable tool call index type */
-export type ToolCallIndex = Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>;
+export type ToolCallIndex = Map<
+  string,
+  { name: string; arguments: Record<string, unknown>; msgIndex: number }
+>;
 
 /** Flattened tool-call descriptor (post `multi_tool_use.parallel` expansion). */
 export interface FlatToolCall {
@@ -31,10 +57,17 @@ export interface FlatToolCall {
 }
 
 /** Identity contract shared by extraction and pruning for nested parallel calls. */
-export function nestedToolCallId(wrapperId: string | undefined, messageIndex: number, toolIndex: number, nestedId?: unknown): string {
+export function nestedToolCallId(
+  wrapperId: string | undefined,
+  messageIndex: number,
+  toolIndex: number,
+  nestedId?: unknown,
+): string {
   return typeof nestedId === "string"
     ? nestedId
-    : wrapperId ? wrapperId + "_" + toolIndex : ID_PREFIX.MULTI_TOOL_USE_SYNTHETIC + messageIndex + "_" + toolIndex;
+    : wrapperId
+      ? wrapperId + "_" + toolIndex
+      : ID_PREFIX.MULTI_TOOL_USE_SYNTHETIC + messageIndex + "_" + toolIndex;
 }
 
 /**
@@ -45,7 +78,10 @@ export function nestedToolCallId(wrapperId: string | undefined, messageIndex: nu
  */
 export function flattenToolCallBlock(b: unknown): FlatToolCall[] {
   if (!isToolCallBlock(b)) return [];
-  if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
+  if (
+    b.name === "multi_tool_use.parallel" &&
+    Array.isArray(b.arguments?.tool_uses)
+  ) {
     return (b.arguments.tool_uses as Record<string, unknown>[]).map((u) => {
       const recipient = (u?.recipient_name as string) ?? "";
       return {
@@ -70,11 +106,13 @@ export function flattenToolCallBlock(b: unknown): FlatToolCall[] {
 export function extractText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content.map((b: unknown) => {
-    if (typeof b === "string") return b;
-    if (isTextBlock(b)) return b.text;
-    return "";
-  }).join("");
+  return content
+    .map((b: unknown) => {
+      if (typeof b === "string") return b;
+      if (isTextBlock(b)) return b.text;
+      return "";
+    })
+    .join("");
 }
 
 function mediaKind(type: string, mime?: string): MediaAttachment["kind"] {
@@ -90,19 +128,43 @@ function mediaKind(type: string, mime?: string): MediaAttachment["kind"] {
 export function extractMediaAttachments(msgs: LlmMessage[]): MediaAttachment[] {
   const out: MediaAttachment[] = [];
   for (let i = 0; i < msgs.length; i++) {
-    const blocks = Array.isArray(msgs[i].content) ? msgs[i].content as unknown[] : [];
+    const blocks = Array.isArray(msgs[i].content)
+      ? (msgs[i].content as unknown[])
+      : [];
     for (const b of blocks) {
       if (!b || typeof b !== "object") continue;
       const rec = b as Record<string, unknown>;
       const type = String(rec.type ?? "");
-      if (type === "text" || type === "toolCall" || type === "tool_use") continue;
-      const mimeType = (rec.mimeType ?? rec.mime_type ?? rec.mediaType ?? rec.media_type) as string | undefined;
-      const name = (rec.name ?? rec.filename ?? rec.fileName ?? rec.title) as string | undefined;
-      const sizeBytes = (rec.sizeBytes ?? rec.size_bytes ?? rec.size) as number | undefined;
-      const source = typeof rec.url === "string" ? "url" : typeof rec.path === "string" ? "path" : typeof rec.data === "string" || typeof rec.base64 === "string" ? "inline" : undefined;
+      if (type === "text" || type === "toolCall" || type === "tool_use")
+        continue;
+      const mimeType = (rec.mimeType ??
+        rec.mime_type ??
+        rec.mediaType ??
+        rec.media_type) as string | undefined;
+      const name = (rec.name ?? rec.filename ?? rec.fileName ?? rec.title) as
+        | string
+        | undefined;
+      const sizeBytes = (rec.sizeBytes ?? rec.size_bytes ?? rec.size) as
+        | number
+        | undefined;
+      const source =
+        typeof rec.url === "string"
+          ? "url"
+          : typeof rec.path === "string"
+            ? "path"
+            : typeof rec.data === "string" || typeof rec.base64 === "string"
+              ? "inline"
+              : undefined;
       const kind = mediaKind(type, mimeType);
       if (kind !== "unknown" || source || mimeType || name) {
-        out.push({ index: i, kind, mimeType, name, sizeBytes: typeof sizeBytes === "number" ? sizeBytes : undefined, source });
+        out.push({
+          index: i,
+          kind,
+          mimeType,
+          name,
+          sizeBytes: typeof sizeBytes === "number" ? sizeBytes : undefined,
+          source,
+        });
       }
     }
   }
@@ -110,7 +172,10 @@ export function extractMediaAttachments(msgs: LlmMessage[]): MediaAttachment[] {
 }
 
 export function buildToolCallIndex(msgs: readonly LlmMessage[]): ToolCallIndex {
-  const idx = new Map<string, { name: string; arguments: Record<string, unknown>; msgIndex: number }>();
+  const idx = new Map<
+    string,
+    { name: string; arguments: Record<string, unknown>; msgIndex: number }
+  >();
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.role !== "assistant") continue;
@@ -123,12 +188,19 @@ export function buildToolCallIndex(msgs: readonly LlmMessage[]): ToolCallIndex {
       // Flatten multi_tool_use.parallel into synthetic tool-call entries.
       // Prefer the real tool_use id if present (matches downstream toolResult.toolCallId),
       // otherwise fall back to a deterministic synthetic id.
-      if (b.name === "multi_tool_use.parallel" && Array.isArray(b.arguments?.tool_uses)) {
+      if (
+        b.name === "multi_tool_use.parallel" &&
+        Array.isArray(b.arguments?.tool_uses)
+      ) {
         const nested = flattenToolCallBlock(b);
         for (let t = 0; t < nested.length; t++) {
           const tool = nested[t];
           const id = nestedToolCallId(b.id, i, t, tool.id);
-          idx.set(id, { name: tool.name, arguments: tool.arguments, msgIndex: i });
+          idx.set(id, {
+            name: tool.name,
+            arguments: tool.arguments,
+            msgIndex: i,
+          });
         }
       }
     }
@@ -136,7 +208,10 @@ export function buildToolCallIndex(msgs: readonly LlmMessage[]): ToolCallIndex {
   return idx;
 }
 
-export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): {
+export function trackFileOps(
+  msgs: LlmMessage[],
+  _tcIdx?: ToolCallIndex,
+): {
   modified: StructuredExtraction["modifiedFiles"];
   read: string[];
   deleted: string[];
@@ -150,7 +225,9 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): {
 
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
-    for (const ref of extractFileRefs((JSON.stringify(m.content) ?? "").replace(/\\[nrt]/g, " "))) {
+    for (const ref of extractFileRefs(
+      (JSON.stringify(m.content) ?? "").replace(/\\[nrt]/g, " "),
+    )) {
       referencedAt.set(ref, i);
     }
     if (m.role !== "toolResult" || m.isError) continue;
@@ -163,7 +240,10 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): {
       const shell = extractShellFileOperations(tc.arguments);
       for (const file of shell.modified) {
         const existing = modMap.get(file);
-        modMap.set(file, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
+        modMap.set(file, {
+          toolCalls: (existing?.toolCalls ?? 0) + 1,
+          lastIdx: i,
+        });
         deletedAt.delete(file);
       }
       for (const file of shell.deleted) {
@@ -182,14 +262,21 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): {
       const resultText = extractText(m.content);
       if (isTruncated(resultText) || !NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
-        modMap.set(filePath, { toolCalls: (existing?.toolCalls ?? 0) + 1, lastIdx: i });
+        modMap.set(filePath, {
+          toolCalls: (existing?.toolCalls ?? 0) + 1,
+          lastIdx: i,
+        });
         deletedAt.delete(filePath);
       }
     } else if (operation === "delete") {
       deletedAt.set(filePath, i);
       modMap.delete(filePath);
       readAt.delete(filePath);
-    } else if (operation === "read" || operation === "search" || operation === "list") {
+    } else if (
+      operation === "read" ||
+      operation === "search" ||
+      operation === "list"
+    ) {
       // A successful access proves the path is present now. Record the latest
       // access index so tail caps preserve recently re-read files.
       readAt.set(filePath, i);
@@ -198,20 +285,41 @@ export function trackFileOps(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): {
   }
 
   return {
-    modified: [...modMap.entries()].map(([p, d]) => ({ path: p, toolCalls: d.toolCalls, lastModifiedIndex: d.lastIdx })),
-    read: [...readAt.entries()].sort((a, b) => a[1] - b[1]).map(([file]) => file),
-    deleted: [...deletedAt.entries()].sort((a, b) => a[1] - b[1]).map(([file]) => file),
-    referenced: [...referencedAt.entries()].sort((a, b) => a[1] - b[1]).map(([file]) => file),
+    modified: [...modMap.entries()].map(([p, d]) => ({
+      path: p,
+      toolCalls: d.toolCalls,
+      lastModifiedIndex: d.lastIdx,
+    })),
+    read: [...readAt.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([file]) => file),
+    deleted: [...deletedAt.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([file]) => file),
+    referenced: [...referencedAt.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([file]) => file),
   };
 }
 
-function isBenignSearchResult(tc: { arguments: Record<string, unknown> }, result: string): boolean {
-  const command = typeof tc.arguments.command === "string"
-    ? tc.arguments.command
-    : typeof tc.arguments.cmd === "string" ? tc.arguments.cmd : "";
+function isBenignSearchResult(
+  tc: { arguments: Record<string, unknown> },
+  result: string,
+): boolean {
+  const command =
+    typeof tc.arguments.command === "string"
+      ? tc.arguments.command
+      : typeof tc.arguments.cmd === "string"
+        ? tc.arguments.cmd
+        : "";
   if (/[;\n]|\|\|/.test(command)) return false;
-  const segments = command.split("&&").map(segment => segment.trim()).filter(Boolean);
-  const searchOnly = segments.length > 0 && segments.every(segment => /^(?:rg|grep)\b/.test(segment));
+  const segments = command
+    .split("&&")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const searchOnly =
+    segments.length > 0 &&
+    segments.every((segment) => /^(?:rg|grep)\b/.test(segment));
   if (!searchOnly || /(?:^|\n)(?:rg|grep):/m.test(result)) return false;
   const exit = result.match(/Command exited with code (\d+)\s*$/i)?.[1];
   return exit === undefined || exit === "1";
@@ -219,8 +327,15 @@ function isBenignSearchResult(tc: { arguments: Record<string, unknown> }, result
 
 function hasCommandFailureSignal(text: string): boolean {
   if (/Command exited with code [1-9]\d*\s*$/i.test(text)) return true;
-  const firstLine = text.split(/\r?\n/).find(line => line.trim())?.trim() ?? "";
-  return LIKELY_ERROR_RE.test(firstLine) || /^(?:npm\s+error|fatal:|traceback\b)/i.test(firstLine);
+  const firstLine =
+    text
+      .split(/\r?\n/)
+      .find((line) => line.trim())
+      ?.trim() ?? "";
+  return (
+    LIKELY_ERROR_RE.test(firstLine) ||
+    /^(?:npm\s+error|fatal:|traceback\b)/i.test(firstLine)
+  );
 }
 
 /**
@@ -230,7 +345,10 @@ function hasCommandFailureSignal(text: string): boolean {
  */
 export function commandFailureEvidence(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  const match = /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:|FATAL\b|Traceback\b|(?:failed|failure)\b)/im.exec(text);
+  const match =
+    /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:|FATAL\b|Traceback\b|(?:failed|failure)\b)/im.exec(
+      text,
+    );
   const evidenceBudget = Math.max(1, Math.floor(maxChars * 0.7));
   const tailBudget = Math.max(0, maxChars - evidenceBudget);
   const anchor = match?.index ?? Math.max(0, text.length - evidenceBudget);
@@ -242,13 +360,20 @@ export function commandFailureEvidence(text: string, maxChars: number): string {
 
 export function isTransientToolDiagnostic(text: string): boolean {
   const candidate = text.trim();
-  return /\bBrave Search API error\s*\(429\)/i.test(candidate)
-    || (/\bnpm error code ENOLOCK\b/i.test(candidate) && /(?:audit|existing lockfile|loadVirtual)/i.test(candidate))
-    || /^Found \d+ occurrences? of edits\[\d+\](?!\w)/i.test(candidate)
-    || (/^Unknown JSON field:/i.test(candidate) && /Available fields:/i.test(candidate));
+  return (
+    /\bBrave Search API error\s*\(429\)/i.test(candidate) ||
+    (/\bnpm error code ENOLOCK\b/i.test(candidate) &&
+      /(?:audit|existing lockfile|loadVirtual)/i.test(candidate)) ||
+    /^Found \d+ occurrences? of edits\[\d+\](?!\w)/i.test(candidate) ||
+    (/^Unknown JSON field:/i.test(candidate) &&
+      /Available fields:/i.test(candidate))
+  );
 }
 
-export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["errors"] {
+export function catalogErrors(
+  msgs: LlmMessage[],
+  _tcIdx?: ToolCallIndex,
+): StructuredExtraction["errors"] {
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const errors: StructuredExtraction["errors"] = [];
 
@@ -258,7 +383,11 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
     const tc = tcIdx.get(m.toolCallId ?? "");
 
     const text = extractText(m.content);
-    if ((tc && isBenignSearchResult(tc, text)) || isTransientToolDiagnostic(text)) continue;
+    if (
+      (tc && isBenignSearchResult(tc, text)) ||
+      isTransientToolDiagnostic(text)
+    )
+      continue;
 
     if (m.isError) {
       errors.push({
@@ -267,7 +396,9 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
         message: text.slice(0, TRUNC.ERROR_DETAIL),
         retryAttempted: false,
         resolved: false,
-        operationSignature: tc ? toolOperationSignature(tc.name, tc.arguments) : undefined,
+        operationSignature: tc
+          ? toolOperationSignature(tc.name, tc.arguments)
+          : undefined,
       });
       continue;
     }
@@ -292,23 +423,36 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
   for (const err of errors) {
     const failedCall = tcIdx.get(msgs[err.index]?.toolCallId ?? "");
     if (!failedCall) continue;
-    for (let j = err.index + 1; j < Math.min(msgs.length, err.index + ERROR_RETRY_WINDOW); j++) {
+    for (
+      let j = err.index + 1;
+      j < Math.min(msgs.length, err.index + ERROR_RETRY_WINDOW);
+      j++
+    ) {
       if (msgs[j]?.role !== "assistant") continue;
-      const blocks: unknown[] = Array.isArray(msgs[j]?.content) ? msgs[j].content as unknown[] : [];
+      const blocks: unknown[] = Array.isArray(msgs[j]?.content)
+        ? (msgs[j].content as unknown[])
+        : [];
       const retryTool = blocks
-        .flatMap(block => flattenToolCallBlock(block))
-        .find(candidate => sameToolOperation(failedCall, candidate));
+        .flatMap((block) => flattenToolCallBlock(block))
+        .find((candidate) => sameToolOperation(failedCall, candidate));
       if (!retryTool) continue;
       err.retryAttempted = true;
-      for (let k = j + 1; k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW); k++) {
+      for (
+        let k = j + 1;
+        k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW);
+        k++
+      ) {
         const result = msgs[k];
         if (result?.role !== "toolResult" || result.isError) continue;
-        const resolved = retryTool.id == null
-          ? (() => {
-            const resultCall = tcIdx.get(result.toolCallId ?? "");
-            return Boolean(resultCall && sameToolOperation(retryTool, resultCall));
-          })()
-          : result.toolCallId === retryTool.id;
+        const resolved =
+          retryTool.id == null
+            ? (() => {
+                const resultCall = tcIdx.get(result.toolCallId ?? "");
+                return Boolean(
+                  resultCall && sameToolOperation(retryTool, resultCall),
+                );
+              })()
+            : result.toolCallId === retryTool.id;
         if (resolved) {
           err.resolved = true;
           break;
@@ -320,18 +464,36 @@ export function catalogErrors(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): Struc
   return errors;
 }
 
-export function extractDecisions(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): StructuredExtraction["decisions"] {
+export function extractDecisions(
+  msgs: LlmMessage[],
+  _tcIdx?: ToolCallIndex,
+): StructuredExtraction["decisions"] {
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
   const decisions: StructuredExtraction["decisions"] = [];
 
   for (const [id, tc] of tcIdx) {
     if (tc.name !== "ask_user") continue;
     const args = tc.arguments;
-    const question = typeof args === "string" ? args : (args?.question ?? args?.prompt ?? "") as string;
+    const question =
+      typeof args === "string"
+        ? args
+        : ((args?.question ?? args?.prompt ?? "") as string);
     if (!question) continue;
-    for (let i = tc.msgIndex + 1; i < Math.min(msgs.length, tc.msgIndex + 4); i++) {
+    for (
+      let i = tc.msgIndex + 1;
+      i < Math.min(msgs.length, tc.msgIndex + 4);
+      i++
+    ) {
       if (msgs[i]?.role === "toolResult" && msgs[i]?.toolCallId === id) {
-        decisions.push({ index: tc.msgIndex, type: "explicit", summary: question.slice(0, TRUNC.DECISION_SUMMARY), userResponse: extractText(msgs[i].content).slice(0, TRUNC.USER_RESPONSE) });
+        decisions.push({
+          index: tc.msgIndex,
+          type: "explicit",
+          summary: question.slice(0, TRUNC.DECISION_SUMMARY),
+          userResponse: extractText(msgs[i].content).slice(
+            0,
+            TRUNC.USER_RESPONSE,
+          ),
+        });
         break;
       }
     }
@@ -341,31 +503,67 @@ export function extractDecisions(msgs: LlmMessage[], _tcIdx?: ToolCallIndex): St
     if (msgs[i]?.role !== "user") continue;
     const txt = extractText(msgs[i].content);
     if (CHOICE_RE.test(txt)) {
-      decisions.push({ index: i, type: "implicit", summary: txt.slice(0, TRUNC.DECISION_SUMMARY) });
+      decisions.push({
+        index: i,
+        type: "implicit",
+        summary: txt.slice(0, TRUNC.DECISION_SUMMARY),
+      });
     }
   }
   return decisions;
 }
 
-const CONSTRAINT_PATTERNS: Array<{ re: RegExp; cat: StructuredExtraction["constraints"][0]["category"]; conf: number }> = [
-  { re: /\b(?:must|need|require|has to|important)\b.*\b(?:be|use|have|include|support)\b/i, cat: "requirement", conf: TUNING.CONFIDENCE_HIGH },
-  { re: /\b(?:don't|never|avoid|shouldn't|must not|do not|no\s+(?:need|want))\b/i, cat: "prohibition", conf: TUNING.CONFIDENCE_MEDIUM },
-  { re: /\b(?:prefer|like|want|would rather|should)\b.*\b(?:use|be|have|with)\b/i, cat: "preference", conf: TUNING.CONFIDENCE_LOW },
+const CONSTRAINT_PATTERNS: Array<{
+  re: RegExp;
+  cat: StructuredExtraction["constraints"][0]["category"];
+  conf: number;
+}> = [
+  {
+    re: /\b(?:must|need|require|has to|important)\b.*\b(?:be|use|have|include|support)\b/i,
+    cat: "requirement",
+    conf: TUNING.CONFIDENCE_HIGH,
+  },
+  {
+    re: /\b(?:don't|never|avoid|shouldn't|must not|do not|no\s+(?:need|want))\b/i,
+    cat: "prohibition",
+    conf: TUNING.CONFIDENCE_MEDIUM,
+  },
+  {
+    re: /\b(?:prefer|like|want|would rather|should)\b.*\b(?:use|be|have|with)\b/i,
+    cat: "preference",
+    conf: TUNING.CONFIDENCE_LOW,
+  },
   // Turkish patterns — raw UTF-8 chars; lookarounds instead of `\b` because
   // JS `\b` is ASCII-only (a leading ö/ş is not a word boundary, so the
   // Turkish-leading forms never matched). (?<![A-Za-z0-9_])…(?![A-Za-z0-9_])
   // treats any non-ASCII letter as a valid edge, so both spellings now work.
-  { re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu, cat: "prohibition", conf: TUNING.CONFIDENCE_MEDIUM },
-  { re: /(?<![A-Za-z0-9_])(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)(?![A-Za-z0-9_])/iu, cat: "requirement", conf: TUNING.CONFIDENCE_MEDIUM },
-  { re: /(?<![A-Za-z0-9_])(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)(?![A-Za-z0-9_])/iu, cat: "preference", conf: TUNING.CONFIDENCE_LOW },
+  {
+    re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu,
+    cat: "prohibition",
+    conf: TUNING.CONFIDENCE_MEDIUM,
+  },
+  {
+    re: /(?<![A-Za-z0-9_])(?:kritik|kritikal|önemli|onemli|şart|sart|zorunlu|şart koşul|önemli şart|kesinlikle|kesinlikle şart|böyle olsun|böyle yapın|şöyle olsun|şöyle yapın)(?![A-Za-z0-9_])/iu,
+    cat: "requirement",
+    conf: TUNING.CONFIDENCE_MEDIUM,
+  },
+  {
+    re: /(?<![A-Za-z0-9_])(?:tercih|isterim|olsun|kullanalım|yapalım|istiyorum)(?![A-Za-z0-9_])/iu,
+    cat: "preference",
+    conf: TUNING.CONFIDENCE_LOW,
+  },
 ];
 
 export function isDiagnosticConstraintText(text: string): boolean {
   const candidate = text.replace(/^\s*[-*]\s+/, "").trim();
-  return /^(?:\[[^\]]+\]\s*)?(?:npm\s+(?:error|warn|notice|audit|verbose|info)\b|(?:rg|grep):|command exited\b)/i.test(candidate);
+  return /^(?:\[[^\]]+\]\s*)?(?:npm\s+(?:error|warn|notice|audit|verbose|info)\b|(?:rg|grep):|command exited\b)/i.test(
+    candidate,
+  );
 }
 
-export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["constraints"] {
+export function mineConstraints(
+  msgs: LlmMessage[],
+): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
   for (let i = 0; i < msgs.length; i++) {
@@ -377,13 +575,19 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
     // the entire recap (including notices) into one bogus constraint.
     for (const raw of text.split(/\n+/)) {
       const candidate = raw.replace(/^\s*[-*]\s+/, "").trim();
-      if (candidate.length < 10 || isDiagnosticConstraintText(candidate)) continue;
+      if (candidate.length < 10 || isDiagnosticConstraintText(candidate))
+        continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
         if (!re.test(candidate)) continue;
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
         if (!seen.has(normalized)) {
           seen.add(normalized);
-          constraints.push({ index: i, text: candidate.slice(0, TRUNC.CONSTRAINT_TEXT), category: cat, confidence: conf });
+          constraints.push({
+            index: i,
+            text: candidate.slice(0, TRUNC.CONSTRAINT_TEXT),
+            category: cat,
+            confidence: conf,
+          });
         }
         break;
       }
@@ -392,17 +596,27 @@ export function mineConstraints(msgs: LlmMessage[]): StructuredExtraction["const
   return constraints;
 }
 
-export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, maxSegs = 20, _tcIdx?: ToolCallIndex): StructuredExtraction["topics"] {
+export function segmentTopicsHeuristic(
+  msgs: LlmMessage[],
+  pc: ProfileConfig,
+  maxSegs = 20,
+  _tcIdx?: ToolCallIndex,
+): StructuredExtraction["topics"] {
   // Generic basenames (index.ts & friends) change on nearly every tool call
   // in a monorepo and shred segmentation into micro-segments. Only a basename
   // specific enough to identify one file is a real shift signal.
-  const shiftBasename = (filePath: string | null | undefined): string | null => {
+  const shiftBasename = (
+    filePath: string | null | undefined,
+  ): string | null => {
     if (!filePath) return null;
     const base = path.basename(filePath);
     return GENERIC_BASENAMES.has(base.toLowerCase()) ? null : base;
   };
   const topics: StructuredExtraction["topics"] = [];
-  let startIdx = 0, tokenAcc = 0, lastFile: string | null = null, errAcc = 0;
+  let startIdx = 0,
+    tokenAcc = 0,
+    lastFile: string | null = null,
+    errAcc = 0;
   let currentType: StructuredExtraction["topics"][0]["type"] = "exploration";
   let currentPrimaryFile: string | null = null;
   const tcIdx = _tcIdx ?? buildToolCallIndex(msgs);
@@ -411,21 +625,31 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
     const message = msgs[i];
     const text = extractText(message.content);
     const messageTokens = estimateTokens(text);
-    const tools = message.role === "assistant"
-      ? (Array.isArray(message.content) ? message.content : []).flatMap(flattenToolCallBlock)
-      : [];
-    const nextFile = tools.map(tool => extractToolPath(tool.arguments)).find((value): value is string => Boolean(value));
+    const tools =
+      message.role === "assistant"
+        ? (Array.isArray(message.content) ? message.content : []).flatMap(
+            flattenToolCallBlock,
+          )
+        : [];
+    const nextFile = tools
+      .map((tool) => extractToolPath(tool.arguments))
+      .find((value): value is string => Boolean(value));
     const nextBasename = shiftBasename(nextFile);
-    const closesActiveTool = message.role === "toolResult"
-      && (tcIdx.get(message.toolCallId ?? "")?.msgIndex ?? -1) >= startIdx;
-    const fileShift = Boolean(lastFile && nextBasename && nextBasename !== lastFile);
+    const closesActiveTool =
+      message.role === "toolResult" &&
+      (tcIdx.get(message.toolCallId ?? "")?.msgIndex ?? -1) >= startIdx;
+    const fileShift = Boolean(
+      lastFile && nextBasename && nextBasename !== lastFile,
+    );
     const userShift = message.role === "user" && SHIFT_RE.test(text);
-    const sizeShift = tokenAcc > 0 && tokenAcc + messageTokens > pc.maxChunkTokens;
-    const breakBefore = !closesActiveTool
-      && i > startIdx
-      && tokenAcc >= pc.minChunkTokens
-      && (fileShift || userShift || sizeShift)
-      && topics.length < maxSegs - 1;
+    const sizeShift =
+      tokenAcc > 0 && tokenAcc + messageTokens > pc.maxChunkTokens;
+    const breakBefore =
+      !closesActiveTool &&
+      i > startIdx &&
+      tokenAcc >= pc.minChunkTokens &&
+      (fileShift || userShift || sizeShift) &&
+      topics.length < maxSegs - 1;
 
     if (breakBefore) {
       topics.push({
@@ -451,55 +675,96 @@ export function segmentTopicsHeuristic(msgs: LlmMessage[], pc: ProfileConfig, ma
         currentPrimaryFile = filePath;
       }
       const operation = classifyToolOperation(tool.arguments, tool.name);
-      if (operation === "mutate" || operation === "delete") currentType = "implementation";
-      else if ((operation === "read" || operation === "search" || operation === "list") && currentType === "exploration") currentType = "review";
+      if (operation === "mutate" || operation === "delete")
+        currentType = "implementation";
+      else if (
+        (operation === "read" ||
+          operation === "search" ||
+          operation === "list") &&
+        currentType === "exploration"
+      )
+        currentType = "review";
     }
     if (message.role === "toolResult" && message.isError) {
       errAcc++;
       if (currentType !== "implementation") currentType = "debugging";
     } else if (message.role === "toolResult") {
       const tool = tcIdx.get(message.toolCallId ?? "");
-      if (tool && classifyToolOperation(tool.arguments, tool.name) === "execute" && /error|fail/i.test(text)) {
+      if (
+        tool &&
+        classifyToolOperation(tool.arguments, tool.name) === "execute" &&
+        /error|fail/i.test(text)
+      ) {
         errAcc++;
         if (currentType !== "implementation") currentType = "debugging";
       }
     }
   }
   if (startIdx < msgs.length) {
-    topics.push({ startIndex: startIdx, endIndex: msgs.length - 1, primaryFile: currentPrimaryFile, type: currentType, errorDensity: errAcc });
+    topics.push({
+      startIndex: startIdx,
+      endIndex: msgs.length - 1,
+      primaryFile: currentPrimaryFile,
+      type: currentType,
+      errorDensity: errAcc,
+    });
   }
   return topics;
 }
 
-export function buildTimeline(msgs: LlmMessage[], errors: StructuredExtraction["errors"]): StructuredExtraction["timeline"] {
+export function buildTimeline(
+  msgs: LlmMessage[],
+  errors: StructuredExtraction["errors"],
+): StructuredExtraction["timeline"] {
   const timeline: StructuredExtraction["timeline"] = [];
-  const errorIndices = new Set(errors.map(e => e.index));
+  const errorIndices = new Set(errors.map((e) => e.index));
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
     if (m.role === "user") {
       const txt = extractText(m.content);
-      if (!txt.startsWith("/")) timeline.push({ index: i, event: "user_request", summary: txt.slice(0, TRUNC.TIMELINE_EVENT) });
+      if (!txt.startsWith("/"))
+        timeline.push({
+          index: i,
+          event: "user_request",
+          summary: txt.slice(0, TRUNC.TIMELINE_EVENT),
+        });
     }
-    if (errorIndices.has(i)) timeline.push({ index: i, event: "error", summary: errors.find(e => e.index === i)?.message.slice(0, TRUNC.TIMELINE_ERROR) ?? "error" });
+    if (errorIndices.has(i))
+      timeline.push({
+        index: i,
+        event: "error",
+        summary:
+          errors
+            .find((e) => e.index === i)
+            ?.message.slice(0, TRUNC.TIMELINE_ERROR) ?? "error",
+      });
   }
   // Keep the *most recent* N user requests (slice(-N), not slice(0, N)) —
   // for compaction the latest requests are the valuable ones. Re-sort by
   // index so errors interleave chronologically instead of clumping at the end.
   return timeline.length > 30
     ? [
-      ...timeline.filter(t => t.event === "user_request").slice(-TRUNC.TIMELINE_DISPLAY),
-      ...timeline.filter(t => t.event === "error"),
-    ].sort((a, b) => a.index - b.index)
+        ...timeline
+          .filter((t) => t.event === "user_request")
+          .slice(-TRUNC.TIMELINE_DISPLAY),
+        ...timeline.filter((t) => t.event === "error"),
+      ].sort((a, b) => a.index - b.index)
     : timeline;
 }
 
-const HISTORY_SUMMARY_RE = /^(?:The conversation history before this point was compacted|The following is a summary of a branch that this conversation came back from)[\s\S]*<summary>/i;
-const ACK_ONLY_RE = /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
+const HISTORY_SUMMARY_RE =
+  /^(?:The conversation history before this point was compacted|The following is a summary of a branch that this conversation came back from)[\s\S]*<summary>/i;
+const ACK_ONLY_RE =
+  /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
 
 /** Machine status from an earlier compaction is context, not an active user goal. */
 export function isCompactionStatusText(text: string): boolean {
-  const candidate = summaryEvidenceLine(text, TRUNC.MESSAGE).replace(/^["'`]+/, "").trim();
-  return /^(?:EESV Compact\b|Smart compact (?:skipped|prepared|run finished)\b|Auto-compacting\b)/i.test(candidate);
+  const candidate = summaryEvidenceLine(text, TRUNC.MESSAGE)
+    .replace(/^["'`]+/, "")
+    .trim();
+  return /^(?:EESV Compact\b|Smart compact (?:skipped|prepared|run finished)\b|Auto-compacting\b)/i.test(
+    candidate,
+  );
 }
 
 export function extractMainGoal(msgs: LlmMessage[]): string | null {
@@ -512,7 +777,10 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
     const text = extractText(m.content).trim();
     if (!text) continue;
     if (HISTORY_SUMMARY_RE.test(text)) {
-      const carried = summaryEvidenceLine(findSection(text, "goal")?.body ?? "", TRUNC.MESSAGE);
+      const carried = summaryEvidenceLine(
+        findSection(text, "goal")?.body ?? "",
+        TRUNC.MESSAGE,
+      );
       return carried && !isCompactionStatusText(carried) ? carried : null;
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
@@ -521,17 +789,37 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
   return null;
 }
 
-const FOLLOWUP_COMPLETION_RE = /\b(?:done|completed?|finished|implemented|fixed|resolved|updated|added|removed|shipped|tamamland[ıi]|tamamlad[ıi]m|bitti|[çc][öo]z[üu]ld[üu])\b/iu;
-const NEGATED_COMPLETION_RE = /\b(?:not|isn['’]?t|wasn['’]?t|hen[üu]z|de[ğg]il)\b.{0,20}\b(?:done|complete|finished|fixed|resolved|bitti)\b/iu;
+const FOLLOWUP_COMPLETION_RE =
+  /\b(?:done|completed?|finished|implemented|fixed|resolved|updated|added|removed|shipped|tamamland[ıi]|tamamlad[ıi]m|bitti|[çc][öo]z[üu]ld[üu])\b/iu;
+const NEGATED_COMPLETION_RE =
+  /\b(?:not|isn['’]?t|wasn['’]?t|hen[üu]z|de[ğg]il)\b.{0,20}\b(?:done|complete|finished|fixed|resolved|bitti)\b/iu;
 const FOLLOWUP_TOKEN_STOP: Readonly<Record<string, true>> = {
-  next: true, step: true, thing: true, todo: true, action: true, item: true,
-  follow: true, still: true, need: true, have: true, gotta: true,
-  eklenecek: true, duzeltilecek: true, düzeltilecek: true, gerekiyor: true,
-  yapalim: true, yapalım: true, kaldi: true, kaldı: true,
+  next: true,
+  step: true,
+  thing: true,
+  todo: true,
+  action: true,
+  item: true,
+  follow: true,
+  still: true,
+  need: true,
+  have: true,
+  gotta: true,
+  eklenecek: true,
+  duzeltilecek: true,
+  düzeltilecek: true,
+  gerekiyor: true,
+  yapalim: true,
+  yapalım: true,
+  kaldi: true,
+  kaldı: true,
 };
 
 /** Extract open loops — unresolved tasks from the conversation */
-export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtraction): OpenLoop[] {
+export function extractOpenLoops(
+  msgs: LlmMessage[],
+  extraction: StructuredExtraction,
+): OpenLoop[] {
   const loops: OpenLoop[] = [];
   let loopId = 0;
 
@@ -546,17 +834,17 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   // pathological for sessions with dozens of unresolved errors and many
   // touched files. With pre-computation the inner loop is a pure substring
   // scan over a fixed-size array.
-  const fileNeedles = extraction.modifiedFiles.map(f => ({
+  const fileNeedles = extraction.modifiedFiles.map((f) => ({
     path: f.path,
     needles: buildPathNeedles(f.path),
   }));
-  for (const err of extraction.errors.filter(e => !e.resolved)) {
+  for (const err of extraction.errors.filter((e) => !e.resolved)) {
     const errLower = err.message.toLowerCase();
     const errFiles = fileNeedles
-      .filter(({ needles }) => needles.some(n => errLower.includes(n)))
+      .filter(({ needles }) => needles.some((n) => errLower.includes(n)))
       .map(({ path }) => path);
     loops.push({
-      id: ID_PREFIX.OPEN_LOOP + (++loopId),
+      id: ID_PREFIX.OPEN_LOOP + ++loopId,
       type: "bugfix",
       priority: err.retryAttempted ? "high" : "normal",
       status: "open",
@@ -570,15 +858,24 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   // Proximity alone conflates unrelated work: a genuine new task phrased
   // within 5 messages of an error loop was silently dropped. Require content
   // kinship as well before treating a nearby loop as a duplicate.
-  const isNearbyDuplicate = (existing: { sourceIndex?: number | null; summary: string }, text: string, index: number): boolean => {
+  const isNearbyDuplicate = (
+    existing: { sourceIndex?: number | null; summary: string },
+    text: string,
+    index: number,
+  ): boolean => {
     if (Math.abs((existing.sourceIndex ?? 0) - index) >= 5) return false;
     const existingKey = normalizeFactKey(existing.summary);
     const textKey = normalizeFactKey(text);
-    return existingKey === textKey || existingKey.includes(textKey) || textKey.includes(existingKey);
+    return (
+      existingKey === textKey ||
+      existingKey.includes(textKey) ||
+      textKey.includes(existingKey)
+    );
   };
   // Match English + Turkish follow-up cues; allow both ASCII-only and diacritic spellings
   // because users mix the two and we never want to miss an open loop.
-  const FOLLOWUP_RE = /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|yapalim|yapalım|yapmamiz|yapmamız|gerekiyor|eklenecek|düzeltilecek|duzeltilecek|bitmedi|kaldi|kaldı)/iu;
+  const FOLLOWUP_RE =
+    /(?:next\s+(?:step|thing)|todo|action item|follow\s*up|still (?:need|have) to|gotta|yapalim|yapalım|yapmamiz|yapmamız|gerekiyor|eklenecek|düzeltilecek|duzeltilecek|bitmedi|kaldi|kaldı)/iu;
   for (let idx = 0; idx < msgs.length; idx++) {
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
@@ -586,10 +883,10 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
     if (txt.length < 10 || txt.startsWith("/")) continue;
     if (FOLLOWUP_RE.test(txt)) {
       // Avoid duplicates with errors
-      const isDup = loops.some(l => isNearbyDuplicate(l, txt, idx));
+      const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));
       if (!isDup) {
         loops.push({
-          id: ID_PREFIX.OPEN_LOOP + (++loopId),
+          id: ID_PREFIX.OPEN_LOOP + ++loopId,
           type: "follow-up",
           priority: "normal",
           status: "open",
@@ -606,17 +903,18 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   // appears in routine package talk and was flagging ordinary messages as
   // high-priority blocked loops. Same min-length/command guard as the
   // follow-up scan above — slash commands and tiny fragments are never loops.
-  const BLOCKED_RE = /\bblocked\b|waiting for|\bdepends?\s+on\b|ba[ğg]l[iı]|bekliyor|engell/i;
+  const BLOCKED_RE =
+    /\bblocked\b|waiting for|\bdepends?\s+on\b|ba[ğg]l[iı]|bekliyor|engell/i;
   for (let idx = 0; idx < msgs.length; idx++) {
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
     if (txt.length < 10 || txt.startsWith("/")) continue;
     if (BLOCKED_RE.test(txt)) {
-      const isDup = loops.some(l => isNearbyDuplicate(l, txt, idx));
+      const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));
       if (!isDup) {
         loops.push({
-          id: ID_PREFIX.OPEN_LOOP + (++loopId),
+          id: ID_PREFIX.OPEN_LOOP + ++loopId,
           type: "blocked",
           priority: "high",
           status: "open",
@@ -635,8 +933,9 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
   // the same user turn. Generic "done" text cannot retire an unrelated loop.
   for (const loop of loops) {
     if (loop.type !== "follow-up" || loop.sourceIndex == null) continue;
-    const taskTokens = (loop.summary.toLowerCase().match(/[\p{L}\p{N}_-]{4,}/gu) ?? [])
-      .filter(token => !FOLLOWUP_TOKEN_STOP[token]);
+    const taskTokens = (
+      loop.summary.toLowerCase().match(/[\p{L}\p{N}_-]{4,}/gu) ?? []
+    ).filter((token) => !FOLLOWUP_TOKEN_STOP[token]);
     if (!taskTokens.length) continue;
     const end = Math.min(msgs.length, loop.sourceIndex + 50);
     for (let index = loop.sourceIndex + 1; index < end; index++) {
@@ -652,14 +951,17 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
       if (message?.role !== "assistant") continue;
       const response = extractText(message.content);
       const normalized = response.toLowerCase();
-      if (!FOLLOWUP_COMPLETION_RE.test(response) || NEGATED_COMPLETION_RE.test(response)) continue;
-      if (taskTokens.some(token => normalized.includes(token))) {
+      if (
+        !FOLLOWUP_COMPLETION_RE.test(response) ||
+        NEGATED_COMPLETION_RE.test(response)
+      )
+        continue;
+      if (taskTokens.some((token) => normalized.includes(token))) {
         loop.status = "resolved";
         break;
       }
     }
   }
-
 
   return loops;
 }
@@ -674,7 +976,11 @@ export function extractOpenLoops(msgs: LlmMessage[], extraction: StructuredExtra
  * Pruning produces an index against the unpruned list; that index is not safe
  * to pass here — build a fresh one over the pruned messages instead.
  */
-export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomputedTcIdx?: ToolCallIndex): StructuredExtraction {
+export function extractStructured(
+  msgs: LlmMessage[],
+  pc: ProfileConfig,
+  precomputedTcIdx?: ToolCallIndex,
+): StructuredExtraction {
   const tcIdx = precomputedTcIdx ?? buildToolCallIndex(msgs);
   const tracked = trackFileOps(msgs, tcIdx);
   const allErrors = catalogErrors(msgs, tcIdx);
@@ -683,9 +989,12 @@ export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomp
   const topics = segmentTopicsHeuristic(msgs, pc, 20, tcIdx);
   const allTimeline = buildTimeline(msgs, allErrors);
   const allMediaAttachments = extractMediaAttachments(msgs);
-  const recent = <T>(items: T[], max: number): T[] => items.length > max ? items.slice(-max) : items;
+  const recent = <T>(items: T[], max: number): T[] =>
+    items.length > max ? items.slice(-max) : items;
   const modifiedFiles = recent(
-    tracked.modified.slice().sort((a, b) => a.lastModifiedIndex - b.lastModifiedIndex),
+    tracked.modified
+      .slice()
+      .sort((a, b) => a.lastModifiedIndex - b.lastModifiedIndex),
     EXTRACTION_LIMITS.MODIFIED_FILES,
   );
   const readFiles = recent(tracked.read, EXTRACTION_LIMITS.READ_FILES);
@@ -695,9 +1004,15 @@ export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomp
   const constraints = recent(allConstraints, EXTRACTION_LIMITS.CONSTRAINTS);
   const boundedTopics = recent(topics, EXTRACTION_LIMITS.TOPICS);
   const timeline = recent(allTimeline, EXTRACTION_LIMITS.TIMELINE);
-  const mediaAttachments = recent(allMediaAttachments, EXTRACTION_LIMITS.MEDIA_ATTACHMENTS);
+  const mediaAttachments = recent(
+    allMediaAttachments,
+    EXTRACTION_LIMITS.MEDIA_ATTACHMENTS,
+  );
   const allReferencedFiles = tracked.referenced;
-  const referencedFiles = recent(allReferencedFiles, EXTRACTION_LIMITS.REFERENCED_FILES);
+  const referencedFiles = recent(
+    allReferencedFiles,
+    EXTRACTION_LIMITS.REFERENCED_FILES,
+  );
   const overflow = {
     modifiedFiles: tracked.modified.length - modifiedFiles.length,
     referencedFiles: allReferencedFiles.length - referencedFiles.length,
@@ -714,12 +1029,26 @@ export function extractStructured(msgs: LlmMessage[], pc: ProfileConfig, precomp
     Object.entries(overflow).filter(([, count]) => count > 0),
   );
   const mainGoal = extractMainGoal(msgs);
-  const lastUserMessages = msgs.filter(m => m.role === "user").slice(-5).map(m => extractText(m.content));
-  const lastErrors = errors.slice(-3).map(e => e.message);
+  const lastUserMessages = msgs
+    .filter((m) => m.role === "user")
+    .slice(-5)
+    .map((m) => extractText(m.content));
+  const lastErrors = errors.slice(-3).map((e) => e.message);
   return {
-    modifiedFiles, readFiles, deletedFiles, referencedFiles,
-    errors, decisions, constraints, topics: boundedTopics, timeline, mediaAttachments,
-    mainGoal, lastUserMessages, lastErrors, messageCount: msgs.length,
+    modifiedFiles,
+    readFiles,
+    deletedFiles,
+    referencedFiles,
+    errors,
+    decisions,
+    constraints,
+    topics: boundedTopics,
+    timeline,
+    mediaAttachments,
+    mainGoal,
+    lastUserMessages,
+    lastErrors,
+    messageCount: msgs.length,
     ...(Object.keys(evidenceOverflow).length ? { evidenceOverflow } : {}),
   };
 }

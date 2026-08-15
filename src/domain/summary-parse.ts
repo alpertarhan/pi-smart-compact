@@ -102,10 +102,7 @@ export function buildSummaryPathEvidence(
 		const owner = owners.get(digest);
 		if (owner && owner !== path) {
 			digest = fullDigest;
-			digests.set(
-				owner,
-				createHash("sha256").update(owner).digest("base64url"),
-			);
+			digests.set(owner, createHash("sha256").update(owner).digest("base64url"));
 		}
 		owners.set(digest, path);
 		digests.set(path, digest);

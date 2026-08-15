@@ -110,9 +110,7 @@ Something
 
 	it("requires exact modified and deleted paths in their canonical sections", () => {
 		const extraction = makeExtraction({
-			modifiedFiles: [
-				{ path: "src/Auth.ts", toolCalls: 1, lastModifiedIndex: 2 },
-			],
+			modifiedFiles: [{ path: "src/Auth.ts", toolCalls: 1, lastModifiedIndex: 2 }],
 			deletedFiles: ["src/legacy-auth.ts"],
 		});
 		const summary =
@@ -155,9 +153,7 @@ Something
 		const result = verifySummary(summary, extraction);
 		expect(result.ok).toBe(false);
 		expect(
-			result.gaps.some((g) =>
-				formatVerificationGap(g).includes("Syntax error"),
-			),
+			result.gaps.some((g) => formatVerificationGap(g).includes("Syntax error")),
 		).toBe(true);
 	});
 
@@ -220,8 +216,7 @@ Something
 		expect(
 			result.gaps.some(
 				(gap) =>
-					gap.kind === "missing-file" &&
-					gap.path === "packages/web/src/auth.ts",
+					gap.kind === "missing-file" && gap.path === "packages/web/src/auth.ts",
 			),
 		).toBe(true);
 	});
@@ -253,8 +248,7 @@ Something
 		expect(
 			nestedOnly.gaps.some(
 				(gap) =>
-					gap.kind === "missing-file" &&
-					gap.path === "agents/monitor/README.md",
+					gap.kind === "missing-file" && gap.path === "agents/monitor/README.md",
 			),
 		).toBe(false);
 	});
@@ -318,9 +312,7 @@ Build
 			"## Goal\nContinue auth\n## Progress\n- src/legacy-auth.ts remains relevant\n## Critical Context\n- stable";
 		const result = verifySummary(summary, makeExtraction(), continuity);
 
-		expect(result.gaps.some((gap) => gap.kind === "fabricated-file")).toBe(
-			false,
-		);
+		expect(result.gaps.some((gap) => gap.kind === "fabricated-file")).toBe(false);
 	});
 
 	it("ignores legacy npm diagnostics stored as continuity constraints", () => {
@@ -328,7 +320,8 @@ Build
 			constraints: [
 				{
 					id: "constraint-1",
-					text: "npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404",
+					text:
+						"npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404",
 					category: "prohibition",
 					confidence: 0.8,
 				},
@@ -357,9 +350,7 @@ Build
 
 	it("does not tie a completed file to an unrelated search error that cites it later", () => {
 		const extraction = makeExtraction({
-			modifiedFiles: [
-				{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 },
-			],
+			modifiedFiles: [{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 }],
 			errors: [
 				{
 					index: 2,
@@ -384,9 +375,7 @@ Build
 
 	it("still rejects Done when the unresolved operation directly targets that file", () => {
 		const extraction = makeExtraction({
-			modifiedFiles: [
-				{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 },
-			],
+			modifiedFiles: [{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 }],
 			errors: [
 				{
 					index: 2,
@@ -448,9 +437,7 @@ Build
 		);
 		const after = verifySummary(patched, makeExtraction(), continuity);
 
-		expect(before.gaps.some((gap) => gap.kind === "missing-decision")).toBe(
-			true,
-		);
+		expect(before.gaps.some((gap) => gap.kind === "missing-decision")).toBe(true);
 		expect(patched).toContain("Use JSON web tokens for authentication");
 		expect(patched).toContain("No new dependencies");
 		expect(patched).toContain("auth test fails");
@@ -481,15 +468,20 @@ Build
 	it("treats Turkish inflected restatement as constraint evidence", () => {
 		const extraction = makeExtraction({
 			constraints: [
-				{ index: 2, text: "tabloları günlük yedekle", category: "requirement", confidence: 1 },
+				{
+					index: 2,
+					text: "tabloları günlük yedekle",
+					category: "requirement",
+					confidence: 1,
+				},
 			],
 		});
 		const summary =
 			"## Goal\nBackup\n## Progress\n- working\n## Constraints & Preferences\n- tablolar günlük olarak yedeklenir\n## Critical Context\n- stable";
 		const result = verifySummary(summary, extraction);
-		expect(
-			result.gaps.some((gap) => gap.kind === "missing-constraint"),
-		).toBe(false);
+		expect(result.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(
+			false,
+		);
 	});
 
 	it("rejects inverted prohibition and conditional semantics", () => {
@@ -541,9 +533,9 @@ Build
 		const result = verifySummary(summary, extraction);
 
 		expect(result.ok).toBe(false);
-		expect(
-			result.gaps.filter((gap) => gap.kind === "missing-goal"),
-		).toHaveLength(1);
+		expect(result.gaps.filter((gap) => gap.kind === "missing-goal")).toHaveLength(
+			1,
+		);
 		expect(
 			result.gaps.filter((gap) => gap.kind === "missing-constraint"),
 		).toHaveLength(1);
@@ -610,10 +602,7 @@ Build
 		];
 		for (const [source, target] of cases) {
 			const summary = `## Goal\n${target}\n## Progress\n- waiting\n## Critical Context\n- stable`;
-			const result = verifySummary(
-				summary,
-				makeExtraction({ mainGoal: source }),
-			);
+			const result = verifySummary(summary, makeExtraction({ mainGoal: source }));
 			expect(
 				result.gaps.filter((gap) => gap.kind === "missing-goal"),
 			).toHaveLength(1);
@@ -743,9 +732,7 @@ Build
 
 		const result = verifySummary(assembleFallback([], extraction), extraction);
 
-		expect(result.gaps.filter((gap) => gap.kind === "missing-error")).toEqual(
-			[],
-		);
+		expect(result.gaps.filter((gap) => gap.kind === "missing-error")).toEqual([]);
 	});
 
 	it("keeps long-lived .NET and infrastructure fallback evidence verifiable", () => {
@@ -774,11 +761,7 @@ Build
 
 		const summary = assembleFallback([], extraction);
 		const result = verifySummary(summary, extraction);
-		const repaired = repairSummaryDeterministically(
-			summary,
-			result,
-			extraction,
-		);
+		const repaired = repairSummaryDeterministically(summary, result, extraction);
 
 		expect(result.gaps).toEqual([]);
 		expect(repaired.result.gaps).toEqual([]);
@@ -807,8 +790,7 @@ Build
 		expect(
 			verifySummary(summary, extraction).gaps.some(
 				(gap) =>
-					gap.kind === "inconsistency" &&
-					gap.detail.startsWith("blocked-none:"),
+					gap.kind === "inconsistency" && gap.detail.startsWith("blocked-none:"),
 			),
 		).toBe(false);
 	});
@@ -833,8 +815,7 @@ Build
 		expect(
 			verifySummary(summary, extraction).gaps.some(
 				(gap) =>
-					gap.kind === "inconsistency" &&
-					gap.detail.startsWith("blocked-none:"),
+					gap.kind === "inconsistency" && gap.detail.startsWith("blocked-none:"),
 			),
 		).toBe(false);
 	});
@@ -859,16 +840,11 @@ Build
 				"\n## Open Loops\n- Retry migration\n## Critical Context\n- " +
 				error;
 			const before = verifySummary(summary, extraction);
-			const repaired = repairSummaryDeterministically(
-				summary,
-				before,
-				extraction,
-			);
+			const repaired = repairSummaryDeterministically(summary, before, extraction);
 			expect(
 				before.gaps.some(
 					(gap) =>
-						gap.kind === "inconsistency" &&
-						gap.detail.startsWith("blocked-none:"),
+						gap.kind === "inconsistency" && gap.detail.startsWith("blocked-none:"),
 				),
 			).toBe(true);
 			expect(repaired.result.gaps).toEqual([]);
@@ -893,17 +869,12 @@ Build
 			"## Goal\nMigrate\n## Progress\n### Blocked\n- None recorded.\n## Open Loops\n- Retry migration\n## Critical Context\n- " +
 			error;
 		const before = verifySummary(summary, extraction);
-		const repaired = repairSummaryDeterministically(
-			summary,
-			before,
-			extraction,
-		);
+		const repaired = repairSummaryDeterministically(summary, before, extraction);
 
 		expect(
 			before.gaps.some(
 				(gap) =>
-					gap.kind === "inconsistency" &&
-					gap.detail.startsWith("blocked-none:"),
+					gap.kind === "inconsistency" && gap.detail.startsWith("blocked-none:"),
 			),
 		).toBe(true);
 		expect(repaired.result.gaps).toEqual([]);
@@ -961,8 +932,7 @@ Build
 			"## Goal\nRelease only after explicit approval\n## Constraints & Preferences\n- Publish only after explicit approval\n## Progress\n### Done\n- none\n### In Progress\n- awaiting approval\n### Blocked\n- approval pending\n## Critical Context\n- approval is required";
 		expect(
 			verifySummary(summary, extraction).gaps.filter(
-				(gap) =>
-					gap.kind === "missing-constraint" || gap.kind === "inconsistency",
+				(gap) => gap.kind === "missing-constraint" || gap.kind === "inconsistency",
 			),
 		).toEqual([]);
 	});
@@ -984,9 +954,9 @@ Build
 			null,
 			unsupportedEvidence,
 		);
-		expect(
-			unsupported.gaps.some((gap) => gap.kind === "unsupported-claim"),
-		).toBe(true);
+		expect(unsupported.gaps.some((gap) => gap.kind === "unsupported-claim")).toBe(
+			true,
+		);
 		const repaired = repairSummaryDeterministically(
 			summary,
 			unsupported,
@@ -1068,9 +1038,7 @@ describe("verifyAndPatch", () => {
 		const extraction = makeExtraction({
 			mainGoal: "## Goal\nRelease safely",
 			lastUserMessages: ["Finish release checks"],
-			modifiedFiles: [
-				{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 },
-			],
+			modifiedFiles: [{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 }],
 			errors: [
 				{
 					index: 2,
@@ -1246,9 +1214,7 @@ describe("verifyAndPatch", () => {
 		const extraction = makeExtraction({
 			mainGoal: "Update project documentation",
 			lastUserMessages: ["Finish the README update"],
-			modifiedFiles: [
-				{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 },
-			],
+			modifiedFiles: [{ path: "README.md", toolCalls: 1, lastModifiedIndex: 1 }],
 			errors: [
 				{
 					index: 2,
@@ -1346,9 +1312,7 @@ describe("verifyAndPatch", () => {
 			} as any);
 			expect(result.finalSummary).toContain(path);
 			expect(result.verificationProvenance.initialScore).toBe(95);
-			expect(result.verificationProvenance.deterministicPatched).toHaveLength(
-				1,
-			);
+			expect(result.verificationProvenance.deterministicPatched).toHaveLength(1);
 			expect(result.verificationScore).toBe(100);
 		}
 	});
@@ -1364,7 +1328,8 @@ describe("patchSummary", () => {
 			content: [
 				{
 					type: "text",
-					text: "## Goal\nBuild auth\n## Progress\n- fixed\n```ts\nconst incomplete = true;",
+					text:
+						"## Goal\nBuild auth\n## Progress\n- fixed\n```ts\nconst incomplete = true;",
 				},
 			],
 			usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },

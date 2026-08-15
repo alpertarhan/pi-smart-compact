@@ -3,36 +3,77 @@ import fs from "node:fs";
 import path from "node:path";
 import { extractOpenLoops } from "../src/utils/extraction.ts";
 import {
-  buildCompactionState, injectOpenLoopsSection, extractNextActions, extractCriticalContext,
-  computeDelta, formatDeltaSection, hasDeltaChanges, injectDeltaSection,
-  saveCompactionState, loadCompactionState, loadScopedCompactionState,
-  applyLoopOverrides, upsertLoopOverride, mergeCompactionStates, renderContinuityCapsule,
-  sanitizeCompactionStateEvidence, upsertContinuityOverride,
+  buildCompactionState,
+  injectOpenLoopsSection,
+  extractNextActions,
+  extractCriticalContext,
+  computeDelta,
+  formatDeltaSection,
+  hasDeltaChanges,
+  injectDeltaSection,
+  saveCompactionState,
+  loadCompactionState,
+  loadScopedCompactionState,
+  applyLoopOverrides,
+  upsertLoopOverride,
+  mergeCompactionStates,
+  renderContinuityCapsule,
+  sanitizeCompactionStateEvidence,
+  upsertContinuityOverride,
 } from "../src/utils/state.ts";
 import { scopedCompactionStateFile } from "../src/infra/paths.ts";
-import type { LlmMessage, StructuredExtraction, OpenLoop, ExplorationReport, CompactionState } from "../src/types.ts";
+import type {
+  LlmMessage,
+  StructuredExtraction,
+  OpenLoop,
+  ExplorationReport,
+  CompactionState,
+} from "../src/types.ts";
 import { STATE_SNAPSHOT_MAX_FILES } from "../src/constants.ts";
 
-function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
+function makeExtraction(
+  partial: Partial<StructuredExtraction> = {},
+): StructuredExtraction {
   return {
-    modifiedFiles: [], readFiles: [], deletedFiles: [],
-    errors: [], decisions: [], constraints: [], topics: [], timeline: [],
-    mainGoal: "Build an app", lastUserMessages: [], lastErrors: [], messageCount: 10,
+    modifiedFiles: [],
+    readFiles: [],
+    deletedFiles: [],
+    errors: [],
+    decisions: [],
+    constraints: [],
+    topics: [],
+    timeline: [],
+    mainGoal: "Build an app",
+    lastUserMessages: [],
+    lastErrors: [],
+    messageCount: 10,
     ...partial,
   };
 }
 
 function makeMsgs(extra: Partial<LlmMessage>[]): LlmMessage[] {
-  return extra.map((e, i) => ({ role: e.role ?? "user", content: e.content ?? "", ...e }));
+  return extra.map((e, i) => ({
+    role: e.role ?? "user",
+    content: e.content ?? "",
+    ...e,
+  }));
 }
 
 describe("extractOpenLoops", () => {
   it("creates bugfix loops from unresolved errors", () => {
     const extraction = makeExtraction({
       errors: [
-        { index: 3, tool: "bash", message: "test failed in auth.ts", retryAttempted: false, resolved: false },
+        {
+          index: 3,
+          tool: "bash",
+          message: "test failed in auth.ts",
+          retryAttempted: false,
+          resolved: false,
+        },
       ],
-      modifiedFiles: [{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 2 }],
+      modifiedFiles: [
+        { path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 2 },
+      ],
     });
     const msgs = makeMsgs([]);
     const loops = extractOpenLoops(msgs, extraction);
@@ -45,11 +86,17 @@ describe("extractOpenLoops", () => {
   it("creates high-priority bugfix loops for retried errors", () => {
     const extraction = makeExtraction({
       errors: [
-        { index: 5, tool: "edit", message: "permission denied", retryAttempted: true, resolved: false },
+        {
+          index: 5,
+          tool: "edit",
+          message: "permission denied",
+          retryAttempted: true,
+          resolved: false,
+        },
       ],
     });
     const loops = extractOpenLoops([], extraction);
-    expect(loops.some(l => l.priority === "high")).toBe(true);
+    expect(loops.some((l) => l.priority === "high")).toBe(true);
   });
 
   it("creates follow-up loops from user messages", () => {
@@ -60,33 +107,48 @@ describe("extractOpenLoops", () => {
       { role: "user", content: "also we still need to fix that bug" },
     ];
     const loops = extractOpenLoops(msgs, extraction);
-    expect(loops.some(l => l.type === "follow-up")).toBe(true);
+    expect(loops.some((l) => l.type === "follow-up")).toBe(true);
   });
 
   it("closes only task-specific follow-ups with positive completion evidence", () => {
     const extraction = makeExtraction({ errors: [] });
-    const resolved = extractOpenLoops([
-      { role: "user", content: "next step is to add regression tests" },
-      { role: "assistant", content: "Added the regression tests and they pass." },
-    ], extraction).find(loop => loop.type === "follow-up");
+    const resolved = extractOpenLoops(
+      [
+        { role: "user", content: "next step is to add regression tests" },
+        {
+          role: "assistant",
+          content: "Added the regression tests and they pass.",
+        },
+      ],
+      extraction,
+    ).find((loop) => loop.type === "follow-up");
     expect(resolved?.status).toBe("resolved");
 
-    const unrelated = extractOpenLoops([
-      { role: "user", content: "next step is to add regression tests" },
-      { role: "assistant", content: "Documentation is done." },
-    ], extraction).find(loop => loop.type === "follow-up");
+    const unrelated = extractOpenLoops(
+      [
+        { role: "user", content: "next step is to add regression tests" },
+        { role: "assistant", content: "Documentation is done." },
+      ],
+      extraction,
+    ).find((loop) => loop.type === "follow-up");
     expect(unrelated?.status).toBe("open");
 
-    const negated = extractOpenLoops([
-      { role: "user", content: "next step is to add regression tests" },
-      { role: "assistant", content: "The regression tests are not done." },
-    ], extraction).find(loop => loop.type === "follow-up");
+    const negated = extractOpenLoops(
+      [
+        { role: "user", content: "next step is to add regression tests" },
+        { role: "assistant", content: "The regression tests are not done." },
+      ],
+      extraction,
+    ).find((loop) => loop.type === "follow-up");
     expect(negated?.status).toBe("open");
   });
 
   it("uses actual iteration indexes for repeated message object references", () => {
     const extraction = makeExtraction({ errors: [] });
-    const repeated: LlmMessage = { role: "user", content: "next step is to add tests" };
+    const repeated: LlmMessage = {
+      role: "user",
+      content: "next step is to add tests",
+    };
     const msgs: LlmMessage[] = [
       repeated,
       { role: "assistant", content: "a" },
@@ -96,8 +158,10 @@ describe("extractOpenLoops", () => {
       { role: "assistant", content: "e" },
       repeated,
     ];
-    const loops = extractOpenLoops(msgs, extraction).filter(l => l.type === "follow-up");
-    expect(loops.map(l => l.sourceIndex)).toEqual([0, 6]);
+    const loops = extractOpenLoops(msgs, extraction).filter(
+      (l) => l.type === "follow-up",
+    );
+    expect(loops.map((l) => l.sourceIndex)).toEqual([0, 6]);
   });
 
   it("creates blocked loops", () => {
@@ -106,14 +170,20 @@ describe("extractOpenLoops", () => {
       { role: "user", content: "we're blocked waiting for the API key" },
     ];
     const loops = extractOpenLoops(msgs, extraction);
-    expect(loops.some(l => l.type === "blocked")).toBe(true);
+    expect(loops.some((l) => l.type === "blocked")).toBe(true);
     expect(loops[0].priority).toBe("high");
   });
 
   it("returns empty for resolved-only sessions", () => {
     const extraction = makeExtraction({
       errors: [
-        { index: 3, tool: "bash", message: "test failed", retryAttempted: true, resolved: true },
+        {
+          index: 3,
+          tool: "bash",
+          message: "test failed",
+          retryAttempted: true,
+          resolved: true,
+        },
       ],
     });
     const loops = extractOpenLoops([], extraction);
@@ -123,8 +193,20 @@ describe("extractOpenLoops", () => {
   it("assigns stable IDs", () => {
     const extraction = makeExtraction({
       errors: [
-        { index: 1, tool: "bash", message: "error 1", retryAttempted: false, resolved: false },
-        { index: 5, tool: "edit", message: "error 2", retryAttempted: false, resolved: false },
+        {
+          index: 1,
+          tool: "bash",
+          message: "error 1",
+          retryAttempted: false,
+          resolved: false,
+        },
+        {
+          index: 5,
+          tool: "edit",
+          message: "error 2",
+          retryAttempted: false,
+          resolved: false,
+        },
       ],
     });
     const loops = extractOpenLoops([], extraction);
@@ -135,39 +217,83 @@ describe("extractOpenLoops", () => {
 
   it("does not drop an unrelated follow-up located near an error loop", () => {
     const extraction = makeExtraction({
-      errors: [{ index: 3, tool: "bash", message: "build failed in webpack bundle step", retryAttempted: false, resolved: false }],
+      errors: [
+        {
+          index: 3,
+          tool: "bash",
+          message: "build failed in webpack bundle step",
+          retryAttempted: false,
+          resolved: false,
+        },
+      ],
     });
-    const unrelated = extractOpenLoops([
-      { role: "user", content: "next step: we still need to add the login page" },
-    ], extraction);
-    expect(unrelated.some(l => l.type === "follow-up")).toBe(true);
+    const unrelated = extractOpenLoops(
+      [
+        {
+          role: "user",
+          content: "next step: we still need to add the login page",
+        },
+      ],
+      extraction,
+    );
+    expect(unrelated.some((l) => l.type === "follow-up")).toBe(true);
 
-    const related = extractOpenLoops([
-      { role: "user", content: "still need to fix the build failed in webpack bundle step error" },
-    ], extraction);
-    expect(related.some(l => l.type === "follow-up")).toBe(false);
+    const related = extractOpenLoops(
+      [
+        {
+          role: "user",
+          content:
+            "still need to fix the build failed in webpack bundle step error",
+        },
+      ],
+      extraction,
+    );
+    expect(related.some((l) => l.type === "follow-up")).toBe(false);
   });
 
   it("retires follow-ups completed after an ack-only nudge", () => {
     const extraction = makeExtraction({ errors: [] });
-    const loops = extractOpenLoops([
-      { role: "user", content: "next step is to add the migration script" },
-      { role: "assistant", content: "Looking into it." },
-      { role: "user", content: "devam et" },
-      { role: "assistant", content: "The migration script is added and verified." },
-    ], extraction);
-    expect(loops.find(l => l.type === "follow-up")?.status).toBe("resolved");
+    const loops = extractOpenLoops(
+      [
+        { role: "user", content: "next step is to add the migration script" },
+        { role: "assistant", content: "Looking into it." },
+        { role: "user", content: "devam et" },
+        {
+          role: "assistant",
+          content: "The migration script is added and verified.",
+        },
+      ],
+      extraction,
+    );
+    expect(loops.find((l) => l.type === "follow-up")?.status).toBe("resolved");
   });
 });
 
 describe("loop overrides", () => {
   const loops: OpenLoop[] = [
-    { id: "loop-1", type: "follow-up", priority: "normal", status: "open", summary: "Finish auth", files: ["src/auth.ts"] },
-    { id: "loop-2", type: "blocked", priority: "high", status: "open", summary: "Unblock billing", files: [] },
+    {
+      id: "loop-1",
+      type: "follow-up",
+      priority: "normal",
+      status: "open",
+      summary: "Finish auth",
+      files: ["src/auth.ts"],
+    },
+    {
+      id: "loop-2",
+      type: "blocked",
+      priority: "high",
+      status: "open",
+      summary: "Unblock billing",
+      files: [],
+    },
   ];
 
   it("applies status and priority overrides", () => {
-    const overrides = upsertLoopOverride([], loops[0], { status: "resolved", priority: "critical" });
+    const overrides = upsertLoopOverride([], loops[0], {
+      status: "resolved",
+      priority: "critical",
+    });
     const result = applyLoopOverrides(loops, overrides);
     expect(result[0].status).toBe("resolved");
     expect(result[0].priority).toBe("critical");
@@ -191,22 +317,53 @@ describe("loop overrides", () => {
 describe("buildCompactionState", () => {
   it("builds full state from extraction", () => {
     const extraction = makeExtraction({
-      modifiedFiles: [{ path: "src/app.ts", toolCalls: 1, lastModifiedIndex: 2 }],
+      modifiedFiles: [
+        { path: "src/app.ts", toolCalls: 1, lastModifiedIndex: 2 },
+      ],
       readFiles: ["src/config.ts"],
       errors: [
-        { index: 5, tool: "bash", message: "test failed", retryAttempted: false, resolved: false },
+        {
+          index: 5,
+          tool: "bash",
+          message: "test failed",
+          retryAttempted: false,
+          resolved: false,
+        },
       ],
       decisions: [
-        { index: 3, type: "explicit", summary: "Use JWT", userResponse: "confirmed" },
+        {
+          index: 3,
+          type: "explicit",
+          summary: "Use JWT",
+          userResponse: "confirmed",
+        },
       ],
       constraints: [
-        { index: 1, text: "Must use TypeScript", category: "requirement", confidence: 0.9 },
+        {
+          index: 1,
+          text: "Must use TypeScript",
+          category: "requirement",
+          confidence: 0.9,
+        },
       ],
     });
     const loops: OpenLoop[] = [
-      { id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "test failed", files: [] },
+      {
+        id: "loop-1",
+        type: "bugfix",
+        priority: "high",
+        status: "open",
+        summary: "test failed",
+        files: [],
+      },
     ];
-    const state = buildCompactionState(extraction, loops, null, ["Add tests"], ["Unresolved error"]);
+    const state = buildCompactionState(
+      extraction,
+      loops,
+      null,
+      ["Add tests"],
+      ["Unresolved error"],
+    );
 
     expect(state.goal).toBe("Build an app");
     expect(state.modifiedFiles).toEqual(["src/app.ts"]);
@@ -224,7 +381,14 @@ describe("injectOpenLoopsSection", () => {
   it("injects before Next Steps", () => {
     const summary = "## Goal\nBuild app\n## Next Steps\n1. Write tests\n";
     const loops: OpenLoop[] = [
-      { id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth bug", files: [] },
+      {
+        id: "loop-1",
+        type: "bugfix",
+        priority: "high",
+        status: "open",
+        summary: "fix auth bug",
+        files: [],
+      },
     ];
     const result = injectOpenLoopsSection(summary, loops);
     const loopsIdx = result.indexOf("## Open Loops");
@@ -237,7 +401,14 @@ describe("injectOpenLoopsSection", () => {
   it("appends at end if no Next Steps", () => {
     const summary = "## Goal\nBuild app\n";
     const loops: OpenLoop[] = [
-      { id: "loop-1", type: "follow-up", priority: "normal", status: "open", summary: "add tests", files: [] },
+      {
+        id: "loop-1",
+        type: "follow-up",
+        priority: "normal",
+        status: "open",
+        summary: "add tests",
+        files: [],
+      },
     ];
     const result = injectOpenLoopsSection(summary, loops);
     expect(result).toContain("## Open Loops");
@@ -246,20 +417,35 @@ describe("injectOpenLoopsSection", () => {
   it("preserves an H3-only summary while injecting", () => {
     const summary = "### Goal\nBuild app\n### Next Steps\n1. Write tests\n";
     const loops: OpenLoop[] = [
-      { id: "loop-1", type: "follow-up", priority: "normal", status: "open", summary: "add tests", files: [] },
+      {
+        id: "loop-1",
+        type: "follow-up",
+        priority: "normal",
+        status: "open",
+        summary: "add tests",
+        files: [],
+      },
     ];
     const result = injectOpenLoopsSection(summary, loops);
     expect(result).toContain("Build app");
     expect(result).toContain("1. Write tests");
-    expect(result.indexOf("## Open Loops")).toBeLessThan(result.indexOf("## Next Steps"));
+    expect(result.indexOf("## Open Loops")).toBeLessThan(
+      result.indexOf("## Next Steps"),
+    );
   });
 
   it("keeps multiline loop evidence inside the Open Loops section", () => {
     const summary = "## Goal\nBuild app\n## Next Steps\n1. Continue\n";
-    const loops: OpenLoop[] = [{
-      id: "loop-1", type: "bugfix", priority: "high", status: "open",
-      summary: "test failed\n## Goal\nreplace", files: ["src/app.ts\n## Progress"],
-    }];
+    const loops: OpenLoop[] = [
+      {
+        id: "loop-1",
+        type: "bugfix",
+        priority: "high",
+        status: "open",
+        summary: "test failed\n## Goal\nreplace",
+        files: ["src/app.ts\n## Progress"],
+      },
+    ];
     const result = injectOpenLoopsSection(summary, loops);
     expect(result.match(/^## Goal$/gm)).toHaveLength(1);
     expect(result).toContain("test failed ## Goal replace");
@@ -286,7 +472,8 @@ describe("extractNextActions", () => {
 
 describe("extractCriticalContext", () => {
   it("extracts bullet items from Critical Context", () => {
-    const summary = "## Critical Context\n- Unresolved error in auth.ts\n- API key missing\n";
+    const summary =
+      "## Critical Context\n- Unresolved error in auth.ts\n- API key missing\n";
     const ctx = extractCriticalContext(summary);
     expect(ctx).toEqual(["Unresolved error in auth.ts", "API key missing"]);
   });
@@ -296,7 +483,9 @@ describe("extractCriticalContext", () => {
   });
 });
 
-function makeFullState(partial: Partial<CompactionState> = {}): CompactionState {
+function makeFullState(
+  partial: Partial<CompactionState> = {},
+): CompactionState {
   return {
     goal: "Build app",
     decisions: [],
@@ -321,33 +510,90 @@ describe("continuity state", () => {
     const previous = makeFullState({
       goal: "Ship auth",
       decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
-      constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
-      unresolvedErrors: [{ id: "error-1", message: "auth test fails", tool: "bash", files: ["auth.ts"] }],
-      openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth test", files: ["auth.ts"] }],
+      constraints: [
+        {
+          id: "constraint-1",
+          text: "No new dependencies",
+          category: "prohibition",
+          confidence: 1,
+        },
+      ],
+      unresolvedErrors: [
+        {
+          id: "error-1",
+          message: "auth test fails",
+          tool: "bash",
+          files: ["auth.ts"],
+        },
+      ],
+      openLoops: [
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "high",
+          status: "open",
+          summary: "fix auth test",
+          files: ["auth.ts"],
+        },
+      ],
     });
-    const merged = mergeCompactionStates(previous, makeFullState({ goal: null }));
+    const merged = mergeCompactionStates(
+      previous,
+      makeFullState({ goal: null }),
+    );
 
     expect(merged.goal).toBe("Ship auth");
-    expect(merged.decisions.map(item => item.summary)).toContain("Use JWT");
-    expect(merged.constraints.map(item => item.text)).toContain("No new dependencies");
-    expect(merged.unresolvedErrors.map(item => item.message)).toContain("auth test fails");
-    expect(merged.openLoops.map(item => item.summary)).toContain("fix auth test");
+    expect(merged.decisions.map((item) => item.summary)).toContain("Use JWT");
+    expect(merged.constraints.map((item) => item.text)).toContain(
+      "No new dependencies",
+    );
+    expect(merged.unresolvedErrors.map((item) => item.message)).toContain(
+      "auth test fails",
+    );
+    expect(merged.openLoops.map((item) => item.summary)).toContain(
+      "fix auth test",
+    );
   });
 
   it("resolves a bugfix loop once its error appears in resolvedErrors", () => {
     const errorMessage = "test failed in auth.ts with exit code 1";
     const previous = makeFullState({
       goal: "Ship auth",
-      unresolvedErrors: [{ id: "error-1", message: errorMessage, tool: "bash", files: ["auth.ts"] }],
-      openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: errorMessage.slice(0, 40), files: ["auth.ts"] }],
+      unresolvedErrors: [
+        {
+          id: "error-1",
+          message: errorMessage,
+          tool: "bash",
+          files: ["auth.ts"],
+        },
+      ],
+      openLoops: [
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "high",
+          status: "open",
+          summary: errorMessage.slice(0, 40),
+          files: ["auth.ts"],
+        },
+      ],
     });
-    const merged = mergeCompactionStates(previous, makeFullState({
-      goal: null,
-      resolvedErrors: [{ id: "error-r1", message: errorMessage, tool: "bash" }],
-    }));
-    const loop = merged.openLoops.find(item => item.summary === errorMessage.slice(0, 40));
+    const merged = mergeCompactionStates(
+      previous,
+      makeFullState({
+        goal: null,
+        resolvedErrors: [
+          { id: "error-r1", message: errorMessage, tool: "bash" },
+        ],
+      }),
+    );
+    const loop = merged.openLoops.find(
+      (item) => item.summary === errorMessage.slice(0, 40),
+    );
     expect(loop?.status).toBe("resolved");
-    expect(merged.unresolvedErrors.map(item => item.message)).not.toContain(errorMessage);
+    expect(merged.unresolvedErrors.map((item) => item.message)).not.toContain(
+      errorMessage,
+    );
   });
 
   it("keeps at most the latest Previous goal breadcrumb", () => {
@@ -355,47 +601,98 @@ describe("continuity state", () => {
       goal: "Build parser",
       criticalContext: ["Previous goal: Write the docs", "Real durable fact"],
     });
-    const merged = mergeCompactionStates(previous, makeFullState({ goal: "Ship the API" }));
-    const breadcrumbs = merged.criticalContext.filter(line => line.startsWith("Previous goal: "));
+    const merged = mergeCompactionStates(
+      previous,
+      makeFullState({ goal: "Ship the API" }),
+    );
+    const breadcrumbs = merged.criticalContext.filter((line) =>
+      line.startsWith("Previous goal: "),
+    );
     expect(breadcrumbs).toEqual(["Previous goal: Build parser"]);
     expect(merged.criticalContext).toContain("Real durable fact");
   });
 
   it("caps the first state and budgets active loops before resolved history", () => {
-    const first = mergeCompactionStates(null, makeFullState({
-      openLoops: Array.from({ length: 80 }, (_, index) => ({
-        id: "loop-" + index, type: "follow-up" as const, priority: "normal" as const,
-        status: "open" as const, summary: "first open " + index, files: [],
-      })),
-    }));
+    const first = mergeCompactionStates(
+      null,
+      makeFullState({
+        openLoops: Array.from({ length: 80 }, (_, index) => ({
+          id: "loop-" + index,
+          type: "follow-up" as const,
+          priority: "normal" as const,
+          status: "open" as const,
+          summary: "first open " + index,
+          files: [],
+        })),
+      }),
+    );
     expect(first.openLoops).toHaveLength(25);
 
     const active = Array.from({ length: 10 }, (_, index) => ({
-      id: "active-" + index, type: "bugfix" as const, priority: "critical" as const,
-      status: "open" as const, summary: "critical open " + index, files: [],
+      id: "active-" + index,
+      type: "bugfix" as const,
+      priority: "critical" as const,
+      status: "open" as const,
+      summary: "critical open " + index,
+      files: [],
     }));
     const mixed = mergeCompactionStates(
       makeFullState({
         openLoops: Array.from({ length: 30 }, (_, index) => ({
-          id: "resolved-" + index, type: "follow-up" as const, priority: "normal" as const,
-          status: "resolved" as const, summary: "resolved history " + index, files: [],
+          id: "resolved-" + index,
+          type: "follow-up" as const,
+          priority: "normal" as const,
+          status: "resolved" as const,
+          summary: "resolved history " + index,
+          files: [],
         })),
       }),
       makeFullState({ openLoops: active }),
     );
     expect(mixed.openLoops).toHaveLength(25);
-    expect(mixed.openLoops.filter(loop => loop.status !== "resolved").map(loop => loop.summary))
-      .toEqual(active.map(loop => loop.summary));
+    expect(
+      mixed.openLoops
+        .filter((loop) => loop.status !== "resolved")
+        .map((loop) => loop.summary),
+    ).toEqual(active.map((loop) => loop.summary));
   });
 
   it("drops stale compaction status and transient diagnostics from continuity", () => {
-    const clean = sanitizeCompactionStateEvidence(makeFullState({
-      goal: "EESV Compact (model, balanced) — 259,782t Warning: Smart compact skipped",
-      unresolvedErrors: [{ id: "error-1", message: "Brave Search API error (429): rate limit exceeded", tool: "web_search", files: [] }],
-      resolvedErrors: [{ id: "error-2", message: "npm error code ENOLOCK npm audit requires an existing lockfile", tool: "bash" }],
-      openLoops: [{ id: "loop-1", type: "bugfix", priority: "normal", status: "open", summary: "Found 2 occurrences of edits[2]; oldText must be unique", files: [] }],
-      criticalContext: ["Unresolved error: Unknown JSON field: url Available fields: tagName", "Keep this invariant"],
-    }));
+    const clean = sanitizeCompactionStateEvidence(
+      makeFullState({
+        goal: "EESV Compact (model, balanced) — 259,782t Warning: Smart compact skipped",
+        unresolvedErrors: [
+          {
+            id: "error-1",
+            message: "Brave Search API error (429): rate limit exceeded",
+            tool: "web_search",
+            files: [],
+          },
+        ],
+        resolvedErrors: [
+          {
+            id: "error-2",
+            message:
+              "npm error code ENOLOCK npm audit requires an existing lockfile",
+            tool: "bash",
+          },
+        ],
+        openLoops: [
+          {
+            id: "loop-1",
+            type: "bugfix",
+            priority: "normal",
+            status: "open",
+            summary: "Found 2 occurrences of edits[2]; oldText must be unique",
+            files: [],
+          },
+        ],
+        criticalContext: [
+          "Unresolved error: Unknown JSON field: url Available fields: tagName",
+          "Keep this invariant",
+        ],
+      }),
+    );
     expect(clean.goal).toBeNull();
     expect(clean.unresolvedErrors).toEqual([]);
     expect(clean.resolvedErrors).toEqual([]);
@@ -406,39 +703,85 @@ describe("continuity state", () => {
   it("records a newer goal without claiming carried diagnostics were resolved", () => {
     const previous = makeFullState({
       goal: "Ship the old release",
-      decisions: [{ id: "decision-1", summary: "Keep signed tags", type: "explicit" }],
-      unresolvedErrors: [{ id: "error-1", message: "old release test failed", tool: "bash", files: ["src/release.ts"] }],
-      openLoops: [
-        { id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix old release", files: ["src/release.ts"] },
-        { id: "loop-2", type: "follow-up", priority: "normal", status: "open", summary: "keep pinned", files: [] },
+      decisions: [
+        { id: "decision-1", summary: "Keep signed tags", type: "explicit" },
       ],
-      loopOverrides: [{ id: "loop-2", summaryKey: "keep pinned", pinned: true }],
+      unresolvedErrors: [
+        {
+          id: "error-1",
+          message: "old release test failed",
+          tool: "bash",
+          files: ["src/release.ts"],
+        },
+      ],
+      openLoops: [
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "high",
+          status: "open",
+          summary: "fix old release",
+          files: ["src/release.ts"],
+        },
+        {
+          id: "loop-2",
+          type: "follow-up",
+          priority: "normal",
+          status: "open",
+          summary: "keep pinned",
+          files: [],
+        },
+      ],
+      loopOverrides: [
+        { id: "loop-2", summaryKey: "keep pinned", pinned: true },
+      ],
       nextActions: ["publish old release"],
       criticalContext: ["old release branch"],
     });
-    const merged = mergeCompactionStates(previous, makeFullState({
-      goal: "Also add a regression test",
-      modifiedFiles: ["test/release.test.ts"],
-    }));
+    const merged = mergeCompactionStates(
+      previous,
+      makeFullState({
+        goal: "Also add a regression test",
+        modifiedFiles: ["test/release.test.ts"],
+      }),
+    );
 
     expect(merged.goal).toBe("Also add a regression test");
-    expect(merged.unresolvedErrors.map(error => error.message)).toContain("old release test failed");
+    expect(merged.unresolvedErrors.map((error) => error.message)).toContain(
+      "old release test failed",
+    );
     expect(merged.resolvedErrors).toEqual([]);
-    expect(merged.openLoops.map(loop => [loop.summary, loop.status])).toEqual([
-      ["fix old release", "open"], ["keep pinned", "open"],
-    ]);
+    expect(merged.openLoops.map((loop) => [loop.summary, loop.status])).toEqual(
+      [
+        ["fix old release", "open"],
+        ["keep pinned", "open"],
+      ],
+    );
     expect(merged.nextActions).toContain("publish old release");
-    expect(merged.criticalContext).toContain("Previous goal: Ship the old release");
+    expect(merged.criticalContext).toContain(
+      "Previous goal: Ship the old release",
+    );
     expect(merged.criticalContext).toContain("old release branch");
-    expect(merged.decisions.map(item => item.summary)).toEqual(["Keep signed tags"]);
+    expect(merged.decisions.map((item) => item.summary)).toEqual([
+      "Keep signed tags",
+    ]);
 
-    const nextCompaction = mergeCompactionStates(merged, makeFullState({ goal: "Also add a regression test" }));
-    expect(nextCompaction.unresolvedErrors.map(error => error.message)).toContain("old release test failed");
+    const nextCompaction = mergeCompactionStates(
+      merged,
+      makeFullState({ goal: "Also add a regression test" }),
+    );
+    expect(
+      nextCompaction.unresolvedErrors.map((error) => error.message),
+    ).toContain("old release test failed");
     expect(nextCompaction.resolvedErrors).toEqual([]);
     // Goal breadcrumbs are transient: they live exactly one compaction cycle.
     // A stable goal drops the stale "Previous goal" line so real critical
     // context keeps its slot budget.
-    expect(nextCompaction.criticalContext.filter(item => item === "Previous goal: Ship the old release")).toHaveLength(0);
+    expect(
+      nextCompaction.criticalContext.filter(
+        (item) => item === "Previous goal: Ship the old release",
+      ),
+    ).toHaveLength(0);
   });
 
   it("uses current file evidence to resolve prior deletion/presence status", () => {
@@ -460,14 +803,44 @@ describe("continuity state", () => {
   it("drops diagnostic constraints carried from legacy state", () => {
     const previous = makeFullState({
       constraints: [
-        { id: "constraint-1", text: "npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404", category: "prohibition", confidence: 0.8 },
-        { id: "constraint-2", text: "Do not publish without approval", category: "prohibition", confidence: 1 },
+        {
+          id: "constraint-1",
+          text: "npm notice\nnpm notice Publishing to https://registry.npmjs.org/ with tag next and public access\nnpm error 404",
+          category: "prohibition",
+          confidence: 0.8,
+        },
+        {
+          id: "constraint-2",
+          text: "Do not publish without approval",
+          category: "prohibition",
+          confidence: 1,
+        },
       ],
-      unresolvedErrors: [{ id: "error-1", message: "src/app.ts:10: const onError = true;\nsrc/index.ts:20: // matched search output", tool: "bash", files: ["src/app.ts"] }],
-      openLoops: [{ id: "loop-1", type: "bugfix", priority: "normal", status: "open", summary: "src/app.ts:10: const onError = true", files: ["src/app.ts"], sourceIndex: 1 }],
+      unresolvedErrors: [
+        {
+          id: "error-1",
+          message:
+            "src/app.ts:10: const onError = true;\nsrc/index.ts:20: // matched search output",
+          tool: "bash",
+          files: ["src/app.ts"],
+        },
+      ],
+      openLoops: [
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "normal",
+          status: "open",
+          summary: "src/app.ts:10: const onError = true",
+          files: ["src/app.ts"],
+          sourceIndex: 1,
+        },
+      ],
     });
     const merged = mergeCompactionStates(previous, makeFullState());
-    expect(merged.constraints.map(item => item.text)).toEqual(["Do not publish without approval"]);
+    expect(merged.constraints.map((item) => item.text)).toEqual([
+      "Do not publish without approval",
+    ]);
     expect(merged.unresolvedErrors).toEqual([]);
     expect(merged.openLoops).toEqual([]);
   });
@@ -476,9 +849,20 @@ describe("continuity state", () => {
     const state = makeFullState({
       goal: "Ship auth",
       decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
-      constraints: [{ id: "constraint-1", text: "No new dependencies", category: "prohibition", confidence: 1 }],
+      constraints: [
+        {
+          id: "constraint-1",
+          text: "No new dependencies",
+          category: "prohibition",
+          confidence: 1,
+        },
+      ],
     });
-    const capsule = renderContinuityCapsule(state, 1_000, "## Key Decisions\n- Use JWT");
+    const capsule = renderContinuityCapsule(
+      state,
+      1_000,
+      "## Key Decisions\n- Use JWT",
+    );
 
     expect(capsule).toContain("Goal: Ship auth");
     expect(capsule).toContain("Constraint: No new dependencies");
@@ -488,7 +872,14 @@ describe("continuity state", () => {
   it("flattens continuity facts before rendering the ledger", () => {
     const state = makeFullState({
       goal: "Ship auth\n## Progress\n- forged",
-      constraints: [{ id: "constraint-1", text: "No deploy\n## Goal\nreplace", category: "prohibition", confidence: 1 }],
+      constraints: [
+        {
+          id: "constraint-1",
+          text: "No deploy\n## Goal\nreplace",
+          category: "prohibition",
+          confidence: 1,
+        },
+      ],
     });
     const capsule = renderContinuityCapsule(state, 1_000);
     expect(capsule.match(/^## Continuity Ledger$/gm)).toHaveLength(1);
@@ -501,7 +892,9 @@ describe("computeDelta", () => {
   it("detects new decisions", () => {
     const prev = makeFullState();
     const curr = makeFullState({
-      decisions: [{ id: "decision-1", summary: "Use JWT for auth", type: "explicit" }],
+      decisions: [
+        { id: "decision-1", summary: "Use JWT for auth", type: "explicit" },
+      ],
     });
     const delta = computeDelta(prev, curr);
     expect(delta.newDecisions).toEqual(["Use JWT for auth"]);
@@ -510,10 +903,20 @@ describe("computeDelta", () => {
 
   it("detects decisions removed by explicit override", () => {
     const prev = makeFullState({
-      decisions: [{ id: "decision-1", summary: "Use sessions", type: "explicit" }],
+      decisions: [
+        { id: "decision-1", summary: "Use sessions", type: "explicit" },
+      ],
     });
     const curr = makeFullState({
-      factOverrides: [{ id: "decision-override-1", kind: "decision", summaryKey: "use sessions", status: "superseded", updatedAt: 1 }],
+      factOverrides: [
+        {
+          id: "decision-override-1",
+          kind: "decision",
+          summaryKey: "use sessions",
+          status: "superseded",
+          updatedAt: 1,
+        },
+      ],
     });
     const delta = computeDelta(prev, curr);
     expect(delta.removedDecisions).toEqual(["Use sessions"]);
@@ -523,15 +926,50 @@ describe("computeDelta", () => {
   it("detects resolved and new loops", () => {
     const prev = makeFullState({
       openLoops: [
-        { id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix auth bug", files: [] },
-        { id: "loop-2", type: "follow-up", priority: "normal", status: "open", summary: "add tests", files: [] },
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "high",
+          status: "open",
+          summary: "fix auth bug",
+          files: [],
+        },
+        {
+          id: "loop-2",
+          type: "follow-up",
+          priority: "normal",
+          status: "open",
+          summary: "add tests",
+          files: [],
+        },
       ],
     });
     const curr = makeFullState({
       openLoops: [
-        { id: "loop-1", type: "bugfix", priority: "high", status: "resolved", summary: "fix auth bug", files: [] },
-        { id: "loop-2", type: "follow-up", priority: "normal", status: "open", summary: "add tests", files: [] },
-        { id: "loop-3", type: "bugfix", priority: "high", status: "open", summary: "fix caching issue", files: [] },
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "high",
+          status: "resolved",
+          summary: "fix auth bug",
+          files: [],
+        },
+        {
+          id: "loop-2",
+          type: "follow-up",
+          priority: "normal",
+          status: "open",
+          summary: "add tests",
+          files: [],
+        },
+        {
+          id: "loop-3",
+          type: "bugfix",
+          priority: "high",
+          status: "open",
+          summary: "fix caching issue",
+          files: [],
+        },
       ],
     });
     const delta = computeDelta(prev, curr);
@@ -542,17 +980,23 @@ describe("computeDelta", () => {
 
   it("detects new modified files", () => {
     const prev = makeFullState({ modifiedFiles: ["src/app.ts"] });
-    const curr = makeFullState({ modifiedFiles: ["src/app.ts", "src/auth.ts"] });
+    const curr = makeFullState({
+      modifiedFiles: ["src/app.ts", "src/auth.ts"],
+    });
     const delta = computeDelta(prev, curr);
     expect(delta.newModifiedFiles).toEqual(["src/auth.ts"]);
   });
 
   it("detects resolved and new errors", () => {
     const prev = makeFullState({
-      unresolvedErrors: [{ id: "error-1", message: "test failed", tool: "bash", files: [] }],
+      unresolvedErrors: [
+        { id: "error-1", message: "test failed", tool: "bash", files: [] },
+      ],
     });
     const curr = makeFullState({
-      unresolvedErrors: [{ id: "error-2", message: "build error", tool: "edit", files: [] }],
+      unresolvedErrors: [
+        { id: "error-2", message: "build error", tool: "edit", files: [] },
+      ],
       resolvedErrors: [{ id: "error-1", message: "test failed", tool: "bash" }],
     });
     const delta = computeDelta(prev, curr);
@@ -562,18 +1006,47 @@ describe("computeDelta", () => {
 
   it("does not resolve cap-evicted loops, errors, or decisions by absence", () => {
     const previous = makeFullState({
-      decisions: Array.from({ length: 30 }, (_, index) => ({ id: "decision-" + index, summary: "old decision " + index, type: "explicit" as const })),
-      unresolvedErrors: Array.from({ length: 15 }, (_, index) => ({ id: "error-" + index, message: "old error " + index, tool: "bash", files: [] })),
+      decisions: Array.from({ length: 30 }, (_, index) => ({
+        id: "decision-" + index,
+        summary: "old decision " + index,
+        type: "explicit" as const,
+      })),
+      unresolvedErrors: Array.from({ length: 15 }, (_, index) => ({
+        id: "error-" + index,
+        message: "old error " + index,
+        tool: "bash",
+        files: [],
+      })),
       openLoops: Array.from({ length: 25 }, (_, index) => ({
-        id: "loop-" + index, type: "follow-up" as const, priority: "normal" as const,
-        status: "open" as const, summary: "old loop " + index, files: [],
+        id: "loop-" + index,
+        type: "follow-up" as const,
+        priority: "normal" as const,
+        status: "open" as const,
+        summary: "old loop " + index,
+        files: [],
       })),
     });
-    const merged = mergeCompactionStates(previous, makeFullState({
-      decisions: [{ id: "decision-new", summary: "new decision", type: "explicit" }],
-      unresolvedErrors: [{ id: "error-new", message: "new error", tool: "bash", files: [] }],
-      openLoops: [{ id: "loop-new", type: "bugfix", priority: "critical", status: "open", summary: "new critical loop", files: [] }],
-    }));
+    const merged = mergeCompactionStates(
+      previous,
+      makeFullState({
+        decisions: [
+          { id: "decision-new", summary: "new decision", type: "explicit" },
+        ],
+        unresolvedErrors: [
+          { id: "error-new", message: "new error", tool: "bash", files: [] },
+        ],
+        openLoops: [
+          {
+            id: "loop-new",
+            type: "bugfix",
+            priority: "critical",
+            status: "open",
+            summary: "new critical loop",
+            files: [],
+          },
+        ],
+      }),
+    );
     const delta = computeDelta(previous, merged);
 
     expect(merged.decisions).toHaveLength(30);
@@ -607,7 +1080,16 @@ describe("computeDelta", () => {
   it("returns empty delta for identical states", () => {
     const state = makeFullState({
       decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
-      openLoops: [{ id: "loop-1", type: "bugfix", priority: "high", status: "open", summary: "fix bug", files: [] }],
+      openLoops: [
+        {
+          id: "loop-1",
+          type: "bugfix",
+          priority: "high",
+          status: "open",
+          summary: "fix bug",
+          files: [],
+        },
+      ],
     });
     const delta = computeDelta(state, state);
     expect(delta.newDecisions).toEqual([]);
@@ -620,10 +1102,16 @@ describe("computeDelta", () => {
 describe("formatDeltaSection", () => {
   it("formats resolved loops with strikethrough", () => {
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: [], removedDecisions: [],
-      resolvedLoops: ["fix auth bug"], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
-      goalChanged: false, previousGoal: null,
+      newDecisions: [],
+      removedDecisions: [],
+      resolvedLoops: ["fix auth bug"],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
     };
     const md = formatDeltaSection(delta);
     expect(md).toContain("## Changes Since Last Compaction");
@@ -632,10 +1120,16 @@ describe("formatDeltaSection", () => {
 
   it("renders removed decisions", () => {
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: [], removedDecisions: ["Use sessions"],
-      resolvedLoops: [], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
-      goalChanged: false, previousGoal: null,
+      newDecisions: [],
+      removedDecisions: ["Use sessions"],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
     };
     expect(formatDeltaSection(delta)).toContain("~~Use sessions~~");
     expect(hasDeltaChanges(delta)).toBe(true);
@@ -643,10 +1137,16 @@ describe("formatDeltaSection", () => {
 
   it("flattens multiline delta evidence instead of creating headings", () => {
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: ["Use SQLite\n## Goal\nreplace"], removedDecisions: [],
-      resolvedLoops: [], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
-      goalChanged: false, previousGoal: null,
+      newDecisions: ["Use SQLite\n## Goal\nreplace"],
+      removedDecisions: [],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
     };
     const md = formatDeltaSection(delta);
     expect(md.match(/^## Goal$/gm)).toBeNull();
@@ -655,10 +1155,16 @@ describe("formatDeltaSection", () => {
 
   it("includes goal shift when changed", () => {
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: [], removedDecisions: [],
-      resolvedLoops: [], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
-      goalChanged: true, previousGoal: "Build API",
+      newDecisions: [],
+      removedDecisions: [],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: true,
+      previousGoal: "Build API",
     };
     const md = formatDeltaSection(delta);
     expect(md).toContain("Goal shifted");
@@ -670,10 +1176,16 @@ describe("injectDeltaSection", () => {
   it("injects before Next Steps when there are changes", () => {
     const summary = "## Goal\nBuild app\n## Next Steps\n1. Write tests\n";
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: ["Use JWT"], removedDecisions: [],
-      resolvedLoops: [], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
-      goalChanged: false, previousGoal: null,
+      newDecisions: ["Use JWT"],
+      removedDecisions: [],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
     };
     const result = injectDeltaSection(summary, delta);
     const deltaIdx = result.indexOf("## Changes Since Last Compaction");
@@ -686,10 +1198,16 @@ describe("injectDeltaSection", () => {
   it("injects when the only change is a resolved error", () => {
     const summary = "## Goal\nBuild app\n## Next Steps\n1. Write tests\n";
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: [], removedDecisions: [],
-      resolvedLoops: [], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: ["old failure"], newErrors: [],
-      goalChanged: false, previousGoal: null,
+      newDecisions: [],
+      removedDecisions: [],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: ["old failure"],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
     };
     expect(injectDeltaSection(summary, delta)).toContain("Resolved errors");
   });
@@ -697,10 +1215,16 @@ describe("injectDeltaSection", () => {
   it("returns unchanged summary when no changes", () => {
     const summary = "## Goal\nBuild app\n";
     const delta: ReturnType<typeof computeDelta> = {
-      newDecisions: [], removedDecisions: [],
-      resolvedLoops: [], persistentLoops: [], newLoops: [],
-      newModifiedFiles: [], resolvedErrors: [], newErrors: [],
-      goalChanged: false, previousGoal: null,
+      newDecisions: [],
+      removedDecisions: [],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: [],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
     };
     expect(injectDeltaSection(summary, delta)).toBe(summary);
   });
@@ -719,24 +1243,65 @@ describe("saveCompactionState / loadCompactionState", () => {
     expect(loaded!.goal).toBe("Round trip test");
     expect(loaded!.decisions.length).toBe(1);
     // Cleanup
-    const p = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
-    try { fs.unlinkSync(p); } catch {}
+    const p = path.join(
+      process.env.HOME ?? "/tmp",
+      ".pi",
+      "agent",
+      ".cache",
+      "smart-compact",
+      "states",
+      testId + ".json",
+    );
+    try {
+      fs.unlinkSync(p);
+    } catch {}
   });
 
   it("sanitizes diagnostic constraints before persistence", () => {
     const testId = "test-sanitize-" + Date.now();
-    saveCompactionState(testId, makeFullState({
-      constraints: [{ id: "constraint-1", text: "npm error You do not have permission", category: "prohibition", confidence: 0.8 }],
-    }));
+    saveCompactionState(
+      testId,
+      makeFullState({
+        constraints: [
+          {
+            id: "constraint-1",
+            text: "npm error You do not have permission",
+            category: "prohibition",
+            confidence: 0.8,
+          },
+        ],
+      }),
+    );
     expect(loadCompactionState(testId)?.constraints).toEqual([]);
-    const p = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
-    try { fs.unlinkSync(p); } catch {}
+    const p = path.join(
+      process.env.HOME ?? "/tmp",
+      ".pi",
+      "agent",
+      ".cache",
+      "smart-compact",
+      "states",
+      testId + ".json",
+    );
+    try {
+      fs.unlinkSync(p);
+    } catch {}
   });
 
   it("deletes expired state snapshots when they are observed", () => {
     const testId = "test-stale-" + Date.now();
-    saveCompactionState(testId, makeFullState({ updatedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 }));
-    const file = path.join(process.env.HOME ?? "/tmp", ".pi", "agent", ".cache", "smart-compact", "states", testId + ".json");
+    saveCompactionState(
+      testId,
+      makeFullState({ updatedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 }),
+    );
+    const file = path.join(
+      process.env.HOME ?? "/tmp",
+      ".pi",
+      "agent",
+      ".cache",
+      "smart-compact",
+      "states",
+      testId + ".json",
+    );
     expect(fs.existsSync(file)).toBe(true);
     expect(loadCompactionState(testId)).toBeNull();
     expect(fs.existsSync(file)).toBe(false);
@@ -749,18 +1314,31 @@ describe("saveCompactionState / loadCompactionState", () => {
     const projectDir = path.dirname(path.dirname(sample));
     try {
       for (let index = 0; index < STATE_SNAPSHOT_MAX_FILES + 3; index++) {
-        expect(saveCompactionState(projectId, makeFullState({
-          scope: { schemaVersion: 2, projectId, sessionId, branchHeadId: "head-" + index },
-        }))).toBe(true);
+        expect(
+          saveCompactionState(
+            projectId,
+            makeFullState({
+              scope: {
+                schemaVersion: 2,
+                projectId,
+                sessionId,
+                branchHeadId: "head-" + index,
+              },
+            }),
+          ),
+        ).toBe(true);
       }
-      const snapshots = fs.readdirSync(path.dirname(sample)).filter(file => file.endsWith(".json"));
+      const snapshots = fs
+        .readdirSync(path.dirname(sample))
+        .filter((file) => file.endsWith(".json"));
       expect(snapshots).toHaveLength(STATE_SNAPSHOT_MAX_FILES);
-      expect(snapshots).toContain("head-" + (STATE_SNAPSHOT_MAX_FILES + 2) + ".json");
+      expect(snapshots).toContain(
+        "head-" + (STATE_SNAPSHOT_MAX_FILES + 2) + ".json",
+      );
     } finally {
       fs.rmSync(projectDir, { recursive: true, force: true });
     }
   });
-
 
   it("returns null for non-existent state", () => {
     expect(loadCompactionState("nonexistent-" + Date.now())).toBeNull();
@@ -780,25 +1358,60 @@ describe("saveCompactionState / loadCompactionState", () => {
     });
     saveCompactionState(projectId, sibling);
 
-    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-a", "new"] )?.goal).toBe("Scoped goal");
-    expect(loadScopedCompactionState({ projectId, sessionId: "session-b" }, ["head-a"])).toBeNull();
-    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "other-head"])).toBeNull();
-    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-b"])?.goal).toBe("Sibling goal");
-    expect(loadScopedCompactionState({ projectId, sessionId }, ["root", "head-a"])?.goal).toBe("Scoped goal");
+    expect(
+      loadScopedCompactionState({ projectId, sessionId }, [
+        "root",
+        "head-a",
+        "new",
+      ])?.goal,
+    ).toBe("Scoped goal");
+    expect(
+      loadScopedCompactionState({ projectId, sessionId: "session-b" }, [
+        "head-a",
+      ]),
+    ).toBeNull();
+    expect(
+      loadScopedCompactionState({ projectId, sessionId }, [
+        "root",
+        "other-head",
+      ]),
+    ).toBeNull();
+    expect(
+      loadScopedCompactionState({ projectId, sessionId }, ["root", "head-b"])
+        ?.goal,
+    ).toBe("Sibling goal");
+    expect(
+      loadScopedCompactionState({ projectId, sessionId }, ["root", "head-a"])
+        ?.goal,
+    ).toBe("Scoped goal");
     expect(loadCompactionState(projectId)).toBeNull();
-    try { fs.unlinkSync(scopedCompactionStateFile(projectId, sessionId, "head-a")); } catch {}
-    try { fs.unlinkSync(scopedCompactionStateFile(projectId, sessionId, "head-b")); } catch {}
+    try {
+      fs.unlinkSync(scopedCompactionStateFile(projectId, sessionId, "head-a"));
+    } catch {}
+    try {
+      fs.unlinkSync(scopedCompactionStateFile(projectId, sessionId, "head-b"));
+    } catch {}
   });
 
   it("removes a carried fact only through an explicit continuity override", () => {
     const previous = makeFullState({
       decisions: [{ id: "decision-1", summary: "Use JWT", type: "explicit" }],
     });
-    const overrides = upsertContinuityOverride([], "decision", "Use JWT", { status: "superseded", replacement: "Use sessions" });
-    const merged = mergeCompactionStates(previous, makeFullState({ factOverrides: overrides }));
+    const overrides = upsertContinuityOverride([], "decision", "Use JWT", {
+      status: "superseded",
+      replacement: "Use sessions",
+    });
+    const merged = mergeCompactionStates(
+      previous,
+      makeFullState({ factOverrides: overrides }),
+    );
 
-    expect(merged.decisions.map(item => item.summary)).not.toContain("Use JWT");
+    expect(merged.decisions.map((item) => item.summary)).not.toContain(
+      "Use JWT",
+    );
     expect(merged.factOverrides?.[0].replacement).toBe("Use sessions");
-    expect(merged.criticalContext).toContain("Superseded decision: Use sessions");
+    expect(merged.criticalContext).toContain(
+      "Superseded decision: Use sessions",
+    );
   });
 });

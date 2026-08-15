@@ -7,22 +7,55 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  StructuredExtraction, OpenLoop, CompactionState, ExplorationReport, SessionType,
-  LoopOverride, ContinuityOverride, ContinuityScope,
+  StructuredExtraction,
+  OpenLoop,
+  CompactionState,
+  ExplorationReport,
+  SessionType,
+  LoopOverride,
+  ContinuityOverride,
+  ContinuityScope,
 } from "../types.ts";
-import { VERSION, SEVEN_DAYS_MS, STATE_SNAPSHOT_MAX_FILES, TRUNC, ID_PREFIX, MAX_STATE_OPEN_LOOPS } from "../constants.ts";
+import {
+  VERSION,
+  SEVEN_DAYS_MS,
+  STATE_SNAPSHOT_MAX_FILES,
+  TRUNC,
+  ID_PREFIX,
+  MAX_STATE_OPEN_LOOPS,
+} from "../constants.ts";
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
-import { isCompactionStatusText, isDiagnosticConstraintText, isTransientToolDiagnostic } from "./extraction.ts";
+import {
+  isCompactionStatusText,
+  isDiagnosticConstraintText,
+  isTransientToolDiagnostic,
+} from "./extraction.ts";
 import * as log from "./logger.ts";
-import { compactionStateFile, legacyScopedCompactionStateFile, scopedCompactionStateFile } from "../infra/paths.ts";
+import {
+  compactionStateFile,
+  legacyScopedCompactionStateFile,
+  scopedCompactionStateFile,
+} from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
-import { parseSummary, findSection, upsertSection, renderSummary, appendToSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
+import {
+  parseSummary,
+  findSection,
+  upsertSection,
+  renderSummary,
+  appendToSection,
+  summaryEvidenceLine,
+} from "../domain/summary-parse.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 
 function getStatePath(projectId: string, state?: CompactionState): string {
   if (!state?.scope) return compactionStateFile(projectId);
-  if (!state.scope.branchHeadId) throw new Error("Scoped compaction state requires branchHeadId");
-  return scopedCompactionStateFile(projectId, state.scope.sessionId, state.scope.branchHeadId);
+  if (!state.scope.branchHeadId)
+    throw new Error("Scoped compaction state requires branchHeadId");
+  return scopedCompactionStateFile(
+    projectId,
+    state.scope.sessionId,
+    state.scope.branchHeadId,
+  );
 }
 
 function isLegacySearchOutput(text: string): boolean {
@@ -30,30 +63,67 @@ function isLegacySearchOutput(text: string): boolean {
   return /^[^\s:][^:]*:\d+(?::\d+)?:/.test(firstLine);
 }
 
-export function sanitizeCompactionStateEvidence(state: CompactionState): CompactionState {
-  const isNoise = (text: string) => isLegacySearchOutput(text) || isTransientToolDiagnostic(text.replace(/^Unresolved error:\s*/i, ""));
-  const goal = state.goal && !isCompactionStatusText(state.goal) ? state.goal : null;
-  const constraints = state.constraints.filter(item => !isDiagnosticConstraintText(item.text));
-  const unresolvedErrors = state.unresolvedErrors.filter(item => !isNoise(item.message));
-  const resolvedErrors = state.resolvedErrors.filter(item => !isNoise(item.message));
-  const openLoops = state.openLoops.filter(item => !isNoise(item.summary));
-  const criticalContext = state.criticalContext.filter(item => !isNoise(item));
-  if (goal === state.goal && constraints.length === state.constraints.length &&
-      unresolvedErrors.length === state.unresolvedErrors.length &&
-      resolvedErrors.length === state.resolvedErrors.length &&
-      openLoops.length === state.openLoops.length &&
-      criticalContext.length === state.criticalContext.length) return state;
-  return { ...state, goal, constraints, unresolvedErrors, resolvedErrors, openLoops, criticalContext };
+export function sanitizeCompactionStateEvidence(
+  state: CompactionState,
+): CompactionState {
+  const isNoise = (text: string) =>
+    isLegacySearchOutput(text) ||
+    isTransientToolDiagnostic(text.replace(/^Unresolved error:\s*/i, ""));
+  const goal =
+    state.goal && !isCompactionStatusText(state.goal) ? state.goal : null;
+  const constraints = state.constraints.filter(
+    (item) => !isDiagnosticConstraintText(item.text),
+  );
+  const unresolvedErrors = state.unresolvedErrors.filter(
+    (item) => !isNoise(item.message),
+  );
+  const resolvedErrors = state.resolvedErrors.filter(
+    (item) => !isNoise(item.message),
+  );
+  const openLoops = state.openLoops.filter((item) => !isNoise(item.summary));
+  const criticalContext = state.criticalContext.filter(
+    (item) => !isNoise(item),
+  );
+  if (
+    goal === state.goal &&
+    constraints.length === state.constraints.length &&
+    unresolvedErrors.length === state.unresolvedErrors.length &&
+    resolvedErrors.length === state.resolvedErrors.length &&
+    openLoops.length === state.openLoops.length &&
+    criticalContext.length === state.criticalContext.length
+  )
+    return state;
+  return {
+    ...state,
+    goal,
+    constraints,
+    unresolvedErrors,
+    resolvedErrors,
+    openLoops,
+    criticalContext,
+  };
 }
 
-function freshState(fp: string, data: CompactionState | null): CompactionState | null {
+function freshState(
+  fp: string,
+  data: CompactionState | null,
+): CompactionState | null {
   if (!data) return null;
   let updatedAt = data.updatedAt;
   if (!updatedAt) {
-    try { updatedAt = fs.statSync(fp).mtimeMs; } catch (e) { log.debug("statSync failed for state file", e); updatedAt = 0; }
+    try {
+      updatedAt = fs.statSync(fp).mtimeMs;
+    } catch (e) {
+      log.debug("statSync failed for state file", e);
+      updatedAt = 0;
+    }
   }
   if (Date.now() - updatedAt > SEVEN_DAYS_MS) {
-    try { fs.unlinkSync(fp); } catch (error) { log.debug("stale state cleanup failed", error); }
+    try {
+      fs.unlinkSync(fp);
+    } catch (error) {
+      log.debug("stale state cleanup failed", error);
+    }
     return null;
   }
   return sanitizeCompactionStateEvidence(data);
@@ -62,17 +132,23 @@ function freshState(fp: string, data: CompactionState | null): CompactionState |
 function pruneScopedStateSnapshots(target: string): void {
   try {
     const dir = path.dirname(target);
-    const snapshots = fs.readdirSync(dir, { withFileTypes: true })
-      .filter(entry => entry.isFile() && entry.name.endsWith(".json"))
-      .map(entry => {
+    const snapshots = fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => {
         const file = path.join(dir, entry.name);
         return { file, mtimeMs: fs.statSync(file).mtimeMs };
       })
-      .filter(entry => entry.file !== target)
+      .filter((entry) => entry.file !== target)
       .sort((a, b) => b.mtimeMs - a.mtimeMs || b.file.localeCompare(a.file));
-    for (const snapshot of snapshots.slice(Math.max(0, STATE_SNAPSHOT_MAX_FILES - 1))) {
-      try { fs.unlinkSync(snapshot.file); }
-      catch (error) { log.debug("state snapshot cleanup failed", error); }
+    for (const snapshot of snapshots.slice(
+      Math.max(0, STATE_SNAPSHOT_MAX_FILES - 1),
+    )) {
+      try {
+        fs.unlinkSync(snapshot.file);
+      } catch (error) {
+        log.debug("state snapshot cleanup failed", error);
+      }
     }
   } catch (error) {
     log.debug("state snapshot retention failed", error);
@@ -86,7 +162,10 @@ function pruneScopedStateSnapshots(target: string): void {
  * leaves the previous valid state file untouched instead of a truncated JSON
  * blob that would crash the next loadCompactionState parse.
  */
-export function saveCompactionState(projectId: string, state: CompactionState): boolean {
+export function saveCompactionState(
+  projectId: string,
+  state: CompactionState,
+): boolean {
   try {
     const target = getStatePath(projectId, state);
     writeJsonSync(target, sanitizeCompactionStateEvidence(state), true);
@@ -107,36 +186,52 @@ export function loadCompactionState(projectId: string): CompactionState | null {
 }
 
 export function loadScopedCompactionState(
-  scope: Pick<ContinuityScope, "projectId" | "sessionId"> & Partial<Pick<ContinuityScope, "branchHeadId">>,
+  scope: Pick<ContinuityScope, "projectId" | "sessionId"> &
+    Partial<Pick<ContinuityScope, "branchHeadId">>,
   branchEntryIds: readonly string[] = [],
 ): CompactionState | null {
-  const snapshotProbe = scopedCompactionStateFile(scope.projectId, scope.sessionId, "__snapshot__");
+  const snapshotProbe = scopedCompactionStateFile(
+    scope.projectId,
+    scope.sessionId,
+    "__snapshot__",
+  );
   let availableSnapshots = new Set<string>();
   try {
-    availableSnapshots = new Set(fs.readdirSync(path.dirname(snapshotProbe), { withFileTypes: true })
-      .filter(entry => entry.isFile() && entry.name.endsWith(".json"))
-      .map(entry => entry.name));
+    availableSnapshots = new Set(
+      fs
+        .readdirSync(path.dirname(snapshotProbe), { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => entry.name),
+    );
   } catch {
     // No branch snapshot directory yet; legacy migration below may still apply.
   }
-  const ancestry = Array.from(new Set([
-    ...branchEntryIds,
-    ...(scope.branchHeadId ? [scope.branchHeadId] : []),
-  ])).reverse();
+  const ancestry = Array.from(
+    new Set([
+      ...branchEntryIds,
+      ...(scope.branchHeadId ? [scope.branchHeadId] : []),
+    ]),
+  ).reverse();
   const valid = (
     state: CompactionState | null,
     branchHeadId?: string,
-  ): state is CompactionState & { scope: ContinuityScope & { branchHeadId: string } } =>
+  ): state is CompactionState & {
+    scope: ContinuityScope & { branchHeadId: string };
+  } =>
     Boolean(
-      state?.scope?.schemaVersion === 2
-      && state.scope.projectId === scope.projectId
-      && state.scope.sessionId === scope.sessionId
-      && typeof state.scope.branchHeadId === "string"
-      && (!branchHeadId || state.scope.branchHeadId === branchHeadId),
+      state?.scope?.schemaVersion === 2 &&
+        state.scope.projectId === scope.projectId &&
+        state.scope.sessionId === scope.sessionId &&
+        typeof state.scope.branchHeadId === "string" &&
+        (!branchHeadId || state.scope.branchHeadId === branchHeadId),
     );
 
   for (const branchHeadId of ancestry) {
-    const fp = scopedCompactionStateFile(scope.projectId, scope.sessionId, branchHeadId);
+    const fp = scopedCompactionStateFile(
+      scope.projectId,
+      scope.sessionId,
+      branchHeadId,
+    );
     if (!availableSnapshots.has(path.basename(fp))) continue;
     const state = freshState(fp, readJsonSync<CompactionState>(fp));
     if (valid(state, branchHeadId)) return state;
@@ -144,9 +239,16 @@ export function loadScopedCompactionState(
 
   // One-time migration from the old session-only snapshot. Remove the file
   // before creating the same-named directory used by branch snapshots.
-  const legacyPath = legacyScopedCompactionStateFile(scope.projectId, scope.sessionId);
-  const legacy = freshState(legacyPath, readJsonSync<CompactionState>(legacyPath));
-  if (!valid(legacy) || !ancestry.includes(legacy.scope.branchHeadId)) return null;
+  const legacyPath = legacyScopedCompactionStateFile(
+    scope.projectId,
+    scope.sessionId,
+  );
+  const legacy = freshState(
+    legacyPath,
+    readJsonSync<CompactionState>(legacyPath),
+  );
+  if (!valid(legacy) || !ancestry.includes(legacy.scope.branchHeadId))
+    return null;
   try {
     fs.unlinkSync(legacyPath);
     writeJsonSync(getStatePath(scope.projectId, legacy), legacy, true);
@@ -156,43 +258,49 @@ export function loadScopedCompactionState(
   return legacy;
 }
 
-export function applyLoopOverrides(loops: OpenLoop[], overrides: LoopOverride[]): OpenLoop[] {
+export function applyLoopOverrides(
+  loops: OpenLoop[],
+  overrides: LoopOverride[],
+): OpenLoop[] {
   // Loop ids are positional (`loop-1`, `loop-2`) and regenerated every run;
   // normalized summary identity is the only stable cross-compaction key.
-  const bySummary = new Map(overrides.map(override => [override.summaryKey, override]));
-  return loops.map(loop => {
-    const override = bySummary.get(normalizeFactKey(loop.summary));
-    return override ? {
-      ...loop,
-      ...(override.status ? { status: override.status } : {}),
-      ...(override.priority ? { priority: override.priority } : {}),
-    } : loop;
-  }).sort((a, b) => {
-    const aOverride = bySummary.get(normalizeFactKey(a.summary));
-    const bOverride = bySummary.get(normalizeFactKey(b.summary));
-    return Number(Boolean(bOverride?.pinned)) - Number(Boolean(aOverride?.pinned));
-  });
+  const bySummary = new Map(
+    overrides.map((override) => [override.summaryKey, override]),
+  );
+  return loops
+    .map((loop) => {
+      const override = bySummary.get(normalizeFactKey(loop.summary));
+      return override
+        ? {
+            ...loop,
+            ...(override.status ? { status: override.status } : {}),
+            ...(override.priority ? { priority: override.priority } : {}),
+          }
+        : loop;
+    })
+    .sort((a, b) => {
+      const aOverride = bySummary.get(normalizeFactKey(a.summary));
+      const bOverride = bySummary.get(normalizeFactKey(b.summary));
+      return (
+        Number(Boolean(bOverride?.pinned)) - Number(Boolean(aOverride?.pinned))
+      );
+    });
 }
 
-export function upsertLoopOverride(overrides: LoopOverride[], loop: OpenLoop, patch: Partial<Omit<LoopOverride, "id" | "summaryKey">>): LoopOverride[] {
+export function upsertLoopOverride(
+  overrides: LoopOverride[],
+  loop: OpenLoop,
+  patch: Partial<Omit<LoopOverride, "id" | "summaryKey">>,
+): LoopOverride[] {
   const summaryKey = normalizeFactKey(loop.summary);
-  const index = overrides.findIndex(override => override.summaryKey === summaryKey);
-  const next: LoopOverride = { ...(index >= 0 ? overrides[index] : { id: loop.id, summaryKey }), ...patch, id: loop.id, summaryKey };
-  if (index < 0) return [...overrides, next];
-  const copy = overrides.slice();
-  copy[index] = next;
-  return copy;
-}
-
-export function upsertContinuityOverride(
-  overrides: ContinuityOverride[], kind: ContinuityOverride["kind"], text: string,
-  patch: Pick<ContinuityOverride, "status"> & Partial<Pick<ContinuityOverride, "replacement">>,
-): ContinuityOverride[] {
-  const summaryKey = normalizeFactKey(text);
-  const index = overrides.findIndex(item => item.kind === kind && item.summaryKey === summaryKey);
-  const next: ContinuityOverride = {
-    ...(index >= 0 ? overrides[index] : { id: kind + "-override-" + (overrides.length + 1), kind, summaryKey }),
-    ...patch, kind, summaryKey, updatedAt: Date.now(),
+  const index = overrides.findIndex(
+    (override) => override.summaryKey === summaryKey,
+  );
+  const next: LoopOverride = {
+    ...(index >= 0 ? overrides[index] : { id: loop.id, summaryKey }),
+    ...patch,
+    id: loop.id,
+    summaryKey,
   };
   if (index < 0) return [...overrides, next];
   const copy = overrides.slice();
@@ -200,21 +308,65 @@ export function upsertContinuityOverride(
   return copy;
 }
 
-export function applyContinuityOverrides(state: CompactionState, overrides: ContinuityOverride[]): CompactionState {
+export function upsertContinuityOverride(
+  overrides: ContinuityOverride[],
+  kind: ContinuityOverride["kind"],
+  text: string,
+  patch: Pick<ContinuityOverride, "status"> &
+    Partial<Pick<ContinuityOverride, "replacement">>,
+): ContinuityOverride[] {
+  const summaryKey = normalizeFactKey(text);
+  const index = overrides.findIndex(
+    (item) => item.kind === kind && item.summaryKey === summaryKey,
+  );
+  const next: ContinuityOverride = {
+    ...(index >= 0
+      ? overrides[index]
+      : { id: kind + "-override-" + (overrides.length + 1), kind, summaryKey }),
+    ...patch,
+    kind,
+    summaryKey,
+    updatedAt: Date.now(),
+  };
+  if (index < 0) return [...overrides, next];
+  const copy = overrides.slice();
+  copy[index] = next;
+  return copy;
+}
+
+export function applyContinuityOverrides(
+  state: CompactionState,
+  overrides: ContinuityOverride[],
+): CompactionState {
   const inactive = new Set(
-    overrides.filter(item => item.status !== "active").map(item => item.kind + ":" + item.summaryKey),
+    overrides
+      .filter((item) => item.status !== "active")
+      .map((item) => item.kind + ":" + item.summaryKey),
   );
   const replacements = overrides
-    .filter(item => item.status === "superseded" && item.replacement)
-    .map(item => "Superseded " + item.kind + ": " + item.replacement);
+    .filter((item) => item.status === "superseded" && item.replacement)
+    .map((item) => "Superseded " + item.kind + ": " + item.replacement);
   const cleanState = sanitizeCompactionStateEvidence(state);
   return {
     ...cleanState,
-    decisions: cleanState.decisions.filter(item => !inactive.has("decision:" + normalizeFactKey(item.summary))),
-    constraints: cleanState.constraints.filter(item => !inactive.has("constraint:" + normalizeFactKey(item.text))),
-    unresolvedErrors: cleanState.unresolvedErrors.filter(item => !inactive.has("error:" + normalizeFactKey(item.message))),
-    openLoops: cleanState.openLoops.filter(item => !inactive.has("loop:" + normalizeFactKey(item.summary))),
-    criticalContext: mergeBy(replacements, cleanState.criticalContext, normalizeFactKey, 20),
+    decisions: cleanState.decisions.filter(
+      (item) => !inactive.has("decision:" + normalizeFactKey(item.summary)),
+    ),
+    constraints: cleanState.constraints.filter(
+      (item) => !inactive.has("constraint:" + normalizeFactKey(item.text)),
+    ),
+    unresolvedErrors: cleanState.unresolvedErrors.filter(
+      (item) => !inactive.has("error:" + normalizeFactKey(item.message)),
+    ),
+    openLoops: cleanState.openLoops.filter(
+      (item) => !inactive.has("loop:" + normalizeFactKey(item.summary)),
+    ),
+    criticalContext: mergeBy(
+      replacements,
+      cleanState.criticalContext,
+      normalizeFactKey,
+      20,
+    ),
     factOverrides: overrides,
   };
 }
@@ -234,45 +386,60 @@ export function buildCompactionState(
   // Precompute path-suffix needles once (drops generic basenames like index.ts
   // so an error about lib/index.ts doesn't attach to src/index.ts). Same helper
   // extractOpenLoops uses, keeping error→file attribution consistent pipeline-wide.
-  const fileNeedles = extraction.modifiedFiles.map(f => ({ path: f.path, needles: buildPathNeedles(f.path) }));
+  const fileNeedles = extraction.modifiedFiles.map((f) => ({
+    path: f.path,
+    needles: buildPathNeedles(f.path),
+  }));
 
   return {
     goal: extraction.mainGoal,
-    goalKey: extraction.mainGoal ? normalizeFactKey(extraction.mainGoal) : undefined,
-    decisions: extraction.decisions.map(d => ({
-      id: ID_PREFIX.DECISION + (++decisionId),
+    goalKey: extraction.mainGoal
+      ? normalizeFactKey(extraction.mainGoal)
+      : undefined,
+    decisions: extraction.decisions.map((d) => ({
+      id: ID_PREFIX.DECISION + ++decisionId,
       summary: d.summary.slice(0, TRUNC.DECISION_SUMMARY),
-      ...(d.userResponse ? { userResponse: d.userResponse.slice(0, TRUNC.USER_RESPONSE) } : {}),
+      ...(d.userResponse
+        ? { userResponse: d.userResponse.slice(0, TRUNC.USER_RESPONSE) }
+        : {}),
       type: d.type,
     })),
-    constraints: extraction.constraints.map(c => ({
-      id: "constraint-" + (++constraintId),
+    constraints: extraction.constraints.map((c) => ({
+      id: "constraint-" + ++constraintId,
       text: c.text.slice(0, TRUNC.CONSTRAINT_TEXT),
       category: c.category,
       confidence: c.confidence,
     })),
-    modifiedFiles: extraction.modifiedFiles.map(f => f.path),
+    modifiedFiles: extraction.modifiedFiles.map((f) => f.path),
     readFiles: extraction.readFiles,
     deletedFiles: extraction.deletedFiles,
-    unresolvedErrors: extraction.errors.filter(e => !e.resolved).map(e => {
-      const msgLower = e.message.toLowerCase();
-      const match = fileNeedles.find(({ needles }) => needles.some(n => msgLower.includes(n)));
-      return {
-        id: ID_PREFIX.ERROR + (++errorId),
+    unresolvedErrors: extraction.errors
+      .filter((e) => !e.resolved)
+      .map((e) => {
+        const msgLower = e.message.toLowerCase();
+        const match = fileNeedles.find(({ needles }) =>
+          needles.some((n) => msgLower.includes(n)),
+        );
+        return {
+          id: ID_PREFIX.ERROR + ++errorId,
+          message: e.message.slice(0, TRUNC.MESSAGE),
+          tool: e.tool,
+          files: match ? [match.path] : [],
+        };
+      }),
+    resolvedErrors: extraction.errors
+      .filter((e) => e.resolved)
+      .map((e) => ({
+        id: ID_PREFIX.ERROR + ++errorId,
         message: e.message.slice(0, TRUNC.MESSAGE),
         tool: e.tool,
-        files: match ? [match.path] : [],
-      };
-    }),
-    resolvedErrors: extraction.errors.filter(e => e.resolved).map(e => ({
-      id: ID_PREFIX.ERROR + (++errorId),
-      message: e.message.slice(0, TRUNC.MESSAGE),
-      tool: e.tool,
-    })),
+      })),
     openLoops,
     ...(loopOverrides.length ? { loopOverrides } : {}),
     topics: extraction.topics.map((t, i) => ({
-      title: t.primaryFile ? t.primaryFile.split("/").pop() + " (" + t.type + ")" : "Topic " + (i + 1),
+      title: t.primaryFile
+        ? t.primaryFile.split("/").pop() + " (" + t.type + ")"
+        : "Topic " + (i + 1),
       type: t.type,
       priority: t.errorDensity > 2 ? "high" : "normal",
     })),
@@ -284,27 +451,51 @@ export function buildCompactionState(
   };
 }
 
-function mergeBy<T>(current: T[], previous: T[], key: (item: T) => string, limit: number): T[] {
+function mergeBy<T>(
+  current: T[],
+  previous: T[],
+  key: (item: T) => string,
+  limit: number,
+): T[] {
   const seen = new Set<string>();
-  return [...current, ...previous].filter(item => {
-    const normalized = key(item);
-    if (!normalized || seen.has(normalized)) return false;
-    seen.add(normalized);
-    return true;
-  }).slice(0, limit);
+  return [...current, ...previous]
+    .filter((item) => {
+      const normalized = key(item);
+      if (!normalized || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    })
+    .slice(0, limit);
 }
 
-const LOOP_PRIORITY: Record<OpenLoop["priority"], number> = { critical: 0, high: 1, normal: 2, low: 3 };
+const LOOP_PRIORITY: Record<OpenLoop["priority"], number> = {
+  critical: 0,
+  high: 1,
+  normal: 2,
+  low: 3,
+};
 
 /** Active work must consume the bounded loop budget before resolved history. */
 function mergeOpenLoops(current: OpenLoop[], previous: OpenLoop[]): OpenLoop[] {
-  return mergeBy(current, previous, item => normalizeFactKey(item.summary), Number.MAX_SAFE_INTEGER)
+  return mergeBy(
+    current,
+    previous,
+    (item) => normalizeFactKey(item.summary),
+    Number.MAX_SAFE_INTEGER,
+  )
     .map((item, order) => ({ item, order }))
-    .sort((a, b) => Number(a.item.status === "resolved") - Number(b.item.status === "resolved")
-      || LOOP_PRIORITY[a.item.priority] - LOOP_PRIORITY[b.item.priority]
-      || a.order - b.order)
+    .sort(
+      (a, b) =>
+        Number(a.item.status === "resolved") -
+          Number(b.item.status === "resolved") ||
+        LOOP_PRIORITY[a.item.priority] - LOOP_PRIORITY[b.item.priority] ||
+        a.order - b.order,
+    )
     .slice(0, MAX_STATE_OPEN_LOOPS)
-    .map(({ item }, index) => ({ ...item, id: ID_PREFIX.OPEN_LOOP + (index + 1) }));
+    .map(({ item }, index) => ({
+      ...item,
+      id: ID_PREFIX.OPEN_LOOP + (index + 1),
+    }));
 }
 
 /**
@@ -314,20 +505,38 @@ function mergeOpenLoops(current: OpenLoop[], previous: OpenLoop[]): OpenLoop[] {
  * bounded so continuity cannot grow without limit. Goal shifts are recorded as
  * context; only positive resolution evidence or an explicit override retires a fact.
  */
-export function mergeCompactionStates(previous: CompactionState | null, current: CompactionState): CompactionState {
+export function mergeCompactionStates(
+  previous: CompactionState | null,
+  current: CompactionState,
+): CompactionState {
   if (!previous) {
-    const active = applyContinuityOverrides(current, current.factOverrides ?? []);
+    const active = applyContinuityOverrides(
+      current,
+      current.factOverrides ?? [],
+    );
     return { ...active, openLoops: mergeOpenLoops(active.openLoops, []) };
   }
   const factOverrides = mergeBy(
-    current.factOverrides ?? [], previous.factOverrides ?? [],
-    item => item.kind + ":" + item.summaryKey, 50,
+    current.factOverrides ?? [],
+    previous.factOverrides ?? [],
+    (item) => item.kind + ":" + item.summaryKey,
+    50,
   );
   const activeCurrent = applyContinuityOverrides(current, factOverrides);
   const activePrevious = applyContinuityOverrides(previous, factOverrides);
-  const currentPresent = new Set([...activeCurrent.modifiedFiles, ...activeCurrent.readFiles].map(normalizeFactKey));
-  const currentDeleted = new Set(activeCurrent.deletedFiles.map(normalizeFactKey));
-  const resolvedKeys = new Set(activeCurrent.resolvedErrors.map(error => normalizeFactKey(error.message)));
+  const currentPresent = new Set(
+    [...activeCurrent.modifiedFiles, ...activeCurrent.readFiles].map(
+      normalizeFactKey,
+    ),
+  );
+  const currentDeleted = new Set(
+    activeCurrent.deletedFiles.map(normalizeFactKey),
+  );
+  const resolvedKeys = new Set(
+    activeCurrent.resolvedErrors.map((error) =>
+      normalizeFactKey(error.message),
+    ),
+  );
   // A bugfix loop dies with its error: when the error text now shows up in
   // resolvedErrors, the loop recorded from it is resolved too. Loop summaries
   // are truncated error messages, so a resolved key that *starts with* the
@@ -339,75 +548,137 @@ export function mergeCompactionStates(previous: CompactionState | null, current:
     const summaryKey = normalizeFactKey(loop.summary);
     if (summaryKey.length < 16) return false; // too short to prefix-match safely
     for (const key of resolvedKeys) {
-      if (key === summaryKey || (key.length > summaryKey.length && key.startsWith(summaryKey))) return true;
+      if (
+        key === summaryKey ||
+        (key.length > summaryKey.length && key.startsWith(summaryKey))
+      )
+        return true;
     }
     return false;
   };
-  const decisions = mergeBy(activeCurrent.decisions, activePrevious.decisions, item => normalizeFactKey(item.summary), 30)
-    .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
-  const constraints = mergeBy(activeCurrent.constraints, activePrevious.constraints, item => normalizeFactKey(item.text), 30)
-    .map((item, index) => ({ ...item, id: "constraint-" + (index + 1) }));
+  const decisions = mergeBy(
+    activeCurrent.decisions,
+    activePrevious.decisions,
+    (item) => normalizeFactKey(item.summary),
+    30,
+  ).map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
+  const constraints = mergeBy(
+    activeCurrent.constraints,
+    activePrevious.constraints,
+    (item) => normalizeFactKey(item.text),
+    30,
+  ).map((item, index) => ({ ...item, id: "constraint-" + (index + 1) }));
   const unresolvedErrors = mergeBy(
     activeCurrent.unresolvedErrors,
-    activePrevious.unresolvedErrors.filter(error => !resolvedKeys.has(normalizeFactKey(error.message))),
-    item => normalizeFactKey(item.message),
+    activePrevious.unresolvedErrors.filter(
+      (error) => !resolvedKeys.has(normalizeFactKey(error.message)),
+    ),
+    (item) => normalizeFactKey(item.message),
     15,
   ).map((item, index) => ({ ...item, id: ID_PREFIX.ERROR + (index + 1) }));
   const openLoops = mergeOpenLoops(
     activeCurrent.openLoops,
-    activePrevious.openLoops.map(loop => (isResolvedLoop(loop) ? { ...loop, status: "resolved" } : loop)),
+    activePrevious.openLoops.map((loop) =>
+      isResolvedLoop(loop) ? { ...loop, status: "resolved" } : loop,
+    ),
   );
-  const currentGoalKey = activeCurrent.goalKey
-    ?? (activeCurrent.goal ? normalizeFactKey(activeCurrent.goal) : "");
-  const previousGoalKey = activePrevious.goalKey
-    ?? (activePrevious.goal ? normalizeFactKey(activePrevious.goal) : "");
+  const currentGoalKey =
+    activeCurrent.goalKey ??
+    (activeCurrent.goal ? normalizeFactKey(activeCurrent.goal) : "");
+  const previousGoalKey =
+    activePrevious.goalKey ??
+    (activePrevious.goal ? normalizeFactKey(activePrevious.goal) : "");
   // "Previous goal:" lines are transient breadcrumbs, not durable facts: strip
   // stale ones from the previous context so at most the LATEST one survives
   // (a plain mergeBy would accumulate up to 20 stale goals and starve real
   // critical context). ponytail: goal identity is still "last user message";
   // if drift matters later, extraction needs a real goal tracker.
   const PREV_GOAL_PREFIX = "Previous goal: ";
-  const durablePreviousContext = activePrevious.criticalContext.filter(line => !line.startsWith(PREV_GOAL_PREFIX));
-  const oldGoal = previousGoalKey && currentGoalKey && previousGoalKey !== currentGoalKey
-    ? [PREV_GOAL_PREFIX + activePrevious.goal]
-    : [];
-  return applyContinuityOverrides({
-    ...activeCurrent,
-    goal: activeCurrent.goal ?? activePrevious.goal,
-    goalKey: activeCurrent.goal
-      ? currentGoalKey || undefined
-      : (activePrevious.goalKey ?? previousGoalKey) || undefined,
-    decisions,
-    constraints,
-    modifiedFiles: mergeBy(
-      activeCurrent.modifiedFiles,
-      activePrevious.modifiedFiles.filter(file => !currentDeleted.has(normalizeFactKey(file))),
-      normalizeFactKey, 100,
-    ),
-    readFiles: mergeBy(
-      activeCurrent.readFiles,
-      activePrevious.readFiles.filter(file => !currentDeleted.has(normalizeFactKey(file))),
-      normalizeFactKey, 100,
-    ),
-    deletedFiles: mergeBy(
-      activeCurrent.deletedFiles,
-      activePrevious.deletedFiles.filter(file => !currentPresent.has(normalizeFactKey(file))),
-      normalizeFactKey, 50,
-    ),
-    unresolvedErrors,
-    resolvedErrors: mergeBy(activeCurrent.resolvedErrors, activePrevious.resolvedErrors, item => normalizeFactKey(item.message), 20),
-    openLoops,
-    loopOverrides: mergeBy(activeCurrent.loopOverrides ?? [], activePrevious.loopOverrides ?? [], item => item.summaryKey, 50),
+  const durablePreviousContext = activePrevious.criticalContext.filter(
+    (line) => !line.startsWith(PREV_GOAL_PREFIX),
+  );
+  const oldGoal =
+    previousGoalKey && currentGoalKey && previousGoalKey !== currentGoalKey
+      ? [PREV_GOAL_PREFIX + activePrevious.goal]
+      : [];
+  return applyContinuityOverrides(
+    {
+      ...activeCurrent,
+      goal: activeCurrent.goal ?? activePrevious.goal,
+      goalKey: activeCurrent.goal
+        ? currentGoalKey || undefined
+        : (activePrevious.goalKey ?? previousGoalKey) || undefined,
+      decisions,
+      constraints,
+      modifiedFiles: mergeBy(
+        activeCurrent.modifiedFiles,
+        activePrevious.modifiedFiles.filter(
+          (file) => !currentDeleted.has(normalizeFactKey(file)),
+        ),
+        normalizeFactKey,
+        100,
+      ),
+      readFiles: mergeBy(
+        activeCurrent.readFiles,
+        activePrevious.readFiles.filter(
+          (file) => !currentDeleted.has(normalizeFactKey(file)),
+        ),
+        normalizeFactKey,
+        100,
+      ),
+      deletedFiles: mergeBy(
+        activeCurrent.deletedFiles,
+        activePrevious.deletedFiles.filter(
+          (file) => !currentPresent.has(normalizeFactKey(file)),
+        ),
+        normalizeFactKey,
+        50,
+      ),
+      unresolvedErrors,
+      resolvedErrors: mergeBy(
+        activeCurrent.resolvedErrors,
+        activePrevious.resolvedErrors,
+        (item) => normalizeFactKey(item.message),
+        20,
+      ),
+      openLoops,
+      loopOverrides: mergeBy(
+        activeCurrent.loopOverrides ?? [],
+        activePrevious.loopOverrides ?? [],
+        (item) => item.summaryKey,
+        50,
+      ),
+      factOverrides,
+      topics: mergeBy(
+        activeCurrent.topics,
+        activePrevious.topics,
+        (item) => normalizeFactKey(item.title),
+        30,
+      ),
+      nextActions: mergeBy(
+        activeCurrent.nextActions,
+        activePrevious.nextActions,
+        normalizeFactKey,
+        15,
+      ),
+      criticalContext: mergeBy(
+        [...oldGoal, ...activeCurrent.criticalContext],
+        durablePreviousContext,
+        normalizeFactKey,
+        20,
+      ),
+      updatedAt: Date.now(),
+    },
     factOverrides,
-    topics: mergeBy(activeCurrent.topics, activePrevious.topics, item => normalizeFactKey(item.title), 30),
-    nextActions: mergeBy(activeCurrent.nextActions, activePrevious.nextActions, normalizeFactKey, 15),
-    criticalContext: mergeBy([...oldGoal, ...activeCurrent.criticalContext], durablePreviousContext, normalizeFactKey, 20),
-    updatedAt: Date.now(),
-  }, factOverrides);
+  );
 }
 
 /** Build the bounded, deterministic context that must survive every generation. */
-export function renderContinuityCapsule(state: CompactionState, maxChars = TRUNC.CONTINUITY_CAPSULE, existing = ""): string {
+export function renderContinuityCapsule(
+  state: CompactionState,
+  maxChars = TRUNC.CONTINUITY_CAPSULE,
+  existing = "",
+): string {
   const haystack = normalizeFactKey(existing);
   const lines: string[] = ["## Continuity Ledger"];
   const add = (label: string, value: string) => {
@@ -418,10 +689,19 @@ export function renderContinuityCapsule(state: CompactionState, maxChars = TRUNC
   };
   if (state.goal) add("Goal", state.goal);
   for (const item of state.constraints) add("Constraint", item.text);
-  for (const item of state.decisions) add("Decision", item.summary + (item.userResponse ? " → " + item.userResponse : ""));
-  for (const item of state.unresolvedErrors) add("Unresolved error", item.message);
-  for (const item of state.resolvedErrors.slice(-5)) add("Resolved error", item.message);
-  for (const item of state.openLoops.filter(loop => loop.status !== "resolved")) add("Open loop", item.summary);
+  for (const item of state.decisions)
+    add(
+      "Decision",
+      item.summary + (item.userResponse ? " → " + item.userResponse : ""),
+    );
+  for (const item of state.unresolvedErrors)
+    add("Unresolved error", item.message);
+  for (const item of state.resolvedErrors.slice(-5))
+    add("Resolved error", item.message);
+  for (const item of state.openLoops.filter(
+    (loop) => loop.status !== "resolved",
+  ))
+    add("Open loop", item.summary);
   for (const item of state.criticalContext) add("Critical", item);
   return lines.length > 1 ? lines.join("\n") : "";
 }
@@ -434,15 +714,30 @@ export function renderContinuityCapsule(state: CompactionState, maxChars = TRUNC
  * H3 instead of H2) still result in `Open Loops` being placed *before* the
  * next-steps section. Falls back to append-at-end when the section is absent.
  */
-export function injectOpenLoopsSection(summary: string, openLoops: OpenLoop[]): string {
+export function injectOpenLoopsSection(
+  summary: string,
+  openLoops: OpenLoop[],
+): string {
   if (!openLoops.length) return summary;
 
-  const body = openLoops.map(l => {
-    const prio = l.priority === "critical" || l.priority === "high" ? "[" + l.priority + "] " : "";
-    const files = l.files.map(file => summaryEvidenceLine(file, TRUNC.MESSAGE)).filter(Boolean);
-    const suffix = files.length ? " — " + files.join(", ") : "";
-    return "- " + prio + summaryEvidenceLine(l.summary, TRUNC.OPEN_LOOP_SUMMARY) + suffix;
-  }).join("\n");
+  const body = openLoops
+    .map((l) => {
+      const prio =
+        l.priority === "critical" || l.priority === "high"
+          ? "[" + l.priority + "] "
+          : "";
+      const files = l.files
+        .map((file) => summaryEvidenceLine(file, TRUNC.MESSAGE))
+        .filter(Boolean);
+      const suffix = files.length ? " — " + files.join(", ") : "";
+      return (
+        "- " +
+        prio +
+        summaryEvidenceLine(l.summary, TRUNC.OPEN_LOOP_SUMMARY) +
+        suffix
+      );
+    })
+    .join("\n");
 
   const parsed = parseSummary(summary);
   const updated = upsertSection(parsed, "open-loops", body, "next-steps");
@@ -475,30 +770,50 @@ export interface CompactionDelta {
   previousGoal: string | null;
 }
 
-export function computeDelta(prev: CompactionState, current: CompactionState): CompactionDelta {
+export function computeDelta(
+  prev: CompactionState,
+  current: CompactionState,
+): CompactionDelta {
   // Match on full canonical fact identity. Extraction is deterministic, so the
   // same item yields identical text across compactions.
   const overrides = current.factOverrides ?? [];
-  const retired = (kind: ContinuityOverride["kind"]): Set<string> => new Set(overrides
-    .filter(item => item.kind === kind && item.status !== "active")
-    .map(item => item.summaryKey));
+  const retired = (kind: ContinuityOverride["kind"]): Set<string> =>
+    new Set(
+      overrides
+        .filter((item) => item.kind === kind && item.status !== "active")
+        .map((item) => item.summaryKey),
+    );
 
   // Decisions
-  const prevDecisionTexts = new Set(prev.decisions.map(d => normalizeFactKey(d.summary)));
+  const prevDecisionTexts = new Set(
+    prev.decisions.map((d) => normalizeFactKey(d.summary)),
+  );
   const newDecisions = current.decisions
-    .filter(d => !prevDecisionTexts.has(normalizeFactKey(d.summary)))
-    .map(d => d.summary);
+    .filter((d) => !prevDecisionTexts.has(normalizeFactKey(d.summary)))
+    .map((d) => d.summary);
   const retiredDecisions = retired("decision");
   const removedDecisions = prev.decisions
-    .filter(d => retiredDecisions.has(normalizeFactKey(d.summary)))
-    .map(d => d.summary);
+    .filter((d) => retiredDecisions.has(normalizeFactKey(d.summary)))
+    .map((d) => d.summary);
 
   // Open loops (summaries are already bounded to ~120 chars at extraction time)
-  const prevLoopSummaries = new Map(prev.openLoops.filter(loop => loop.status !== "resolved").map(l => [normalizeFactKey(l.summary), l]));
-  const currLoopKeys = new Set(current.openLoops.filter(loop => loop.status !== "resolved").map(l => normalizeFactKey(l.summary)));
+  const prevLoopSummaries = new Map(
+    prev.openLoops
+      .filter((loop) => loop.status !== "resolved")
+      .map((l) => [normalizeFactKey(l.summary), l]),
+  );
+  const currLoopKeys = new Set(
+    current.openLoops
+      .filter((loop) => loop.status !== "resolved")
+      .map((l) => normalizeFactKey(l.summary)),
+  );
   const resolvedLoopKeys = new Set([
-    ...current.openLoops.filter(loop => loop.status === "resolved").map(loop => normalizeFactKey(loop.summary)),
-    ...(current.loopOverrides ?? []).filter(item => item.status === "resolved").map(item => item.summaryKey),
+    ...current.openLoops
+      .filter((loop) => loop.status === "resolved")
+      .map((loop) => normalizeFactKey(loop.summary)),
+    ...(current.loopOverrides ?? [])
+      .filter((item) => item.status === "resolved")
+      .map((item) => item.summaryKey),
     ...retired("loop"),
   ]);
   const resolvedLoops: string[] = [];
@@ -508,51 +823,64 @@ export function computeDelta(prev: CompactionState, current: CompactionState): C
     else if (resolvedLoopKeys.has(k)) resolvedLoops.push(loop.summary);
   }
   const newLoops = current.openLoops
-    .filter(loop => loop.status !== "resolved")
-    .filter(l => !prevLoopSummaries.has(normalizeFactKey(l.summary)))
-    .map(l => l.summary);
+    .filter((loop) => loop.status !== "resolved")
+    .filter((l) => !prevLoopSummaries.has(normalizeFactKey(l.summary)))
+    .map((l) => l.summary);
 
   // Files: diff sets
   const prevFiles = new Set(prev.modifiedFiles);
-  const newModifiedFiles = current.modifiedFiles.filter(f => !prevFiles.has(f));
+  const newModifiedFiles = current.modifiedFiles.filter(
+    (f) => !prevFiles.has(f),
+  );
 
   // Errors (messages bounded to ~300 chars at build time)
-  const prevErrorMsgs = new Set(prev.unresolvedErrors.map(e => normalizeFactKey(e.message)));
+  const prevErrorMsgs = new Set(
+    prev.unresolvedErrors.map((e) => normalizeFactKey(e.message)),
+  );
   const resolvedErrorKeys = new Set([
-    ...current.resolvedErrors.map(error => normalizeFactKey(error.message)),
+    ...current.resolvedErrors.map((error) => normalizeFactKey(error.message)),
     ...retired("error"),
   ]);
   const resolvedErrors = prev.unresolvedErrors
-    .filter(e => resolvedErrorKeys.has(normalizeFactKey(e.message)))
-    .map(e => e.message);
+    .filter((e) => resolvedErrorKeys.has(normalizeFactKey(e.message)))
+    .map((e) => e.message);
   const newErrors = current.unresolvedErrors
-    .filter(e => !prevErrorMsgs.has(normalizeFactKey(e.message)))
-    .map(e => e.message);
+    .filter((e) => !prevErrorMsgs.has(normalizeFactKey(e.message)))
+    .map((e) => e.message);
 
-  const previousGoalKey = prev.goalKey ?? (prev.goal ? normalizeFactKey(prev.goal) : "");
-  const currentGoalKey = current.goalKey ?? (current.goal ? normalizeFactKey(current.goal) : "");
+  const previousGoalKey =
+    prev.goalKey ?? (prev.goal ? normalizeFactKey(prev.goal) : "");
+  const currentGoalKey =
+    current.goalKey ?? (current.goal ? normalizeFactKey(current.goal) : "");
   const goalChanged = Boolean(
     previousGoalKey && currentGoalKey && previousGoalKey !== currentGoalKey,
   );
 
   return {
-    newDecisions, removedDecisions,
-    resolvedLoops, persistentLoops, newLoops,
+    newDecisions,
+    removedDecisions,
+    resolvedLoops,
+    persistentLoops,
+    newLoops,
     newModifiedFiles,
-    resolvedErrors, newErrors,
-    goalChanged, previousGoal: goalChanged ? prev.goal : null,
+    resolvedErrors,
+    newErrors,
+    goalChanged,
+    previousGoal: goalChanged ? prev.goal : null,
   };
 }
 
 export function hasDeltaChanges(delta: CompactionDelta): boolean {
-  return delta.goalChanged
-    || delta.removedDecisions.length > 0
-    || delta.resolvedLoops.length > 0
-    || delta.newLoops.length > 0
-    || delta.newDecisions.length > 0
-    || delta.resolvedErrors.length > 0
-    || delta.newErrors.length > 0
-    || delta.newModifiedFiles.length > 0;
+  return (
+    delta.goalChanged ||
+    delta.removedDecisions.length > 0 ||
+    delta.resolvedLoops.length > 0 ||
+    delta.newLoops.length > 0 ||
+    delta.newDecisions.length > 0 ||
+    delta.resolvedErrors.length > 0 ||
+    delta.newErrors.length > 0 ||
+    delta.newModifiedFiles.length > 0
+  );
 }
 
 /**
@@ -563,32 +891,70 @@ export function formatDeltaSection(delta: CompactionDelta): string {
   const safe = (value: string, max: number) => summaryEvidenceLine(value, max);
 
   if (delta.goalChanged) {
-    lines.push("- **Goal shifted**: " + safe(delta.previousGoal ?? "?", TRUNC.MESSAGE) + " → see current goal above");
+    lines.push(
+      "- **Goal shifted**: " +
+        safe(delta.previousGoal ?? "?", TRUNC.MESSAGE) +
+        " → see current goal above",
+    );
   }
 
   if (delta.resolvedLoops.length) {
-    lines.push("- **Resolved loops**: " + delta.resolvedLoops.map(s => "~~" + safe(s, TRUNC.DECISION_DETAIL) + "~~").join(", "));
+    lines.push(
+      "- **Resolved loops**: " +
+        delta.resolvedLoops
+          .map((s) => "~~" + safe(s, TRUNC.DECISION_DETAIL) + "~~")
+          .join(", "),
+    );
   }
   if (delta.persistentLoops.length) {
-    lines.push("- **Still open**: " + delta.persistentLoops.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push(
+      "- **Still open**: " +
+        delta.persistentLoops
+          .map((s) => safe(s, TRUNC.DECISION_DETAIL))
+          .join("; "),
+    );
   }
   if (delta.newLoops.length) {
-    lines.push("- **New loops**: " + delta.newLoops.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push(
+      "- **New loops**: " +
+        delta.newLoops.map((s) => safe(s, TRUNC.DECISION_DETAIL)).join("; "),
+    );
   }
   if (delta.newDecisions.length) {
-    lines.push("- **New decisions**: " + delta.newDecisions.map(s => safe(s, TRUNC.SNIPPET)).join("; "));
+    lines.push(
+      "- **New decisions**: " +
+        delta.newDecisions.map((s) => safe(s, TRUNC.SNIPPET)).join("; "),
+    );
   }
   if (delta.removedDecisions.length) {
-    lines.push("- **Removed decisions**: " + delta.removedDecisions.map(s => "~~" + safe(s, TRUNC.SNIPPET) + "~~").join("; "));
+    lines.push(
+      "- **Removed decisions**: " +
+        delta.removedDecisions
+          .map((s) => "~~" + safe(s, TRUNC.SNIPPET) + "~~")
+          .join("; "),
+    );
   }
   if (delta.resolvedErrors.length) {
-    lines.push("- **Resolved errors**: " + delta.resolvedErrors.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push(
+      "- **Resolved errors**: " +
+        delta.resolvedErrors
+          .map((s) => safe(s, TRUNC.DECISION_DETAIL))
+          .join("; "),
+    );
   }
   if (delta.newErrors.length) {
-    lines.push("- **New errors**: " + delta.newErrors.map(s => safe(s, TRUNC.DECISION_DETAIL)).join("; "));
+    lines.push(
+      "- **New errors**: " +
+        delta.newErrors.map((s) => safe(s, TRUNC.DECISION_DETAIL)).join("; "),
+    );
   }
   if (delta.newModifiedFiles.length) {
-    lines.push("- **New files touched**: " + delta.newModifiedFiles.map(file => safe(file, TRUNC.MESSAGE)).join(", "));
+    lines.push(
+      "- **New files touched**: " +
+        delta.newModifiedFiles
+          .map((file) => safe(file, TRUNC.MESSAGE))
+          .join(", "),
+    );
   }
 
   lines.push("");
@@ -606,7 +972,10 @@ export function formatDeltaSection(delta: CompactionDelta): string {
  * Works on the canonical parsed form, so heading-format drift cannot misorder
  * the delta section.
  */
-export function injectDeltaSection(summary: string, delta: CompactionDelta): string {
+export function injectDeltaSection(
+  summary: string,
+  delta: CompactionDelta,
+): string {
   if (!hasDeltaChanges(delta)) return summary;
 
   const body = formatDeltaSection(delta)
@@ -616,7 +985,7 @@ export function injectDeltaSection(summary: string, delta: CompactionDelta): str
   if (!body) return summary;
 
   const parsed = parseSummary(summary);
-  const hasOpenLoops = parsed.sections.some(s => s.kind === "open-loops");
+  const hasOpenLoops = parsed.sections.some((s) => s.kind === "open-loops");
   // Placement priority:
   //   1. If an `Open Loops` section exists, anchor the delta directly *after*
   //      it so the reader sees `… Open Loops → Changes → Next Steps …`.
@@ -636,17 +1005,21 @@ export function injectDeltaSection(summary: string, delta: CompactionDelta): str
  * survives compaction regardless of what the LLM chose to include. This is a
  * deterministic, LLM-free guarantee — the pin wins over synthesis output.
  */
-export function ensurePinnedPaths(summary: string, pinned: readonly string[]): string {
+export function ensurePinnedPaths(
+  summary: string,
+  pinned: readonly string[],
+): string {
   if (!pinned.length) return summary;
   const lower = summary.toLowerCase();
-  const missing = pinned.map(path => summaryEvidenceLine(path, TRUNC.MESSAGE))
-    .filter(path => path && !lower.includes(path.toLowerCase()));
+  const missing = pinned
+    .map((path) => summaryEvidenceLine(path, TRUNC.MESSAGE))
+    .filter((path) => path && !lower.includes(path.toLowerCase()));
   if (!missing.length) return summary;
   const parsed = parseSummary(summary);
   const updated = appendToSection(
     parsed,
     "files-read",
-    missing.map(p => "- " + p).join("\n"),
+    missing.map((p) => "- " + p).join("\n"),
     "- Pinned by config (always preserved):",
   );
   return renderSummary(updated);
@@ -663,8 +1036,8 @@ export function extractNextActions(summary: string): string[] {
   if (!section) return [];
   return section.body
     .split("\n")
-    .map(l => l.replace(/^\d+\.\s*/, "").trim())
-    .filter(l => l.length > 0);
+    .map((l) => l.replace(/^\d+\.\s*/, "").trim())
+    .filter((l) => l.length > 0);
 }
 
 /**
@@ -673,5 +1046,8 @@ export function extractNextActions(summary: string): string[] {
 export function extractCriticalContext(summary: string): string[] {
   const section = findSection(summary, "critical-context");
   if (!section) return [];
-  return section.body.split("\n").map(l => l.replace(/^-\s*/, "").trim()).filter(l => l.length > 0);
+  return section.body
+    .split("\n")
+    .map((l) => l.replace(/^-\s*/, "").trim())
+    .filter((l) => l.length > 0);
 }
