@@ -23,7 +23,10 @@ import { extractText, TRUNCATE_RE } from "./extraction.ts";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../infra/ai-messages.ts";
-import { sessionsDir as sessionsDirPath } from "../infra/paths.ts";
+import {
+  sessionsDir as sessionsDirPath,
+  home as piHome,
+} from "../infra/paths.ts";
 // LRU helpers live in a sibling module so they can be unit-tested in
 // isolation and reused by other bounded caches.
 import { lruGet, lruSet } from "./lru.ts";
@@ -39,7 +42,10 @@ function getSessionsDir(): string {
  * recovery. Awaiting each chunk yields I/O back to the event loop instead of
  * blocking the agent while preserving exact UTF-8 line boundaries.
  */
-async function* streamJsonlLines(file: string, chunkSize = 64 * 1024): AsyncGenerator<string> {
+async function* streamJsonlLines(
+  file: string,
+  chunkSize = 64 * 1024,
+): AsyncGenerator<string> {
   const handle = await fs.promises.open(file, "r");
   try {
     const buffer = Buffer.allocUnsafe(chunkSize);
@@ -58,7 +64,9 @@ async function* streamJsonlLines(file: string, chunkSize = 64 * 1024): AsyncGene
     leftover += decoder.end();
     if (leftover.length > 0) yield leftover;
   } finally {
-    await handle.close().catch(error => log.debug("streamJsonlLines close failed", error));
+    await handle
+      .close()
+      .catch((error) => log.debug("streamJsonlLines close failed", error));
   }
 }
 
@@ -75,7 +83,11 @@ interface LogMessage {
   content?: unknown;
   toolCallId?: string;
   toolName?: string;
-  toolCall?: { id?: string; name?: string; arguments?: Record<string, unknown> };
+  toolCall?: {
+    id?: string;
+    name?: string;
+    arguments?: Record<string, unknown>;
+  };
   isError?: boolean;
   details?: Record<string, unknown>;
   display?: boolean;
@@ -124,10 +136,20 @@ function getMaxEntries(): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_CACHE_MAX_ENTRIES;
 }
 
-
-
-const logPathCache = new Map<string, { path: string | null; expiresAt: number; home: string }>();
-const messageMapCache = new Map<string, { logPath: string; mtimeMs: number; size: number; requestedIds: Set<string>; map: Map<string, LlmMessage> }>();
+const logPathCache = new Map<
+  string,
+  { path: string | null; expiresAt: number; home: string }
+>();
+const messageMapCache = new Map<
+  string,
+  {
+    logPath: string;
+    mtimeMs: number;
+    size: number;
+    requestedIds: Set<string>;
+    map: Map<string, LlmMessage>;
+  }
+>();
 
 /** @internal Test-only: drop both module caches between cases. */
 export function __resetSessionLogCachesForTests(): void {
@@ -136,18 +158,28 @@ export function __resetSessionLogCachesForTests(): void {
 }
 
 function sessionDirectoryForCwd(cwd: string): string {
-  const safeCwd = path.resolve(cwd).replace(/^[/\\]/, "").replace(/[:/\\]/g, "-");
+  const safeCwd = path
+    .resolve(cwd)
+    .replace(/^[/\\]/, "")
+    .replace(/[:/\\]/g, "-");
   return path.join(getSessionsDir(), "--" + safeCwd + "--");
 }
 
-function findLogInDirectory(directory: string, sessionId: string): string | null {
+function findLogInDirectory(
+  directory: string,
+  sessionId: string,
+): string | null {
   if (!fs.existsSync(directory)) return null;
   if (/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
     const exact = path.join(directory, sessionId + ".jsonl");
     if (fs.existsSync(exact)) return exact;
   }
-  const match = fs.readdirSync(directory, { withFileTypes: true })
-    .find(entry => entry.isFile() && entry.name.endsWith("_" + sessionId + ".jsonl"));
+  const match = fs
+    .readdirSync(directory, { withFileTypes: true })
+    .find(
+      (entry) =>
+        entry.isFile() && entry.name.endsWith("_" + sessionId + ".jsonl"),
+    );
   return match ? path.join(directory, match.name) : null;
 }
 
@@ -159,18 +191,24 @@ function findLogInDirectory(directory: string, sessionId: string): string | null
  * We try the bare id first, then the glob suffix pattern.
  */
 function findSessionLogFile(sessionId: string, cwd?: string): string | null {
-  const home = process.env.HOME ?? "/tmp";
+  const home = piHome();
   const now = Date.now();
   const directDirectory = cwd ? sessionDirectoryForCwd(cwd) : null;
   const cacheKey = sessionId + "\0" + (directDirectory ?? "*");
   const remember = (foundPath: string | null) => {
-    lruSet(logPathCache, cacheKey, { path: foundPath, expiresAt: now + LOG_PATH_CACHE_TTL_MS, home }, getMaxEntries());
+    lruSet(
+      logPathCache,
+      cacheKey,
+      { path: foundPath, expiresAt: now + LOG_PATH_CACHE_TTL_MS, home },
+      getMaxEntries(),
+    );
     return foundPath;
   };
 
   try {
     const cached = lruGet(logPathCache, cacheKey);
-    if (cached && cached.home === home && cached.expiresAt > now) return cached.path;
+    if (cached && cached.home === home && cached.expiresAt > now)
+      return cached.path;
 
     const sessionsDir = getSessionsDir();
     if (!fs.existsSync(sessionsDir)) return remember(null);
@@ -202,7 +240,10 @@ function findSessionLogFile(sessionId: string, cwd?: string): string | null {
  * wrong values. The field is currently write-only internally, but using the
  * real timestamp keeps recovered messages consistent with their neighbors.
  */
-function normalizeLogMessage(msg: LogMessage | undefined, entryTimestamp?: string): LlmMessage | null {
+function normalizeLogMessage(
+  msg: LogMessage | undefined,
+  entryTimestamp?: string,
+): LlmMessage | null {
   if (!msg || !msg.role) return null;
 
   const role = msg.role;
@@ -225,7 +266,7 @@ function normalizeLogMessage(msg: LogMessage | undefined, entryTimestamp?: strin
  * Check if any message in the array has been truncated by pi-toolkit.
  */
 export function hasTruncatedMessages(msgs: LlmMessage[]): boolean {
-  return msgs.some(m => TRUNCATE_RE.test(extractText(m.content)));
+  return msgs.some((m) => TRUNCATE_RE.test(extractText(m.content)));
 }
 
 /**
@@ -248,11 +289,11 @@ async function readOriginalMessageMap(
     const stat = await fs.promises.stat(logPath);
     const cached = lruGet(messageMapCache, sessionId);
     if (
-      cached
-      && cached.logPath === logPath
-      && cached.mtimeMs === stat.mtimeMs
-      && cached.size === stat.size
-      && Array.from(wantedIds).every(id => cached.requestedIds.has(id))
+      cached &&
+      cached.logPath === logPath &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.size === stat.size &&
+      Array.from(wantedIds).every((id) => cached.requestedIds.has(id))
     ) {
       return cached.map;
     }
@@ -267,21 +308,39 @@ async function readOriginalMessageMap(
       } catch {
         continue;
       }
-      if (entry.type !== "message" || !entry.id || !remaining.has(entry.id) || !entry.message) continue;
+      if (
+        entry.type !== "message" ||
+        !entry.id ||
+        !remaining.has(entry.id) ||
+        !entry.message
+      )
+        continue;
       remaining.delete(entry.id);
       const normalized = normalizeLogMessage(entry.message, entry.timestamp);
       if (normalized) map.set(entry.id, normalized);
       if (remaining.size === 0) break;
     }
 
-    log.debug("readOriginalMessageMap: " + map.size + "/" + wantedIds.size + " requested msgs from " + logPath);
-    lruSet(messageMapCache, sessionId, {
-      logPath,
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
-      requestedIds: new Set(wantedIds),
-      map,
-    }, getMaxEntries());
+    log.debug(
+      "readOriginalMessageMap: " +
+        map.size +
+        "/" +
+        wantedIds.size +
+        " requested msgs from " +
+        logPath,
+    );
+    lruSet(
+      messageMapCache,
+      sessionId,
+      {
+        logPath,
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        requestedIds: new Set(wantedIds),
+        map,
+      },
+      getMaxEntries(),
+    );
     return map;
   } catch (error) {
     log.debug("readOriginalMessageMap failed", error);
@@ -307,7 +366,9 @@ export async function resolveCompactionMessages(
   toCompactEntries: SessionMessageEntry[],
   cwd?: string,
 ): Promise<ResolvedCompactionMessage[] | null> {
-  const wantedIds = new Set(toCompactEntries.flatMap(entry => entry.id ? [entry.id] : []));
+  const wantedIds = new Set(
+    toCompactEntries.flatMap((entry) => (entry.id ? [entry.id] : [])),
+  );
   const logMap = await readOriginalMessageMap(sessionId, wantedIds, cwd);
   if (!logMap) return null;
 
@@ -316,19 +377,28 @@ export async function resolveCompactionMessages(
 
   for (const entry of toCompactEntries) {
     if (!entry.id) continue;
-    const converted = convertToLlm([asBranchMessage(entry.message)]) as LlmMessage[];
+    const converted = convertToLlm([
+      asBranchMessage(entry.message),
+    ]) as LlmMessage[];
     if (!converted.length) continue;
     const logMsg = logMap.get(entry.id);
     if (logMsg && !hasTruncatedMessages([logMsg])) {
       result.push({ entryId: entry.id, message: logMsg });
       restoredCount++;
     } else {
-      for (const message of converted) result.push({ entryId: entry.id, message });
+      for (const message of converted)
+        result.push({ entryId: entry.id, message });
     }
   }
 
   if (restoredCount > 0) {
-    log.info("Session log recovery: " + restoredCount + "/" + result.length + " LLM messages restored from log");
+    log.info(
+      "Session log recovery: " +
+        restoredCount +
+        "/" +
+        result.length +
+        " LLM messages restored from log",
+    );
   }
   return result;
 }
