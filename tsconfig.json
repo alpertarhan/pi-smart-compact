@@ -4,7 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2024"],
-    "types": ["node"],
+    "types": ["node", "bun"],
     "strict": true,
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,

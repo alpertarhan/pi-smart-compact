@@ -261,6 +261,7 @@ describe("extension lifecycle end to end", () => {
       Array<(event: any, ctx: any) => unknown>
     >();
     const tools = new Map<string, any>();
+    let activeTools = ["smart_compact"];
     const extensionApi = new Proxy(
       {
         on: (name: string, handler: (event: any, ctx: any) => unknown) => {
@@ -272,6 +273,11 @@ describe("extension lifecycle end to end", () => {
         registerTool: (tool: any) => {
           tools.set(tool.name, tool);
         },
+        getActiveTools: () => [...activeTools],
+        setActiveTools: (names: string[]) => {
+          activeTools = [...names];
+        },
+        appendEntry: () => {},
       },
       {
         get(target, key) {

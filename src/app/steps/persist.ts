@@ -20,14 +20,22 @@
  */
 
 import type { RunContext } from "../run-context.ts";
-import type { MetricsSnapshot, PendingCompaction, LlmMessage } from "../../types.ts";
+import type {
+  MetricsSnapshot,
+  PendingCompaction,
+  LlmMessage,
+} from "../../types.ts";
 import { saveProjectFingerprint } from "../../utils/fingerprint.ts";
 import { saveCompactionState } from "../../utils/state.ts";
 import { scheduleCompactionStateIndex } from "../../infra/context-graph.ts";
-import { loadConfig } from "../../utils/helpers.ts";
+import { loadConfig } from "../../utils/config.ts";
 import { appendMetricsSnapshot } from "../../utils/cache.ts";
 import { commitPreparedConversationBackup } from "../../utils/backups.ts";
-import { detectDamage, logDamageReport, writeRemediationHints } from "../../utils/damage.ts";
+import {
+  detectDamage,
+  logDamageReport,
+  writeRemediationHints,
+} from "../../utils/damage.ts";
 import { sanitizeSmartCompactDetails } from "../../utils/type-guards.ts";
 import { recordFailureMetrics } from "./metrics.ts";
 import type { StatedRc } from "../run-context.ts";
@@ -47,29 +55,52 @@ import * as log from "../../utils/logger.ts";
  * `session_compact` event after the compaction entry exists. Best-effort:
  * persistence failures are logged without corrupting the host session.
  */
-export async function persistAppliedState(pending: PendingCompaction): Promise<string[]> {
-  if (!pending.projectId) return pending.compactionState || pending.extraction ? ["project state (project identity unavailable)"] : [];
+export async function persistAppliedState(
+  pending: PendingCompaction,
+): Promise<string[]> {
+  if (!pending.projectId)
+    return pending.compactionState || pending.extraction
+      ? ["project state (project identity unavailable)"]
+      : [];
   const failures: string[] = [];
-  if (pending.extraction && !await saveProjectFingerprint(pending.projectId, pending.sessionId, pending.extraction)) {
+  if (
+    pending.extraction &&
+    !(await saveProjectFingerprint(
+      pending.projectId,
+      pending.sessionId,
+      pending.extraction,
+    ))
+  ) {
     failures.push("project fingerprint");
   }
   if (pending.compactionState) {
     if (!saveCompactionState(pending.projectId, pending.compactionState)) {
       failures.push("continuity state");
-    } else if (loadConfig().contextGraphEnabled
-      && !scheduleCompactionStateIndex(pending.projectId, pending.compactionState)) {
+    } else if (
+      loadConfig().contextGraphEnabled &&
+      !(await scheduleCompactionStateIndex(
+        pending.projectId,
+        pending.compactionState,
+      ))
+    ) {
       failures.push("context graph");
     }
   }
   return failures;
 }
 
-export async function commitAppliedCompaction(pending: PendingCompaction): Promise<string[]> {
+export async function commitAppliedCompaction(
+  pending: PendingCompaction,
+): Promise<string[]> {
   const startedAt = Date.now();
   const failures = await persistAppliedState(pending);
-  if (pending.preparedBackup && !await commitPreparedConversationBackup(pending.preparedBackup)) failures.push("conversation backup");
+  if (
+    pending.preparedBackup &&
+    !(await commitPreparedConversationBackup(pending.preparedBackup))
+  )
+    failures.push("conversation backup");
   if (!pending.metricsSnapshot) return failures;
-  await appendMetricsSnapshot(pending.sessionId, {
+  const metricsWritten = await appendMetricsSnapshot(pending.sessionId, {
     ...pending.metricsSnapshot,
     persistenceStatus: failures.length ? "partial" : "complete",
     persistenceFailures: failures.length ? failures : undefined,
@@ -78,14 +109,16 @@ export async function commitAppliedCompaction(pending: PendingCompaction): Promi
       { phase: "persist", durationMs: Date.now() - startedAt },
     ],
   });
+  if (!metricsWritten) failures.push("metrics log");
   return failures;
 }
 
 /** Run post-compaction damage detection. Best-effort — never throws. */
 export function runDamageDetection(rc: RunContext): void {
   try {
-    const postCompactMsgs = rc.msgs.slice(rc.keepFrom)
-      .map(e => convertToLlm([asBranchMessage(e.message)]))
+    const postCompactMsgs = rc.msgs
+      .slice(rc.keepFrom)
+      .map((e) => convertToLlm([asBranchMessage(e.message)]))
       .flat() as LlmMessage[];
     if (postCompactMsgs.length <= 2) return;
 
@@ -101,11 +134,16 @@ export function runDamageDetection(rc: RunContext): void {
     // shape. Validate before touching it.
     const safeDetails = sanitizeSmartCompactDetails(lastCompaction.details);
     if (!safeDetails) {
-      rc.vlog("Damage detection skipped: previous compaction details have an unrecognized shape");
+      rc.vlog(
+        "Damage detection skipped: previous compaction details have an unrecognized shape",
+      );
       return;
     }
 
-    const damage = detectDamage(postCompactMsgs.slice(0, Math.min(15, postCompactMsgs.length)), safeDetails);
+    const damage = detectDamage(
+      postCompactMsgs.slice(0, Math.min(15, postCompactMsgs.length)),
+      safeDetails,
+    );
     if (damage.damageScore > 0) {
       rc.notify("Previous compaction damage: " + damage.summary, "warning");
     }
@@ -115,7 +153,9 @@ export function runDamageDetection(rc: RunContext): void {
     if (damage.reReadFiles.length > 0) {
       writeRemediationHints(rc.projectId, damage.reReadFiles);
     }
-  } catch (err) { log.debugError("Damage detection skipped", err); }
+  } catch (err) {
+    log.debugError("Damage detection skipped", err);
+  }
 }
 
 /**
@@ -124,12 +164,18 @@ export function runDamageDetection(rc: RunContext): void {
  * the run should keep running side effects (it does until the timeout/cleanup
  * step decides otherwise).
  */
-export function stagePendingCompaction(rc: RunContext, metricsSnapshot?: MetricsSnapshot): PendingCompaction {
+export function stagePendingCompaction(
+  rc: RunContext,
+  metricsSnapshot?: MetricsSnapshot,
+): PendingCompaction {
   // The producing branch head is immutable provenance. The consumer rejects
   // this payload unless both it and the kept-entry boundary remain in the
   // active branch ancestry.
-  const originBranchHeadId = branchEntryIds(rc.branch as Array<{ id?: unknown }>).at(-1);
-  if (!originBranchHeadId) throw new Error("Pending compaction requires an identifiable branch head");
+  const originBranchHeadId = branchEntryIds(
+    rc.branch as Array<{ id?: unknown }>,
+  ).at(-1);
+  if (!originBranchHeadId)
+    throw new Error("Pending compaction requires an identifiable branch head");
   const pending: PendingCompaction = {
     runId: rc.runId,
     summary: rc.finalSummary,
@@ -161,16 +207,23 @@ export function applyCompaction(rc: StatedRc): void {
   if (rc.flags.skipCompact || rc.flags.autoTriggered) return;
   rc.ctx.compact({
     customInstructions: "Use pre-computed smart summary from /smart-compact",
-    onComplete: () => { /* session_compact owns correlated success feedback */ },
-    onError: e => {
+    onComplete: () => {
+      /* session_compact owns correlated success feedback */
+    },
+    onError: (e) => {
       clearCompactProgress(rc.ctx);
       rc.pendingRef.clear(rc.sessionId);
       const handled = rc.onNativeApplyError?.(rc.runId, e) ?? false;
       if (!handled) {
         void recordFailureMetrics(rc, e, {
-          sessionId: rc.sessionId, tier: rc.tier, contextPercent: rc.contextPercent,
-          toolPercent: rc.toolPercent, totalTokens: rc.totalTokens,
-          methodForMetrics: rc.method, profile: rc.profile, mode: rc.mode,
+          sessionId: rc.sessionId,
+          tier: rc.tier,
+          contextPercent: rc.contextPercent,
+          toolPercent: rc.toolPercent,
+          totalTokens: rc.totalTokens,
+          methodForMetrics: rc.method,
+          profile: rc.profile,
+          mode: rc.mode,
         });
       }
       log.debugError("Native compaction apply failed", e);

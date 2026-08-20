@@ -39,7 +39,7 @@ import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
 /** pi-toolkit truncation marker: content.slice(0, 20) + `…✂${content.length}` */
 export const TRUNCATE_RE = /…✂\d+$/;
 
-export function isTruncated(content: unknown): boolean {
+function isTruncated(content: unknown): boolean {
   return TRUNCATE_RE.test(extractText(content));
 }
 
@@ -712,7 +712,7 @@ export function segmentTopicsHeuristic(
   return topics;
 }
 
-export function buildTimeline(
+function buildTimeline(
   msgs: LlmMessage[],
   errors: StructuredExtraction["errors"],
 ): StructuredExtraction["timeline"] {

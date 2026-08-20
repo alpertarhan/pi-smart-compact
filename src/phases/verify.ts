@@ -806,231 +806,292 @@ export function repairSummaryDeterministically(
 	return { summary, result, patched };
 }
 
-export function verifySummary(
-	summary: string,
+interface VerificationAccumulator {
+	gaps: VerificationGap[];
+	score: number;
+}
+
+interface CollectedVerificationEvidence {
+	unresolved: Array<{ message: string }>;
+	resolved: Array<{ message: string }>;
+	constraints: Array<{ text: string }>;
+	decisions: Array<{ summary: string }>;
+	goal: string | null;
+}
+
+interface PathVerificationData {
+	modified: string[];
+	read: string[];
+	deleted: string[];
+	rendered: ReadonlyMap<string, string>;
+}
+
+function addGap(
+	accumulator: VerificationAccumulator,
+	gap: VerificationGap,
+	penalty: number,
+): void {
+	accumulator.gaps.push(gap);
+	accumulator.score -= penalty;
+}
+
+function uniqueByText<T>(items: T[], text: (item: T) => string): T[] {
+	const seen = new Set<string>();
+	return items.filter((item) => {
+		const key = text(item).toLowerCase().replace(/\s+/g, " ").trim();
+		if (!key || seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function collectVerificationEvidence(
 	extraction: StructuredExtraction,
-	continuity: CompactionState | null = null,
-	evidence: VerificationEvidence = {},
-): VerificationResult {
-	const parsed = parseSummary(summary);
-	const gaps: VerificationGap[] = [];
-	const lower = summary.toLowerCase().replace(/\\/g, "/");
-	const normalizedSummary = lower.replace(/\s+/g, " ");
-	let score = 100;
-	const uniqueByText = <T>(items: T[], text: (item: T) => string): T[] => {
-		const seen = new Set<string>();
-		return items.filter((item) => {
-			const key = text(item).toLowerCase().replace(/\s+/g, " ").trim();
-			if (!key || seen.has(key)) return false;
-			seen.add(key);
-			return true;
-		});
-	};
-	const unresolvedEvidence = uniqueByText(
+	continuity: CompactionState | null,
+	evidence: VerificationEvidence,
+): CollectedVerificationEvidence {
+	const unresolved = uniqueByText(
 		[
-			...extraction.errors
-				.filter((error) => !error.resolved)
-				.map((error) => ({ message: error.message })),
+			...extraction.errors.flatMap((error) =>
+				!error.resolved ? [{ message: error.message }] : [],
+			),
 			...(continuity?.unresolvedErrors ?? []).map((error) => ({
 				message: error.message,
 			})),
 		],
 		(item) => item.message,
 	);
-	const resolvedEvidence = uniqueByText(
+	const resolved = uniqueByText(
 		[
-			...extraction.errors
-				.filter((error) => error.resolved)
-				.map((error) => ({ message: error.message })),
+			...extraction.errors.flatMap((error) =>
+				error.resolved ? [{ message: error.message }] : [],
+			),
 			...(continuity?.resolvedErrors ?? []).map((error) => ({
 				message: error.message,
 			})),
 		],
 		(item) => item.message,
 	).slice(-5);
-	const steeringConstraints = [
-		evidence.steering?.focus
-			? { text: "Preserve detail about: " + evidence.steering.focus }
-			: null,
-		evidence.steering?.note ? { text: evidence.steering.note } : null,
-	].filter((item): item is { text: string } => Boolean(item?.text.trim()));
-	const constraintEvidence = uniqueByText(
+	const steeringConstraints: Array<{ text: string }> = [];
+	if (evidence.steering?.focus?.trim()) {
+		steeringConstraints.push({
+			text: "Preserve detail about: " + evidence.steering.focus,
+		});
+	}
+	if (evidence.steering?.note?.trim()) {
+		steeringConstraints.push({ text: evidence.steering.note });
+	}
+	const constraints = uniqueByText(
 		[
-			...extraction.constraints
-				.filter((item) => item.confidence >= 0.8)
-				.map((item) => ({ text: item.text })),
-			...(continuity?.constraints ?? [])
-				.filter((item) => item.confidence >= 0.8)
-				.map((item) => ({ text: item.text })),
+			...extraction.constraints.flatMap((item) =>
+				item.confidence >= 0.8 ? [{ text: item.text }] : [],
+			),
+			...(continuity?.constraints ?? []).flatMap((item) =>
+				item.confidence >= 0.8 ? [{ text: item.text }] : [],
+			),
 			...steeringConstraints,
 		],
 		(item) => item.text,
 	).filter((item) => !isDiagnosticConstraintText(item.text));
-	const decisionEvidence = uniqueByText(
+	const decisions = uniqueByText(
 		[
-			...extraction.decisions
-				.filter((item) => item.type === "explicit")
-				.map((item) => ({ summary: item.summary })),
-			...(continuity?.decisions ?? [])
-				.filter((item) => item.type === "explicit")
-				.map((item) => ({ summary: item.summary })),
+			...extraction.decisions.flatMap((item) =>
+				item.type === "explicit" ? [{ summary: item.summary }] : [],
+			),
+			...(continuity?.decisions ?? []).flatMap((item) =>
+				item.type === "explicit" ? [{ summary: item.summary }] : [],
+			),
 		],
 		(item) => item.summary,
 	);
-	const goalEvidence = extraction.mainGoal ?? continuity?.goal ?? null;
+	return {
+		unresolved,
+		resolved,
+		constraints,
+		decisions,
+		goal: extraction.mainGoal ?? continuity?.goal ?? null,
+	};
+}
 
-	const requiredSections: Array<{
-		kind: "goal" | "progress" | "critical-context";
-		penalty: number;
-	}> = [
+function verifyRequiredSections(
+	parsed: CanonicalSummary,
+	accumulator: VerificationAccumulator,
+): void {
+	const required = [
 		{ kind: "goal", penalty: 5 },
 		{ kind: "progress", penalty: 5 },
 		{ kind: "critical-context", penalty: 3 },
-	];
-	for (const req of requiredSections) {
-		if (!findSection(parsed, req.kind)) {
-			gaps.push({ kind: "missing-section", section: req.kind });
-			score -= req.penalty;
+	] as const;
+	for (const item of required) {
+		if (!findSection(parsed, item.kind)) {
+			addGap(
+				accumulator,
+				{ kind: "missing-section", section: item.kind },
+				item.penalty,
+			);
 		}
 	}
+}
 
-	const modifiedPaths = extraction.modifiedFiles.map((file) => file.path);
-	const readPaths = extraction.readFiles;
-	const deletedEvidence = Array.from(
+function verifyPathCoverage(
+	parsed: CanonicalSummary,
+	extraction: StructuredExtraction,
+	continuity: CompactionState | null,
+	evidence: VerificationEvidence,
+	accumulator: VerificationAccumulator,
+): PathVerificationData {
+	const modified = extraction.modifiedFiles.map((file) => file.path);
+	const read = extraction.readFiles;
+	const deleted = Array.from(
 		new Set([...extraction.deletedFiles, ...(continuity?.deletedFiles ?? [])]),
 	);
-	const requiredPaths = [...modifiedPaths, ...readPaths, ...deletedEvidence];
-	const expectedPathSet = new Set(requiredPaths);
-	const pathEvidence = buildSummaryPathEvidence(
-		requiredPaths,
+	const required = [...modified, ...read, ...deleted];
+	const expected = new Set(required);
+	const rendered = buildSummaryPathEvidence(
+		required,
 		evidence.summaryBudgetTokens,
 	);
-	const normalizedOwnerSets = new Map<string, Set<string>>();
-	for (const file of requiredPaths) {
-		const display = pathEvidence.get(file);
+	const ownerSets = new Map<string, Set<string>>();
+	for (const file of required) {
+		const display = rendered.get(file);
 		for (const candidate of [
 			file,
 			...(display ? [decodePathDisplay(display)] : []),
 		]) {
 			const normalized = normalizePath(candidate);
-			const owners = normalizedOwnerSets.get(normalized) ?? new Set<string>();
+			const owners = ownerSets.get(normalized) ?? new Set<string>();
 			owners.add(file);
-			normalizedOwnerSets.set(normalized, owners);
+			ownerSets.set(normalized, owners);
 		}
 	}
-	const normalizedOwners = new Map(
-		Array.from(normalizedOwnerSets, ([path, owners]) => [path, owners.size]),
+	const ownerCounts = new Map(
+		Array.from(ownerSets, ([file, owners]) => [file, owners.size]),
 	);
-	const listedPaths = (
+	const listed = (
 		kind: "files-modified" | "files-read" | "files-deleted",
 	): ListedPathEvidence =>
-		collectListedPaths(findSection(parsed, kind)?.body ?? "", expectedPathSet);
-	const modifiedListed = listedPaths("files-modified");
-	const readListed = listedPaths("files-read");
-	const deletedListed = listedPaths("files-deleted");
-	for (const file of modifiedPaths) {
-		const display = pathEvidence.get(file);
-		if (
-			display &&
-			!hasListedPath(modifiedListed, file, display, normalizedOwners)
-		) {
-			gaps.push({ kind: "missing-file", path: file });
+		collectListedPaths(findSection(parsed, kind)?.body ?? "", expected);
+	const modifiedListed = listed("files-modified");
+	const readListed = listed("files-read");
+	const deletedListed = listed("files-deleted");
+	for (const file of modified) {
+		const display = rendered.get(file);
+		if (display && !hasListedPath(modifiedListed, file, display, ownerCounts)) {
+			addGap(accumulator, { kind: "missing-file", path: file }, 5);
 		}
 	}
-	for (const file of readPaths) {
-		const display = pathEvidence.get(file);
-		if (display && !hasListedPath(readListed, file, display, normalizedOwners)) {
-			gaps.push({ kind: "missing-read-file", path: file });
+	for (const file of read) {
+		const display = rendered.get(file);
+		if (display && !hasListedPath(readListed, file, display, ownerCounts)) {
+			addGap(accumulator, { kind: "missing-read-file", path: file }, 5);
 		}
 	}
-	for (const file of deletedEvidence) {
-		const display = pathEvidence.get(file);
-		if (
-			display &&
-			!hasListedPath(deletedListed, file, display, normalizedOwners)
-		) {
-			gaps.push({ kind: "missing-deleted-file", path: file });
+	for (const file of deleted) {
+		const display = rendered.get(file);
+		if (display && !hasListedPath(deletedListed, file, display, ownerCounts)) {
+			addGap(accumulator, { kind: "missing-deleted-file", path: file }, 5);
 		}
 	}
-	score -=
-		gaps.filter(
-			(gap) =>
-				gap.kind === "missing-file" ||
-				gap.kind === "missing-read-file" ||
-				gap.kind === "missing-deleted-file",
-		).length * 5;
+	return { modified, read, deleted, rendered };
+}
 
-	for (const error of unresolvedEvidence) {
+function verifyErrorEvidence(
+	normalizedSummary: string,
+	collected: CollectedVerificationEvidence,
+	accumulator: VerificationAccumulator,
+): void {
+	for (const error of collected.unresolved) {
 		const snippet = summaryEvidenceLine(error.message, TRUNC.ERROR_SNIPPET)
 			.toLowerCase()
 			.replace(/\\/g, "/");
 		if (snippet.length > 5 && !normalizedSummary.includes(snippet)) {
-			gaps.push({ kind: "missing-error", message: error.message });
-			score -= 5;
+			addGap(accumulator, { kind: "missing-error", message: error.message }, 5);
 		}
 	}
-	for (const error of resolvedEvidence) {
+	for (const error of collected.resolved) {
 		const snippet = summaryEvidenceLine(error.message, TRUNC.ERROR_SNIPPET)
 			.toLowerCase()
 			.replace(/\\/g, "/");
 		if (snippet.length > 5 && !normalizedSummary.includes(snippet)) {
-			gaps.push({
-				kind: "missing-error",
-				message: error.message,
-				resolved: true,
-			});
-			score -= 2;
+			addGap(
+				accumulator,
+				{ kind: "missing-error", message: error.message, resolved: true },
+				2,
+			);
 		}
 	}
+}
 
+function verifySemanticCoverage(
+	parsed: CanonicalSummary,
+	collected: CollectedVerificationEvidence,
+	accumulator: VerificationAccumulator,
+): void {
 	const constraintTarget = [
 		findSection(parsed, "constraints")?.body ?? "",
 		findSection(parsed, "critical-context")?.body ?? "",
 	].join("\n");
-	for (const constraint of constraintEvidence) {
+	for (const constraint of collected.constraints) {
 		if (!hasSemanticEvidence(constraint.text, constraintTarget)) {
-			gaps.push({ kind: "missing-constraint", text: constraint.text });
-			score -= 8;
+			addGap(accumulator, { kind: "missing-constraint", text: constraint.text }, 8);
 		}
 		if (hasSemanticContradiction(constraint.text, constraintTarget)) {
-			gaps.push({
+			addGap(accumulator, {
 				kind: "inconsistency",
-				detail:
-					"semantic-contradiction: constraint contradicts " +
-					constraint.text.slice(0, TRUNC.SNIPPET),
-			});
-			score -= 20;
+				detail: "semantic-contradiction: constraint contradicts "
+					+ constraint.text.slice(0, TRUNC.SNIPPET),
+			}, 20);
 		}
 	}
-
-	if (goalEvidence) {
+	if (collected.goal) {
 		const goalTarget = findSection(parsed, "goal")?.body ?? "";
-		if (!hasSemanticEvidence(goalEvidence, goalTarget)) {
-			gaps.push({ kind: "missing-goal", goal: goalEvidence });
-			score -= 12;
+		if (!hasSemanticEvidence(collected.goal, goalTarget)) {
+			addGap(accumulator, { kind: "missing-goal", goal: collected.goal }, 12);
 		}
-		if (hasSemanticContradiction(goalEvidence, goalTarget)) {
-			gaps.push({
+		if (hasSemanticContradiction(collected.goal, goalTarget)) {
+			addGap(accumulator, {
 				kind: "inconsistency",
 				detail: "semantic-contradiction: goal polarity or condition changed",
-			});
-			score -= 20;
+			}, 20);
 		}
 	}
+	const decisionBody = findSection(parsed, "decisions")?.body ?? "";
+	for (const decision of collected.decisions) {
+		if (!hasSemanticEvidence(decision.summary, decisionBody)) {
+			addGap(accumulator, { kind: "missing-decision", summary: decision.summary }, 8);
+		}
+		if (hasSemanticContradiction(decision.summary, decisionBody)) {
+			addGap(accumulator, {
+				kind: "inconsistency",
+				detail: "semantic-contradiction: decision contradicts "
+					+ decision.summary.slice(0, TRUNC.SNIPPET),
+			}, 20);
+		}
+	}
+}
 
+function verifyFileReferences(
+	summary: string,
+	extraction: StructuredExtraction,
+	continuity: CompactionState | null,
+	evidence: VerificationEvidence,
+	collected: CollectedVerificationEvidence,
+	paths: PathVerificationData,
+	accumulator: VerificationAccumulator,
+): void {
 	const groundedEvidence = [
-		...unresolvedEvidence.map((item) => item.message),
-		...resolvedEvidence.map((item) => item.message),
-		...constraintEvidence.map((item) => item.text),
-		...decisionEvidence.map((item) => item.summary),
-		...(goalEvidence ? [goalEvidence] : []),
+		...collected.unresolved.map((item) => item.message),
+		...collected.resolved.map((item) => item.message),
+		...collected.constraints.map((item) => item.text),
+		...collected.decisions.map((item) => item.summary),
+		...(collected.goal ? [collected.goal] : []),
 		...extraction.lastUserMessages,
 		...extraction.timeline.map((item) => item.summary),
 		...extraction.topics.map((item) => item.primaryFile ?? ""),
 		...(continuity?.openLoops.map((item) => item.summary) ?? []),
 		...(continuity?.criticalContext ?? []),
 	];
-	const groundedEvidenceFiles = groundedEvidence
+	const groundedFiles = groundedEvidence
 		.flatMap((value) => [
 			value,
 			summaryEvidenceLine(value, TRUNC.ERROR_SNIPPET),
@@ -1039,120 +1100,140 @@ export function verifySummary(
 			summaryEvidenceLine(value, TRUNC.MESSAGE),
 		])
 		.flatMap(extractFileRefs);
-	const renderedPathEvidence = Array.from(pathEvidence.values()).flatMap(
-		(line) => [
-			decodePathDisplay(line),
-			line.startsWith('"') && line.endsWith('"') ? line.slice(1, -1) : line,
-		],
-	);
-	const rawKnownFiles = Array.from(
-		new Set([
-			...modifiedPaths,
-			...readPaths,
-			...deletedEvidence,
-			...(extraction.referencedFiles ?? []),
-			...groundedEvidenceFiles,
-			...renderedPathEvidence,
-			...renderedPathEvidence.flatMap(extractFileRefs),
-			...(continuity?.modifiedFiles ?? []),
-			...(continuity?.readFiles ?? []),
-			...(continuity?.unresolvedErrors ?? []).flatMap((error) => error.files),
-			...(continuity?.openLoops ?? []).flatMap((loop) => loop.files),
-		]),
-	);
+	const renderedPaths = Array.from(paths.rendered.values()).flatMap((line) => [
+		decodePathDisplay(line),
+		line.startsWith('"') && line.endsWith('"') ? line.slice(1, -1) : line,
+	]);
+	const knownFiles = Array.from(new Set([
+		...paths.modified,
+		...paths.read,
+		...paths.deleted,
+		...(extraction.referencedFiles ?? []),
+		...groundedFiles,
+		...renderedPaths,
+		...renderedPaths.flatMap(extractFileRefs),
+		...(continuity?.modifiedFiles ?? []),
+		...(continuity?.readFiles ?? []),
+		...(continuity?.unresolvedErrors ?? []).flatMap((error) => error.files),
+		...(continuity?.openLoops ?? []).flatMap((loop) => loop.files),
+	]));
 	for (const ref of new Set(extractFileRefs(summary))) {
-		const grounded =
-			isKnownPathReference(ref, rawKnownFiles) ||
-			Boolean(
-				evidence.sourceMessages &&
-					sourceSupportsFileReference(ref, evidence.sourceMessages),
-			);
-		if (!grounded) {
-			gaps.push({ kind: "fabricated-file", ref });
-			score -= 4;
-		}
+		const grounded = isKnownPathReference(ref, knownFiles)
+			|| Boolean(evidence.sourceMessages
+				&& sourceSupportsFileReference(ref, evidence.sourceMessages));
+		if (!grounded) addGap(accumulator, { kind: "fabricated-file", ref }, 4);
 	}
+}
 
-	const progressSection = findSection(parsed, "progress");
-	if (progressSection) {
-		const doneSection =
-			progressSection.body.match(/###\s*Done[\s\S]*?(?=###|$)/i)?.[0] ?? "";
-		const blockedSection =
-			progressSection.body.match(/###\s*Blocked[\s\S]*?(?=###|$)/i)?.[0] ?? "";
-		const blockedLines = blockedSection.split(/\r?\n/).slice(1);
-		if (
-			unresolvedEvidence.length > 0 &&
-			noneBlockerLineIndexes(blockedLines).size > 0
-		) {
-			gaps.push({
+function verifyProgressConsistency(
+	parsed: CanonicalSummary,
+	extraction: StructuredExtraction,
+	collected: CollectedVerificationEvidence,
+	paths: PathVerificationData,
+	accumulator: VerificationAccumulator,
+): void {
+	const progress = findSection(parsed, "progress");
+	if (!progress) return;
+	const done = progress.body.match(/###\s*Done[\s\S]*?(?=###|$)/i)?.[0] ?? "";
+	const blocked = progress.body.match(/###\s*Blocked[\s\S]*?(?=###|$)/i)?.[0] ?? "";
+	if (collected.unresolved.length > 0
+		&& noneBlockerLineIndexes(blocked.split(/\r?\n/).slice(1)).size > 0) {
+		addGap(accumulator, {
+			kind: "inconsistency",
+			detail: "blocked-none: Blocked says none despite unresolved errors",
+		}, 12);
+	}
+	const doneRefs = new Set(extractFileRefs(done).map(normalizePath));
+	for (const file of extraction.modifiedFiles) {
+		const needles = buildUniquePathNeedles(file.path, paths.modified);
+		if (!needles.some((needle) => doneRefs.has(normalizePath(needle)))) continue;
+		const unresolved = collected.unresolved.find((error) => {
+			const firstLine = error.message.split(/\r?\n/, 1)[0] ?? "";
+			const refs = extractFileRefs(firstLine).map(normalizePath);
+			return needles.some((needle) => refs.includes(normalizePath(needle)));
+		});
+		if (unresolved) {
+			addGap(accumulator, {
 				kind: "inconsistency",
-				detail: "blocked-none: Blocked says none despite unresolved errors",
-			});
-			score -= 12;
-		}
-		const doneRefs = new Set(extractFileRefs(doneSection).map(normalizePath));
-		for (const file of extraction.modifiedFiles) {
-			const uniqueNeedles = buildUniquePathNeedles(file.path, modifiedPaths);
-			if (!uniqueNeedles.some((needle) => doneRefs.has(normalizePath(needle))))
-				continue;
-			const unresolved = unresolvedEvidence.find((error) => {
-				const firstLine = error.message.split(/\r?\n/, 1)[0] ?? "";
-				const errorRefs = extractFileRefs(firstLine).map(normalizePath);
-				return uniqueNeedles.some((needle) =>
-					errorRefs.includes(normalizePath(needle)),
-				);
-			});
-			if (unresolved) {
-				gaps.push({
-					kind: "inconsistency",
-					detail: file.path + " marked Done but has unresolved error",
-				});
-				score -= 5;
-			}
+				detail: file.path + " marked Done but has unresolved error",
+			}, 5);
 		}
 	}
+}
 
-	const decisionBody = findSection(parsed, "decisions")?.body ?? "";
-	for (const decision of decisionEvidence) {
-		if (!hasSemanticEvidence(decision.summary, decisionBody)) {
-			gaps.push({ kind: "missing-decision", summary: decision.summary });
-			score -= 8;
-		}
-		if (hasSemanticContradiction(decision.summary, decisionBody)) {
-			gaps.push({
-				kind: "inconsistency",
-				detail:
-					"semantic-contradiction: decision contradicts " +
-					decision.summary.slice(0, TRUNC.SNIPPET),
-			});
-			score -= 20;
+function verifyOpenLoopsAndClaims(
+	summary: string,
+	parsed: CanonicalSummary,
+	extraction: StructuredExtraction,
+	continuity: CompactionState | null,
+	evidence: VerificationEvidence,
+	collected: CollectedVerificationEvidence,
+	accumulator: VerificationAccumulator,
+): void {
+	const unresolvedCount = collected.unresolved.length
+		+ (continuity?.openLoops.filter((loop) => loop.status !== "resolved").length ?? 0);
+	if (unresolvedCount >= 1
+		&& !findSection(parsed, "open-loops")
+		&& !summary.toLowerCase().replace(/\\/g, "/").includes("unresolved")) {
+		addGap(accumulator, { kind: "missing-open-loops", unresolvedCount }, 5);
+	}
+	if (!evidence.sourceMessages) return;
+	const tools = successfulToolEvidence(evidence.sourceMessages);
+	for (const claim of outcomeClaims(summary)) {
+		if (!successfulToolSupportsClaim(claim, tools, extraction)) {
+			addGap(accumulator, { kind: "unsupported-claim", claim }, 20);
 		}
 	}
+}
 
-	const unresolvedCount =
-		unresolvedEvidence.length +
-		(continuity?.openLoops.filter((loop) => loop.status !== "resolved").length ??
-			0);
-	if (
-		unresolvedCount >= 1 &&
-		!findSection(parsed, "open-loops") &&
-		!lower.includes("unresolved")
-	) {
-		gaps.push({ kind: "missing-open-loops", unresolvedCount });
-		score -= 5;
-	}
-	if (evidence.sourceMessages) {
-		const tools = successfulToolEvidence(evidence.sourceMessages);
-		for (const claim of outcomeClaims(summary)) {
-			if (!successfulToolSupportsClaim(claim, tools, extraction)) {
-				gaps.push({ kind: "unsupported-claim", claim });
-				score -= 20;
-			}
-		}
-	}
-
-	const finalScore = Math.max(0, score);
-	return { ok: gaps.length === 0 && finalScore >= 85, gaps, score: finalScore };
+export function verifySummary(
+	summary: string,
+	extraction: StructuredExtraction,
+	continuity: CompactionState | null = null,
+	evidence: VerificationEvidence = {},
+): VerificationResult {
+	const parsed = parseSummary(summary);
+	const accumulator: VerificationAccumulator = { gaps: [], score: 100 };
+	const collected = collectVerificationEvidence(extraction, continuity, evidence);
+	verifyRequiredSections(parsed, accumulator);
+	const paths = verifyPathCoverage(
+		parsed,
+		extraction,
+		continuity,
+		evidence,
+		accumulator,
+	);
+	verifyErrorEvidence(
+		summary.toLowerCase().replace(/\\/g, "/").replace(/\s+/g, " "),
+		collected,
+		accumulator,
+	);
+	verifySemanticCoverage(parsed, collected, accumulator);
+	verifyFileReferences(
+		summary,
+		extraction,
+		continuity,
+		evidence,
+		collected,
+		paths,
+		accumulator,
+	);
+	verifyProgressConsistency(parsed, extraction, collected, paths, accumulator);
+	verifyOpenLoopsAndClaims(
+		summary,
+		parsed,
+		extraction,
+		continuity,
+		evidence,
+		collected,
+		accumulator,
+	);
+	const score = Math.max(0, accumulator.score);
+	return {
+		ok: accumulator.gaps.length === 0 && score >= 85,
+		gaps: accumulator.gaps,
+		score,
+	};
 }
 
 /** Apply every safe, deterministic repair. Hallucination/inconsistency gaps stay visible for LLM/user review. */

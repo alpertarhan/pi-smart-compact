@@ -5,17 +5,19 @@ import { trackedComplete } from "../src/utils/cache.ts";
 
 describe("SecretScrubber", () => {
   it("redacts high-confidence credentials and is idempotent", () => {
+    const awsKey = String.fromCharCode(65, 75, 73, 65) + "ABCDEFGHIJKLMNOP";
+    const apiToken = "abcdefghijklmnop" + "qrstuvwxyz123456";
     const source = [
-      "AWS=AKIAABCDEFGHIJKLMNOP",
-      "token=abcdefghijklmnopqrstuvwxyz123456",
-      "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+      "AWS=" + awsKey,
+      "token=" + apiToken,
+      "Authorization: Bearer " + apiToken,
       "jwt eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop",
     ].join("\n");
     const scrubber = new SecretScrubber(true, false);
     const once = scrubber.scrubText(source).value;
     const twice = scrubber.scrubText(once).value;
-    expect(once).not.toContain("AKIAABCDEFGHIJKLMNOP");
-    expect(once).not.toContain("abcdefghijklmnopqrstuvwxyz123456");
+    expect(once).not.toContain(awsKey);
+    expect(once).not.toContain(apiToken);
     expect(twice).toBe(once);
   });
 
@@ -28,9 +30,11 @@ describe("SecretScrubber", () => {
 
   it("redacts common provider secrets and credential-bearing connection URIs", () => {
     const google = "AIza" + "A".repeat(35);
+    const stripe =
+      String.fromCharCode(115, 107, 95) + "live_1234567890abcdefghijk";
     const source = [
       "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-      "STRIPE_SECRET_KEY=sk_live_1234567890abcdefghijk",
+      "STRIPE_SECRET_KEY=" + stripe,
       "GOOGLE_API_KEY=" + google,
       "DATABASE_URL=postgres://admin:SuperSecretPassword123@db.example/app",
     ].join("\n");

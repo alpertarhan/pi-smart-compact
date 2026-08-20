@@ -176,11 +176,25 @@ function assertSuccessful(message: AssistantMessage): AssistantMessage {
   }
   return message;
 }
+export function resolveProviderWatchdogMs(
+  provider: string | undefined,
+  maxTokens: number | undefined,
+  configuredMs = 0,
+): number {
+  const multiplier =
+    provider && configuredMs <= 0
+      ? getProviderCaps(provider).timeoutMultiplier
+      : 1;
+  return Math.round(
+    resolveCodexWatchdogMs(maxTokens, configuredMs) * multiplier,
+  );
+}
+
 /** @internal Test seam for the transport deadline used by every provider. */
 export async function withProviderDeadline(
   opts: LlmCompleteOptions,
   invoke: (bounded: LlmCompleteOptions) => Promise<AssistantMessage>,
-  modelId?: string,
+  provider?: string,
 ): Promise<AssistantMessage> {
   if (opts.signal?.aborted)
     throw new Error("LLM request aborted before dispatch");
@@ -189,12 +203,10 @@ export async function withProviderDeadline(
   // (timeoutMultiplier > 1) were cut at the raw [15s, 90s] window and silently
   // degraded to deterministic fallback summaries. An explicitly configured
   // watchdog value is never scaled.
-  const multiplier =
-    modelId && !((opts.codexWatchdogMs ?? 0) > 0)
-      ? getProviderCaps(modelId).timeoutMultiplier
-      : 1;
-  const watchdogMs = Math.round(
-    resolveCodexWatchdogMs(opts.maxTokens, opts.codexWatchdogMs) * multiplier,
+  const watchdogMs = resolveProviderWatchdogMs(
+    provider,
+    opts.maxTokens,
+    opts.codexWatchdogMs,
   );
   const abort = Promise.withResolvers<never>();
   const abortFromCaller = () => {
@@ -303,7 +315,7 @@ export const rawLlmClient: LlmClient = {
             : await (await resolveCompleteSimple())(model, body, bounded);
         return assertSuccessful(response);
       },
-      model.id,
+      model.provider,
     );
   },
 };

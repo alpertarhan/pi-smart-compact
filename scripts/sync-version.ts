@@ -27,29 +27,48 @@ const root = resolve(here, "..");
 const pkgPath = resolve(root, "package.json");
 const constantsPath = resolve(root, "src/constants.ts");
 
-const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version: string };
-const version = pkg.version;
+let packageData: unknown;
+try {
+ packageData = JSON.parse(readFileSync(pkgPath, "utf-8"));
+} catch (error) {
+ console.error(
+  "sync-version: package.json is not valid JSON: " +
+   (error instanceof Error ? error.message : String(error)),
+ );
+ process.exit(1);
+}
+const version =
+ typeof packageData === "object" &&
+ packageData !== null &&
+ "version" in packageData
+  ? packageData.version
+  : undefined;
 if (typeof version !== "string" || !version) {
-  console.error("sync-version: package.json#version is missing or not a string");
-  process.exit(1);
+ console.error("sync-version: package.json#version is missing or not a string");
+ process.exit(1);
 }
 
 if (!isValidSemver(version)) {
-  console.error("sync-version: refusing to embed non-semver version literal: " + JSON.stringify(version));
-  process.exit(1);
+ console.error(
+  "sync-version: refusing to embed non-semver version literal: " +
+   JSON.stringify(version),
+ );
+ process.exit(1);
 }
 
 const src = readFileSync(constantsPath, "utf-8");
 const { found, changed, result } = rewriteVersionLiteral(src, version);
 
 if (!found) {
-  console.error("sync-version: could not locate the `export const VERSION = \"...\";` line in src/constants.ts");
-  process.exit(1);
+ console.error(
+  'sync-version: could not locate the `export const VERSION = "...";` line in src/constants.ts',
+ );
+ process.exit(1);
 }
 
 if (changed) {
-  writeFileSync(constantsPath, result);
-  console.log(`sync-version: updated src/constants.ts to ${version}`);
+ writeFileSync(constantsPath, result);
+ console.log(`sync-version: updated src/constants.ts to ${version}`);
 } else {
-  console.log(`sync-version: already in sync at ${version}`);
+ console.log(`sync-version: already in sync at ${version}`);
 }

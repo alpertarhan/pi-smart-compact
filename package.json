@@ -1,6 +1,6 @@
 {
   "name": "pi-smart-compact",
-  "version": "9.3.1",
+  "version": "9.4.0-rc.0",
   "description": "Verification-oriented smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification, metrics, and safety checks.",
   "packageManager": "bun@1.3.14",
   "engines": {
@@ -59,11 +59,13 @@
     "compat:pi": "bun run scripts/check-pi-compat.ts",
     "release:audit": "bun run scripts/release-audit.ts",
     "release:check": "bun run typecheck && bun test && bun run gate && bun run bench && bun run build && bun run release:audit && bun run compat:pi latest",
-    "typecheck": "bun x tsc --noEmit && bun x tsc -p tsconfig.scripts.json",
+    "typecheck": "bun x tsc --noEmit && bun x tsc -p tsconfig.scripts.json && bun x tsc -p tsconfig.test.json && bun x tsc -p bench/tsconfig.json",
     "prepublishOnly": "bun run release:check"
   },
   "pi": {
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/main/docs/assets/pi-smart-compact.png"
   },
   "peerDependencies": {
@@ -73,6 +75,7 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.14",
     "@types/node": "^26.1.2",
     "typescript": "^7.0.2"
   },

@@ -7,7 +7,7 @@ export interface SmartCompactInput {
   mode?: CompactionMode;
   verbose: boolean;
   dryRun: boolean;
-  action?: "metrics" | "dashboard" | "restore" | "loops";
+  action?: "metrics" | "dashboard" | "restore" | "loops" | "settings";
   focus?: string;
   note?: string;
   maxLlmCalls?: number;
@@ -27,7 +27,7 @@ interface Token {
 function tokenize(input: string): Token[] {
   const tokens: Token[] = [];
   let value = "";
-  let quote: "'" | "\"" | null = null;
+  let quote: "'" | '"' | null = null;
   let started = false;
   for (let index = 0; index <= input.length; index++) {
     const char = input[index];
@@ -42,7 +42,7 @@ function tokenize(input: string): Token[] {
       value += input[++index];
       continue;
     }
-    if (char === "'" || char === "\"") {
+    if (char === "'" || char === '"') {
       if (!quote) quote = char;
       else if (quote === char) quote = null;
       else value += char;
@@ -57,18 +57,64 @@ function validateBudgets(
   maxCalls: unknown,
   maxInputTokens: unknown,
   maxLatencyMs: unknown,
-): SmartCompactInputResult | Pick<SmartCompactInput, "maxLlmCalls" | "maxLlmInputTokens" | "timeoutMs"> {
-  const maxLlmCalls = maxCalls == null || maxCalls === "" ? undefined : Number(maxCalls);
-  if (maxLlmCalls !== undefined && (!Number.isInteger(maxLlmCalls) || maxLlmCalls < BUDGET_LIMITS.CALLS.min || maxLlmCalls > BUDGET_LIMITS.CALLS.max)) {
-    return { ok: false, error: "--max-calls must be an integer from " + BUDGET_LIMITS.CALLS.min + " to " + BUDGET_LIMITS.CALLS.max };
+):
+  | SmartCompactInputResult
+  | Pick<SmartCompactInput, "maxLlmCalls" | "maxLlmInputTokens" | "timeoutMs"> {
+  const maxLlmCalls =
+    maxCalls == null || maxCalls === "" ? undefined : Number(maxCalls);
+  if (
+    maxLlmCalls !== undefined &&
+    (!Number.isInteger(maxLlmCalls) ||
+      maxLlmCalls < BUDGET_LIMITS.CALLS.min ||
+      maxLlmCalls > BUDGET_LIMITS.CALLS.max)
+  ) {
+    return {
+      ok: false,
+      error:
+        "--max-calls must be an integer from " +
+        BUDGET_LIMITS.CALLS.min +
+        " to " +
+        BUDGET_LIMITS.CALLS.max,
+    };
   }
-  const maxLlmInputTokens = maxInputTokens == null || maxInputTokens === "" ? undefined : Number(maxInputTokens);
-  if (maxLlmInputTokens !== undefined && (!Number.isInteger(maxLlmInputTokens) || maxLlmInputTokens < BUDGET_LIMITS.INPUT_TOKENS.min || maxLlmInputTokens > BUDGET_LIMITS.INPUT_TOKENS.max)) {
-    return { ok: false, error: "--max-input-tokens must be an integer from " + BUDGET_LIMITS.INPUT_TOKENS.min + " to " + BUDGET_LIMITS.INPUT_TOKENS.max };
+  const maxLlmInputTokens =
+    maxInputTokens == null || maxInputTokens === ""
+      ? undefined
+      : Number(maxInputTokens);
+  if (
+    maxLlmInputTokens !== undefined &&
+    (!Number.isInteger(maxLlmInputTokens) ||
+      maxLlmInputTokens < BUDGET_LIMITS.INPUT_TOKENS.min ||
+      maxLlmInputTokens > BUDGET_LIMITS.INPUT_TOKENS.max)
+  ) {
+    return {
+      ok: false,
+      error:
+        "--max-input-tokens must be an integer from " +
+        BUDGET_LIMITS.INPUT_TOKENS.min +
+        " to " +
+        BUDGET_LIMITS.INPUT_TOKENS.max,
+    };
   }
-  const timeoutMs = maxLatencyMs == null || maxLatencyMs === "" ? undefined : Number(maxLatencyMs);
-  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < BUDGET_LIMITS.LATENCY_MS.min || timeoutMs > BUDGET_LIMITS.LATENCY_MS.max)) {
-    return { ok: false, error: "--max-latency must be " + BUDGET_LIMITS.LATENCY_MS.min + "–" + BUDGET_LIMITS.LATENCY_MS.max + " ms" };
+  const timeoutMs =
+    maxLatencyMs == null || maxLatencyMs === ""
+      ? undefined
+      : Number(maxLatencyMs);
+  if (
+    timeoutMs !== undefined &&
+    (!Number.isFinite(timeoutMs) ||
+      timeoutMs < BUDGET_LIMITS.LATENCY_MS.min ||
+      timeoutMs > BUDGET_LIMITS.LATENCY_MS.max)
+  ) {
+    return {
+      ok: false,
+      error:
+        "--max-latency must be " +
+        BUDGET_LIMITS.LATENCY_MS.min +
+        "–" +
+        BUDGET_LIMITS.LATENCY_MS.max +
+        " ms",
+    };
   }
   return { maxLlmCalls, maxLlmInputTokens, timeoutMs };
 }
@@ -78,6 +124,7 @@ const ACTIONS: Record<string, SmartCompactInput["action"]> = {
   dashboard: "dashboard",
   restore: "restore",
   loops: "loops",
+  settings: "settings",
 };
 
 const MODES: Record<string, CompactionMode | "light"> = {
@@ -127,7 +174,8 @@ export function parseSmartCompactCommand(
       maxLatency = token.value.slice(14);
       continue;
     }
-    if (token.value.startsWith("--")) return { ok: false, error: "Unknown option: " + token.value };
+    if (token.value.startsWith("--"))
+      return { ok: false, error: "Unknown option: " + token.value };
     positional.push(token.value);
     if (index === tokens.length - 1) break;
   }
@@ -155,29 +203,43 @@ export function parseSmartCompactCommand(
     cursor++;
   }
 
-  const note = explicitNote ?? (positional.slice(cursor).join(" ").trim() || undefined);
+  const note =
+    explicitNote ?? (positional.slice(cursor).join(" ").trim() || undefined);
   return {
     ok: true,
     value: { modelArg, mode, verbose, dryRun, action, focus, note, ...budgets },
   };
 }
 
-export function parseSmartCompactTool(params: Record<string, unknown>): SmartCompactInputResult {
+export function parseSmartCompactTool(
+  params: Record<string, unknown>,
+): SmartCompactInputResult {
   let mode: CompactionMode | undefined;
   if (params.mode != null) {
     const raw = String(params.mode).toLowerCase();
     const parsed = MODES[raw];
-    if (!parsed || parsed === "light") return { ok: false, error: "mode must be auto, fast, balanced, or thorough" };
+    if (!parsed || parsed === "light")
+      return {
+        ok: false,
+        error: "mode must be auto, fast, balanced, or thorough",
+      };
     mode = parsed;
   }
   if (params.profile != null) {
     const profile = String(params.profile) as CompressionProfile;
     if (!(["light", "balanced", "aggressive"] as string[]).includes(profile)) {
-      return { ok: false, error: "profile must be light, balanced, or aggressive" };
+      return {
+        ok: false,
+        error: "profile must be light, balanced, or aggressive",
+      };
     }
     mode ??= modeFromLegacyProfile(profile);
   }
-  const budgets = validateBudgets(params.max_calls, params.max_input_tokens, params.max_latency_ms);
+  const budgets = validateBudgets(
+    params.max_calls,
+    params.max_input_tokens,
+    params.max_latency_ms,
+  );
   if ("ok" in budgets) return budgets;
   return {
     ok: true,
@@ -185,8 +247,16 @@ export function parseSmartCompactTool(params: Record<string, unknown>): SmartCom
       mode,
       verbose: params.verbose === true,
       dryRun: params.dry_run === true,
-      action: params.dashboard === true ? "dashboard" : params.report === true ? "metrics" : undefined,
-      focus: typeof params.focus === "string" ? params.focus.trim() || undefined : undefined,
+      action:
+        params.dashboard === true
+          ? "dashboard"
+          : params.report === true
+            ? "metrics"
+            : undefined,
+      focus:
+        typeof params.focus === "string"
+          ? params.focus.trim() || undefined
+          : undefined,
       ...budgets,
     },
   };

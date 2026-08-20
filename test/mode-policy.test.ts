@@ -23,16 +23,16 @@ describe("compaction mode policy", () => {
 
   it("scores deterministic extraction confidence conservatively", () => {
     expect(deterministicExtractionConfidence(extraction({
-      modifiedFiles: [{ path: "src/a.ts", operations: ["edit"] }],
+      modifiedFiles: [{ path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 1 }],
       lastUserMessages: ["finish the task"],
     }))).toBeGreaterThanOrEqual(0.85);
     expect(deterministicExtractionConfidence(extraction({
-      modifiedFiles: [{ path: "src/a.ts", operations: ["edit"] }],
+      modifiedFiles: [{ path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 1 }],
       lastUserMessages: ["finish"],
       messageCount: 500,
     }))).toBeLessThan(0.85);
     expect(deterministicExtractionConfidence(extraction({
-      modifiedFiles: [{ path: "src/a.ts", operations: ["edit"] }],
+      modifiedFiles: [{ path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 1 }],
       lastUserMessages: ["finish"],
       messageCount: 20,
     }), { conversationTokens: 180_000, toolPercent: 85 })).toBeLessThan(0.85);

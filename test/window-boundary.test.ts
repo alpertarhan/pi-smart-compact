@@ -158,7 +158,6 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       mode: "thorough",
       profileCfg: rc.profileCfg,
       force: true,
-      overflowedContext: false,
     });
 
     expect(plan.hardBoundaryAdjusted).toBeTrue();
@@ -206,7 +205,6 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       mode: "thorough",
       profileCfg: rc.profileCfg,
       force: true,
-      overflowedContext: false,
     });
 
     expect(plan.keepFrom).toBe(5);
@@ -237,7 +235,6 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       mode: "thorough",
       profileCfg: rc.profileCfg,
       force: true,
-      overflowedContext: false,
     });
 
     expect(plan.viable).toBeFalse();
@@ -449,7 +446,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const plan = planCompactionWindow({
       msgs: branch, branch, messageTokens: [49_492, 20_008, 500], totalTokens: 70_000,
       modelContextWindow: 70_020, mode: "balanced", profileCfg,
-      force: false, overflowedContext: false,
+      force: false,
     });
 
     expect(plan.targetAfterTokens).toBe(28_008);
@@ -483,7 +480,6 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       mode: "balanced",
       profileCfg,
       force: true,
-      overflowedContext: false,
       finalSummaryAllowanceTokens: allowance,
     });
     expect(allowance).toBeGreaterThan(
@@ -652,7 +648,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const plan = planCompactionWindow({
       msgs, branch: msgs, messageTokens: [10_000, 10_000, 10_000, 10_000, 10_000],
       totalTokens: 150_000, modelContextWindow: 128_000, mode: "fast", profileCfg,
-      force: false, overflowedContext: true,
+      force: false,
     });
 
     expect(plan.fixedContextTokens).toBe(100_000);

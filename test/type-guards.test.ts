@@ -10,7 +10,9 @@ import {
 import type { SmartCompactDetails } from "../src/types.ts";
 
 /** A fully-populated details object that passes the validator. */
-function validDetails(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+function validDetails(
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
   return {
     method: "eesv",
     chunkCount: 3,
@@ -58,8 +60,17 @@ describe("isTextBlock", () => {
 
 describe("isToolCallBlock", () => {
   it("accepts a well-formed tool call block", () => {
-    expect(isToolCallBlock({ type: "toolCall", name: "write", arguments: {} })).toBe(true);
-    expect(isToolCallBlock({ type: "toolCall", id: "1", name: "edit", arguments: { x: 1 } })).toBe(true);
+    expect(
+      isToolCallBlock({ type: "toolCall", name: "write", arguments: {} }),
+    ).toBe(true);
+    expect(
+      isToolCallBlock({
+        type: "toolCall",
+        id: "1",
+        name: "edit",
+        arguments: { x: 1 },
+      }),
+    ).toBe(true);
   });
   it("rejects non-object input", () => {
     expect(isToolCallBlock(null)).toBe(false);
@@ -70,7 +81,9 @@ describe("isToolCallBlock", () => {
   });
   it("rejects when name is not a string", () => {
     expect(isToolCallBlock({ type: "toolCall", arguments: {} })).toBe(false);
-    expect(isToolCallBlock({ type: "toolCall", name: 5, arguments: {} })).toBe(false);
+    expect(isToolCallBlock({ type: "toolCall", name: 5, arguments: {} })).toBe(
+      false,
+    );
   });
 });
 
@@ -108,19 +121,25 @@ describe("isValidSmartCompactDetails", () => {
     expect(isValidSmartCompactDetails(validDetails())).toBe(true);
   });
   it("accepts a minimal object (only required fields)", () => {
-    expect(isValidSmartCompactDetails({
-      method: "heuristic",
-      profile: "aggressive",
-      qualityScore: 50,
-      totalMessages: 10,
-      modifiedFiles: [],
-      readFiles: [],
-      topics: [],
-    })).toBe(true);
+    expect(
+      isValidSmartCompactDetails({
+        method: "heuristic",
+        profile: "aggressive",
+        qualityScore: 50,
+        totalMessages: 10,
+        modifiedFiles: [],
+        readFiles: [],
+        topics: [],
+      }),
+    ).toBe(true);
   });
   it("accepts backupPath as null or string", () => {
-    expect(isValidSmartCompactDetails(validDetails({ backupPath: null }))).toBe(true);
-    expect(isValidSmartCompactDetails(validDetails({ backupPath: "/tmp/x.md" }))).toBe(true);
+    expect(isValidSmartCompactDetails(validDetails({ backupPath: null }))).toBe(
+      true,
+    );
+    expect(
+      isValidSmartCompactDetails(validDetails({ backupPath: "/tmp/x.md" })),
+    ).toBe(true);
   });
 
   // Non-object rejection
@@ -134,87 +153,183 @@ describe("isValidSmartCompactDetails", () => {
 
   // Required string-array fields (detectDamage iterates these → crash risk)
   it("rejects missing/non-array modifiedFiles", () => {
-    expect(isValidSmartCompactDetails(validDetails({ modifiedFiles: undefined }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ modifiedFiles: "a.ts" }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ modifiedFiles: [1, 2] }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ modifiedFiles: undefined })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ modifiedFiles: "a.ts" })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ modifiedFiles: [1, 2] })),
+    ).toBe(false);
   });
   it("rejects missing/non-array readFiles", () => {
-    expect(isValidSmartCompactDetails(validDetails({ readFiles: undefined }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ readFiles: {} }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ readFiles: undefined })),
+    ).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ readFiles: {} }))).toBe(
+      false,
+    );
   });
   it("rejects missing/non-array topics", () => {
-    expect(isValidSmartCompactDetails(validDetails({ topics: undefined }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ topics: [42] }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ topics: undefined })),
+    ).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ topics: [42] }))).toBe(
+      false,
+    );
   });
 
   // Enum fields
   it("rejects unknown / non-string method", () => {
-    expect(isValidSmartCompactDetails(validDetails({ method: "magic" }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ method: "magic" }))).toBe(
+      false,
+    );
     expect(isValidSmartCompactDetails(validDetails({ method: 5 }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ method: undefined }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ method: undefined })),
+    ).toBe(false);
   });
   it("rejects unknown / non-string profile", () => {
-    expect(isValidSmartCompactDetails(validDetails({ profile: "turbo" }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ profile: null }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ profile: "turbo" }))).toBe(
+      false,
+    );
+    expect(isValidSmartCompactDetails(validDetails({ profile: null }))).toBe(
+      false,
+    );
   });
 
   // Numeric fields
   it("rejects missing / NaN / Infinity qualityScore", () => {
-    expect(isValidSmartCompactDetails(validDetails({ qualityScore: undefined }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ qualityScore: NaN }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ qualityScore: Infinity }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ qualityScore: "90" }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ qualityScore: undefined })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ qualityScore: NaN })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ qualityScore: Infinity })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ qualityScore: "90" })),
+    ).toBe(false);
   });
   it("rejects missing, non-finite, or negative token/count fields", () => {
-    expect(isValidSmartCompactDetails(validDetails({ totalMessages: undefined }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ totalMessages: NaN }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ totalMessages: undefined })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ totalMessages: NaN })),
+    ).toBe(false);
     for (const field of [
-      "chunkCount", "totalMessages", "totalTokensSummarized", "llmCalls", "tokensSaved",
-      "explorationRounds", "explorationBoundaries", "tokensBefore", "plannedAfterTokens",
-      "plannedSavedTokens", "estimatedAfterTokens", "estimatedSavedTokens", "retainedTailTokens",
-      "summaryTokens", "summaryBudgetTokens", "targetAfterTokens",
-    ]) expect(isValidSmartCompactDetails(validDetails({ [field]: -1 }))).toBe(false);
+      "chunkCount",
+      "totalMessages",
+      "totalTokensSummarized",
+      "llmCalls",
+      "tokensSaved",
+      "explorationRounds",
+      "explorationBoundaries",
+      "tokensBefore",
+      "plannedAfterTokens",
+      "plannedSavedTokens",
+      "estimatedAfterTokens",
+      "estimatedSavedTokens",
+      "retainedTailTokens",
+      "summaryTokens",
+      "summaryBudgetTokens",
+      "targetAfterTokens",
+    ])
+      expect(isValidSmartCompactDetails(validDetails({ [field]: -1 }))).toBe(
+        false,
+      );
   });
   it("rejects yields outside [0,1]", () => {
-    expect(isValidSmartCompactDetails(validDetails({ plannedYield: -0.01 }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ plannedYield: 1.01 }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ estimatedYield: Infinity }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ estimatedYield: 1 }))).toBe(true);
+    expect(
+      isValidSmartCompactDetails(validDetails({ plannedYield: -0.01 })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ plannedYield: 1.01 })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ estimatedYield: Infinity })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ estimatedYield: 1 })),
+    ).toBe(true);
   });
 
   // Optional-but-typed fields: present-and-wrong-type must reject
   it("rejects present-but-wrong-type gaps", () => {
-    expect(isValidSmartCompactDetails(validDetails({ gaps: "not-array" }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ gaps: [1, 2] }))).toBe(false);
+    expect(
+      isValidSmartCompactDetails(validDetails({ gaps: "not-array" })),
+    ).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ gaps: [1, 2] }))).toBe(
+      false,
+    );
     // missing gaps is fine
-    const { gaps: _drop, ...withoutGaps } = validDetails() as Record<string, unknown>;
+    const { gaps: _drop, ...withoutGaps } = validDetails() as Record<
+      string,
+      unknown
+    >;
     expect(isValidSmartCompactDetails(withoutGaps)).toBe(true);
   });
   it("rejects present-but-non-boolean verified", () => {
-    expect(isValidSmartCompactDetails(validDetails({ verified: "yes" }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ verified: 1 }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ verified: "yes" }))).toBe(
+      false,
+    );
+    expect(isValidSmartCompactDetails(validDetails({ verified: 1 }))).toBe(
+      false,
+    );
   });
   it("rejects present-but-non-string non-null backupPath", () => {
-    expect(isValidSmartCompactDetails(validDetails({ backupPath: 42 }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ backupPath: false }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ backupPath: 42 }))).toBe(
+      false,
+    );
+    expect(
+      isValidSmartCompactDetails(validDetails({ backupPath: false })),
+    ).toBe(false);
   });
   it("accepts only concrete effective modes when mode is present", () => {
-    expect(isValidSmartCompactDetails(validDetails({ mode: "fast" }))).toBe(true);
-    expect(isValidSmartCompactDetails(validDetails({ mode: "auto" }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ mode: "turbo" }))).toBe(false);
+    expect(isValidSmartCompactDetails(validDetails({ mode: "fast" }))).toBe(
+      true,
+    );
+    expect(isValidSmartCompactDetails(validDetails({ mode: "auto" }))).toBe(
+      false,
+    );
+    expect(isValidSmartCompactDetails(validDetails({ mode: "turbo" }))).toBe(
+      false,
+    );
   });
   it("validates optional stage provider routes", () => {
-    expect(isValidSmartCompactDetails(validDetails({ releaseChannel: "preview" }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ releaseChannel: "canary", version: "8.0.0" }))).toBe(true);
-    expect(isValidSmartCompactDetails(validDetails({ providerRoutes: { explore: "a", synthesize: "b", verify: 42 } }))).toBe(false);
-    expect(isValidSmartCompactDetails(validDetails({ providerRoutes: { explore: "a", synthesize: "b", verify: "c" } }))).toBe(true);
+    expect(
+      isValidSmartCompactDetails(validDetails({ releaseChannel: "preview" })),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(
+        validDetails({ releaseChannel: "canary", version: "8.0.0" }),
+      ),
+    ).toBe(true);
+    expect(
+      isValidSmartCompactDetails(
+        validDetails({
+          providerRoutes: { explore: "a", synthesize: "b", verify: 42 },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isValidSmartCompactDetails(
+        validDetails({
+          providerRoutes: { explore: "a", synthesize: "b", verify: "c" },
+        }),
+      ),
+    ).toBe(true);
   });
 });
 
 describe("sanitizeSmartCompactDetails", () => {
   it("passes a valid object through unchanged (same reference)", () => {
     const d = validDetails();
-    expect(sanitizeSmartCompactDetails(d)).toBe(d);
+    expect(Object.is(sanitizeSmartCompactDetails(d), d)).toBe(true);
   });
   it("returns null for null / primitives / arrays", () => {
     expect(sanitizeSmartCompactDetails(null)).toBe(null);
@@ -224,9 +339,23 @@ describe("sanitizeSmartCompactDetails", () => {
     expect(sanitizeSmartCompactDetails([])).toBe(null);
   });
   it("returns null when the required string arrays are absent", () => {
-    expect(sanitizeSmartCompactDetails({ method: "eesv", profile: "balanced" })).toBe(null);
-    expect(sanitizeSmartCompactDetails({ modifiedFiles: "a.ts", readFiles: [], topics: [] })).toBe(null);
-    expect(sanitizeSmartCompactDetails({ modifiedFiles: [1], readFiles: [], topics: [] })).toBe(null);
+    expect(
+      sanitizeSmartCompactDetails({ method: "eesv", profile: "balanced" }),
+    ).toBe(null);
+    expect(
+      sanitizeSmartCompactDetails({
+        modifiedFiles: "a.ts",
+        readFiles: [],
+        topics: [],
+      }),
+    ).toBe(null);
+    expect(
+      sanitizeSmartCompactDetails({
+        modifiedFiles: [1],
+        readFiles: [],
+        topics: [],
+      }),
+    ).toBe(null);
   });
 
   it("repairs a legacy entry: arrays present, enums/numbers missing → safe defaults", () => {
@@ -236,7 +365,9 @@ describe("sanitizeSmartCompactDetails", () => {
       topics: ["auth"],
       // method/profile/qualityScore/totalMessages all missing
     };
-    const repaired = sanitizeSmartCompactDetails(legacy) as SmartCompactDetails | null;
+    const repaired = sanitizeSmartCompactDetails(
+      legacy,
+    ) as SmartCompactDetails | null;
     expect(repaired).not.toBeNull();
     expect(repaired!.method).toBe("heuristic");
     expect(repaired!.profile).toBe("balanced");
@@ -254,8 +385,11 @@ describe("sanitizeSmartCompactDetails", () => {
 
   it("coerces invalid enums to the safe defaults", () => {
     const repaired = sanitizeSmartCompactDetails({
-      modifiedFiles: [], readFiles: [], topics: [],
-      method: "superturbo", profile: "ultra",
+      modifiedFiles: [],
+      readFiles: [],
+      topics: [],
+      method: "superturbo",
+      profile: "ultra",
     }) as SmartCompactDetails | null;
     expect(repaired).not.toBeNull();
     expect(repaired!.method).toBe("heuristic");
@@ -264,10 +398,18 @@ describe("sanitizeSmartCompactDetails", () => {
 
   it("keeps valid enums and numbers during repair", () => {
     const repaired = sanitizeSmartCompactDetails({
-      modifiedFiles: [], readFiles: [], topics: [],
-      method: "single-pass", profile: "light",
-      qualityScore: 77, totalMessages: 42, tokensSaved: 100, llmCalls: 3,
-      model: "openai/gpt-x", verified: true, backupPath: "/x.md",
+      modifiedFiles: [],
+      readFiles: [],
+      topics: [],
+      method: "single-pass",
+      profile: "light",
+      qualityScore: 77,
+      totalMessages: 42,
+      tokensSaved: 100,
+      llmCalls: 3,
+      model: "openai/gpt-x",
+      verified: true,
+      backupPath: "/x.md",
     }) as SmartCompactDetails | null;
     expect(repaired).not.toBeNull();
     expect(repaired!.method).toBe("single-pass");
@@ -282,9 +424,14 @@ describe("sanitizeSmartCompactDetails", () => {
   });
 
   it("drops malformed estimates and clamps malformed required counts to safe defaults", () => {
-    const repaired = sanitizeSmartCompactDetails(validDetails({
-      tokensSaved: -10, plannedAfterTokens: -1, estimatedYield: 1.5, chunkCount: -2,
-    }))!;
+    const repaired = sanitizeSmartCompactDetails(
+      validDetails({
+        tokensSaved: -10,
+        plannedAfterTokens: -1,
+        estimatedYield: 1.5,
+        chunkCount: -2,
+      }),
+    )!;
     expect(repaired.tokensSaved).toBe(0);
     expect(repaired.chunkCount).toBe(0);
     expect(repaired.plannedAfterTokens).toBeUndefined();
@@ -294,7 +441,9 @@ describe("sanitizeSmartCompactDetails", () => {
 
   it("the repaired result always passes isValidSmartCompactDetails", () => {
     const repaired = sanitizeSmartCompactDetails({
-      modifiedFiles: ["a"], readFiles: ["b"], topics: ["c"],
+      modifiedFiles: ["a"],
+      readFiles: ["b"],
+      topics: ["c"],
     });
     expect(repaired).not.toBeNull();
     expect(isValidSmartCompactDetails(repaired)).toBe(true);

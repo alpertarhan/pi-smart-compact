@@ -21,15 +21,13 @@ import os from "node:os";
 import { EXTRACTION_CACHE_PREFIX } from "../constants.ts";
 
 /**
- * `HOME` wins so tests can override the root; when it is unset (every
- * Windows launch — Windows uses `USERPROFILE` — and GUI launches that strip
- * the environment) fall back to `os.homedir()`, matching how the pi host
- * resolves `~/.pi/agent`. The old `"/tmp"` fallback routed settings,
- * caches, and run-locks to `C:\tmp` on Windows, making settings.json
- * invisible to the extension.
+ * `HOME` wins so tests can override the root. Windows' `USERPROFILE` is the
+ * next choice; GUI launches that strip both variables fall back to
+ * `os.homedir()`, matching how the pi host resolves `~/.pi/agent`.
  */
 export function home(): string {
- return process.env.HOME ?? os.homedir();
+ const configured = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
+ return configured || os.homedir();
 }
 
 /** Root pi agent directory (`~/.pi/agent`). */
@@ -38,22 +36,22 @@ export function piAgentDir(): string {
 }
 
 /** Shared cache root (`~/.pi/agent/.cache`). */
-export function cacheDir(): string {
+function cacheDir(): string {
  return path.join(piAgentDir(), ".cache");
 }
 
 /** Smart-compact specific cache root (`~/.pi/agent/.cache/smart-compact`). */
-export function smartCompactCacheDir(): string {
+function smartCompactCacheDir(): string {
  return path.join(cacheDir(), "smart-compact");
 }
 
 /** Project fingerprint directory. */
-export function projectFingerprintDir(): string {
+function projectFingerprintDir(): string {
  return path.join(smartCompactCacheDir(), "projects");
 }
 
 /** Compaction state directory. */
-export function compactionStateDir(): string {
+function compactionStateDir(): string {
  return path.join(smartCompactCacheDir(), "states");
 }
 

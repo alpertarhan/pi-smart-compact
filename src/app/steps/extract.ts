@@ -39,7 +39,6 @@ import {
 } from "../../utils/cache.ts";
 import {
   deriveProjectId,
-  findGitRoot,
   loadProjectFingerprint,
   buildProjectContext,
 } from "../../utils/fingerprint.ts";
@@ -296,11 +295,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     currentKeptEntryIds,
   );
 
-  const projectId = deriveProjectId(
-    findGitRoot(rc.ctx.cwd) ?? rc.ctx.cwd,
-    extraction,
-    rc.sessionId,
-  );
+  const projectId = deriveProjectId(rc.ctx.cwd, extraction, rc.sessionId);
   const fingerprint = loadProjectFingerprint(projectId);
   if (fingerprint) {
     rc.notify(

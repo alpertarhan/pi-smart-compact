@@ -1,9 +1,21 @@
 import { describe, expect, it } from "bun:test";
-import { parseSmartCompactCommand, parseSmartCompactTool } from "../src/app/smart-compact-input.ts";
+import {
+  parseSmartCompactCommand,
+  parseSmartCompactTool,
+} from "../src/app/smart-compact-input.ts";
 
 const modelToken = (token: string) => token === "openai/gpt-5";
 
 describe("smart compact input parsing", () => {
+  it("parses the settings action without turning it into a user note", () => {
+    const result = parseSmartCompactCommand("settings", () => false);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.action).toBe("settings");
+      expect(result.value.note).toBeUndefined();
+    }
+  });
+
   it("consumes only leading control tokens and preserves mode-like note words", () => {
     const result = parseSmartCompactCommand(
       "openai/gpt-5 balanced --max-calls=4 focus on fast startup in src/auth.ts",
@@ -27,7 +39,10 @@ describe("smart compact input parsing", () => {
   });
 
   it("preserves explicit notes after the double-dash boundary", () => {
-    const result = parseSmartCompactCommand("--  keep  balanced and fast in src/auth.ts", modelToken);
+    const result = parseSmartCompactCommand(
+      "--  keep  balanced and fast in src/auth.ts",
+      modelToken,
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.mode).toBeUndefined();
@@ -36,7 +51,10 @@ describe("smart compact input parsing", () => {
   });
 
   it("does not reinterpret file paths as provider/model arguments", () => {
-    const result = parseSmartCompactCommand("src/auth.ts must stay reversible", modelToken);
+    const result = parseSmartCompactCommand(
+      "src/auth.ts must stay reversible",
+      modelToken,
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.modelArg).toBeUndefined();

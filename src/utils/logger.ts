@@ -12,7 +12,7 @@ export function warn(msg: string, err?: unknown): void {
   console.error(LOG_PREFIX + " " + msg + (detail ? ": " + detail : ""));
 }
 
-export function error(msg: string, err?: unknown): void {
+function error(msg: string, err?: unknown): void {
   const detail = err instanceof Error ? err.message + "\n" + err.stack : err ?? "";
   console.error(LOG_PREFIX + " " + msg + (detail ? ": " + detail : ""));
 }

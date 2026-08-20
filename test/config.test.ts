@@ -1,6 +1,14 @@
 import { describe, it, expect } from "bun:test";
-import { validateSmartCompactConfig, selectCompactionTier, computeToolCharPercentage } from "../src/utils/helpers.ts";
-import { DEFAULT_CONFIG, VERSION, MIN_TOKEN_THRESHOLD } from "../src/constants.ts";
+import {
+  validateSmartCompactConfig,
+  selectCompactionTier,
+  computeToolCharPercentage,
+} from "../src/utils/helpers.ts";
+import {
+  DEFAULT_CONFIG,
+  VERSION,
+  MIN_TOKEN_THRESHOLD,
+} from "../src/constants.ts";
 import pkg from "../package.json";
 
 describe("validateSmartCompactConfig", () => {
@@ -62,6 +70,22 @@ describe("validateSmartCompactConfig", () => {
     expect(DEFAULT_CONFIG.verificationModel).toBeNull();
   });
 
+  it("validates agent tool access and migrates the legacy boolean", () => {
+    expect(DEFAULT_CONFIG.agentToolAccess).toBe("inherit");
+    const valid: Record<string, unknown> = { agentToolAccess: "disabled" };
+    validateSmartCompactConfig(valid);
+    expect(valid.agentToolAccess).toBe("disabled");
+
+    const migrated: Record<string, unknown> = { agentToolEnabled: false };
+    validateSmartCompactConfig(migrated);
+    expect(migrated.agentToolEnabled).toBeUndefined();
+    expect(migrated.agentToolAccess).toBe("disabled");
+
+    const invalid: Record<string, unknown> = { agentToolAccess: "sometimes" };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.agentToolAccess).toBeUndefined();
+  });
+
   it("deletes invalid autoTrigger (string)", () => {
     const sc = { autoTrigger: "true" };
     validateSmartCompactConfig(sc);
@@ -75,7 +99,9 @@ describe("validateSmartCompactConfig", () => {
       validateSmartCompactConfig(valid);
       expect(valid.autoTriggerStrategy).toBe(strategy);
     }
-    const invalid: Record<string, unknown> = { autoTriggerStrategy: "background" };
+    const invalid: Record<string, unknown> = {
+      autoTriggerStrategy: "background",
+    };
     validateSmartCompactConfig(invalid);
     expect(invalid.autoTriggerStrategy).toBeUndefined();
   });
@@ -162,7 +188,11 @@ describe("validateSmartCompactConfig", () => {
   it("keeps a coherent integer profile override", () => {
     const sc = {
       profiles: {
-        balanced: { minChunkTokens: 600, maxChunkTokens: 9_000, batchMaxTokens: 27_000 },
+        balanced: {
+          minChunkTokens: 600,
+          maxChunkTokens: 9_000,
+          batchMaxTokens: 27_000,
+        },
       },
     } as Record<string, unknown>;
     validateSmartCompactConfig(sc);
@@ -265,10 +295,25 @@ describe("validateSmartCompactConfig", () => {
   });
 
   it("validates optional call and latency budgets", () => {
-    const valid: Record<string, unknown> = { maxLlmCalls: 8, maxLlmInputTokens: 120_000, codexMaxCallMs: 25_000, maxLatencyMs: 20_000 };
+    const valid: Record<string, unknown> = {
+      maxLlmCalls: 8,
+      maxLlmInputTokens: 120_000,
+      codexMaxCallMs: 25_000,
+      maxLatencyMs: 20_000,
+    };
     validateSmartCompactConfig(valid);
-    expect(valid).toEqual({ maxLlmCalls: 8, maxLlmInputTokens: 120_000, codexMaxCallMs: 25_000, maxLatencyMs: 20_000 });
-    const invalid: Record<string, unknown> = { maxLlmCalls: -1, maxLlmInputTokens: -1, codexMaxCallMs: 1_000, maxLatencyMs: 1000 };
+    expect(valid).toEqual({
+      maxLlmCalls: 8,
+      maxLlmInputTokens: 120_000,
+      codexMaxCallMs: 25_000,
+      maxLatencyMs: 20_000,
+    });
+    const invalid: Record<string, unknown> = {
+      maxLlmCalls: -1,
+      maxLlmInputTokens: -1,
+      codexMaxCallMs: 1_000,
+      maxLatencyMs: 1000,
+    };
     validateSmartCompactConfig(invalid);
     expect(invalid.maxLlmCalls).toBeUndefined();
     expect(invalid.maxLlmInputTokens).toBeUndefined();
@@ -296,20 +341,44 @@ describe("validateSmartCompactConfig", () => {
 describe("computeToolCharPercentage", () => {
   it("counts only text blocks and ignores tool-call text-like fields", () => {
     const branch = [
-      { message: { role: "assistant", content: [
-        { type: "toolCall", text: "x".repeat(1000), name: "write", arguments: {} },
-        { type: "text", text: "assistant" },
-      ] } },
-      { message: { role: "toolResult", content: [{ type: "text", text: "tool" }] } },
+      {
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              text: "x".repeat(1000),
+              name: "write",
+              arguments: {},
+            },
+            { type: "text", text: "assistant" },
+          ],
+        },
+      },
+      {
+        message: {
+          role: "toolResult",
+          content: [{ type: "text", text: "tool" }],
+        },
+      },
     ];
-    expect(computeToolCharPercentage(branch)).toBe(Math.round(4 / (9 + 4) * 100));
+    expect(computeToolCharPercentage(branch)).toBe(
+      Math.round((4 / (9 + 4)) * 100),
+    );
   });
 
   it("counts text blocks via .text and ignores a stray .content field", () => {
     // A text block carries its payload in `.text`; a sibling `.content` must
     // not be counted (guards against the removed dead branch).
     const branch = [
-      { message: { role: "toolResult", content: [{ type: "text", text: "abc", content: "XXXXXXXXXXXXXXXXXX" }] } },
+      {
+        message: {
+          role: "toolResult",
+          content: [
+            { type: "text", text: "abc", content: "XXXXXXXXXXXXXXXXXX" },
+          ],
+        },
+      },
     ];
     // total = 3 (only .text "abc"), tool = 3 → 100%. If .content were
     // counted, total would include the Xs and the share would drop.
@@ -319,41 +388,55 @@ describe("computeToolCharPercentage", () => {
 
 describe("selectCompactionTier", () => {
   it("returns none if below MIN_TOKEN_THRESHOLD", () => {
-    expect(selectCompactionTier(50, 90, 4000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+    expect(selectCompactionTier(50, 4000, MIN_TOKEN_THRESHOLD, 30)).toBe(
+      "none",
+    );
   });
 
-  it("returns none if contextPercent < minContextPercent (even with high tool%)", () => {
-    // This is the key fix: tool=97% but context=5-59% should NOT compact with default-safe threshold
-    expect(selectCompactionTier(5, 97, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
-    expect(selectCompactionTier(35, 80, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
-    expect(selectCompactionTier(59, 99, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe("none");
-  });
-
-  it("returns none if contextPercent < minContextPercent regardless of toolPercent", () => {
-    expect(selectCompactionTier(25, 50, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
-    expect(selectCompactionTier(25, 90, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("none");
+  it("returns none if contextPercent is below the configured threshold", () => {
+    expect(selectCompactionTier(5, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe(
+      "none",
+    );
+    expect(selectCompactionTier(35, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe(
+      "none",
+    );
+    expect(selectCompactionTier(59, 10000, MIN_TOKEN_THRESHOLD, 60)).toBe(
+      "none",
+    );
   });
 
   it("uses 60 as the default minContextPercent", () => {
-    expect(selectCompactionTier(50, 97, 10000, MIN_TOKEN_THRESHOLD)).toBe("none");
-    expect(selectCompactionTier(69, 93, 10000, MIN_TOKEN_THRESHOLD)).toBe("light");
+    expect(selectCompactionTier(50, 10000, MIN_TOKEN_THRESHOLD)).toBe("none");
+    expect(selectCompactionTier(69, 10000, MIN_TOKEN_THRESHOLD)).toBe("light");
   });
 
-  it("returns light if contextPercent between 45 and 80", () => {
-    expect(selectCompactionTier(50, 70, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("light");
-    expect(selectCompactionTier(60, 80, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("light");
-    expect(selectCompactionTier(79, 90, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("light");
+  it("returns light below 80 percent once the minimum is met", () => {
+    expect(selectCompactionTier(50, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe(
+      "light",
+    );
+    expect(selectCompactionTier(60, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe(
+      "light",
+    );
+    expect(selectCompactionTier(79, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe(
+      "light",
+    );
   });
 
-  it("returns full if contextPercent >= 80", () => {
-    expect(selectCompactionTier(80, 90, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("full");
-    expect(selectCompactionTier(95, 99, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe("full");
+  it("returns full at 80 percent or above", () => {
+    expect(selectCompactionTier(80, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe(
+      "full",
+    );
+    expect(selectCompactionTier(95, 10000, MIN_TOKEN_THRESHOLD, 30)).toBe(
+      "full",
+    );
   });
 
   it("respects custom minContextPercent", () => {
-    // With minContextPercent=10, context=15% should not be blocked
-    expect(selectCompactionTier(15, 97, 10000, MIN_TOKEN_THRESHOLD, 10)).toBe("light");
-    // With minContextPercent=20, context=15% should be blocked
-    expect(selectCompactionTier(15, 97, 10000, MIN_TOKEN_THRESHOLD, 20)).toBe("none");
+    expect(selectCompactionTier(15, 10000, MIN_TOKEN_THRESHOLD, 10)).toBe(
+      "light",
+    );
+    expect(selectCompactionTier(15, 10000, MIN_TOKEN_THRESHOLD, 20)).toBe(
+      "none",
+    );
   });
 });

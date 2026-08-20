@@ -44,6 +44,7 @@ Then run `/smart-compact` for an explainable preflight before anything changes.
 /smart-compact dashboard                            # interactive dashboard
 /smart-compact restore                              # browse and restore backups
 /smart-compact loops                                # manage persisted open loops
+/smart-compact settings                             # agent visibility + automatic mode
 ```
 
 Command controls are consumed only from the left edge. Once note text starts,
@@ -141,8 +142,9 @@ both tools.
 | --- | --- |
 | `/smart-compact` | Explicit manual run. Opens a target-first preflight or accepts direct args, dry-run, focus, and budgets. |
 | `session_before_compact` | Auto path. Returns/stages a verification-scored summary under pressure; durable state waits for matching `session_compact`. |
-| `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. |
+| `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. Can be hidden from the agent. |
 | `/smart-compact loops` | Project-level open-loop manager: resolve/reopen, priority, pin/unpin. |
+| `/smart-compact settings` | TUI policy editor for agent access and automatic compaction. Manual `/smart-compact` always remains available. |
 
 ### Manual preflight
 
@@ -240,7 +242,7 @@ All stages use the selected Pi model by default. Routing is explicit and
 independent of modes:
 
 | Stage | Config key | Default |
-|---|---|---|
+| --- | --- | --- |
 | Explore / segmentation | `segmentationModel` | selected model |
 | Synthesis / assembly | `summaryModel` | selected model |
 | Verification repair | `verificationModel` | summary/selected model |
@@ -380,6 +382,7 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
     "verificationModel": null,
     "summaryThinkingLevel": "minimal",
     "segmentationThinkingLevel": "minimal",
+    "agentToolAccess": "inherit",
     "autoTrigger": true,
     "autoTriggerStrategy": "native-hook",
     "minContextPercent": 60,
@@ -401,6 +404,18 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
   }
 }
 ```
+
+`/smart-compact settings` can hide `smart_compact` from the agent and disable
+automatic compaction independently. Changes apply immediately and are stored in
+the current session branch; navigating the session tree restores that branch's
+last policy. They do not edit `settings.json`. Set `agentToolAccess` to
+`"disabled"` and `autoTrigger` to `false` below for a permanent Smart Compact
+manual-only default. `"inherit"` (the default) respects Pi's `/tools`, host
+allowlists, and other extensions instead of forcing the tool back on. This
+disables Smart Compact's hook participation, not Pi's built-in native compactor.
+Registering the tool internally does not expose it: Pi's active-tool list
+controls the schema
+and prompt guidance visible on the next agent turn.
 
 `native-hook` preserves the existing passive behavior. The opt-in proactive
 strategy is:
@@ -476,6 +491,7 @@ the run fails closed before staging or apply.
 | `verificationModel` | `string \| null` | `null` | Optional explicit model for LLM verification repair |
 | `summaryThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for synthesis and repair; provider default when null |
 | `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for exploration; provider default when null |
+| `agentToolAccess` | `"inherit" \| "enabled" \| "disabled"` | `"inherit"` | Respect Pi's active tools by default, or explicitly expose/hide `smart_compact`; manual command is unaffected |
 | `autoTrigger` | `boolean` | `true` | Allow smart compaction in Pi's native hook and the selected trigger strategy |
 | `autoTriggerStrategy` | `native-hook \| settled` | `native-hook` | `settled` additionally requests Pi's normal compact flow after an idle high-pressure agent run; verified with Pi 0.84.0+ |
 | `autoTriggerTimeoutMs` | `number` | `120000` | Requested auto cancellation deadline; the host hook clamps it to 60s and four LLM calls, shows live phase progress, then safely unwinds to native recovery |
