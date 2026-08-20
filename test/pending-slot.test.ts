@@ -13,17 +13,24 @@
  * We exercise each invariant with a fake clock + minimal context.
  */
 import { describe, it, expect } from "bun:test";
-import { createPendingSlot, type ConsumeResult } from "../src/app/pending-slot.ts";
+import {
+  createPendingSlot,
+  type ConsumeResult,
+} from "../src/app/pending-slot.ts";
 import type { PendingCompaction } from "../src/types.ts";
 import type { SessionIdentityContext } from "../src/infra/session-identity.ts";
 
 let runCounter = 0;
-function makePayload(sessionId: string, summary = "## Done\n- thing"): PendingCompaction {
+function makePayload(
+  sessionId: string,
+  summary = "## Done\n- thing",
+): PendingCompaction {
   const runId = "pending-run-" + ++runCounter;
   return {
     runId,
     summary,
     firstKeptEntryId: "entry_1",
+    originBranchHeadId: "entry_1",
     tokensBefore: 12345,
     details: { runId } as PendingCompaction["details"],
     sessionId,
@@ -36,7 +43,9 @@ function ctxWith(id: string): SessionIdentityContext {
   } as unknown as SessionIdentityContext;
 }
 
-function assertOk(r: ConsumeResult): asserts r is { kind: "ok"; pending: PendingCompaction } {
+function assertOk(
+  r: ConsumeResult,
+): asserts r is { kind: "ok"; pending: PendingCompaction } {
   if (r.kind !== "ok") throw new Error("expected ok, got " + JSON.stringify(r));
 }
 
@@ -61,7 +70,10 @@ describe("PendingSlot — empty + isPresent", () => {
     const slot = createPendingSlot({ ttlMs: 60_000 });
     const p = makePayload("sess_a");
     slot.set(p);
-    expect(slot.peek()).toMatchObject({ sessionId: "sess_a", tokensBefore: 12345 });
+    expect(slot.peek()).toMatchObject({
+      sessionId: "sess_a",
+      tokensBefore: 12345,
+    });
     expect(slot.peek()).toMatchObject({ sessionId: "sess_a" });
     expect(slot.isPresent()).toBe(true);
   });
@@ -84,8 +96,8 @@ describe("PendingSlot — TTL expiry", () => {
   it("returns expired and clears when age > ttl", () => {
     let t = 1_000;
     const slot = createPendingSlot({ ttlMs: 100, now: () => t });
-    slot.set(makePayload("sess_a"));    // createdAt = 1000
-    t = 1_200;                          // age = 200 > 100
+    slot.set(makePayload("sess_a")); // createdAt = 1000
+    t = 1_200; // age = 200 > 100
     const r = slot.consume(ctxWith("sess_a"));
     expect(r.kind).toBe("expired");
     if (r.kind === "expired") expect(r.ageMs).toBe(200);
@@ -96,7 +108,7 @@ describe("PendingSlot — TTL expiry", () => {
     let t = 1_000;
     const slot = createPendingSlot({ ttlMs: 100, now: () => t });
     slot.set(makePayload("sess_a"));
-    t = 1_100;                          // age === 100, NOT > 100
+    t = 1_100; // age === 100, NOT > 100
     const r = slot.consume(ctxWith("sess_a"));
     expect(r.kind).toBe("ok");
   });
@@ -131,7 +143,9 @@ describe("PendingSlot — cross-session leak guard", () => {
     // `resolveSessionId` now mints a unique id per call, so even two consecutive
     // unresolved ctxs compare unequal.
     const unresolvedCtx = (): SessionIdentityContext =>
-      ({ sessionManager: { getSessionId: () => undefined as unknown as string } }) as SessionIdentityContext;
+      ({
+        sessionManager: { getSessionId: () => undefined as unknown as string },
+      }) as SessionIdentityContext;
     const slot = createPendingSlot({ ttlMs: 60_000 });
 
     // Producer: set a payload whose sessionId was minted in session A.
@@ -142,8 +156,11 @@ describe("PendingSlot — cross-session leak guard", () => {
       runId: "pending-unresolved-run",
       summary: "x",
       firstKeptEntryId: "e",
+      originBranchHeadId: "e",
       tokensBefore: 0,
-      details: { runId: "pending-unresolved-run" } as PendingCompaction["details"],
+      details: {
+        runId: "pending-unresolved-run",
+      } as PendingCompaction["details"],
       sessionId: producerId,
     });
 
@@ -186,7 +203,11 @@ describe("PendingSlot — session-scoped storage", () => {
 
   it("evicts the oldest session at the configured bound", () => {
     let t = 0;
-    const slot = createPendingSlot({ ttlMs: 60_000, maxEntries: 2, now: () => ++t });
+    const slot = createPendingSlot({
+      ttlMs: 60_000,
+      maxEntries: 2,
+      now: () => ++t,
+    });
     slot.set(makePayload("sess_a"));
     slot.set(makePayload("sess_b"));
     slot.set(makePayload("sess_c"));
@@ -203,8 +224,8 @@ describe("PendingSlot — same-session overwrite", () => {
     const slot = createPendingSlot({ ttlMs: 100, now: () => t });
     slot.set(makePayload("sess_a", "first"));
     t = 80;
-    slot.set(makePayload("sess_a", "second"));   // resets createdAt to 80
-    t = 170;                                     // age relative to new = 90, NOT expired
+    slot.set(makePayload("sess_a", "second")); // resets createdAt to 80
+    t = 170; // age relative to new = 90, NOT expired
     const r = slot.consume(ctxWith("sess_a"));
     assertOk(r);
     expect(r.pending.summary).toBe("second");

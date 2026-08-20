@@ -48,6 +48,18 @@ import {
 	summaryEvidenceLine,
 } from "../domain/summary-parse.ts";
 
+/** Lazily compiled per-field label patterns; labels come from a fixed set. */
+const batchFieldPatterns = new Map<string, RegExp>();
+function batchFieldPattern(name: string): RegExp {
+	let pattern = batchFieldPatterns.get(name);
+	if (!pattern) {
+		const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		pattern = new RegExp("\\*\\*" + escaped + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i");
+		batchFieldPatterns.set(name, pattern);
+	}
+	return pattern;
+}
+
 function boundedToolArgs(value: unknown, depth = 0): unknown {
 	if (typeof value === "string")
 		return value.length > TRUNC.DETAIL
@@ -543,9 +555,7 @@ export async function summarizeBatch(
 		const id = i + 1;
 		const sec = sectionMap.get(id) ?? "";
 		const f = (n: string) => {
-			const m = sec.match(
-				new RegExp("\\*\\*" + n + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i"),
-			);
+			const m = sec.match(batchFieldPattern(n));
 			return m ? m[1].trim() : "";
 		};
 		const l = (n: string) => {

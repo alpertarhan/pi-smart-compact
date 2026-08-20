@@ -44,7 +44,7 @@ export function ensureDir(dir: string): void {
   fs.chmodSync(dir, 0o700);
 }
 
-export async function ensureDirAsync(dir: string): Promise<void> {
+async function ensureDirAsync(dir: string): Promise<void> {
   await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
   await fsp.chmod(dir, 0o700);
 }

@@ -334,7 +334,7 @@ export function upsertContinuityOverride(
   return copy;
 }
 
-export function applyContinuityOverrides(
+function applyContinuityOverrides(
   state: CompactionState,
   overrides: ContinuityOverride[],
 ): CompactionState {
@@ -676,7 +676,7 @@ export function mergeCompactionStates(
 /** Build the bounded, deterministic context that must survive every generation. */
 export function renderContinuityCapsule(
   state: CompactionState,
-  maxChars = TRUNC.CONTINUITY_CAPSULE,
+  maxChars: number = TRUNC.CONTINUITY_CAPSULE,
   existing = "",
 ): string {
   const haystack = normalizeFactKey(existing);

@@ -9,27 +9,41 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { extractStructured, extractOpenLoops } from "../src/utils/extraction.ts";
+import {
+  extractStructured,
+  extractOpenLoops,
+} from "../src/utils/extraction.ts";
 import { buildCompactionState, computeDelta } from "../src/utils/state.ts";
 import { verifySummary, formatVerificationGap } from "../src/phases/verify.ts";
 import { PROFILES } from "../src/constants.ts";
-import type { LlmMessage, StructuredExtraction, CompactionState } from "../src/types.ts";
+import type {
+  LlmMessage,
+  StructuredExtraction,
+  CompactionState,
+} from "../src/types.ts";
 
 // ─── Helpers ───
 
-function msg(role: "user" | "assistant" | "toolResult", content: string, extra: Partial<LlmMessage> = {}): LlmMessage {
+function msg(
+  role: "user" | "assistant" | "toolResult",
+  content: string,
+  extra: Partial<LlmMessage> = {},
+): LlmMessage {
   return { role, content, ...extra };
 }
 
 let tcCounter = 0;
-function toolMsg(toolName: string, args: Record<string, unknown>, result: string, isError = false): LlmMessage[] {
-  const id = "tc-" + (++tcCounter);
+function toolMsg(
+  toolName: string,
+  args: Record<string, unknown>,
+  result: string,
+  isError = false,
+): LlmMessage[] {
+  const id = "tc-" + ++tcCounter;
   return [
     {
       role: "assistant",
-      content: [
-        { type: "toolCall", name: toolName, id, arguments: args },
-      ],
+      content: [{ type: "toolCall", name: toolName, id, arguments: args }],
     },
     {
       role: "toolResult",
@@ -46,16 +60,41 @@ function extract(msgs: LlmMessage[]): StructuredExtraction {
 
 // ─── Gold Cases ───
 
-const GOLD_CASES = [
+interface GoldExpectation {
+  modifiedFiles?: string[];
+  readFiles?: string[];
+  unresolvedErrors?: number;
+  resolvedErrors?: number;
+  decisions?: number;
+  hasGoal?: boolean;
+  openLoops?: boolean;
+}
+
+interface GoldCase {
+  name: string;
+  description: string;
+  messages: () => LlmMessage[];
+  expect: GoldExpectation;
+}
+
+const GOLD_CASES: GoldCase[] = [
   {
     name: "Simple file edit session",
     description: "User asks to fix a bug, assistant edits one file, no errors",
     messages: (): LlmMessage[] => [
       msg("user", "Fix the auth bug in src/auth.ts"),
       msg("assistant", "Let me read the file first."),
-      ...toolMsg("read", { path: "src/auth.ts" }, "export function login() { /* buggy */ }"),
+      ...toolMsg(
+        "read",
+        { path: "src/auth.ts" },
+        "export function login() { /* buggy */ }",
+      ),
       msg("user", "yes fix the null check"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "/* buggy */", newText: "/* fixed */" }, "OK"),
+      ...toolMsg(
+        "edit",
+        { path: "src/auth.ts", oldText: "/* buggy */", newText: "/* fixed */" },
+        "OK",
+      ),
       msg("assistant", "Fixed the null check in login()."),
     ],
     expect: {
@@ -68,15 +107,40 @@ const GOLD_CASES = [
   },
   {
     name: "Debugging session with errors",
-    description: "User reports a failing test, multiple errors occur, one resolved",
+    description:
+      "User reports a failing test, multiple errors occur, one resolved",
     messages: (): LlmMessage[] => [
       msg("user", "Tests are failing after the refactor"),
-      ...toolMsg("bash", { command: "bun test" }, "2 tests failed:\n1) auth.test.ts - login returns undefined\n2) user.test.ts - createUser fails", true),
+      ...toolMsg(
+        "bash",
+        { command: "bun test" },
+        "2 tests failed:\n1) auth.test.ts - login returns undefined\n2) user.test.ts - createUser fails",
+        true,
+      ),
       msg("assistant", "I see 2 failing tests. Let me check auth first."),
-      ...toolMsg("read", { path: "src/auth.ts" }, "export function login() { return undefined; }"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "return undefined", newText: "return token" }, "OK"),
-      ...toolMsg("bash", { command: "bun test test/auth.test.ts" }, "All 5 tests passed!"),
-      msg("user", "auth is fixed, but user.test still fails. We'll fix it next."),
+      ...toolMsg(
+        "read",
+        { path: "src/auth.ts" },
+        "export function login() { return undefined; }",
+      ),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/auth.ts",
+          oldText: "return undefined",
+          newText: "return token",
+        },
+        "OK",
+      ),
+      ...toolMsg(
+        "bash",
+        { command: "bun test test/auth.test.ts" },
+        "All 5 tests passed!",
+      ),
+      msg(
+        "user",
+        "auth is fixed, but user.test still fails. We'll fix it next.",
+      ),
     ],
     expect: {
       modifiedFiles: ["src/auth.ts"],
@@ -87,16 +151,56 @@ const GOLD_CASES = [
   },
   {
     name: "Multi-file refactoring with decisions",
-    description: "User requests architecture change, assistant modifies multiple files",
+    description:
+      "User requests architecture change, assistant modifies multiple files",
     messages: (): LlmMessage[] => [
       msg("user", "Refactor the auth module to use dependency injection"),
-      msg("assistant", "I'll refactor auth to use DI. Let me check the current structure."),
-      ...toolMsg("read", { path: "src/auth.ts" }, "export class AuthService { constructor() {} }"),
-      ...toolMsg("read", { path: "src/auth.test.ts" }, "import { AuthService } from './auth'"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "constructor() {}", newText: "constructor(private repo: UserRepository) {}" }, "OK"),
-      ...toolMsg("edit", { path: "src/auth.test.ts", oldText: "import { AuthService }", newText: "import { AuthService } from './auth'\nconst mockRepo = { find: vi.fn() }" }, "OK"),
-      ...toolMsg("edit", { path: "src/container.ts", oldText: "// empty", newText: "register(AuthService, [UserRepository])" }, "OK"),
-      msg("assistant", "Done. AuthService now uses constructor injection with UserRepository."),
+      msg(
+        "assistant",
+        "I'll refactor auth to use DI. Let me check the current structure.",
+      ),
+      ...toolMsg(
+        "read",
+        { path: "src/auth.ts" },
+        "export class AuthService { constructor() {} }",
+      ),
+      ...toolMsg(
+        "read",
+        { path: "src/auth.test.ts" },
+        "import { AuthService } from './auth'",
+      ),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/auth.ts",
+          oldText: "constructor() {}",
+          newText: "constructor(private repo: UserRepository) {}",
+        },
+        "OK",
+      ),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/auth.test.ts",
+          oldText: "import { AuthService }",
+          newText:
+            "import { AuthService } from './auth'\nconst mockRepo = { find: vi.fn() }",
+        },
+        "OK",
+      ),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/container.ts",
+          oldText: "// empty",
+          newText: "register(AuthService, [UserRepository])",
+        },
+        "OK",
+      ),
+      msg(
+        "assistant",
+        "Done. AuthService now uses constructor injection with UserRepository.",
+      ),
     ],
     expect: {
       modifiedFiles: ["src/auth.ts", "src/auth.test.ts", "src/container.ts"],
@@ -107,14 +211,27 @@ const GOLD_CASES = [
   },
   {
     name: "Blocked session with follow-ups",
-    description: "Work is blocked on external dependency, user mentions next steps",
+    description:
+      "Work is blocked on external dependency, user mentions next steps",
     messages: (): LlmMessage[] => [
       msg("user", "Implement the payment integration"),
       msg("assistant", "I'll set up the payment module."),
-      ...toolMsg("read", { path: "src/payment.ts" }, "export function processPayment() {}"),
-      ...toolMsg("bash", { command: "npm install @stripe/sdk" }, "npm ERR! 403 Forbidden - requires auth token", true),
+      ...toolMsg(
+        "read",
+        { path: "src/payment.ts" },
+        "export function processPayment() {}",
+      ),
+      ...toolMsg(
+        "bash",
+        { command: "npm install @stripe/sdk" },
+        "npm ERR! 403 Forbidden - requires auth token",
+        true,
+      ),
       msg("assistant", "The Stripe SDK requires an auth token to install."),
-      msg("user", "We're blocked waiting for the API key from DevOps. Next step is to add caching behavior to the order module while we wait."),
+      msg(
+        "user",
+        "We're blocked waiting for the API key from DevOps. Next step is to add caching behavior to the order module while we wait.",
+      ),
     ],
     expect: {
       modifiedFiles: [],
@@ -130,10 +247,18 @@ const GOLD_CASES = [
     messages: (): LlmMessage[] => [
       msg("user", "Auth modülünü düzelt, JWT kullanmamız gerekiyor"),
       msg("assistant", "Tamam, JWT implementasyonunu yapayım."),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "session", newText: "jwt" }, "OK"),
+      ...toolMsg(
+        "edit",
+        { path: "src/auth.ts", oldText: "session", newText: "jwt" },
+        "OK",
+      ),
       msg("user", "Türkçe locale desteği de eklenmeli, bu bir zorunluluk"),
       msg("assistant", "Türkçe locale desteğini de ekliyorum."),
-      ...toolMsg("edit", { path: "src/i18n.ts", oldText: "en only", newText: "en, tr" }, "OK"),
+      ...toolMsg(
+        "edit",
+        { path: "src/i18n.ts", oldText: "en only", newText: "en, tr" },
+        "OK",
+      ),
       msg("user", "yapalım bunu, sonra testleri de yazmamiz gerekiyor"),
     ],
     expect: {
@@ -155,7 +280,7 @@ describe("Evaluation Harness", () => {
 
       // Modified files
       if (gold.expect.modifiedFiles) {
-        const modPaths = extraction.modifiedFiles.map(f => f.path);
+        const modPaths = extraction.modifiedFiles.map((f) => f.path);
         for (const expected of gold.expect.modifiedFiles) {
           expect(modPaths).toContain(expected);
         }
@@ -170,19 +295,21 @@ describe("Evaluation Harness", () => {
 
       // Unresolved errors
       if (gold.expect.unresolvedErrors !== undefined) {
-        const unresolved = extraction.errors.filter(e => !e.resolved).length;
+        const unresolved = extraction.errors.filter((e) => !e.resolved).length;
         expect(unresolved).toBe(gold.expect.unresolvedErrors);
       }
 
       // Resolved errors
       if (gold.expect.resolvedErrors !== undefined) {
-        const resolved = extraction.errors.filter(e => e.resolved).length;
+        const resolved = extraction.errors.filter((e) => e.resolved).length;
         expect(resolved).toBeGreaterThanOrEqual(gold.expect.resolvedErrors);
       }
 
       // Decisions
       if (gold.expect.decisions !== undefined) {
-        expect(extraction.decisions.length).toBeGreaterThanOrEqual(gold.expect.decisions);
+        expect(extraction.decisions.length).toBeGreaterThanOrEqual(
+          gold.expect.decisions,
+        );
       }
 
       // Goal
@@ -206,8 +333,21 @@ describe("Delta Evaluation", () => {
     // Simulate first compaction
     const msgs1 = [
       msg("user", "Build auth module"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "", newText: "export function login() {}" }, "OK"),
-      ...toolMsg("bash", { command: "bun test" }, "1 test failed: login returns undefined", true),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/auth.ts",
+          oldText: "",
+          newText: "export function login() {}",
+        },
+        "OK",
+      ),
+      ...toolMsg(
+        "bash",
+        { command: "bun test" },
+        "1 test failed: login returns undefined",
+        true,
+      ),
     ];
     const ext1 = extract(msgs1);
     const loops1 = extractOpenLoops(msgs1, ext1);
@@ -218,7 +358,14 @@ describe("Delta Evaluation", () => {
       modifiedFiles: ["src/auth.ts"],
       readFiles: [],
       deletedFiles: [],
-      unresolvedErrors: [{ id: "error-1", message: "login returns undefined", tool: "bash", files: [] }],
+      unresolvedErrors: [
+        {
+          id: "error-1",
+          message: "login returns undefined",
+          tool: "bash",
+          files: [],
+        },
+      ],
       resolvedErrors: [],
       openLoops: loops1,
       topics: [],
@@ -231,9 +378,33 @@ describe("Delta Evaluation", () => {
     // Simulate second compaction — bug fixed, new feature added
     const msgs2 = [
       msg("user", "Fix the auth test and add logout"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "return undefined", newText: "return token" }, "OK"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "", newText: "export function logout() {}" }, "OK"),
-      ...toolMsg("edit", { path: "src/session.ts", oldText: "", newText: "export function clearSession() {}" }, "OK"),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/auth.ts",
+          oldText: "return undefined",
+          newText: "return token",
+        },
+        "OK",
+      ),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/auth.ts",
+          oldText: "",
+          newText: "export function logout() {}",
+        },
+        "OK",
+      ),
+      ...toolMsg(
+        "edit",
+        {
+          path: "src/session.ts",
+          oldText: "",
+          newText: "export function clearSession() {}",
+        },
+        "OK",
+      ),
       ...toolMsg("bash", { command: "bun test" }, "All tests passed!"),
     ];
     const ext2 = extract(msgs2);
@@ -246,7 +417,9 @@ describe("Delta Evaluation", () => {
       readFiles: [],
       deletedFiles: [],
       unresolvedErrors: [],
-      resolvedErrors: [{ id: "error-1", message: "login returns undefined", tool: "bash" }],
+      resolvedErrors: [
+        { id: "error-1", message: "login returns undefined", tool: "bash" },
+      ],
       openLoops: loops2,
       topics: [],
       nextActions: [],
@@ -274,7 +447,11 @@ describe("Fabrication Safety", () => {
   it("verification flags fabricated file references", () => {
     const msgs = [
       msg("user", "Fix the bug"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "bug", newText: "fix" }, "OK"),
+      ...toolMsg(
+        "edit",
+        { path: "src/auth.ts", oldText: "bug", newText: "fix" },
+        "OK",
+      ),
     ];
     const extraction = extract(msgs);
 
@@ -292,13 +469,19 @@ describe("Fabrication Safety", () => {
 
     const result = verifySummary(fabricatedSummary, extraction);
     expect(result.ok).toBe(false);
-    expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(true);
+    expect(
+      result.gaps.some((g) => formatVerificationGap(g).includes("fabricated")),
+    ).toBe(true);
   });
 
   it("verification accepts all real files", () => {
     const msgs = [
       msg("user", "Fix the bug"),
-      ...toolMsg("edit", { path: "src/auth.ts", oldText: "bug", newText: "fix" }, "OK"),
+      ...toolMsg(
+        "edit",
+        { path: "src/auth.ts", oldText: "bug", newText: "fix" },
+        "OK",
+      ),
     ];
     const extraction = extract(msgs);
 
@@ -314,6 +497,8 @@ describe("Fabrication Safety", () => {
     ].join("\n");
 
     const result = verifySummary(goodSummary, extraction);
-    expect(result.gaps.some(g => formatVerificationGap(g).includes("fabricated"))).toBe(false);
+    expect(
+      result.gaps.some((g) => formatVerificationGap(g).includes("fabricated")),
+    ).toBe(false);
   });
 });

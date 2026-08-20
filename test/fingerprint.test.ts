@@ -4,16 +4,34 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { acquireLockSync, ensureDir } from "../src/infra/fs.ts";
-import { deriveProjectId, deriveProjectIdFromCwd, findGitRoot, buildProjectContext, loadProjectFingerprint, saveProjectFingerprint } from "../src/utils/fingerprint.ts";
+import {
+  deriveProjectId,
+  deriveProjectIdFromCwd,
+  findGitRoot,
+  buildProjectContext,
+  loadProjectFingerprint,
+  saveProjectFingerprint,
+} from "../src/utils/fingerprint.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 const TEST_CWD = ""; // empty cwd forces path-based derivation in tests
 
-function makeExtraction(partial: Partial<StructuredExtraction> = {}): StructuredExtraction {
+function makeExtraction(
+  partial: Partial<StructuredExtraction> = {},
+): StructuredExtraction {
   return {
-    modifiedFiles: [], readFiles: [], deletedFiles: [],
-    errors: [], decisions: [], constraints: [], topics: [], timeline: [],
-    mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 0,
+    modifiedFiles: [],
+    readFiles: [],
+    deletedFiles: [],
+    errors: [],
+    decisions: [],
+    constraints: [],
+    topics: [],
+    timeline: [],
+    mainGoal: null,
+    lastUserMessages: [],
+    lastErrors: [],
+    messageCount: 0,
     ...partial,
   };
 }
@@ -26,9 +44,11 @@ const HOME = "/Users/example";
 const DEV_ROOT = posixJoin(HOME, "dev");
 const AGENT_ROOT = posixJoin(HOME, ".pi", "agent");
 
-const repoPath = (projectRoot: string, ...parts: string[]) => posixJoin(DEV_ROOT, projectRoot, ...parts);
+const repoPath = (projectRoot: string, ...parts: string[]) =>
+  posixJoin(DEV_ROOT, projectRoot, ...parts);
 const agentPath = (...parts: string[]) => posixJoin(AGENT_ROOT, ...parts);
-const npmCachePath = (...parts: string[]) => posixJoin(HOME, ".npm", "_cacache", ...parts);
+const npmCachePath = (...parts: string[]) =>
+  posixJoin(HOME, ".npm", "_cacache", ...parts);
 const cachePath = (...parts: string[]) => posixJoin(HOME, ".cache", ...parts);
 
 // ── Basic stability ──
@@ -55,7 +75,9 @@ describe("deriveProjectId — stability", () => {
     const ext = makeExtraction({
       readFiles: ["a.ts", "b.ts", "c.ts"],
     });
-    const results = Array.from({ length: 10 }, () => deriveProjectId(TEST_CWD, ext));
+    const results = Array.from({ length: 10 }, () =>
+      deriveProjectId(TEST_CWD, ext),
+    );
     expect(new Set(results).size).toBe(1);
   });
 });
@@ -66,27 +88,58 @@ describe("deriveProjectId — collision resistance", () => {
   it("produces DIFFERENT IDs for different projects (absolute paths)", () => {
     const projectA = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("workspace-alpha/repo-core", "src/core.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("workspace-alpha/repo-core", "README.md"), toolCalls: 1, lastModifiedIndex: 3 },
+        {
+          path: repoPath("workspace-alpha/repo-core", "src/core.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("workspace-alpha/repo-core", "README.md"),
+          toolCalls: 1,
+          lastModifiedIndex: 3,
+        },
       ],
     });
     const projectB = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("workspace-beta/repo-agent", "src/tools/index.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("workspace-beta/repo-agent", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
+        {
+          path: repoPath("workspace-beta/repo-agent", "src/tools/index.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("workspace-beta/repo-agent", "README.md"),
+          toolCalls: 1,
+          lastModifiedIndex: 2,
+        },
       ],
     });
-    expect(deriveProjectId(TEST_CWD, projectA)).not.toBe(deriveProjectId(TEST_CWD, projectB));
+    expect(deriveProjectId(TEST_CWD, projectA)).not.toBe(
+      deriveProjectId(TEST_CWD, projectB),
+    );
   });
 
   it("produces DIFFERENT IDs for different projects (relative paths)", () => {
     const projectA = makeExtraction({
-      readFiles: ["src/core.ts", "src/index.ts", "src/utils/helpers.ts", "README.md", "package.json"],
+      readFiles: [
+        "src/core.ts",
+        "src/index.ts",
+        "src/utils/helpers.ts",
+        "README.md",
+        "package.json",
+      ],
     });
     const projectB = makeExtraction({
-      readFiles: ["web/src/app.tsx", "web/src/routes.ts", "extensions/main.js", "docs/guide.md"],
+      readFiles: [
+        "web/src/app.tsx",
+        "web/src/routes.ts",
+        "extensions/main.js",
+        "docs/guide.md",
+      ],
     });
-    expect(deriveProjectId(TEST_CWD, projectA)).not.toBe(deriveProjectId(TEST_CWD, projectB));
+    expect(deriveProjectId(TEST_CWD, projectA)).not.toBe(
+      deriveProjectId(TEST_CWD, projectB),
+    );
   });
 
   it("does NOT use 'root' or '/Users' as project root (regression)", () => {
@@ -101,8 +154,16 @@ describe("deriveProjectId — collision resistance", () => {
     });
     const absoluteExt = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("workspace-alpha/repo-core", "src/core.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("workspace-beta/repo-agent", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
+        {
+          path: repoPath("workspace-alpha/repo-core", "src/core.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("workspace-beta/repo-agent", "README.md"),
+          toolCalls: 1,
+          lastModifiedIndex: 2,
+        },
       ],
     });
 
@@ -117,21 +178,39 @@ describe("deriveProjectId — noise filtering", () => {
   it("ignores node_modules paths", () => {
     const clean = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("project-a", "src/main.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("project-a", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
+        {
+          path: repoPath("project-a", "src/main.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("project-a", "README.md"),
+          toolCalls: 1,
+          lastModifiedIndex: 2,
+        },
       ],
     });
     const withNoise = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("project-a", "src/main.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("project-a", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
+        {
+          path: repoPath("project-a", "src/main.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("project-a", "README.md"),
+          toolCalls: 1,
+          lastModifiedIndex: 2,
+        },
       ],
       readFiles: [
         npmCachePath("tmp", "abc.json"),
         "node_modules/lodash/index.js",
       ],
     });
-    expect(deriveProjectId(TEST_CWD, clean)).toBe(deriveProjectId(TEST_CWD, withNoise));
+    expect(deriveProjectId(TEST_CWD, clean)).toBe(
+      deriveProjectId(TEST_CWD, withNoise),
+    );
   });
 
   it("ignores .pi/agent infrastructure paths", () => {
@@ -147,15 +226,14 @@ describe("deriveProjectId — noise filtering", () => {
         agentPath("settings.json"),
       ],
     });
-    expect(deriveProjectId(TEST_CWD, clean)).toBe(deriveProjectId(TEST_CWD, withPiNoise));
+    expect(deriveProjectId(TEST_CWD, clean)).toBe(
+      deriveProjectId(TEST_CWD, withPiNoise),
+    );
   });
 
   it("returns 'unknown' when all paths are noise", () => {
     const noiseOnly = makeExtraction({
-      readFiles: [
-        "node_modules/react/index.js",
-        cachePath("something.json"),
-      ],
+      readFiles: ["node_modules/react/index.js", cachePath("something.json")],
     });
     expect(deriveProjectId(TEST_CWD, noiseOnly)).toBe("unknown");
   });
@@ -167,9 +245,21 @@ describe("deriveProjectId — absolute path resolution", () => {
   it("finds the correct deep project root for a single project", () => {
     const ext = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("myproject", "src/a.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("myproject", "src/b.ts"), toolCalls: 1, lastModifiedIndex: 2 },
-        { path: repoPath("myproject", "package.json"), toolCalls: 1, lastModifiedIndex: 3 },
+        {
+          path: repoPath("myproject", "src/a.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("myproject", "src/b.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 2,
+        },
+        {
+          path: repoPath("myproject", "package.json"),
+          toolCalls: 1,
+          lastModifiedIndex: 3,
+        },
       ],
     });
     const id1 = deriveProjectId(TEST_CWD, ext);
@@ -184,35 +274,76 @@ describe("deriveProjectId — absolute path resolution", () => {
   it("does not collide when one project dominates with modifications", () => {
     const primary = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("project-x", "src/main.ts"), toolCalls: 3, lastModifiedIndex: 5 },
-        { path: repoPath("project-x", "src/util.ts"), toolCalls: 2, lastModifiedIndex: 8 },
-        { path: repoPath("project-x", "test/main.test.ts"), toolCalls: 1, lastModifiedIndex: 10 },
+        {
+          path: repoPath("project-x", "src/main.ts"),
+          toolCalls: 3,
+          lastModifiedIndex: 5,
+        },
+        {
+          path: repoPath("project-x", "src/util.ts"),
+          toolCalls: 2,
+          lastModifiedIndex: 8,
+        },
+        {
+          path: repoPath("project-x", "test/main.test.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 10,
+        },
       ],
       readFiles: [repoPath("project-y", "README.md")],
     });
     const otherProject = makeExtraction({
       modifiedFiles: [
-        { path: repoPath("project-y", "src/index.ts"), toolCalls: 1, lastModifiedIndex: 1 },
-        { path: repoPath("project-y", "README.md"), toolCalls: 1, lastModifiedIndex: 2 },
+        {
+          path: repoPath("project-y", "src/index.ts"),
+          toolCalls: 1,
+          lastModifiedIndex: 1,
+        },
+        {
+          path: repoPath("project-y", "README.md"),
+          toolCalls: 1,
+          lastModifiedIndex: 2,
+        },
       ],
     });
-    expect(deriveProjectId(TEST_CWD, primary)).not.toBe(deriveProjectId(TEST_CWD, otherProject));
+    expect(deriveProjectId(TEST_CWD, primary)).not.toBe(
+      deriveProjectId(TEST_CWD, otherProject),
+    );
   });
 });
 
 // ── Git-root based projectId ──
 
 describe("deriveProjectId — cwd/git-root priority", () => {
-  it("fails closed for HOME and filesystem root", () => {
+  it("fails closed for missing cwd, HOME, and filesystem root", () => {
+    expect(deriveProjectIdFromCwd(undefined as never)).toBeNull();
     expect(deriveProjectIdFromCwd(process.env.HOME!)).toBeNull();
     expect(deriveProjectIdFromCwd(path.parse(process.cwd()).root)).toBeNull();
   });
 
+  it("fails closed for the OS home when HOME is unavailable", () => {
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    delete process.env.HOME;
+    delete process.env.USERPROFILE;
+    try {
+      expect(deriveProjectIdFromCwd(os.homedir())).toBeNull();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+    }
+  });
+
   it("preserves repository cwd parity", () => {
     const rootId = deriveProjectIdFromCwd(process.cwd());
+    const subdirectory = path.join(process.cwd(), "src");
     expect(rootId).not.toBeNull();
-    expect(deriveProjectIdFromCwd(path.join(process.cwd(), "src"))).toBe(rootId);
-    expect(rootId).toBe(deriveProjectId(process.cwd(), makeExtraction()));
+    if (!rootId) throw new Error("expected project id for repository cwd");
+    expect(deriveProjectIdFromCwd(subdirectory)).toBe(rootId);
+    expect(deriveProjectId(process.cwd(), makeExtraction())).toBe(rootId);
+    expect(deriveProjectId(subdirectory, makeExtraction())).toBe(rootId);
   });
 
   it("finds the real git root for the current directory", () => {
@@ -231,8 +362,14 @@ describe("deriveProjectId — cwd/git-root priority", () => {
   });
 
   it("produces the same id for the same cwd regardless of extraction noise", () => {
-    const id1 = deriveProjectId(process.cwd(), makeExtraction({ readFiles: ["a.ts"] }));
-    const id2 = deriveProjectId(process.cwd(), makeExtraction({ readFiles: ["b.ts", "c.ts"] }));
+    const id1 = deriveProjectId(
+      process.cwd(),
+      makeExtraction({ readFiles: ["a.ts"] }),
+    );
+    const id2 = deriveProjectId(
+      process.cwd(),
+      makeExtraction({ readFiles: ["b.ts", "c.ts"] }),
+    );
     // Same cwd → same projectId (git-root or cwd hash)
     expect(id1).toBe(id2);
   });
@@ -240,12 +377,24 @@ describe("deriveProjectId — cwd/git-root priority", () => {
 
 describe("saveProjectFingerprint", () => {
   it("merges independent process updates under one project lock", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-fingerprint-race-"));
+    const home = fs.mkdtempSync(
+      path.join(os.tmpdir(), "psc-fingerprint-race-"),
+    );
     const projectId = "proj-concurrent";
-    const target = path.join(home, ".pi", "agent", ".cache", "smart-compact", "projects", projectId + ".json");
+    const target = path.join(
+      home,
+      ".pi",
+      "agent",
+      ".cache",
+      "smart-compact",
+      "projects",
+      projectId + ".json",
+    );
     ensureDir(path.dirname(target));
     const release = acquireLockSync(target);
-    const moduleUrl = pathToFileURL(path.resolve("src/utils/fingerprint.ts")).href;
+    const moduleUrl = pathToFileURL(
+      path.resolve("src/utils/fingerprint.ts"),
+    ).href;
     const workers = Array.from({ length: 4 }, (_, index) => {
       const marker = path.join(home, "ready-" + index);
       const source = `
@@ -258,43 +407,80 @@ describe("saveProjectFingerprint", () => {
           mainGoal: null, lastUserMessages: [], lastErrors: [], messageCount: 1
         });
       `;
-      return { marker, process: Bun.spawn([process.execPath, "-e", source], { env: { ...process.env, HOME: home, MARKER: marker } }) };
+      return {
+        marker,
+        process: Bun.spawn([process.execPath, "-e", source], {
+          env: { ...process.env, HOME: home, MARKER: marker },
+        }),
+      };
     });
 
     let released = false;
     const releaseLock = () => {
-      if (!released) { release(); released = true; }
+      if (!released) {
+        release();
+        released = true;
+      }
     };
     try {
       const deadline = Date.now() + 5_000;
-      while (workers.some(worker => !fs.existsSync(worker.marker)) && Date.now() < deadline) {
+      while (
+        workers.some((worker) => !fs.existsSync(worker.marker)) &&
+        Date.now() < deadline
+      ) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
       }
-      expect(workers.every(worker => fs.existsSync(worker.marker))).toBe(true);
+      expect(workers.every((worker) => fs.existsSync(worker.marker))).toBe(
+        true,
+      );
       releaseLock();
 
-      expect(await Promise.all(workers.map(worker => worker.process.exited))).toEqual([0, 0, 0, 0]);
+      expect(
+        await Promise.all(workers.map((worker) => worker.process.exited)),
+      ).toEqual([0, 0, 0, 0]);
       const fingerprint = JSON.parse(fs.readFileSync(target, "utf8"));
       expect(fingerprint.sessionCount).toBe(4);
-      expect(fingerprint.knownFiles.sort()).toEqual(Array.from({ length: 4 }, (_, index) => "src/area-" + index + "/file.ts"));
-      expect(fingerprint.keyDirectories.sort()).toEqual(Array.from({ length: 4 }, (_, index) => "src/area-" + index));
+      expect(fingerprint.knownFiles.sort()).toEqual(
+        Array.from(
+          { length: 4 },
+          (_, index) => "src/area-" + index + "/file.ts",
+        ),
+      );
+      expect(fingerprint.keyDirectories.sort()).toEqual(
+        Array.from({ length: 4 }, (_, index) => "src/area-" + index),
+      );
     } finally {
       releaseLock();
-      await Promise.allSettled(workers.map(worker => worker.process.exited));
+      await Promise.allSettled(workers.map((worker) => worker.process.exited));
       fs.rmSync(home, { recursive: true, force: true });
     }
-
   });
   it("counts distinct sessions rather than compaction runs", async () => {
     const previousHome = process.env.HOME;
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-fingerprint-session-count-"));
+    const home = fs.mkdtempSync(
+      path.join(os.tmpdir(), "psc-fingerprint-session-count-"),
+    );
     process.env.HOME = home;
     try {
       const extraction = makeExtraction({ readFiles: ["src/index.ts"] });
-      await saveProjectFingerprint("proj-session-count", "session-a", extraction);
-      await saveProjectFingerprint("proj-session-count", "session-a", extraction);
-      await saveProjectFingerprint("proj-session-count", "session-b", extraction);
-      expect(loadProjectFingerprint("proj-session-count")?.sessionCount).toBe(2);
+      await saveProjectFingerprint(
+        "proj-session-count",
+        "session-a",
+        extraction,
+      );
+      await saveProjectFingerprint(
+        "proj-session-count",
+        "session-a",
+        extraction,
+      );
+      await saveProjectFingerprint(
+        "proj-session-count",
+        "session-b",
+        extraction,
+      );
+      expect(loadProjectFingerprint("proj-session-count")?.sessionCount).toBe(
+        2,
+      );
     } finally {
       process.env.HOME = previousHome;
       fs.rmSync(home, { recursive: true, force: true });

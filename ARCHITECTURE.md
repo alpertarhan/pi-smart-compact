@@ -112,7 +112,9 @@ assertions: the type system proves `buildState` has run.
 
 ### Entry and context gate
 
-`src/index.ts` resolves models, parses command arguments, and routes work into
+`src/index.ts` owns host lifecycle wiring. Cohesive adapters in
+`src/app/register-smart-compact-command.ts`, `register-smart-compact-tool.ts`,
+and `model-routing.ts` validate input, resolve models, and route work into
 `runSmartCompact()`. Before any expensive work, the system checks context size
 against the threshold in `src/constants.ts`. Auto / tool runs are skipped while
 context is small; manual `/smart-compact` uses an absolute adaptive safety tail
@@ -125,6 +127,15 @@ tail target and at least 10% projected net savings before any model call. A
 pending summary for the same session is reused instead of invoking the pipeline
 again. `auto` is not a fourth policy: it selects one of the three from context
 pressure and deterministic extraction risk.
+
+`app/smart-compact-policy.ts` keeps agent-tool visibility separate from
+automatic compaction. The tool remains registered for immediate re-enable, but
+Pi's active-tool set controls whether its schema and prompt guidance reach the
+agent. Agent access is tri-state: `inherit` leaves host `/tools` and allowlists
+in control, while explicit `enabled`/`disabled` choices mutate only
+`smart_compact` and then report the effective host state. Full policy snapshots
+are custom branch entries restored on `session_start` and `session_tree`; the
+manual command is never gated.
 
 Model routes are stage-specific but never inferred from mode. With no explicit
 configuration, Explore, Synthesize, and Verify all use the selected Pi model.
@@ -276,14 +287,20 @@ leaving one content-free safe-fallback notice in the UI.
 Apply-confirmed verified state is queued and duplicate updates coalesce only
 for the exact project/session/branch head. Replacing an existing key refreshes
 that pending value even at capacity; a divergent 65th key is rejected rather
-than evicting accepted work. The next event-loop turn drains the accepted
-batch through one reused SQLite connection, so connection setup and graph work
-are not part of the native compaction hook's latency.
+than evicting accepted work. A microtask drains the accepted batch through one
+reused SQLite connection. Every caller awaits the transaction result, so
+persistence telemetry is complete only after indexing succeeds; permanent
+open/write failures settle once as `context graph` failures and are never
+zero-delay retried. All graph surfaces
+(recall, manual memory, stats, indexing) share one process-wide, path-keyed
+cached connection, so connection setup, schema checks, and migration probes
+are paid once per process instead of per call; the cache is keyed by database
+path so environments that relocate the cache directory (tests swapping HOME)
+reopen cleanly.
 `infra/context-graph.ts` adapts the same fail-closed transaction contract to
 `bun:sqlite` in Bun tests and `node:sqlite` `DatabaseSync` in Pi's Node runtime;
-the packed release audit exercises both. The queue timer survives extension
-shutdown/reload in the process; graph data is derived and a later cumulative
-state safely supersedes a missed update after a hard process kill. Fact
+the packed release audit exercises both. Graph data is derived and a later
+cumulative state safely supersedes a failed update. Fact
 occurrences are branch-head scoped; state, recall, and resolution use the
 complete host-visible branch ancestry before equivalent facts are deduplicated.
 Schema v1 preserves user-confirmed manual memory but resets older derived
@@ -347,6 +364,15 @@ possibly renewed lease in place. Sessions therefore cannot interleave bytes or
 steal a live successor's lock. SQLite supplies its own WAL durability. Native
 continuity handoffs are one-shot, bounded, and keyed by project + session +
 branch head.
+
+The session run lock uses file leases reclaimed when the owning PID dies.
+Reclaim has a deliberate, documented TOCTOU window: two processes reclaiming
+the same stale lease within milliseconds can, in one interleaving, unlink the
+other's freshly created lease. The double re-read (token + inode metadata)
+narrows but cannot atomically close this without an O_EXCL rename protocol;
+the lock is best-effort serialization of a normally single-writer flow, not a
+mutual-exclusion guarantee, and the surrounding pipeline remains fail-closed
+when the lock cannot be acquired.
 
 ## Provider awareness
 
@@ -437,7 +463,7 @@ The code is organized into six layers, each with a single responsibility.
 
 | File | Responsibility |
 | --- | --- |
-| `src/index.ts` | extension registration, command parsing, and host lifecycle hooks |
+| `src/index.ts` | extension composition root and host lifecycle hooks |
 | `src/constants.ts` | version, thresholds, prompts, config keys |
 | `src/types.ts` | shared types and discriminated unions |
 | `domain/provider-evaluation.ts` | advisory provider scenario matrix and route telemetry aggregation |
@@ -448,6 +474,11 @@ The code is organized into six layers, each with a single responsibility.
 | File | Responsibility |
 | --- | --- |
 | `app/run-smart-compact.ts` | top-level pipeline orchestrator |
+| `app/register-smart-compact-command.ts` | manual command adapter and restore/loop actions |
+| `app/register-smart-compact-tool.ts` | bounded agent-tool adapter |
+| `app/register-context-tools.ts` | project-scoped recall/save-memory adapters |
+| `app/model-routing.ts` | stage model resolution and explicit-model precedence |
+| `app/smart-compact-policy.ts` | branch-scoped agent visibility and auto-trigger policy; owns active-tool updates |
 | `app/run-context.ts` | typed stage chain (`RcBase → … → StatedRc`) |
 | `app/mode-policy.ts` | Auto selector and finite Fast/Balanced/Thorough policies; legacy Aggressive maps to Fast |
 | `app/pending-slot.ts` | encapsulated pending-compaction state cell |
@@ -504,7 +535,9 @@ All external-world interaction.
 | `utils/extraction.ts` | deterministic fact extraction (files, errors, decisions) |
 | `utils/pruning.ts` | redundancy removal on the message list |
 | `utils/state.ts` | structured state, open loops, delta, pinned-path preservation |
-| `utils/helpers.ts` | config, backups, batching, shared helpers, backup list/restore |
+| `utils/config.ts` | validated config loading and mtime-keyed cache |
+| `utils/helpers.ts` | batching, compaction boundaries, and extraction rendering helpers |
+| `utils/backups.ts` | backup persistence, listing, and restore message construction |
 | `utils/cache.ts` | metrics log + extraction prefix cache |
 | `utils/fingerprint.ts` | project fingerprinting (language, framework, deps) |
 | `utils/damage.ts` | post-compaction regression signals + remediation hints |
@@ -521,7 +554,11 @@ All external-world interaction.
 
 | File | Responsibility |
 | --- | --- |
-| `ui/overlays.ts` | progressive preflight, semantic phase progress, approval review, and dashboard screens |
+| `ui/overlays.ts` | progressive preflight, semantic phase progress, and approval review |
+| `ui/metrics-dashboard-overlay.ts` | interactive metrics dashboard screen |
+| `ui/backup-overlays.ts` | backup picker, viewer, and restore action screen |
+| `ui/open-loops-overlay.ts` | persisted open-loop manager |
+| `ui/settings-overlay.ts` | session/branch policy editor for agent access and automatic compaction |
 | `ui/dashboard-format.ts` | shared pure formatters for metrics surfaces |
 | `ui/dashboard-insights.ts` | Data Confidence, quality/provider drilldowns, and canary trust views |
 | `ui/metrics-report.ts` | text report + local HTML metrics dashboard |

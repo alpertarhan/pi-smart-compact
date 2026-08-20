@@ -1,5 +1,17 @@
 # Changelog
 
+## [9.4.0-rc.0] - 2026-08-20
+
+### Added
+
+- `/smart-compact settings` provides branch-scoped TUI controls for agent access and automatic compaction. Agent access defaults to `inherit`, respecting Pi's host tool selection; explicit enable/disable remains available. Hiding agent access removes the `smart_compact` schema and prompt guidance while preserving the manual command, and disabling both controls creates a manual-only session. `agentToolAccess` supplies the permanent global default.
+
+### Fixed
+
+- Context-graph indexing now resolves an awaitable transaction result. Permanent SQLite open/write failures settle once, cannot enter a zero-delay retry storm, and appear as partial persistence in telemetry.
+- Session policy writes roll back runtime tool/status changes when the host cannot append branch state. Tool pipeline and durable-memory failures now throw so Pi records an error result instead of a successful text result.
+- Compaction file evidence uses locale-independent code-point ordering for reproducible prompts across hosts.
+
 ## [9.3.1] - 2026-08-15
 
 ### Fixed

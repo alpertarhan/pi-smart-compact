@@ -6,10 +6,18 @@
 import type { LlmMessage, SmartCompactDetails } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 import { extractText } from "./extraction.ts";
-import { classifyToolOperation, extractToolPath } from "../domain/tool-semantics.ts";
+import {
+  classifyToolOperation,
+  extractToolPath,
+} from "../domain/tool-semantics.ts";
 import * as log from "./logger.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
-import { appendLineLocked, readJsonlTail, writeJsonSync, readJsonSync } from "../infra/fs.ts";
+import {
+  appendLineLockedAsync,
+  readJsonlTail,
+  writeJsonSync,
+  readJsonSync,
+} from "../infra/fs.ts";
 import { RUNTIME_LOG_MAX_BYTES, SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
 
@@ -48,8 +56,12 @@ export function detectDamage(
   const signals: RegressionSignal[] = [];
   const reReadFiles: string[] = [];
   const reReadCounts = new Map<string, number>();
-  const compactedFiles = new Set(details.modifiedFiles.map(f => f.toLowerCase()));
-  const compactedReadFiles = new Set(details.readFiles.map(f => f.toLowerCase()));
+  const compactedFiles = new Set(
+    details.modifiedFiles.map((f) => f.toLowerCase()),
+  );
+  const compactedReadFiles = new Set(
+    details.readFiles.map((f) => f.toLowerCase()),
+  );
 
   for (let i = 0; i < postMessages.length; i++) {
     const msg = postMessages[i];
@@ -61,12 +73,18 @@ export function detectDamage(
       for (const b of blocks) {
         if (isToolCallBlock(b)) {
           const operation = classifyToolOperation(b.arguments, b.name);
-          const fp = operation === "read" || operation === "search" || operation === "list"
-            ? extractToolPath(b.arguments)
-            : undefined;
+          const fp =
+            operation === "read" ||
+            operation === "search" ||
+            operation === "list"
+              ? extractToolPath(b.arguments)
+              : undefined;
           if (fp) {
             const fpLower = fp.toLowerCase();
-            if (compactedFiles.has(fpLower) || compactedReadFiles.has(fpLower)) {
+            if (
+              compactedFiles.has(fpLower) ||
+              compactedReadFiles.has(fpLower)
+            ) {
               if (!reReadFiles.includes(fp)) reReadFiles.push(fp);
               const count = (reReadCounts.get(fpLower) ?? 0) + 1;
               reReadCounts.set(fpLower, count);
@@ -92,7 +110,10 @@ export function detectDamage(
           signals.push({
             type: "user-complaint",
             severity: "high",
-            detail: "User complaint after compaction: \"" + text.slice(0, TRUNC.TOPIC_LABEL) + "\"",
+            detail:
+              'User complaint after compaction: "' +
+              text.slice(0, TRUNC.TOPIC_LABEL) +
+              '"',
           });
           break;
         }
@@ -104,18 +125,26 @@ export function detectDamage(
         // single match is enough signal — the old "≥2 long words" guard was for
         // the noisier positional keyword extraction.
         const topicWords = extractCheckKeywords(t, 3);
-        if (topicWords.length > 0 && topicWords.some(w => text.includes(w.toLowerCase()))) {
+        if (
+          topicWords.length > 0 &&
+          topicWords.some((w) => text.includes(w.toLowerCase()))
+        ) {
           signals.push({
             type: "re-question",
             severity: "low",
-            detail: "User mentions compacted topic: " + t.slice(0, TRUNC.SNIPPET),
+            detail:
+              "User mentions compacted topic: " + t.slice(0, TRUNC.SNIPPET),
           });
         }
       }
     }
   }
 
-  const dedupedSignals = Array.from(new Map(signals.map(signal => [signal.type + ":" + signal.detail, signal])).values());
+  const dedupedSignals = Array.from(
+    new Map(
+      signals.map((signal) => [signal.type + ":" + signal.detail, signal]),
+    ).values(),
+  );
 
   // Low-severity topic mentions are observational, not damage by themselves.
   let damageScore = 0;
@@ -127,9 +156,13 @@ export function detectDamage(
 
   // Build summary
   const parts: string[] = [];
-  const reReads = dedupedSignals.filter(s => s.type === "re-read").length;
-  const complaints = dedupedSignals.filter(s => s.type === "user-complaint").length;
-  const reQuestions = dedupedSignals.filter(s => s.type === "re-question").length;
+  const reReads = dedupedSignals.filter((s) => s.type === "re-read").length;
+  const complaints = dedupedSignals.filter(
+    (s) => s.type === "user-complaint",
+  ).length;
+  const reQuestions = dedupedSignals.filter(
+    (s) => s.type === "re-question",
+  ).length;
   if (reReads) parts.push(reReads + " re-read(s)");
   if (complaints) parts.push(complaints + " user complaint(s)");
   if (reQuestions) parts.push(reQuestions + " re-question(s)");
@@ -146,6 +179,10 @@ export function detectDamage(
 
 /**
  * Save a damage report to the metrics log for future analysis.
+ *
+ * The append is fire-and-forget async: this runs from the message_end
+ * handler, and the locked append path must never block the main thread on a
+ * contended lock. Failures are logged, not thrown.
  */
 export function logDamageReport(
   sessionId: string,
@@ -154,27 +191,31 @@ export function logDamageReport(
   projectId?: string,
   observationSource: "online-window" | "next-compaction" = "next-compaction",
 ): void {
-  try {
-    const entry = {
-      ts: new Date().toISOString(),
-      runId: details.runId,
-      sessionId,
-      projectId,
-      observationSource,
-      method: details.method,
-      profile: details.profile,
-      mode: details.mode,
-      version: details.version,
-      releaseChannel: details.releaseChannel,
-      qualityScore: details.qualityScore,
-      damageScore: report.damageScore,
-      signals: report.signals.length,
-      summary: report.summary,
-    };
-    // Append and retention share one lock so an atomic trim cannot replace a
-    // line that landed after the trim snapshot was read.
-    appendLineLocked(damageReportsFile(), JSON.stringify(entry), RUNTIME_LOG_MAX_BYTES);
-  } catch (e) { log.warn("logDamageReport failed", e); }
+  const entry = {
+    ts: new Date().toISOString(),
+    runId: details.runId,
+    sessionId,
+    projectId,
+    observationSource,
+    method: details.method,
+    profile: details.profile,
+    mode: details.mode,
+    version: details.version,
+    releaseChannel: details.releaseChannel,
+    qualityScore: details.qualityScore,
+    damageScore: report.damageScore,
+    signals: report.signals.length,
+    summary: report.summary,
+  };
+  // Append and retention share one lock so an atomic trim cannot replace a
+  // line that landed after the trim snapshot was read.
+  void appendLineLockedAsync(
+    damageReportsFile(),
+    JSON.stringify(entry),
+    RUNTIME_LOG_MAX_BYTES,
+  ).catch((e) => {
+    log.warn("logDamageReport failed", e);
+  });
 }
 
 export interface OnlineDamageObservation {
@@ -186,35 +227,61 @@ export interface OnlineDamageObservation {
 
 /** Session-keyed monitor activated only after Pi confirms `session_compact`. */
 export class OnlineDamageMonitor {
-  private readonly active = new Map<string, { projectId: string; details: SmartCompactDetails; messages: LlmMessage[] }>();
+  private readonly active = new Map<
+    string,
+    { projectId: string; details: SmartCompactDetails; messages: LlmMessage[] }
+  >();
 
   constructor(private readonly maxMessages = 15) {}
 
-  activate(sessionId: string, projectId: string, details: SmartCompactDetails): void {
+  activate(
+    sessionId: string,
+    projectId: string,
+    details: SmartCompactDetails,
+  ): void {
     this.active.set(sessionId, { projectId, details, messages: [] });
   }
 
-  observe(sessionId: string, message: LlmMessage): OnlineDamageObservation | null {
+  observe(
+    sessionId: string,
+    message: LlmMessage,
+  ): OnlineDamageObservation | null {
     const monitor = this.active.get(sessionId);
     if (!monitor) return null;
     monitor.messages.push(message);
     const report = detectDamage(monitor.messages, monitor.details);
-    const complete = report.damageScore > 0 || monitor.messages.length >= this.maxMessages;
+    const complete =
+      report.damageScore > 0 || monitor.messages.length >= this.maxMessages;
     if (!complete) return null;
     this.active.delete(sessionId);
-    return { projectId: monitor.projectId, details: monitor.details, report, complete };
+    return {
+      projectId: monitor.projectId,
+      details: monitor.details,
+      report,
+      complete,
+    };
   }
 
-  clear(sessionId: string): void { this.active.delete(sessionId); }
-  size(): number { return this.active.size; }
+  clear(sessionId: string): void {
+    this.active.delete(sessionId);
+  }
+  size(): number {
+    return this.active.size;
+  }
 }
 
 export function readRecentDamageScores(projectId: string, limit = 5): number[] {
-  const entries = readJsonlTail<{ projectId?: string; damageScore?: number }>(damageReportsFile(), Math.max(limit * 8, 40));
+  const entries = readJsonlTail<{ projectId?: string; damageScore?: number }>(
+    damageReportsFile(),
+    Math.max(limit * 8, 40),
+  );
   return entries
-    .filter(entry => entry.projectId === projectId && typeof entry.damageScore === "number")
+    .filter(
+      (entry) =>
+        entry.projectId === projectId && typeof entry.damageScore === "number",
+    )
     .slice(-limit)
-    .map(entry => entry.damageScore!);
+    .map((entry) => entry.damageScore!);
 }
 
 const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;
@@ -224,13 +291,23 @@ const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;
  * compaction treats them as must-preserve (remediation). Overwrites with the
  * latest set; a TTL bounds how long stale hints linger.
  */
-export function writeRemediationHints(projectId: string, files: string[]): void {
+export function writeRemediationHints(
+  projectId: string,
+  files: string[],
+): void {
   if (!files.length) return;
-  const cleaned = [...new Set(files.map(f => (f ?? "").trim()).filter(f => f.length > 0))];
+  const cleaned = [
+    ...new Set(files.map((f) => (f ?? "").trim()).filter((f) => f.length > 0)),
+  ];
   if (!cleaned.length) return;
   try {
-    writeJsonSync(remediationHintsFile(projectId), { files: cleaned, updatedAt: Date.now() });
-  } catch (e) { log.warn("writeRemediationHints failed", e); }
+    writeJsonSync(remediationHintsFile(projectId), {
+      files: cleaned,
+      updatedAt: Date.now(),
+    });
+  } catch (e) {
+    log.warn("writeRemediationHints failed", e);
+  }
 }
 
 /**
@@ -238,8 +315,14 @@ export function writeRemediationHints(projectId: string, files: string[]): void 
  * or older than the TTL.
  */
 export function readRemediationHints(projectId: string): string[] {
-  const data = readJsonSync<{ files?: unknown; updatedAt?: number }>(remediationHintsFile(projectId));
+  const data = readJsonSync<{ files?: unknown; updatedAt?: number }>(
+    remediationHintsFile(projectId),
+  );
   if (!data || !Array.isArray(data.files)) return [];
-  if (typeof data.updatedAt === "number" && Date.now() - data.updatedAt > REMEDIATION_TTL_MS) return [];
+  if (
+    typeof data.updatedAt === "number" &&
+    Date.now() - data.updatedAt > REMEDIATION_TTL_MS
+  )
+    return [];
   return data.files.filter((f): f is string => typeof f === "string");
 }

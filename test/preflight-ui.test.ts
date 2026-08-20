@@ -83,8 +83,8 @@ describe("smart compact preflight UI", () => {
   });
 
   it("recommends Fast under severe pressure and mentions tool-heavy shape", () => {
-    const plans = new Map(["thorough", "balanced", "fast"].map(mode => {
-      const item = preview(mode as ManualPreflight["mode"], true);
+    const plans = new Map((["thorough", "balanced", "fast"] as const).map(mode => {
+      const item = preview(mode, true);
       item.contextPercent = 96;
       item.toolPercent = 78;
       return [mode, item] as const;
@@ -96,8 +96,8 @@ describe("smart compact preflight UI", () => {
   });
 
   it("prioritizes Thorough when damage feedback adapted retention", () => {
-    const plans = new Map(["thorough", "balanced", "fast"].map(mode => {
-      const item = preview(mode as ManualPreflight["mode"], true);
+    const plans = new Map((["thorough", "balanced", "fast"] as const).map(mode => {
+      const item = preview(mode, true);
       item.adapted = true;
       item.damageMedian = 40;
       item.contextPercent = 96;

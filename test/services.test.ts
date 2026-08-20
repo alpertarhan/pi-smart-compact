@@ -10,13 +10,23 @@
 
 import { describe, it, expect, beforeEach } from "bun:test";
 import {
-  ToolSupportCache, MetricsSink, ExtractionCacheStats, BudgetGuard, BudgetExceededError,
-  createServices, createProductionServices, getDefaultServices, resetDefaultServices, setDefaultServices,
+  ToolSupportCache,
+  MetricsSink,
+  ExtractionCacheStats,
+  BudgetGuard,
+  BudgetExceededError,
+  createServices,
+  createProductionServices,
+  getDefaultServices,
+  resetDefaultServices,
+  setDefaultServices,
 } from "../src/infra/services.ts";
 import { getMetricsSummary, trackedComplete } from "../src/utils/cache.ts";
 import type { Model, Api } from "@earendil-works/pi-ai";
 
-beforeEach(() => { resetDefaultServices(); });
+beforeEach(() => {
+  resetDefaultServices();
+});
 
 describe("ToolSupportCache", () => {
   it("returns undefined for an unseen key so callers force a probe", () => {
@@ -50,10 +60,24 @@ describe("ToolSupportCache", () => {
 });
 
 describe("MetricsSink", () => {
-  const sample = (over: Partial<{ in: number; out: number; cache: number; lat: number }> = {}) => ({
-    phase: "batch" as const, model: "x", provider: "openai",
-    inputTokens: over.in ?? 100, outputTokens: over.out ?? 50,
-    cacheHitTokens: over.cache ?? 0, latencyMs: over.lat ?? 200, success: true,
+  const sample = (
+    over: Partial<{
+      in: number;
+      out: number;
+      cache: number;
+      cw: number;
+      lat: number;
+    }> = {},
+  ) => ({
+    phase: "batch" as const,
+    model: "x",
+    provider: "openai",
+    inputTokens: over.in ?? 100,
+    outputTokens: over.out ?? 50,
+    cacheHitTokens: over.cache ?? 0,
+    cacheWriteTokens: over.cw ?? 0,
+    latencyMs: over.lat ?? 200,
+    success: true,
   });
 
   it("computes a summary that adds inputs/outputs and averages latency", () => {
@@ -171,20 +195,38 @@ describe("run-scoped services", () => {
   });
 
   it("trackedComplete records metrics and calibration only on the supplied services", async () => {
-    const model = { id: "m", provider: "openai", contextWindow: 128000 } as Model<Api>;
-    const mk = (input: number) => createServices({
-      llm: {
-        complete: async () => ({
-          content: [{ type: "text" as const, text: "ok" }],
-          usage: { input, output: 5, cacheRead: 0 },
-        }) as any,
-      },
-    });
+    const model = {
+      id: "m",
+      provider: "openai",
+      contextWindow: 128000,
+    } as Model<Api>;
+    const mk = (input: number) =>
+      createServices({
+        llm: {
+          complete: async () =>
+            ({
+              content: [{ type: "text" as const, text: "ok" }],
+              usage: { input, output: 5, cacheRead: 0 },
+            }) as any,
+        },
+      });
     const a = mk(10);
     const b = mk(20);
 
-    await trackedComplete("batch", model, { systemPrompt: "x", messages: [] } as any, { apiKey: "k" } as any, a);
-    await trackedComplete("batch", model, { systemPrompt: "x", messages: [] } as any, { apiKey: "k" } as any, b);
+    await trackedComplete(
+      "batch",
+      model,
+      { systemPrompt: "x", messages: [] } as any,
+      { apiKey: "k" } as any,
+      a,
+    );
+    await trackedComplete(
+      "batch",
+      model,
+      { systemPrompt: "x", messages: [] } as any,
+      { apiKey: "k" } as any,
+      b,
+    );
 
     expect(getMetricsSummary(a).totalInput).toBe(10);
     expect(getMetricsSummary(b).totalInput).toBe(20);
@@ -193,18 +235,36 @@ describe("run-scoped services", () => {
   });
 
   it("conservatively estimates missing provider usage for metrics and budgets", async () => {
-    const model = { id: "m", provider: "openai", contextWindow: 128000 } as Model<Api>;
+    const model = {
+      id: "m",
+      provider: "openai",
+      contextWindow: 128000,
+    } as Model<Api>;
     const services = createServices({
       llm: {
-        complete: async () => ({
-          content: [{ type: "text" as const, text: "generated ".repeat(200) }],
-        }) as any,
+        complete: async () =>
+          ({
+            content: [
+              { type: "text" as const, text: "generated ".repeat(200) },
+            ],
+          }) as any,
       },
     });
-    await trackedComplete("batch", model, {
-      systemPrompt: "system ".repeat(50),
-      messages: [{ role: "user", content: [{ type: "text", text: "input ".repeat(100) }] }],
-    } as any, { apiKey: "k", maxTokens: 500 } as any, services);
+    await trackedComplete(
+      "batch",
+      model,
+      {
+        systemPrompt: "system ".repeat(50),
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "input ".repeat(100) }],
+          },
+        ],
+      } as any,
+      { apiKey: "k", maxTokens: 500 } as any,
+      services,
+    );
     const metric = services.metrics.snapshot()[0];
     expect(metric.usageEstimated).toBe(true);
     expect(metric.inputTokens).toBeGreaterThan(0);
@@ -217,8 +277,15 @@ describe("run-scoped services", () => {
 describe("default container", () => {
   it("isolates state between resetDefaultServices calls", () => {
     getDefaultServices().metrics.record({
-      phase: "batch", model: "m", provider: "p",
-      inputTokens: 10, outputTokens: 5, cacheHitTokens: 0, latencyMs: 50, success: true,
+      phase: "batch",
+      model: "m",
+      provider: "p",
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheHitTokens: 0,
+      cacheWriteTokens: 0,
+      latencyMs: 50,
+      success: true,
     });
     expect(getDefaultServices().metrics.snapshot().length).toBe(1);
     resetDefaultServices();

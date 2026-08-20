@@ -26,7 +26,6 @@ import type {
   LlmMessage,
   StructuredExtraction,
   OpenLoop,
-  ExplorationReport,
   CompactionState,
 } from "../src/types.ts";
 import { STATE_SNAPSHOT_MAX_FILES } from "../src/constants.ts";
@@ -52,7 +51,7 @@ function makeExtraction(
 }
 
 function makeMsgs(extra: Partial<LlmMessage>[]): LlmMessage[] {
-  return extra.map((e, i) => ({
+  return extra.map((e) => ({
     role: e.role ?? "user",
     content: e.content ?? "",
     ...e,

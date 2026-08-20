@@ -88,16 +88,16 @@ describe("privacy-safe canary telemetry", () => {
 
   it("accepts the exact 95% success boundary", () => {
     const entries = [
-      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index === 0 ? "failure" : "success" })),
-      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index === 0 ? "failure" : "success" })),
+      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index === 0 ? "error" : "success" })),
+      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index === 0 ? "error" : "success" })),
     ];
     expect(assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 }).decision).toBe("promote");
   });
 
   it("never promotes a canary below the absolute 95% success floor", () => {
     const entries = [
-      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index < 2 ? "failure" : "success" })),
-      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index < 2 ? "failure" : "success" })),
+      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index < 2 ? "error" : "success" })),
+      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index < 2 ? "error" : "success" })),
     ];
     const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.decision).toBe("rollback");
@@ -108,7 +108,7 @@ describe("privacy-safe canary telemetry", () => {
     const entries = [
       ...Array.from({ length: 20 }, () => metric("stable")),
       ...Array.from({ length: 19 }, () => metric("canary", { status: "dry-run" })),
-      metric("canary", { status: "failure", verificationScore: 0 }),
+      metric("canary", { status: "error", verificationScore: 0 }),
     ];
     const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.canary.runs).toBe(20);
@@ -119,7 +119,7 @@ describe("privacy-safe canary telemetry", () => {
   it("rolls back early with three real non-dry outcomes", () => {
     const entries = [
       ...Array.from({ length: 20 }, () => metric("stable")),
-      ...Array.from({ length: 3 }, () => metric("canary", { status: "failure", verificationScore: 0 })),
+      ...Array.from({ length: 3 }, () => metric("canary", { status: "error", verificationScore: 0 })),
     ];
     const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.canary.appliedRuns).toBe(3);
@@ -130,7 +130,7 @@ describe("privacy-safe canary telemetry", () => {
     const entries = [
       ...Array.from({ length: 20 }, () => metric("stable")),
       metric("canary", { avgLatency: 1_000, totalInput: 1_000, totalOutput: 0 }),
-      metric("canary", { status: "failure", avgLatency: 9_000, totalInput: 9_000, totalOutput: 0, method: "heuristic" }),
+      metric("canary", { status: "error", avgLatency: 9_000, totalInput: 9_000, totalOutput: 0, method: "heuristic" }),
     ];
     const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.canary.p95LatencyMs).toBe(9_000);
@@ -141,7 +141,7 @@ describe("privacy-safe canary telemetry", () => {
   it("rolls back early on measurable regressions", () => {
     const baseline = Array.from({ length: 20 }, () => metric("stable"));
     const canary = Array.from({ length: 20 }, (_, index) => metric("canary", {
-      status: index < 10 ? "failure" : "success",
+      status: index < 10 ? "error" : "success",
       verificationScore: 75,
       avgLatency: 2_000,
       totalInput: 4_000,
@@ -199,7 +199,7 @@ describe("privacy-safe canary telemetry", () => {
 
   it("exports aggregates without session, project, prompt, path, or error text", () => {
     const report = buildPrivacySafeTelemetry([
-      metric("stable", { failureKind: "authentication", status: "failure" }),
+      metric("stable", { failureKind: "authentication", status: "error" }),
       metric("canary", { estimatedAfterTokens: 600, estimatedSavedTokens: 400, relaxedSoftBoundaries: ["anchor"] }),
     ], [], { version: "8.0.0", minCanaryRuns: 5 });
     const serialized = JSON.stringify(report);

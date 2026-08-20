@@ -8,13 +8,20 @@ import { afterAll, describe, it, expect, beforeAll } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { commitAppliedCompaction, persistAppliedState } from "../src/app/steps/persist.ts";
+import {
+  commitAppliedCompaction,
+  persistAppliedState,
+} from "../src/app/steps/persist.ts";
 import { createCompactionCommitStore } from "../src/app/compaction-commit-store.ts";
 import { loadProjectFingerprint } from "../src/utils/fingerprint.ts";
 import { loadCompactionState } from "../src/utils/state.ts";
 import { readMetricsLog } from "../src/utils/cache.ts";
-import { flushCompactionStateIndexes, recallContext } from "../src/infra/context-graph.ts";
+import {
+  flushCompactionStateIndexes,
+  recallContext,
+} from "../src/infra/context-graph.ts";
 import { VERSION } from "../src/constants.ts";
+import { contextGraphFile } from "../src/infra/paths.ts";
 
 const originalHome = process.env.HOME;
 let home: string;
@@ -31,28 +38,50 @@ afterAll(async () => {
 function minimalExtraction() {
   return {
     modifiedFiles: [{ path: "src/a.ts", toolCalls: 1, lastModifiedIndex: 0 }],
-    readFiles: ["src/b.ts"], deletedFiles: [],
-    errors: [], decisions: [], constraints: [], topics: [], timeline: [],
-    mediaAttachments: [], mainGoal: "test goal", lastUserMessages: [], lastErrors: [],
+    readFiles: ["src/b.ts"],
+    deletedFiles: [],
+    errors: [],
+    decisions: [],
+    constraints: [],
+    topics: [],
+    timeline: [],
+    mediaAttachments: [],
+    mainGoal: "test goal",
+    lastUserMessages: [],
+    lastErrors: [],
     messageCount: 3,
   };
 }
 
 describe("persistAppliedState", () => {
   it("writes fingerprint + compaction state only when called for an applied payload", async () => {
-
     const projectId = "test-project-consumed";
     await persistAppliedState({
-      runId: "run-applied-1", summary: "## Goal\nx", firstKeptEntryId: "e1", tokensBefore: 100,
-      details: {} as never, sessionId: "s1",
+      runId: "run-applied-1",
+      summary: "## Goal\nx",
+      firstKeptEntryId: "e1",
+      originBranchHeadId: "e1",
+      tokensBefore: 100,
+      details: {} as never,
+      sessionId: "s1",
       projectId,
       extraction: minimalExtraction() as never,
       compactionState: {
-        goal: "test goal", decisions: [], constraints: [],
-        modifiedFiles: ["src/a.ts"], readFiles: [], deletedFiles: [],
-        unresolvedErrors: [], resolvedErrors: [], openLoops: [], topics: [],
-        nextActions: [], criticalContext: [], sessionType: "implementation",
-        compactionVersion: VERSION, updatedAt: Date.now(),
+        goal: "test goal",
+        decisions: [],
+        constraints: [],
+        modifiedFiles: ["src/a.ts"],
+        readFiles: [],
+        deletedFiles: [],
+        unresolvedErrors: [],
+        resolvedErrors: [],
+        openLoops: [],
+        topics: [],
+        nextActions: [],
+        criticalContext: [],
+        sessionType: "implementation",
+        compactionVersion: VERSION,
+        updatedAt: Date.now(),
       } as never,
     });
 
@@ -67,83 +96,256 @@ describe("persistAppliedState", () => {
   it("indexes an applied scoped state into Smart Recall", async () => {
     const projectId = "test-project-graph";
     await persistAppliedState({
-      runId: "run-applied-2", summary: "## Goal\nship recall", firstKeptEntryId: "e1", tokensBefore: 100,
-      details: {} as never, sessionId: "s-graph", projectId,
+      runId: "run-applied-2",
+      summary: "## Goal\nship recall",
+      firstKeptEntryId: "e1",
+      originBranchHeadId: "e1",
+      tokensBefore: 100,
+      details: {} as never,
+      sessionId: "s-graph",
+      projectId,
       compactionState: {
-        goal: "Ship persistent recall", decisions: [{ id: "decision-1", summary: "Use FTS5", type: "explicit" }], constraints: [],
-        modifiedFiles: [], readFiles: [], deletedFiles: [], unresolvedErrors: [], resolvedErrors: [],
-        openLoops: [], topics: [], nextActions: [], criticalContext: [], sessionType: "implementation",
-        compactionVersion: VERSION, updatedAt: Date.now(),
-        scope: { schemaVersion: 2, projectId, sessionId: "s-graph", branchHeadId: "b1" },
+        goal: "Ship persistent recall",
+        decisions: [
+          { id: "decision-1", summary: "Use FTS5", type: "explicit" },
+        ],
+        constraints: [],
+        modifiedFiles: [],
+        readFiles: [],
+        deletedFiles: [],
+        unresolvedErrors: [],
+        resolvedErrors: [],
+        openLoops: [],
+        topics: [],
+        nextActions: [],
+        criticalContext: [],
+        sessionType: "implementation",
+        compactionVersion: VERSION,
+        updatedAt: Date.now(),
+        scope: {
+          schemaVersion: 2,
+          projectId,
+          sessionId: "s-graph",
+          branchHeadId: "b1",
+        },
       } as never,
     });
     flushCompactionStateIndexes();
 
-    expect(recallContext({ projectId, sessionId: "s-graph", branchEntryIds: ["b1"] }, "FTS5")[0].content).toContain("FTS5");
+    expect(
+      recallContext(
+        { projectId, sessionId: "s-graph", branchEntryIds: ["b1"] },
+        "FTS5",
+      )[0].content,
+    ).toContain("FTS5");
+  });
+
+  it("reports a context graph transaction failure as partial persistence", async () => {
+    const isolatedHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "psc-graph-failed-"),
+    );
+    process.env.HOME = isolatedHome;
+    fs.mkdirSync(contextGraphFile(), { recursive: true });
+    try {
+      const projectId = "test-project-graph-failed";
+      const failures = await commitAppliedCompaction({
+        runId: "run-graph-failed",
+        sessionId: "s-graph-failed",
+        projectId,
+        summary: "summary",
+        firstKeptEntryId: "e1",
+        originBranchHeadId: "e1",
+        tokensBefore: 10,
+        details: { runId: "run-graph-failed" } as never,
+        compactionState: {
+          goal: "Surface graph failure",
+          decisions: [],
+          constraints: [],
+          modifiedFiles: [],
+          readFiles: [],
+          deletedFiles: [],
+          unresolvedErrors: [],
+          resolvedErrors: [],
+          openLoops: [],
+          topics: [],
+          nextActions: [],
+          criticalContext: [],
+          sessionType: "implementation",
+          compactionVersion: VERSION,
+          scope: {
+            schemaVersion: 2,
+            projectId,
+            sessionId: "s-graph-failed",
+            branchHeadId: "b-failed",
+          },
+        },
+        metricsSnapshot: {
+          totalCalls: 0,
+          totalInput: 0,
+          totalOutput: 0,
+          totalCacheHit: 0,
+          avgLatency: 0,
+          cacheHitRate: 0,
+          status: "success",
+        },
+      });
+      expect(failures).toContain("context graph");
+      const metric = readMetricsLog().find(
+        (entry) => entry.sessionId === "s-graph-failed",
+      );
+      expect(metric?.persistenceStatus).toBe("partial");
+      expect(metric?.persistenceFailures).toContain("context graph");
+    } finally {
+      process.env.HOME = home;
+      fs.rmSync(isolatedHome, { recursive: true, force: true });
+    }
   });
 
   it("does not persist a staged candidate before explicit applied commit", async () => {
     const projectId = "test-project-commit-point";
     const candidate = {
-      runId: "run-commit-point", sessionId: "s-commit", projectId,
-      summary: "summary", firstKeptEntryId: "e1", tokensBefore: 10,
-      details: { runId: "run-commit-point" }, extraction: minimalExtraction(),
+      runId: "run-commit-point",
+      sessionId: "s-commit",
+      projectId,
+      summary: "summary",
+      firstKeptEntryId: "e1",
+      tokensBefore: 10,
+      details: { runId: "run-commit-point" },
+      extraction: minimalExtraction(),
       metricsSnapshot: {
-        totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0,
-        avgLatency: 0, cacheHitRate: 0, status: "success",
+        totalCalls: 0,
+        totalInput: 0,
+        totalOutput: 0,
+        totalCacheHit: 0,
+        avgLatency: 0,
+        cacheHitRate: 0,
+        status: "success",
       },
     } as never;
     const store = createCompactionCommitStore();
     store.stage(candidate);
     expect(loadProjectFingerprint(projectId)).toBeNull();
-    expect(readMetricsLog().some(entry => entry.sessionId === "s-commit")).toBe(false);
+    expect(
+      readMetricsLog().some((entry) => entry.sessionId === "s-commit"),
+    ).toBe(false);
 
     await commitAppliedCompaction(store.take("run-commit-point", "s-commit")!);
     expect(loadProjectFingerprint(projectId)?.sessionCount).toBe(1);
-    expect(readMetricsLog().filter(entry => entry.sessionId === "s-commit")).toHaveLength(1);
+    expect(
+      readMetricsLog().filter((entry) => entry.sessionId === "s-commit"),
+    ).toHaveLength(1);
   });
-
 
   it("writes the prepared backup only at confirmed commit and records complete persistence", async () => {
     const backupPath = path.join(home, "confirmed-backup.md");
     const candidate = {
-      runId: "run-backup-confirmed", sessionId: "s-backup", summary: "summary",
-      firstKeptEntryId: "e1", tokensBefore: 10, details: { runId: "run-backup-confirmed" },
-      preparedBackup: { path: backupPath, content: "# Smart Compact Backup\n\nexact" },
+      runId: "run-backup-confirmed",
+      sessionId: "s-backup",
+      summary: "summary",
+      firstKeptEntryId: "e1",
+      tokensBefore: 10,
+      details: { runId: "run-backup-confirmed" },
+      preparedBackup: {
+        path: backupPath,
+        content: "# Smart Compact Backup\n\nexact",
+      },
       metricsSnapshot: {
-        totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0,
-        avgLatency: 0, cacheHitRate: 0, status: "success",
+        totalCalls: 0,
+        totalInput: 0,
+        totalOutput: 0,
+        totalCacheHit: 0,
+        avgLatency: 0,
+        cacheHitRate: 0,
+        status: "success",
       },
     } as never;
     const store = createCompactionCommitStore();
     store.stage(candidate);
     expect(fs.existsSync(backupPath)).toBe(false);
-    expect(await commitAppliedCompaction(store.take("run-backup-confirmed", "s-backup")!)).toEqual([]);
+    expect(
+      await commitAppliedCompaction(
+        store.take("run-backup-confirmed", "s-backup")!,
+      ),
+    ).toEqual([]);
     expect(fs.readFileSync(backupPath, "utf8")).toContain("exact");
-    expect(readMetricsLog().find(entry => entry.sessionId === "s-backup")?.persistenceStatus).toBe("complete");
+    expect(
+      readMetricsLog().find((entry) => entry.sessionId === "s-backup")
+        ?.persistenceStatus,
+    ).toBe("complete");
   });
 
   it("surfaces backup persistence failure in return value and telemetry", async () => {
     const blocker = path.join(home, "not-a-directory");
     fs.writeFileSync(blocker, "x");
     const failures = await commitAppliedCompaction({
-      runId: "run-backup-failed", sessionId: "s-backup-failed", summary: "summary",
-      firstKeptEntryId: "e1", tokensBefore: 10, details: { runId: "run-backup-failed" } as never,
-      preparedBackup: { path: path.join(blocker, "backup.md"), content: "exact" },
+      runId: "run-backup-failed",
+      sessionId: "s-backup-failed",
+      summary: "summary",
+      firstKeptEntryId: "e1",
+      originBranchHeadId: "e1",
+      tokensBefore: 10,
+      details: { runId: "run-backup-failed" } as never,
+      preparedBackup: {
+        path: path.join(blocker, "backup.md"),
+        content: "exact",
+        sessionId: "s-backup-failed",
+        createdAt: new Date().toISOString(),
+      },
       metricsSnapshot: {
-        totalCalls: 0, totalInput: 0, totalOutput: 0, totalCacheHit: 0,
-        avgLatency: 0, cacheHitRate: 0, status: "success",
+        totalCalls: 0,
+        totalInput: 0,
+        totalOutput: 0,
+        totalCacheHit: 0,
+        avgLatency: 0,
+        cacheHitRate: 0,
+        status: "success",
       },
     });
     expect(failures).toContain("conversation backup");
-    const metric = readMetricsLog().find(entry => entry.sessionId === "s-backup-failed");
+    const metric = readMetricsLog().find(
+      (entry) => entry.sessionId === "s-backup-failed",
+    );
     expect(metric?.persistenceStatus).toBe("partial");
     expect(metric?.persistenceFailures).toContain("conversation backup");
   });
+  it("surfaces metrics persistence failure after a confirmed apply", async () => {
+    const blockedHome = path.join(home, "blocked-metrics-home");
+    fs.writeFileSync(blockedHome, "not a directory");
+    process.env.HOME = blockedHome;
+    try {
+      const failures = await commitAppliedCompaction({
+        runId: "run-metrics-failed",
+        sessionId: "s-metrics-failed",
+        summary: "summary",
+        firstKeptEntryId: "e1",
+        originBranchHeadId: "e1",
+        tokensBefore: 10,
+        details: { runId: "run-metrics-failed" } as never,
+        metricsSnapshot: {
+          totalCalls: 0,
+          totalInput: 0,
+          totalOutput: 0,
+          totalCacheHit: 0,
+          avgLatency: 0,
+          cacheHitRate: 0,
+          status: "success",
+        },
+      });
+      expect(failures).toContain("metrics log");
+    } finally {
+      process.env.HOME = home;
+    }
+  });
+
   it("is a no-op without projectId (legacy payloads) and never throws", async () => {
     await persistAppliedState({
-      runId: "run-applied-3", summary: "x", firstKeptEntryId: "e", tokensBefore: 0,
-      details: {} as never, sessionId: "s",
+      runId: "run-applied-3",
+      summary: "x",
+      firstKeptEntryId: "e",
+      originBranchHeadId: "e",
+      tokensBefore: 0,
+      details: {} as never,
+      sessionId: "s",
     });
   });
 });

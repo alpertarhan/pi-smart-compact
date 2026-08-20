@@ -34,7 +34,10 @@ function makeFakeCtx(behaviour: "complete" | "error") {
   const calls: string[] = [];
   const ctx = {
     ui: { notify: (msg: string) => calls.push("notify:" + msg) },
-    compact: (opts: { onComplete?: () => void; onError?: (e: Error) => void }) => {
+    compact: (opts: {
+      onComplete?: () => void;
+      onError?: (e: Error) => void;
+    }) => {
       onCompleteFn = opts.onComplete;
       onErrorFn = opts.onError;
       if (behaviour === "complete") onCompleteFn?.();
@@ -54,6 +57,7 @@ function makeRC(behaviour: "complete" | "error"): RunContext {
     runId: "persist-lifecycle-run",
     summary: "x",
     firstKeptEntryId: "id",
+    originBranchHeadId: "id",
     tokensBefore: 0,
     details: { runId: "persist-lifecycle-run" } as any,
     sessionId: "test-session",
@@ -63,8 +67,16 @@ function makeRC(behaviour: "complete" | "error"): RunContext {
     runId: "persist-lifecycle-run",
     ctx,
     pendingRef: slot,
-    flags: { autoTriggered: false, skipCompact: false, verbose: false, dryRun: false, force: false },
-    notify: () => { /* no-op */ },
+    flags: {
+      autoTriggered: false,
+      skipCompact: false,
+      verbose: false,
+      dryRun: false,
+      force: false,
+    },
+    notify: () => {
+      /* no-op */
+    },
     phaseTimings: [],
     phaseStart: 0,
     pipelineStart: Date.now(),
@@ -118,7 +130,9 @@ describe("applyCompaction onError", () => {
     applyCompaction(rc);
     expect(rc.pendingRef.isPresent()).toBe(true);
     expect(readMetricsLog()).toHaveLength(before);
-    expect((rc as unknown as { _calls: string[] })._calls).not.toContain("notify:Applied ✓");
+    expect((rc as unknown as { _calls: string[] })._calls).not.toContain(
+      "notify:Applied ✓",
+    );
   });
 
   it("lets the lifecycle store own apply-error telemetry without duplication", () => {
@@ -141,13 +155,23 @@ describe("applyCompaction onError", () => {
 describe("external cancellation surface", () => {
   it("links a host AbortSignal to the underlying controller", async () => {
     const { runSmartCompact } = await import("../src/app/run-smart-compact.ts");
-    const cancellationOut: { value: import("../src/app/run-smart-compact.ts").ExternalCancellation | null } = { value: null };
+    const cancellationOut: {
+      value:
+        | import("../src/app/run-smart-compact.ts").ExternalCancellation
+        | null;
+    } = { value: null };
     // Fake ctx that does just enough for prepareRun to fail authentication so
     // the run exits quickly. The cancellation handle should still be populated
     // before that exit.
     const fakeCtx = {
-      ui: { notify: () => { /* noop */ } },
-      modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: false, apiKey: null }) },
+      ui: {
+        notify: () => {
+          /* noop */
+        },
+      },
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => ({ ok: false, apiKey: null }),
+      },
       cwd: "/tmp",
       model: { contextWindow: 100000, provider: "openai", id: "x" },
       sessionManager: { getBranch: () => [], getSessionId: () => "sess" },
@@ -156,13 +180,18 @@ describe("external cancellation surface", () => {
     const pendingRef = createPendingSlot({ ttlMs: 5 * 60 * 1000 });
     const isRunning = { value: false };
     const hostCancellation = new AbortController();
-    const summaryModel = { id: "x", provider: "openai", contextWindow: 100000 } as any;
+    const summaryModel = {
+      id: "x",
+      provider: "openai",
+      contextWindow: 100000,
+    } as any;
     const run = runSmartCompact({
       ctx: fakeCtx,
       summaryModel,
       segModel: summaryModel,
       profile: "balanced",
-      pendingRef, isRunning,
+      pendingRef,
+      isRunning,
       autoTriggered: true,
       cancellationOut,
       abortSignal: hostCancellation.signal,
