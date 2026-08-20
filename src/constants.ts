@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "9.4.0-rc.0";
+export const VERSION = "9.4.0";
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.1;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
