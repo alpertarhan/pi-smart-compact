@@ -493,6 +493,7 @@ the run fails closed before staging or apply.
 | `segmentationThinkingLevel` | `minimal \| low \| medium \| high \| xhigh \| max \| null` | `minimal` | Reasoning level for exploration; provider default when null |
 | `agentToolAccess` | `"inherit" \| "enabled" \| "disabled"` | `"inherit"` | Respect Pi's active tools by default, or explicitly expose/hide `smart_compact`; manual command is unaffected |
 | `autoTrigger` | `boolean` | `true` | Allow smart compaction in Pi's native hook and the selected trigger strategy |
+| `showStatus` | `boolean` | `true` | Show the policy status line (e.g. "manual only") in Pi's footer; set `false` for a clean footer |
 | `autoTriggerStrategy` | `native-hook \| settled` | `native-hook` | `settled` additionally requests Pi's normal compact flow after an idle high-pressure agent run; verified with Pi 0.84.0+ |
 | `autoTriggerTimeoutMs` | `number` | `120000` | Requested auto cancellation deadline; the host hook clamps it to 60s and four LLM calls, shows live phase progress, then safely unwinds to native recovery |
 | `minContextPercent` | `number` | `60` | Auto/tool context gate; manual `/smart-compact` warns and bypasses it |

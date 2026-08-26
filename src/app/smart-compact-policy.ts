@@ -18,11 +18,13 @@ export interface SmartCompactPolicySnapshot {
   /** Effective host state after allowlists and other tool controls are applied. */
   agentToolEnabled: boolean;
   autoTrigger: boolean;
+  showStatus: boolean;
 }
 
 interface DesiredSmartCompactPolicy {
   agentToolAccess: AgentToolAccess;
   autoTrigger: boolean;
+  showStatus: boolean;
 }
 
 interface PersistedSmartCompactPolicy extends DesiredSmartCompactPolicy {
@@ -44,7 +46,7 @@ export interface SmartCompactPolicy {
   ): SmartCompactPolicyUpdate;
 }
 
-function persistedPolicy(value: unknown): DesiredSmartCompactPolicy | null {
+function persistedPolicy(value: unknown): Partial<DesiredSmartCompactPolicy> | null {
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as Record<string, unknown>;
   if (
@@ -54,10 +56,15 @@ function persistedPolicy(value: unknown): DesiredSmartCompactPolicy | null {
       candidate.agentToolAccess === "disabled") &&
     typeof candidate.autoTrigger === "boolean"
   ) {
-    return {
+    const desired: DesiredSmartCompactPolicy = {
       agentToolAccess: candidate.agentToolAccess,
       autoTrigger: candidate.autoTrigger,
+      showStatus: true,
     };
+    if (typeof candidate.showStatus === "boolean") {
+      desired.showStatus = candidate.showStatus;
+    }
+    return desired;
   }
   // Version 1 stored a boolean. Preserve an explicit user choice while moving
   // new/default sessions to host-owned `inherit` behavior.
@@ -79,6 +86,7 @@ function configDefaults(): DesiredSmartCompactPolicy {
   return {
     agentToolAccess: config.agentToolAccess,
     autoTrigger: config.autoTrigger,
+    showStatus: config.showStatus !== false,
   };
 }
 
@@ -117,7 +125,7 @@ export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
       );
     }
     const effective = snapshot();
-    ctx.ui.setStatus(STATUS_KEY, statusText(effective));
+    ctx.ui.setStatus(STATUS_KEY, current.showStatus ? statusText(effective) : undefined);
     return effective;
   };
 
@@ -133,7 +141,7 @@ export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
           entry.customType === SMART_COMPACT_POLICY_ENTRY
         ) {
           const restored = persistedPolicy(entry.data);
-          if (restored) current = restored;
+          if (restored) current = { ...current, ...restored };
         }
       }
       apply(ctx);
@@ -158,7 +166,7 @@ export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
           log.debugError("Smart Compact policy rollback failed", rollbackError);
         }
         const rolledBack = snapshot();
-        ctx.ui.setStatus(STATUS_KEY, statusText(rolledBack));
+        ctx.ui.setStatus(STATUS_KEY, current.showStatus ? statusText(rolledBack) : undefined);
         return {
           ok: false,
           policy: rolledBack,

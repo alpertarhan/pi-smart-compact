@@ -84,7 +84,12 @@ describe("smart compact runtime policy", () => {
     expect(test.writes).toEqual([
       {
         customType: "smart-compact-policy",
-        data: { version: 2, agentToolAccess: "disabled", autoTrigger: true },
+        data: {
+          version: 2,
+          agentToolAccess: "disabled",
+          autoTrigger: true,
+          showStatus: true,
+        },
       },
     ]);
     expect(test.statuses.at(-1)).toBe("smart-compact: agent hidden · auto on");
@@ -111,6 +116,7 @@ describe("smart compact runtime policy", () => {
       agentToolAccess: "enabled",
       agentToolEnabled: true,
       autoTrigger: false,
+      showStatus: true,
     });
     expect(
       test.active().filter((name) => name === "smart_compact"),
@@ -188,9 +194,34 @@ describe("smart compact runtime policy", () => {
       agentToolAccess: "disabled",
       agentToolEnabled: false,
       autoTrigger: false,
+      showStatus: true,
     });
     expect(test.active()).toEqual(["read", "smart_recall"]);
     expect(test.statuses.at(-1)).toBe("smart-compact: manual only");
+  });
+
+  it("clears the footer status when showStatus is disabled", () => {
+    const test = harness([
+      {
+        type: "custom",
+        customType: "smart-compact-policy",
+        data: {
+          version: 2,
+          agentToolAccess: "disabled",
+          autoTrigger: false,
+          showStatus: false,
+        },
+      },
+    ]);
+    test.policy.restore(test.ctx);
+
+    expect(test.policy.snapshot()).toEqual({
+      agentToolAccess: "disabled",
+      agentToolEnabled: false,
+      autoTrigger: false,
+      showStatus: false,
+    });
+    expect(test.statuses.at(-1)).toBeUndefined();
   });
 
   it("falls back to global defaults when branch state is absent or invalid", () => {
@@ -207,6 +238,7 @@ describe("smart compact runtime policy", () => {
       agentToolAccess: "inherit",
       agentToolEnabled: true,
       autoTrigger: true,
+      showStatus: true,
     });
     expect(test.statuses.at(-1)).toBeUndefined();
   });
@@ -222,6 +254,7 @@ describe("smart compact runtime policy", () => {
       agentToolAccess: "inherit",
       agentToolEnabled: false,
       autoTrigger: true,
+      showStatus: true,
     });
   });
 
@@ -252,6 +285,7 @@ describe("smart compact runtime policy", () => {
       agentToolAccess: "inherit",
       agentToolEnabled: true,
       autoTrigger: true,
+      showStatus: true,
     });
     expect(test.writes).toEqual([]);
   });

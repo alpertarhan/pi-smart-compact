@@ -77,6 +77,7 @@ export const DEFAULT_CONFIG = {
 	segmentationThinkingLevel: "minimal" as const,
 	agentToolAccess: "inherit" as const,
 	autoTrigger: true,
+	showStatus: true,
 	autoTriggerStrategy: "native-hook" as const,
 	autoTriggerTimeoutMs: 120000,
 	backupEnabled: true,
