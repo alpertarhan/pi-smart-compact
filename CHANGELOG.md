@@ -1,5 +1,11 @@
 # Changelog
 
+## [9.5.0] - 2026-08-26
+
+### Added
+
+- `showStatus` supplies a permanent global default for the footer policy status line, with a matching "Footer status" control in `/smart-compact settings`. Disabling it clears the `smart-compact: ...` footer entry (e.g. "manual only") while the policy itself stays fully active; session branches keep restoring their own footer visibility. The default remains on, so existing setups see no change until they opt in.
+
 ## [9.4.0] - 2026-08-20
 
 ### Added

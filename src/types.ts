@@ -46,6 +46,8 @@ export interface CompactConfig {
  /** Whether Smart Compact inherits, enables, or disables its agent tool. */
  agentToolAccess: AgentToolAccess;
  autoTrigger: boolean;
+ /** Show the policy status line in Pi's footer. */
+ showStatus: boolean;
  /** Native hook participation, or an opt-in proactive request after an idle agent run. */
  autoTriggerStrategy: AutoTriggerStrategy;
  autoTriggerTimeoutMs: number;

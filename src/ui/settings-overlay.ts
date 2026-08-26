@@ -33,6 +33,7 @@ function parseAccessValue(
 
 function previousValue(id: string, policy: SmartCompactPolicySnapshot): string {
   if (id === "agentToolAccess") return accessValue(policy);
+  if (id === "showStatus") return policy.showStatus ? ENABLED : DISABLED;
   return policy.autoTrigger ? ENABLED : DISABLED;
 }
 
@@ -51,6 +52,13 @@ function settingsItems(policy: SmartCompactPolicySnapshot): SettingItem[] {
       label: "Automatic compaction",
       description: "Run Smart Compact from Pi's automatic compaction lifecycle",
       currentValue: policy.autoTrigger ? ENABLED : DISABLED,
+      values: [ENABLED, DISABLED],
+    },
+    {
+      id: "showStatus",
+      label: "Footer status",
+      description: "Show the smart-compact policy status line in Pi's footer",
+      currentValue: policy.showStatus ? ENABLED : DISABLED,
       values: [ENABLED, DISABLED],
     },
   ];
@@ -91,7 +99,9 @@ export async function showSmartCompactSettings(
         const result =
           id === "agentToolAccess"
             ? policy.update({ agentToolAccess: parseAccessValue(value) }, ctx)
-            : policy.update({ autoTrigger: value === ENABLED }, ctx);
+            : id === "autoTrigger"
+              ? policy.update({ autoTrigger: value === ENABLED }, ctx)
+              : policy.update({ showStatus: value === ENABLED }, ctx);
         if (!result.ok) {
           list.updateValue(id, previousValue(id, previous));
           ctx.ui.notify(result.error, "error");

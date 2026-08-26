@@ -27,6 +27,7 @@ const VALID_THINKING_LEVELS = [
 ] as const;
 const BOOLEAN_KEYS = [
   "autoTrigger",
+  "showStatus",
   "backupEnabled",
   "requireApproval",
   "scrubSecrets",
