@@ -1,7 +1,7 @@
 {
 	"name": "pi-smart-compact",
-	"version": "9.4.0",
-	"description": "Verification-oriented smart compaction extension for Pi Coding Agent — deterministic extraction, exploration, synthesis, verification, metrics, and safety checks.",
+	"version": "9.5.0",
+	"description": "Verification-oriented smart compaction extension for Pi Coding Agent \u2014 deterministic extraction, exploration, synthesis, verification, metrics, and safety checks.",
 	"packageManager": "bun@1.4.0",
 	"engines": {
 		"node": ">=22.19.0"
