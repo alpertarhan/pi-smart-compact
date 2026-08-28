@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Release audit resolves local peer dependencies through in-workspace symlinks, so `release:check` works under Bun 1.4.0's stricter `file:` path safety; toolchain pin moved 1.3.14 → 1.4.0 (#52).
+
 ## [9.5.0] - 2026-08-26
 
 ### Added

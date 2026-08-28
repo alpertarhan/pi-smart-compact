@@ -73,7 +73,12 @@ try {
 
   const peerPaths: Record<string, string> = {};
   for (const peer of Object.keys(sourceManifest.peerDependencies)) {
-    peerPaths[peer] = "file:" + join(root, "node_modules", peer);
+    // Bun >=1.4 refuses file: folder deps whose serialized path escapes the
+    // workspace, so expose each peer as an in-workspace symlink (issue #52).
+    const link = join(workspace, "vendor", peer);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(join(root, "node_modules", peer), link, "dir");
+    peerPaths[peer] = "file:" + join("vendor", peer);
   }
   writeFileSync(join(workspace, "package.json"), JSON.stringify({
     name: "pi-smart-compact-frozen-smoke",
