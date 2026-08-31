@@ -100,6 +100,51 @@ describe("appendLineLocked", () => {
     expect(fs.readFileSync(target, "utf8")).toContain("\"ok\":1");
   });
 
+  it("never steals a live lock based only on elapsed time", () => {
+    const target = path.join(tmp, "aged-lock.jsonl");
+    const release = acquireLockSync(target);
+    const lockDir = target + ".lock";
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockDir, old, old);
+    try {
+      expect(() => acquireLockSync(target)).toThrow("Lock busy");
+    } finally {
+      release();
+    }
+  });
+
+  it("does not let an old release callback remove a successor's lock", () => {
+    const target = path.join(tmp, "owned-lock.jsonl");
+    const releaseFirst = acquireLockSync(target);
+    releaseFirst();
+    const releaseSecond = acquireLockSync(target);
+    try {
+      releaseFirst();
+      expect(() => acquireLockSync(target)).toThrow("Lock busy");
+    } finally {
+      releaseSecond();
+    }
+  });
+
+  it("cleans a partial owner file when lock initialization fails", () => {
+    const target = path.join(tmp, "partial-owner.jsonl");
+    const originalWrite = fs.writeFileSync;
+    const mutableFs = fs as { writeFileSync: typeof fs.writeFileSync };
+    mutableFs.writeFileSync = ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (String(file).endsWith(path.join(".lock", "owner"))) {
+        originalWrite(file, "partial");
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      }
+      return Reflect.apply(originalWrite, fs, [file, ...args]);
+    }) as typeof fs.writeFileSync;
+    try {
+      expect(() => acquireLockSync(target)).toThrow("Failed to acquire lock");
+      expect(fs.existsSync(target + ".lock")).toBe(false);
+    } finally {
+      mutableFs.writeFileSync = originalWrite;
+    }
+  });
+
   it("fails closed instead of appending through a non-directory parent", () => {
     expect(() => appendLineLocked(path.join("/dev/null", "log.jsonl"), "unsafe")).toThrow();
   });

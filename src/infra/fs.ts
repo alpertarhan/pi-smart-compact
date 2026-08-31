@@ -25,7 +25,8 @@
  *    `atomicWriteFile` for new async-friendly callers (background metrics).
  *
  * Lock acquisition is fail-closed: callers never continue an append/trim
- * without ownership. Locks older than 5s are reclaimed with an atomic rename.
+ * without ownership. Locks are never stolen on elapsed time because a live,
+ * slow owner must not overlap a successor.
  */
 
 import fs from "node:fs";
@@ -34,7 +35,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import * as log from "../utils/logger.ts";
 
-const LOCK_STALE_MS = 5_000;
 const LOCK_RETRY_MS = 25;
 const LOCK_MAX_RETRIES = 80; // ≈2s
 
@@ -64,8 +64,8 @@ export function atomicWriteFileSync(target: string, data: string | Uint8Array): 
   const tmp = tempPath(target);
   try {
     fs.writeFileSync(tmp, data, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
     fs.renameSync(tmp, target);
-    fs.chmodSync(target, 0o600);
   } catch (e) {
     // Clean up the temp file if rename failed — we never want orphans.
     try { fs.unlinkSync(tmp); } catch { /* best effort */ }
@@ -78,8 +78,8 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
   const tmp = tempPath(target);
   try {
     await fsp.writeFile(tmp, data, { mode: 0o600 });
+    await fsp.chmod(tmp, 0o600);
     await fsp.rename(tmp, target);
-    await fsp.chmod(target, 0o600);
   } catch (e) {
     try { await fsp.unlink(tmp); } catch { /* best effort */ }
     throw e;
@@ -91,32 +91,40 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
  * `mkdir` is atomic on every reasonable filesystem, which is exactly what we
  * need for a multi-process advisory lock without depending on `flock`.
  *
- * If it stays held for longer than LOCK_STALE_MS we assume the owning process
- * crashed and reclaim it. Acquisition errors/timeouts throw, so callers never
- * proceed unlocked. Callers should always release through the returned function.
+ * Acquisition errors/timeouts throw, so callers never proceed unlocked. The
+ * owner token makes release idempotent and prevents an old release callback
+ * from deleting a later owner's lock. Crash leftovers require explicit cleanup;
+ * guessing liveness from lock age would violate mutual exclusion.
  */
 function tryAcquireLock(target: string): (() => void) | null {
   const lockDir = target + ".lock";
-  for (let reclaimAttempt = 0; reclaimAttempt < 2; reclaimAttempt++) {
-    try {
-      fs.mkdirSync(lockDir, { mode: 0o700 });
-      return () => { try { fs.rmdirSync(lockDir); } catch { /* ignore */ } };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
-        throw new Error("Failed to acquire lock for " + target, { cause: error });
-      }
-      try {
-        const stat = fs.statSync(lockDir);
-        if (Date.now() - stat.mtimeMs <= LOCK_STALE_MS) return null;
-        const stolen = lockDir + ".stale." + process.pid + "." + crypto.randomBytes(4).toString("hex");
-        fs.renameSync(lockDir, stolen);
-        const stolenStat = fs.statSync(stolen);
-        if (Date.now() - stolenStat.mtimeMs > LOCK_STALE_MS) fs.rmdirSync(stolen);
-        else try { fs.renameSync(stolen, lockDir); } catch { /* released */ }
-      } catch { /* lock changed; retry acquisition once */ }
-    }
+  const ownerFile = path.join(lockDir, "owner");
+  const token = process.pid + ":" + crypto.randomBytes(8).toString("hex");
+  try {
+    fs.mkdirSync(lockDir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EEXIST") return null;
+    throw new Error("Failed to acquire lock for " + target, { cause: error });
   }
-  return null;
+  try {
+    fs.writeFileSync(ownerFile, token, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    try {
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup of an acquisition interrupted before owner write.
+    }
+    throw new Error("Failed to acquire lock for " + target, { cause: error });
+  }
+  return () => {
+    try {
+      if (fs.readFileSync(ownerFile, "utf8") === token) {
+        fs.rmSync(lockDir, { recursive: true });
+      }
+    } catch {
+      // Already released or ownership changed.
+    }
+  };
 }
 
 /** Immediate lock attempt for synchronous best-effort paths; never parks JS. */

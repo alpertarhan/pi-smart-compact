@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import smartCompactExtension from "../src/index.ts";
 import { contextGraphFile } from "../src/infra/paths.ts";
+import { resetConfigCache } from "../src/utils/config.ts";
 
 const originalHome = process.env.HOME;
 let home = "";
@@ -18,21 +19,52 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-function registeredTools(): Map<string, any> {
+function writeContextGraphSetting(enabled: boolean): void {
+  fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".pi", "agent", "settings.json"),
+    JSON.stringify({ smartCompact: { contextGraphEnabled: enabled } }),
+  );
+  resetConfigCache();
+}
+
+function registeredTools(options?: {
+  contextGraphEnabled?: boolean;
+  activeTools?: string[];
+}) {
+  if (options?.contextGraphEnabled !== undefined) {
+    writeContextGraphSetting(options.contextGraphEnabled);
+  }
   const tools = new Map<string, any>();
+  const active = new Set<string>(
+    options?.activeTools ?? ["read", "smart_recall", "smart_save_memory"],
+  );
+  const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   smartCompactExtension({
     registerCommand: () => {},
     registerTool: (definition: any) => tools.set(definition.name, definition),
-    on: () => {},
+    on: (event: string, handler: (...args: any[]) => unknown) => {
+      const registered = handlers.get(event) ?? [];
+      registered.push(handler);
+      handlers.set(event, registered);
+    },
+    getActiveTools: () => [...active],
+    setActiveTools: (names: string[]) => {
+      active.clear();
+      for (const name of names) active.add(name);
+    },
   } as any);
-  return tools;
+  return { tools, active, handlers };
 }
 
 function context(approved = true, cwd = process.cwd()) {
   return {
     cwd,
     hasUI: true,
-    ui: { confirm: async (_title: string, _message: string) => approved },
+    ui: {
+      confirm: async (_title: string, _message: string) => approved,
+      setStatus: () => {},
+    },
     sessionManager: {
       getSessionId: () => "session-a",
       getBranch: () => [{ id: "branch-root" }, { id: "branch-head" }],
@@ -42,7 +74,7 @@ function context(approved = true, cwd = process.cwd()) {
 
 describe("context memory tools", () => {
   it("registers bounded recall and explicit save contracts", () => {
-    const tools = registeredTools();
+    const { tools } = registeredTools();
     const recall = tools.get("smart_recall");
     const save = tools.get("smart_save_memory");
 
@@ -56,8 +88,35 @@ describe("context memory tools", () => {
     );
   });
 
+  it("hides both context tools when contextGraphEnabled=false and keeps them otherwise", () => {
+    const disabled = registeredTools({ contextGraphEnabled: false });
+    expect([...disabled.active]).toEqual(["read"]);
+
+    const enabled = registeredTools({ contextGraphEnabled: true });
+    expect([...enabled.active]).toEqual([
+      "read",
+      "smart_recall",
+      "smart_save_memory",
+    ]);
+  });
+
+  it("restores only tools hidden by config after a same-process re-enable", () => {
+    const extension = registeredTools({
+      contextGraphEnabled: false,
+      activeTools: ["read", "smart_save_memory"],
+    });
+    expect([...extension.active]).toEqual(["read"]);
+
+    writeContextGraphSetting(true);
+    for (const handler of extension.handlers.get("session_start") ?? []) {
+      handler({}, context());
+    }
+
+    expect([...extension.active]).toEqual(["read", "smart_save_memory"]);
+  });
+
   it("saves scrubbed memory and recalls it from the current project", async () => {
-    const tools = registeredTools();
+    const { tools } = registeredTools();
     const ctx = context();
     const token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
     const saved = await tools.get("smart_save_memory").execute(
@@ -119,7 +178,7 @@ describe("context memory tools", () => {
   });
 
   it("fails closed for project memory save and recall from HOME or root", async () => {
-    const tools = registeredTools();
+    const { tools } = registeredTools();
     for (const cwd of [home, path.parse(home).root]) {
       const ctx = context(true, cwd);
       const saved = await tools.get("smart_save_memory").execute(
@@ -149,7 +208,7 @@ describe("context memory tools", () => {
   });
 
   it("shows the full scrubbed content before an unapproved long memory write", async () => {
-    const tools = registeredTools();
+    const { tools } = registeredTools();
     const content = "a".repeat(850) + " visible-confirmation-tail";
     let confirmation = "";
     const ctx = context();
@@ -191,7 +250,7 @@ describe("context memory tools", () => {
     process.env.HOME = isolatedHome;
     fs.mkdirSync(contextGraphFile(), { recursive: true });
     try {
-      const save = registeredTools().get("smart_save_memory");
+      const save = registeredTools().tools.get("smart_save_memory");
       let failure: unknown;
       try {
         await save.execute(
@@ -215,7 +274,7 @@ describe("context memory tools", () => {
   });
 
   it("refuses memory writes in a non-interactive host", async () => {
-    const save = registeredTools().get("smart_save_memory");
+    const save = registeredTools().tools.get("smart_save_memory");
     const ctx = { ...context(), hasUI: false };
     const result = await save.execute(
       "save-3",

@@ -30,7 +30,7 @@ coverage/
 .DS_Store
 
 # Scratch / progress files used by sub-agents and chains
+.pi/
 progress.md
 context.md
 chain-runs/
-

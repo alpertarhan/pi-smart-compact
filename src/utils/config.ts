@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import {
+  CONFIG_NUMERIC_LIMITS,
   CONFIG_KEY,
   CONFIG_KEY_ALT,
   DEFAULT_CONFIG,
+  PROFILE_NUMERIC_BOUNDS,
   PROFILES,
 } from "../constants.ts";
+import { acquireLock, atomicWriteFile } from "../infra/fs.ts";
 import { defaultBackupDir, settingsFile } from "../infra/paths.ts";
 import type {
   CompactConfig,
@@ -55,17 +58,157 @@ const PROFILE_NUMERIC_KEYS = [
   "singlePassMaxTokens",
   "batchMaxTokens",
 ] as const;
-const PROFILE_NUMERIC_BOUNDS: Record<
-  (typeof PROFILE_NUMERIC_KEYS)[number],
-  readonly [number, number]
-> = {
-  summaryBudgetTokens: [256, 100_000],
-  keepRecentTokens: [1_000, 500_000],
-  minChunkTokens: [100, 100_000],
-  maxChunkTokens: [500, 200_000],
-  singlePassMaxTokens: [1_000, 500_000],
-  batchMaxTokens: [1_000, 500_000],
-};
+type TopLevelConfigKey = Exclude<keyof CompactConfig, "profiles">;
+type ProfileNumericKey = (typeof PROFILE_NUMERIC_KEYS)[number];
+export type GlobalConfigPath =
+  | TopLevelConfigKey
+  | `profiles.${CompressionProfile}.${ProfileNumericKey}`;
+export type GlobalConfigValue =
+  | CompactConfig[TopLevelConfigKey]
+  | ProfileConfig[ProfileNumericKey]
+  | undefined;
+
+export function readGlobalConfigValue(
+  configPath: GlobalConfigPath,
+): GlobalConfigValue {
+  assertGlobalConfigPath(configPath);
+  try {
+    const section = configuredSection(readSettingsRoot(settingsFile()));
+    validateSmartCompactConfig(section);
+    return cloneGlobalConfigValue(configPathValue(section, configPath));
+  } catch {
+    return undefined;
+  }
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneProfiles(
+  profiles: Record<CompressionProfile, ProfileConfig>,
+): Record<CompressionProfile, ProfileConfig> {
+  return Object.fromEntries(
+    VALID_PROFILES.map((name) => [name, { ...profiles[name] }]),
+  ) as Record<CompressionProfile, ProfileConfig>;
+}
+
+function cloneConfig(config: CompactConfig): CompactConfig {
+  return {
+    ...config,
+    profiles: cloneProfiles(config.profiles),
+    pinPaths: [...config.pinPaths],
+  };
+}
+
+function defaultConfig(): CompactConfig {
+  return cloneConfig({
+    ...DEFAULT_CONFIG,
+    backupDir: defaultBackupDir(),
+  } as CompactConfig);
+}
+
+function cloneGlobalConfigValue(value: GlobalConfigValue): GlobalConfigValue {
+  return Array.isArray(value) ? [...value] : value;
+}
+
+function readSettingsRoot(file: string): Record<string, unknown> {
+  if (!fs.existsSync(file)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    throw new Error("settings.json must contain valid JSON");
+  }
+  if (!isRecord(parsed)) {
+    throw new Error("settings.json root must be an object");
+  }
+  return parsed;
+}
+
+function configuredSection(root: Record<string, unknown>): Record<string, unknown> {
+  const selected = Object.hasOwn(root, CONFIG_KEY)
+    ? root[CONFIG_KEY]
+    : (root[CONFIG_KEY_ALT] ?? {});
+  if (!isRecord(selected)) {
+    throw new Error("smartCompact must be an object");
+  }
+  return structuredClone(selected);
+}
+
+function deleteEmptyProfileContainers(
+  section: Record<string, unknown>,
+  profile: CompressionProfile,
+): void {
+  if (!isRecord(section.profiles)) return;
+  if (isRecord(section.profiles[profile])) {
+    const values = section.profiles[profile] as Record<string, unknown>;
+    if (Object.keys(values).length === 0) delete section.profiles[profile];
+  }
+  if (Object.keys(section.profiles).length === 0) delete section.profiles;
+}
+
+function setConfigPath(
+  section: Record<string, unknown>,
+  configPath: GlobalConfigPath,
+  value: GlobalConfigValue,
+): void {
+  const parts = configPath.split(".");
+  if (parts[0] !== "profiles") {
+    if (value === undefined) delete section[configPath];
+    else section[configPath] = value;
+    return;
+  }
+
+  const [, profile, key] = parts as [
+    "profiles",
+    CompressionProfile,
+    ProfileNumericKey,
+  ];
+  if (!isRecord(section.profiles)) section.profiles = {};
+  const profiles = section.profiles as Record<string, unknown>;
+  if (!isRecord(profiles[profile])) profiles[profile] = {};
+  const values = profiles[profile] as Record<string, unknown>;
+  if (value === undefined) delete values[key];
+  else values[key] = value;
+  deleteEmptyProfileContainers(section, profile);
+}
+
+function assertGlobalConfigPath(configPath: string): asserts configPath is GlobalConfigPath {
+  if (configPath !== "profiles" && Object.hasOwn(DEFAULT_CONFIG, configPath)) {
+    return;
+  }
+  const parts = configPath.split(".");
+  if (
+    parts.length === 3 &&
+    parts[0] === "profiles" &&
+    (VALID_PROFILES as readonly string[]).includes(parts[1]) &&
+    (PROFILE_NUMERIC_KEYS as readonly string[]).includes(parts[2])
+  ) {
+    return;
+  }
+  throw new Error(`Unknown smartCompact setting path: ${configPath}`);
+}
+
+function configPathValue(
+  section: Record<string, unknown>,
+  configPath: GlobalConfigPath,
+): GlobalConfigValue {
+  const parts = configPath.split(".");
+  if (parts[0] !== "profiles") {
+    return section[configPath] as GlobalConfigValue;
+  }
+  const [, profile, key] = parts;
+  if (!isRecord(section.profiles)) return undefined;
+  const values = section.profiles[profile];
+  return isRecord(values) ? (values[key] as GlobalConfigValue) : undefined;
+}
+
+function sameJsonValue(
+  left: GlobalConfigValue,
+  right: GlobalConfigValue,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 function discard(
   sc: Record<string, unknown>,
@@ -192,9 +335,7 @@ function validateBasicFields(sc: Record<string, unknown>): void {
 function validateProfiles(sc: Record<string, unknown>): void {
   if (!("profiles" in sc)) return;
   if (
-    typeof sc.profiles !== "object" ||
-    sc.profiles === null ||
-    Array.isArray(sc.profiles)
+    !isRecord(sc.profiles)
   ) {
     discard(
       sc,
@@ -216,7 +357,7 @@ function validateProfiles(sc: Record<string, unknown>): void {
       );
       continue;
     }
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    if (!isRecord(value)) {
       discard(
         profiles,
         profileName,
@@ -226,7 +367,7 @@ function validateProfiles(sc: Record<string, unknown>): void {
       );
       continue;
     }
-    const profileCfg = value as Record<string, unknown>;
+    const profileCfg = value;
     for (const [key, raw] of Object.entries(profileCfg)) {
       if (!PROFILE_NUMERIC_KEYS.includes(key as never)) {
         discard(
@@ -288,11 +429,23 @@ interface NumericRule {
   message: (value: unknown) => string;
 }
 
+function validNumericLimit(
+  key: keyof typeof CONFIG_NUMERIC_LIMITS,
+  value: number,
+): boolean {
+  const limit = CONFIG_NUMERIC_LIMITS[key];
+  return (
+    Number.isFinite(value) &&
+    (!limit.integer || Number.isSafeInteger(value)) &&
+    ((value >= limit.min && value <= limit.max) ||
+      ("zeroOrRange" in limit && limit.zeroOrRange && value === 0))
+  );
+}
+
 const NUMERIC_RULES: readonly NumericRule[] = [
   {
     key: "autoTriggerTimeoutMs",
-    valid: (value) =>
-      Number.isFinite(value) && value >= 1_000 && value <= 300_000,
+    valid: (value) => validNumericLimit("autoTriggerTimeoutMs", value),
     message: (value) =>
       "smart-compact config: autoTriggerTimeoutMs must be 1000–300000, got " +
       value +
@@ -302,36 +455,31 @@ const NUMERIC_RULES: readonly NumericRule[] = [
   },
   {
     key: "maxLlmCalls",
-    valid: (value) => Number.isInteger(value) && value >= 0 && value <= 100,
+    valid: (value) => validNumericLimit("maxLlmCalls", value),
     message: () =>
       "smart-compact config: maxLlmCalls must be 0–100; 0 uses the selected mode cap.",
   },
   {
     key: "maxLlmInputTokens",
-    valid: (value) =>
-      Number.isInteger(value) && value >= 0 && value <= 1_000_000,
+    valid: (value) => validNumericLimit("maxLlmInputTokens", value),
     message: () =>
       "smart-compact config: maxLlmInputTokens must be 0–1000000; 0 uses the mode cap.",
   },
   {
     key: "codexMaxCallMs",
-    valid: (value) =>
-      Number.isInteger(value) &&
-      (value === 0 || (value >= 5_000 && value <= 300_000)),
+    valid: (value) => validNumericLimit("codexMaxCallMs", value),
     message: () =>
       "smart-compact config: codexMaxCallMs must be 0 or 5000–300000; 0 derives a cap from maxTokens.",
   },
   {
     key: "maxLatencyMs",
-    valid: (value) =>
-      Number.isFinite(value) &&
-      (value === 0 || (value >= 5_000 && value <= 600_000)),
+    valid: (value) => validNumericLimit("maxLatencyMs", value),
     message: () =>
       "smart-compact config: maxLatencyMs must be 0 or 5000–600000; 0 means unlimited.",
   },
   {
     key: "minContextPercent",
-    valid: (value) => Number.isFinite(value) && value >= 0 && value <= 100,
+    valid: (value) => validNumericLimit("minContextPercent", value),
     message: (value) =>
       "smart-compact config: minContextPercent must be 0–100, got " +
       value +
@@ -383,6 +531,41 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
   validateLimits(sc);
 }
 
+/**
+ * Persist one extension-owned global setting without replacing other Pi or
+ * extension settings. Passing undefined removes the override so the built-in
+ * default becomes effective again.
+ */
+export async function writeGlobalConfigValue(
+  configPath: GlobalConfigPath,
+  value: GlobalConfigValue,
+): Promise<CompactConfig> {
+  assertGlobalConfigPath(configPath);
+  const file = settingsFile();
+  const release = await acquireLock(file);
+  try {
+    const root = readSettingsRoot(file);
+    const section = configuredSection(root);
+    setConfigPath(section, configPath, cloneGlobalConfigValue(value));
+    if (value === undefined && configPath === "agentToolAccess") {
+      delete section.agentToolEnabled;
+    }
+    const validated = structuredClone(section);
+    validateSmartCompactConfig(validated);
+
+    if (!sameJsonValue(configPathValue(validated, configPath), value)) {
+      throw new Error(`Invalid smartCompact setting: ${configPath}`);
+    }
+
+    root[CONFIG_KEY] = section;
+    await atomicWriteFile(file, JSON.stringify(root, null, 2) + "\n");
+    resetConfigCache();
+    return loadConfig();
+  } finally {
+    release();
+  }
+}
+
 let cachedConfig: CompactConfig | null = null;
 let cachedMtime = 0;
 let cachedPath: string | null = null;
@@ -399,11 +582,21 @@ export function loadConfig(): CompactConfig {
     const file = settingsFile();
     const stat = fs.statSync(file);
     if (cachedConfig && cachedPath === file && stat.mtimeMs === cachedMtime)
-      return cachedConfig;
-    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
-    const sc = raw[CONFIG_KEY] ?? raw[CONFIG_KEY_ALT] ?? {};
-    validateSmartCompactConfig(sc as Record<string, unknown>);
-    const merged = { ...DEFAULT_CONFIG, ...sc } as CompactConfig;
+      return cloneConfig(cachedConfig);
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const raw = isRecord(parsed) ? parsed : {};
+    if (raw !== parsed) {
+      log.warn("smart-compact config: settings.json root must be an object.");
+    }
+    const configured = Object.hasOwn(raw, CONFIG_KEY)
+      ? raw[CONFIG_KEY]
+      : (raw[CONFIG_KEY_ALT] ?? {});
+    const sc = isRecord(configured) ? configured : {};
+    if (sc !== configured) {
+      log.warn("smart-compact config: smartCompact must be an object.");
+    }
+    validateSmartCompactConfig(sc);
+    const merged = { ...defaultConfig(), ...sc } as CompactConfig;
     if (!("mode" in sc) && "profile" in sc) {
       merged.mode =
         sc.profile === "light"
@@ -411,26 +604,29 @@ export function loadConfig(): CompactConfig {
           : (sc.profile as CompactConfig["mode"]);
     }
     if (sc.profiles) {
-      merged.profiles = { ...PROFILES, ...sc.profiles } as Record<
+      const overrides = sc.profiles as Record<
         CompressionProfile,
-        ProfileConfig
+        Partial<ProfileConfig>
       >;
+      merged.profiles = Object.fromEntries(
+        VALID_PROFILES.map((name) => [
+          name,
+          { ...PROFILES[name], ...overrides[name] },
+        ]),
+      ) as Record<CompressionProfile, ProfileConfig>;
     }
     if (!merged.backupDir) merged.backupDir = defaultBackupDir();
     cachedConfig = merged;
     cachedMtime = stat.mtimeMs;
     cachedPath = file;
-    return cachedConfig;
+    return cloneConfig(cachedConfig);
   } catch (error) {
     log.debug(
       "loadConfig: settings.json not found or unreadable, using defaults",
       error,
     );
-    cachedConfig = {
-      ...DEFAULT_CONFIG,
-      backupDir: defaultBackupDir(),
-    } as CompactConfig;
+    cachedConfig = defaultConfig();
     cachedPath = null;
-    return cachedConfig;
+    return cloneConfig(cachedConfig);
   }
 }

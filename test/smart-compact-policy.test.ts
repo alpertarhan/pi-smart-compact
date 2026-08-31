@@ -32,7 +32,11 @@ afterEach(() => {
 
 function harness(
   branch: any[] = [],
-  options: { allowSmartCompact?: boolean; appendError?: boolean } = {},
+  options: {
+    allowSmartCompact?: boolean;
+    appendError?: boolean;
+    addSiblingBeforeAppendError?: boolean;
+  } = {},
 ) {
   let active = ["read", "smart_compact", "smart_recall"];
   const writes: Array<{ customType: string; data: unknown }> = [];
@@ -46,7 +50,10 @@ function harness(
           : [...names];
     },
     appendEntry: (customType: string, data: unknown) => {
-      if (options.appendError) throw new Error("session is read-only");
+      if (options.appendError) {
+        if (options.addSiblingBeforeAppendError) active.push("sibling_tool");
+        throw new Error("session is read-only");
+      }
       writes.push({ customType, data });
     },
   };
@@ -71,7 +78,7 @@ function harness(
 }
 
 describe("smart compact runtime policy", () => {
-  it("hides only smart_compact and persists a full branch-scoped policy", () => {
+  it("hides only smart_compact and persists a sparse branch override", () => {
     const test = harness();
     test.policy.restore(test.ctx);
     const result = test.policy.update(
@@ -85,10 +92,8 @@ describe("smart compact runtime policy", () => {
       {
         customType: "smart-compact-policy",
         data: {
-          version: 2,
-          agentToolAccess: "disabled",
-          autoTrigger: true,
-          showStatus: true,
+          version: 3,
+          overrides: { agentToolAccess: "disabled" },
         },
       },
     ]);
@@ -122,6 +127,59 @@ describe("smart compact runtime policy", () => {
       test.active().filter((name) => name === "smart_compact"),
     ).toHaveLength(1);
     expect(test.statuses.at(-1)).toBe("smart-compact: auto off");
+  });
+
+  it("applies sparse overrides over changing global defaults", () => {
+    const branch = [
+      {
+        type: "custom",
+        customType: "smart-compact-policy",
+        data: { version: 3, overrides: { autoTrigger: false } },
+      },
+    ];
+    const test = harness(branch);
+    test.policy.restore(test.ctx);
+    expect(test.policy.snapshot().agentToolAccess).toBe("inherit");
+
+    fs.writeFileSync(
+      path.join(home, ".pi", "agent", "settings.json"),
+      JSON.stringify({
+        smartCompact: { agentToolAccess: "disabled", autoTrigger: true },
+      }),
+    );
+    resetConfigCache();
+    test.policy.restore(test.ctx);
+
+    expect(test.policy.snapshot()).toEqual({
+      agentToolAccess: "disabled",
+      agentToolEnabled: false,
+      autoTrigger: false,
+      showStatus: true,
+    });
+    expect(test.policy.branchOverrides()).toEqual({ autoTrigger: false });
+  });
+
+  it("resets one override to the current global default", () => {
+    const test = harness();
+    test.policy.restore(test.ctx);
+    test.policy.update(
+      { agentToolAccess: "disabled", autoTrigger: false },
+      test.ctx,
+    );
+    const result = test.policy.reset("autoTrigger", test.ctx);
+
+    expect(result.ok).toBe(true);
+    expect(result.policy.autoTrigger).toBe(true);
+    expect(test.policy.branchOverrides()).toEqual({
+      agentToolAccess: "disabled",
+    });
+    expect(test.writes.at(-1)).toEqual({
+      customType: "smart-compact-policy",
+      data: {
+        version: 3,
+        overrides: { agentToolAccess: "disabled" },
+      },
+    });
   });
 
   it("disables both automatic lifecycle paths while manual registration remains", async () => {
@@ -163,7 +221,9 @@ describe("smart compact runtime policy", () => {
       },
     };
 
-    await handlers.get("session_start")![0]({}, ctx);
+    for (const handler of handlers.get("session_start") ?? []) {
+      await handler({}, ctx);
+    }
     await handlers.get("agent_settled")![0]({}, ctx);
     const nativeResult = await handlers.get("session_before_compact")![0](
       {
@@ -224,8 +284,13 @@ describe("smart compact runtime policy", () => {
     expect(test.statuses.at(-1)).toBeUndefined();
   });
 
-  it("falls back to global defaults when branch state is absent or invalid", () => {
+  it("keeps the last valid branch state when a trailing entry is invalid", () => {
     const test = harness([
+      {
+        type: "custom",
+        customType: "smart-compact-policy",
+        data: { version: 3, overrides: { autoTrigger: false } },
+      },
       {
         type: "custom",
         customType: "smart-compact-policy",
@@ -237,10 +302,10 @@ describe("smart compact runtime policy", () => {
     expect(test.policy.snapshot()).toEqual({
       agentToolAccess: "inherit",
       agentToolEnabled: true,
-      autoTrigger: true,
+      autoTrigger: false,
       showStatus: true,
     });
-    expect(test.statuses.at(-1)).toBeUndefined();
+    expect(test.statuses.at(-1)).toBe("smart-compact: auto off");
   });
 
   it("does not override a host tool deactivation while access is inherited", () => {
@@ -272,7 +337,10 @@ describe("smart compact runtime policy", () => {
   });
 
   it("rolls runtime state back when session persistence fails", () => {
-    const test = harness([], { appendError: true });
+    const test = harness([], {
+      appendError: true,
+      addSiblingBeforeAppendError: true,
+    });
     test.policy.restore(test.ctx);
     const result = test.policy.update(
       { agentToolAccess: "disabled", autoTrigger: false },
@@ -280,7 +348,12 @@ describe("smart compact runtime policy", () => {
     );
 
     expect(result.ok).toBe(false);
-    expect(test.active()).toEqual(["read", "smart_compact", "smart_recall"]);
+    expect(test.active()).toEqual([
+      "read",
+      "smart_recall",
+      "sibling_tool",
+      "smart_compact",
+    ]);
     expect(test.policy.snapshot()).toEqual({
       agentToolAccess: "inherit",
       agentToolEnabled: true,
