@@ -8,7 +8,7 @@ import * as log from "../utils/logger.ts";
 
 const SMART_COMPACT_TOOL_NAME = "smart_compact";
 const SMART_COMPACT_POLICY_ENTRY = "smart-compact-policy";
-const POLICY_VERSION = 2;
+const POLICY_VERSION = 3;
 const STATUS_KEY = "smart-compact-policy";
 
 type AgentToolAccess = CompactConfig["agentToolAccess"];
@@ -21,15 +21,18 @@ export interface SmartCompactPolicySnapshot {
   showStatus: boolean;
 }
 
-interface DesiredSmartCompactPolicy {
+export interface DesiredSmartCompactPolicy {
   agentToolAccess: AgentToolAccess;
   autoTrigger: boolean;
   showStatus: boolean;
 }
 
-interface PersistedSmartCompactPolicy extends DesiredSmartCompactPolicy {
+interface PersistedSmartCompactPolicy {
   version: typeof POLICY_VERSION;
+  overrides: Partial<DesiredSmartCompactPolicy>;
 }
+
+export type SmartCompactPolicyField = keyof DesiredSmartCompactPolicy;
 
 type SmartCompactPolicyUpdate =
   | { ok: true; policy: SmartCompactPolicySnapshot }
@@ -37,11 +40,16 @@ type SmartCompactPolicyUpdate =
 
 export interface SmartCompactPolicy {
   snapshot(): SmartCompactPolicySnapshot;
+  branchOverrides(): Readonly<Partial<DesiredSmartCompactPolicy>>;
   isAgentToolEnabled(): boolean;
   isAutoTriggerEnabled(): boolean;
   restore(ctx: ExtensionContext): void;
   update(
     patch: Partial<DesiredSmartCompactPolicy>,
+    ctx: ExtensionContext,
+  ): SmartCompactPolicyUpdate;
+  reset(
+    field: SmartCompactPolicyField,
     ctx: ExtensionContext,
   ): SmartCompactPolicyUpdate;
 }
@@ -51,6 +59,34 @@ function persistedPolicy(value: unknown): Partial<DesiredSmartCompactPolicy> | n
   const candidate = value as Record<string, unknown>;
   if (
     candidate.version === POLICY_VERSION &&
+    typeof candidate.overrides === "object" &&
+    candidate.overrides !== null &&
+    !Array.isArray(candidate.overrides)
+  ) {
+    const values = candidate.overrides as Record<string, unknown>;
+    const overrides: Partial<DesiredSmartCompactPolicy> = {};
+    if (values.agentToolAccess !== undefined) {
+      if (
+        values.agentToolAccess !== "inherit" &&
+        values.agentToolAccess !== "enabled" &&
+        values.agentToolAccess !== "disabled"
+      ) {
+        return null;
+      }
+      overrides.agentToolAccess = values.agentToolAccess;
+    }
+    if (values.autoTrigger !== undefined) {
+      if (typeof values.autoTrigger !== "boolean") return null;
+      overrides.autoTrigger = values.autoTrigger;
+    }
+    if (values.showStatus !== undefined) {
+      if (typeof values.showStatus !== "boolean") return null;
+      overrides.showStatus = values.showStatus;
+    }
+    return overrides;
+  }
+  if (
+    candidate.version === 2 &&
     (candidate.agentToolAccess === "inherit" ||
       candidate.agentToolAccess === "enabled" ||
       candidate.agentToolAccess === "disabled") &&
@@ -104,17 +140,23 @@ function statusText(policy: SmartCompactPolicySnapshot): string | undefined {
 }
 
 export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
-  let current = configDefaults();
+  let overrides: Partial<DesiredSmartCompactPolicy> = {};
+
+  const desired = (): DesiredSmartCompactPolicy => ({
+    ...configDefaults(),
+    ...overrides,
+  });
 
   const effectiveToolState = (): boolean =>
     pi.getActiveTools().includes(SMART_COMPACT_TOOL_NAME);
 
   const snapshot = (): SmartCompactPolicySnapshot => ({
-    ...current,
+    ...desired(),
     agentToolEnabled: effectiveToolState(),
   });
 
   const apply = (ctx: ExtensionContext): SmartCompactPolicySnapshot => {
+    const current = desired();
     const active = pi.getActiveTools();
     const hasTool = active.includes(SMART_COMPACT_TOOL_NAME);
     if (current.agentToolAccess === "enabled" && !hasTool) {
@@ -129,51 +171,80 @@ export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
     return effective;
   };
 
+  const restoreToolMembership = (enabled: boolean): void => {
+    const active = pi.getActiveTools();
+    const hasTool = active.includes(SMART_COMPACT_TOOL_NAME);
+    if (enabled && !hasTool) {
+      pi.setActiveTools([...new Set([...active, SMART_COMPACT_TOOL_NAME])]);
+    } else if (!enabled && hasTool) {
+      pi.setActiveTools(
+        active.filter((name) => name !== SMART_COMPACT_TOOL_NAME),
+      );
+    }
+  };
+
+  const persist = (
+    next: Partial<DesiredSmartCompactPolicy>,
+    ctx: ExtensionContext,
+  ): SmartCompactPolicyUpdate => {
+    const previous = overrides;
+    const previousToolEnabled = effectiveToolState();
+    overrides = next;
+    try {
+      const effective = apply(ctx);
+      pi.appendEntry<PersistedSmartCompactPolicy>(
+        SMART_COMPACT_POLICY_ENTRY,
+        { version: POLICY_VERSION, overrides: { ...overrides } },
+      );
+      return { ok: true, policy: effective };
+    } catch (error) {
+      log.debugError("Smart Compact policy update failed", error);
+      overrides = previous;
+      try {
+        restoreToolMembership(previousToolEnabled);
+      } catch (rollbackError) {
+        log.debugError("Smart Compact policy rollback failed", rollbackError);
+      }
+      const rolledBack = snapshot();
+      const previousDesired = desired();
+      ctx.ui.setStatus(
+        STATUS_KEY,
+        previousDesired.showStatus ? statusText(rolledBack) : undefined,
+      );
+      return {
+        ok: false,
+        policy: rolledBack,
+        error:
+          "Smart Compact settings could not be saved; the previous policy was restored.",
+      };
+    }
+  };
+
   return {
     snapshot,
+    branchOverrides: () => ({ ...overrides }),
     isAgentToolEnabled: effectiveToolState,
-    isAutoTriggerEnabled: () => current.autoTrigger,
+    isAutoTriggerEnabled: () => desired().autoTrigger,
     restore(ctx) {
-      current = configDefaults();
+      overrides = {};
       for (const entry of ctx.sessionManager.getBranch()) {
         if (
           entry.type === "custom" &&
           entry.customType === SMART_COMPACT_POLICY_ENTRY
         ) {
           const restored = persistedPolicy(entry.data);
-          if (restored) current = { ...current, ...restored };
+          if (restored) overrides = restored;
         }
       }
       apply(ctx);
     },
     update(patch, ctx) {
-      const previous = current;
-      const previousActiveTools = pi.getActiveTools();
-      current = { ...current, ...patch };
-      try {
-        const effective = apply(ctx);
-        pi.appendEntry<PersistedSmartCompactPolicy>(
-          SMART_COMPACT_POLICY_ENTRY,
-          { version: POLICY_VERSION, ...current },
-        );
-        return { ok: true, policy: effective };
-      } catch (error) {
-        log.debugError("Smart Compact policy update failed", error);
-        current = previous;
-        try {
-          pi.setActiveTools(previousActiveTools);
-        } catch (rollbackError) {
-          log.debugError("Smart Compact policy rollback failed", rollbackError);
-        }
-        const rolledBack = snapshot();
-        ctx.ui.setStatus(STATUS_KEY, current.showStatus ? statusText(rolledBack) : undefined);
-        return {
-          ok: false,
-          policy: rolledBack,
-          error:
-            "Smart Compact settings could not be saved; the previous policy was restored.",
-        };
-      }
+      return persist({ ...overrides, ...patch }, ctx);
+    },
+    reset(field, ctx) {
+      const next = { ...overrides };
+      delete next[field];
+      return persist(next, ctx);
     },
   };
 }

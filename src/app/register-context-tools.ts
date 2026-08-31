@@ -59,7 +59,15 @@ export function resolveGraphScope(
   };
 }
 
-export function registerContextTools(pi: ExtensionAPI): void {
+export interface ContextToolAvailability {
+  apply(): void;
+}
+
+export function registerContextTools(
+  pi: ExtensionAPI,
+): ContextToolAvailability {
+  const availability = createContextToolAvailability(pi);
+
   pi.registerTool({
     name: "smart_recall",
     label: "Smart Recall",
@@ -312,4 +320,56 @@ export function registerContextTools(pi: ExtensionAPI): void {
       }
     },
   });
+
+  availability.apply();
+  pi.on("session_start", availability.apply);
+  return availability;
+}
+
+const CONTEXT_TOOL_NAMES = ["smart_recall", "smart_save_memory"] as const;
+
+function createContextToolAvailability(
+  pi: ExtensionAPI,
+): ContextToolAvailability {
+  const hiddenByConfig = new Set<string>();
+  let disabledByConfig = false;
+
+  return {
+    apply(): void {
+      try {
+        const enabled = loadConfig().contextGraphEnabled;
+        const active = pi.getActiveTools();
+
+        if (!enabled) {
+          const visibleContextTools = CONTEXT_TOOL_NAMES.filter((name) =>
+            active.includes(name),
+          );
+          for (const name of visibleContextTools) hiddenByConfig.add(name);
+          disabledByConfig = true;
+          if (visibleContextTools.length > 0) {
+            pi.setActiveTools(
+              active.filter(
+                (name) =>
+                  !(CONTEXT_TOOL_NAMES as readonly string[]).includes(name),
+              ),
+            );
+          }
+          return;
+        }
+
+        if (disabledByConfig) {
+          const restored = [...hiddenByConfig].filter(
+            (name) => !active.includes(name),
+          );
+          if (restored.length > 0) {
+            pi.setActiveTools([...new Set([...active, ...restored])]);
+          }
+          hiddenByConfig.clear();
+          disabledByConfig = false;
+        }
+      } catch (error) {
+        log.debugError("Context tool availability update failed", error);
+      }
+    },
+  };
 }

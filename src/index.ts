@@ -20,6 +20,7 @@ import { loadConfig } from "./utils/config.ts";
 import { getProviderCaps, safeContextPercent } from "./utils/tokens.ts";
 import { appendMetricsSnapshot } from "./utils/cache.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
+import { applyGlobalSettingRuntime } from "./app/global-settings-runtime.ts";
 import {
   clearCompactProgress,
   notifyAppliedCompaction,
@@ -188,13 +189,25 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     }
   };
 
-  registerContextTools(pi);
+  const contextToolAvailability = registerContextTools(pi);
 
   registerSmartCompactCommand(pi, {
     pendingRef,
     runLock: isRunning,
     onNativeApplyError,
     policy,
+    onGlobalSettingApplied(path, ctx) {
+      try {
+        applyGlobalSettingRuntime(
+          path,
+          ctx,
+          policy,
+          contextToolAvailability,
+        );
+      } catch (error) {
+        log.debugError("Smart Compact runtime settings refresh failed", error);
+      }
+    },
   });
 
   pi.on("session_start", (_event, ctx) => {

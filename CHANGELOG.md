@@ -2,8 +2,22 @@
 
 ## [Unreleased]
 
+## [9.6.0] - 2026-08-31
+
+### Added
+
+- `/smart-compact settings` is now the unified settings surface for every Smart Compact option. Branch-scoped controls remain separate from global defaults; categorized submenus add model selection plus validated numeric, path, pin, and profile-budget editors.
+- Global settings updates preserve unrelated host configuration and use locked atomic writes. Runtime-owned tool, trigger, footer, and project-memory visibility settings apply immediately; other changes apply to the next operation.
+
+### Changed
+
+- Branch policy entries now persist sparse overrides with per-field reset-to-global behavior while retaining compatibility with earlier policy records.
+- Project-memory tools leave the active tool list when the context graph is disabled and restore only tools hidden by that setting when re-enabled, keeping manual `/tools` choices intact.
+
 ### Fixed
 
+- Settings loading safely handles invalid roots, isolates cached nested values, merges partial profile overrides with built-ins, and shares numeric limits with the TUI to prevent validation drift.
+- Settings locks are owner-token-safe, never steal from a live slow writer, and clean partial initialization artifacts without deleting a successor's lock.
 - Release audit resolves local peer dependencies through in-workspace symlinks, so `release:check` works under Bun 1.4.0's stricter `file:` path safety; toolchain pin moved 1.3.14 → 1.4.0 (#52).
 
 ## [9.5.0] - 2026-08-26

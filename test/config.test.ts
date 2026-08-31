@@ -146,6 +146,16 @@ describe("validateSmartCompactConfig", () => {
     expect(sc2.autoTriggerTimeoutMs).toBe(300000);
   });
 
+  it("rejects fractional millisecond limits", () => {
+    const sc: Record<string, unknown> = {
+      autoTriggerTimeoutMs: 45_000.5,
+      maxLatencyMs: 60_000.5,
+    };
+    validateSmartCompactConfig(sc);
+    expect(sc.autoTriggerTimeoutMs).toBeUndefined();
+    expect(sc.maxLatencyMs).toBeUndefined();
+  });
+
   it("uses a less aggressive default auto-trigger timeout", () => {
     expect(DEFAULT_CONFIG.autoTriggerTimeoutMs).toBe(120000);
   });

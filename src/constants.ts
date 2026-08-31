@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "9.5.0";
+export const VERSION = "9.6.0";
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.1;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
@@ -65,6 +65,34 @@ export const PROFILES: Record<CompressionProfile, ProfileConfig> = {
 		batchMaxTokens: 18000,
 	},
 };
+
+export const PROFILE_NUMERIC_BOUNDS = {
+	summaryBudgetTokens: [256, 100_000],
+	keepRecentTokens: [1_000, 500_000],
+	minChunkTokens: [100, 100_000],
+	maxChunkTokens: [500, 200_000],
+	singlePassMaxTokens: [1_000, 500_000],
+	batchMaxTokens: [1_000, 500_000],
+} as const;
+
+export const CONFIG_NUMERIC_LIMITS = {
+	minContextPercent: { min: 0, max: 100, integer: false },
+	autoTriggerTimeoutMs: { min: 1_000, max: 300_000, integer: true },
+	maxLlmCalls: { min: 0, max: 100, integer: true },
+	maxLlmInputTokens: { min: 0, max: 1_000_000, integer: true },
+	codexMaxCallMs: {
+		min: 5_000,
+		max: 300_000,
+		integer: true,
+		zeroOrRange: true,
+	},
+	maxLatencyMs: {
+		min: 5_000,
+		max: 600_000,
+		integer: true,
+		zeroOrRange: true,
+	},
+} as const;
 
 export const DEFAULT_CONFIG = {
 	mode: "auto" as const,

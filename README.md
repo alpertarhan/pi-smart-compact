@@ -44,7 +44,7 @@ Then run `/smart-compact` for an explainable preflight before anything changes.
 /smart-compact dashboard                            # interactive dashboard
 /smart-compact restore                              # browse and restore backups
 /smart-compact loops                                # manage persisted open loops
-/smart-compact settings                             # agent visibility + automatic mode
+/smart-compact settings                             # unified branch + global settings TUI
 ```
 
 Command controls are consumed only from the left edge. Once note text starts,
@@ -134,7 +134,8 @@ content, and paths. Each project may have at most 500 active manual memories.
 It rejects empty inputs, scrubs configured secrets/PII, deduplicates exact facts,
 and must not be used for guesses, transient progress, secrets, or code that is
 cheap to re-read. Set `contextGraphEnabled` to `false` to disable indexing and
-both tools.
+remove both tools from the active tool set, so they no longer reach the system
+prompt.
 
 ## Usage surfaces
 
@@ -144,7 +145,7 @@ both tools.
 | `session_before_compact` | Auto path. Returns/stages a verification-scored summary under pressure; durable state waits for matching `session_compact`. |
 | `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. Can be hidden from the agent. |
 | `/smart-compact loops` | Project-level open-loop manager: resolve/reopen, priority, pin/unpin. |
-| `/smart-compact settings` | TUI policy editor for agent access and automatic compaction. Manual `/smart-compact` always remains available. |
+| `/smart-compact settings` | Unified TUI for branch overrides and every `smartCompact` global setting. Manual `/smart-compact` always remains available. |
 
 ### Manual preflight
 
@@ -405,17 +406,30 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
 }
 ```
 
-`/smart-compact settings` can hide `smart_compact` from the agent and disable
-automatic compaction independently. Changes apply immediately and are stored in
-the current session branch; navigating the session tree restores that branch's
-last policy. They do not edit `settings.json`. Set `agentToolAccess` to
-`"disabled"` and `autoTrigger` to `false` below for a permanent Smart Compact
-manual-only default. `"inherit"` (the default) respects Pi's `/tools`, host
-allowlists, and other extensions instead of forcing the tool back on. This
-disables Smart Compact's hook participation, not Pi's built-in native compactor.
-Registering the tool internally does not expose it: Pi's active-tool list
-controls the schema
-and prompt guidance visible on the next agent turn.
+`/smart-compact settings` separates **Current branch** overrides from **Global**
+defaults. The three branch controls (agent access, automatic compaction, and
+footer status) are stored in session history; session-tree navigation restores
+that branch's sparse overrides. Choosing `global` removes an override. Global
+categories persist every other setting under `smartCompact` in
+`~/.pi/agent/settings.json` while preserving unrelated Pi and extension keys.
+
+Agent access, automatic compaction, footer status, and project-memory tool
+exposure apply immediately from the TUI without an extension reload. Active
+tool schemas and prompt guidance update on the next agent turn. Mode, model,
+budget, safety, path, profile, and monitoring changes apply to the next
+compaction or indexing operation; a run already in progress keeps its starting
+configuration. `"inherit"` respects Pi's `/tools`, host allowlists, and other
+extensions instead of forcing `smart_compact` back on. Manual
+`/smart-compact` remains available even when agent access is disabled.
+
+Edits made externally to `settings.json` are detected by normal operations via
+the config mtime cache. Because external writes do not emit a Pi UI event,
+active tool/footer state is refreshed on `/reload` or the next session restore;
+no filesystem watcher is installed.
+
+Settings writes fail closed behind `~/.pi/agent/settings.json.lock`. If Pi is
+terminated during a write and leaves that directory behind, verify no Pi
+process is writing settings, then remove the stale lock directory manually.
 
 `native-hook` preserves the existing passive behavior. The opt-in proactive
 strategy is:
@@ -578,12 +592,13 @@ cancelled runs.
 
 Default artifacts live under `~/.pi/agent/`. Smart Compact normalizes the
 private directories it creates to `0700` and its files to `0600`; a custom
-`backupDir` receives the same protection. `settings.json` remains host-owned
-and read-only to the extension.
+`backupDir` receives the same protection. `settings.json` remains host-owned;
+Smart Compact only updates its own `smartCompact` section through the settings
+TUI, using a shared lock and atomic replacement while preserving other keys.
 
 | Path | Purpose |
 | --- | --- |
-| `settings.json` | Configuration (read only) |
+| `settings.json` | Host configuration; the settings TUI can update `smartCompact` defaults |
 | `compact-backups/` | Full selected pre-prune conversation backups, scrubbed before write and retention-pruned |
 | `.cache/compact-extraction-<session>.json` | Incremental extraction cache |
 | `.cache/compact-metrics.jsonl` | Tail-retained metrics log; 5 MiB cap |

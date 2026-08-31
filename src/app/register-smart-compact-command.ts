@@ -31,7 +31,10 @@ import {
   writeMetricsDashboard,
 } from "../ui/metrics-report.ts";
 import { showMetricsDashboardUI } from "../ui/metrics-dashboard-overlay.ts";
-import { showSmartCompactSettings } from "../ui/settings-overlay.ts";
+import {
+  GlobalSettingsCoordinator,
+  showSmartCompactSettings,
+} from "../ui/settings-overlay.ts";
 import {
   showBackupViewer,
   showCompactUI,
@@ -46,12 +49,17 @@ import { runSmartCompact } from "./run-smart-compact.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 import { parseSmartCompactCommand } from "./smart-compact-input.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
+import type { GlobalConfigPath } from "../utils/config.ts";
 
 interface SmartCompactCommandDependencies {
   pendingRef: PendingSlot;
   runLock: SessionRunLock;
   onNativeApplyError: (runId: string) => boolean;
   policy: SmartCompactPolicy;
+  onGlobalSettingApplied?: (
+    path: GlobalConfigPath,
+    ctx: ExtensionCommandContext,
+  ) => void | Promise<void>;
 }
 
 async function showMetrics(
@@ -293,6 +301,7 @@ export function registerSmartCompactCommand(
   pi: ExtensionAPI,
   dependencies: SmartCompactCommandDependencies,
 ): void {
+  const settingsCoordinator = new GlobalSettingsCoordinator();
   pi.registerCommand("smart-compact", {
     description:
       "EESV smart compaction v" +
@@ -360,7 +369,12 @@ export function registerSmartCompactCommand(
             );
             return;
           }
-          await showSmartCompactSettings(ctx, dependencies.policy);
+        await showSmartCompactSettings(
+          ctx,
+          dependencies.policy,
+          settingsCoordinator,
+          (path) => dependencies.onGlobalSettingApplied?.(path, ctx),
+        );
           return;
         }
         const config = loadConfig();
