@@ -151,6 +151,29 @@ describe("extractFileRefs — integration", () => {
     const s = "a/b.ts and c/d.ts";
     expect(extractFileRefs(s)).toEqual(extractFileRefs(s));
   });
+
+  it("preserves the legacy candidate grammar without regex backtracking", () => {
+    const legacyExtract = (summary: string): string[] => {
+      const matcher = new RegExp(FILE_REF_CANDIDATE_RE.source, FILE_REF_CANDIDATE_RE.flags);
+      const refs: string[] = [];
+      for (const match of summary.matchAll(matcher)) {
+        if (/[\\/]/.test(summary[(match.index ?? 0) + match[0].length] ?? "")) continue;
+        if (isLikelyFileRef(match[0])) refs.push(match[0]);
+      }
+      return refs;
+    };
+    let seed = 0x5eed;
+    const alphabet = "abcXYZ019_./- :,@\\";
+    for (let sample = 0; sample < 1_000; sample++) {
+      let text = "";
+      const length = 8 + (sample % 96);
+      for (let index = 0; index < length; index++) {
+        seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+        text += alphabet[seed % alphabet.length];
+      }
+      expect(extractFileRefs(text)).toEqual(legacyExtract(text));
+    }
+  });
 });
 
 describe("FILE_REF_CANDIDATE_RE", () => {

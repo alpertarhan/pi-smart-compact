@@ -567,6 +567,7 @@ export function computeToolCharPercentage(
   return totalChars > 0 ? Math.round((toolChars / totalChars) * 100) : 0;
 }
 
+/** Admission result plus context-pressure label; modes own execution depth. */
 export type CompactionTier = "none" | "light" | "full";
 
 export function selectCompactionTier(

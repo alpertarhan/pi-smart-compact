@@ -26,8 +26,11 @@ function run(command: string[], cwd = workspace): string {
 
 try {
   const sourceManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-    name: string; version: string; peerDependencies: Record<string, string>;
+    name: string; version: string; type?: string; peerDependencies: Record<string, string>;
   };
+  if (sourceManifest.type !== "module") {
+    throw new Error("package.json must declare type=module for the ESM artifact");
+  }
   const constants = readFileSync(join(root, "src/constants.ts"), "utf8");
   if (!constants.includes(`export const VERSION = "${sourceManifest.version}";`)) {
     throw new Error("package.json and src/constants.ts versions differ");
@@ -69,6 +72,9 @@ try {
   const packedManifest = JSON.parse(run(["tar", "-xOf", tarball, "package/package.json"])) as typeof sourceManifest;
   if (packedManifest.name !== sourceManifest.name || packedManifest.version !== sourceManifest.version) {
     throw new Error("packed manifest identity differs from source");
+  }
+  if (packedManifest.type !== "module") {
+    throw new Error("packed manifest lost type=module");
   }
 
   const peerPaths: Record<string, string> = {};

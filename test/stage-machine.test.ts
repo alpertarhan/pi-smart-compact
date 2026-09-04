@@ -64,6 +64,8 @@ describe("stage machine type chain", () => {
   it("rejects skipped runtime stage markers and missing stage fields", () => {
     expect(() => advance({ _prepared: true } as any, "_recovered" as any))
       .toThrow("requires _windowed");
+    expect(() => advance({ tier: "light" } as any, "_tiered" as any))
+      .toThrow("requires _prepared");
     expect(() => advance({} as any, "_prepared" as any))
       .toThrow("missing field: config");
   });

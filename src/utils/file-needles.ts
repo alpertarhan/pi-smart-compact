@@ -90,15 +90,175 @@ export function buildUniquePathNeedles(
 	filePath: string,
 	allPaths: readonly string[],
 ): string[] {
-	const normalized = allPaths.map(normalizePath);
-	return buildPathNeedles(filePath).filter((needle) => {
-		let owners = 0;
-		for (const candidate of normalized) {
-			if (candidate === needle || candidate.endsWith("/" + needle)) owners++;
-			if (owners > 1) return false;
+	return buildUniquePathNeedlesFromIndex(
+		filePath,
+		buildPathNeedleOwnershipIndex(allPaths),
+	);
+}
+
+// ponytail: bound eager suffix copies; oversized paths retain exact linear fallback.
+const MAX_INDEXED_SUFFIX_CHARS = 1_024;
+
+export interface PathNeedleOwnershipIndex {
+	readonly counts: ReadonlyMap<string, number>;
+	readonly normalizedPaths: readonly string[];
+	readonly hasUnindexedSuffixes: boolean;
+}
+
+/** Count owners for every slash-boundary suffix once per supplied path. */
+export function buildPathNeedleOwnershipIndex(
+	allPaths: readonly string[],
+): PathNeedleOwnershipIndex {
+	const owners = new Map<string, number>();
+	const normalizedPaths = allPaths.map(normalizePath);
+	let hasUnindexedSuffixes = false;
+	for (const normalized of normalizedPaths) {
+		const suffixes = new Set([normalized]);
+		for (let index = 0; index < normalized.length; index++) {
+			if (normalized[index] !== "/") continue;
+			if (normalized.length - index - 1 <= MAX_INDEXED_SUFFIX_CHARS) {
+				suffixes.add(normalized.slice(index + 1));
+			} else {
+				hasUnindexedSuffixes = true;
+			}
 		}
-		return owners === 1;
+		for (const suffix of suffixes) {
+			owners.set(suffix, (owners.get(suffix) ?? 0) + 1);
+		}
+	}
+	return { counts: owners, normalizedPaths, hasUnindexedSuffixes };
+}
+
+/** Hot-loop variant that reuses suffix ownership counts across many files. */
+export function buildUniquePathNeedlesFromIndex(
+	filePath: string,
+	owners: PathNeedleOwnershipIndex,
+): string[] {
+	return buildPathNeedles(filePath).filter((needle) => {
+		if (!owners.hasUnindexedSuffixes) return owners.counts.get(needle) === 1;
+		let count = 0;
+		for (const candidate of owners.normalizedPaths) {
+			if (candidate === needle || candidate.endsWith("/" + needle)) count++;
+			if (count > 1) return false;
+		}
+		return count === 1;
 	});
+}
+
+export interface KnownPathReferenceIndex {
+	/** Full paths and every slash-boundary suffix. */
+	readonly segmentSuffixes: ReadonlySet<string>;
+	/** Sorted view used for prefix lookups of complete parent paths. */
+	readonly sortedSegmentSuffixes: readonly string[];
+	/** Suffixes beginning after a character the coarse file regex cannot consume. */
+	readonly boundarySuffixes: ReadonlySet<string>;
+	/** Normalized source paths retained for exact fallback on oversized suffixes. */
+	readonly normalizedPaths: readonly string[];
+	readonly hasUnindexedSuffixes: boolean;
+}
+
+const PATH_CANDIDATE_CHAR_RE = /[\w./-]/;
+
+/** Precompute every lookup shape accepted by `isKnownPathReference`. */
+export function buildKnownPathReferenceIndex(
+	knownPaths: readonly string[],
+): KnownPathReferenceIndex {
+	const segmentSuffixes = new Set<string>();
+	const boundarySuffixes = new Set<string>();
+	const normalizedPaths: string[] = [];
+	let hasUnindexedSuffixes = false;
+
+	for (const path of knownPaths) {
+		const normalizedPath = normalizePath(path).replace(/^\/+/, "");
+		if (!normalizedPath) continue;
+		normalizedPaths.push(normalizedPath);
+		segmentSuffixes.add(normalizedPath);
+
+		for (let index = 0; index < normalizedPath.length; index++) {
+			if (normalizedPath[index] === "/") {
+				if (normalizedPath.length - index - 1 <= MAX_INDEXED_SUFFIX_CHARS) {
+					segmentSuffixes.add(normalizedPath.slice(index + 1));
+				} else {
+					hasUnindexedSuffixes = true;
+				}
+			}
+			if (
+				index > 0 &&
+				!PATH_CANDIDATE_CHAR_RE.test(normalizedPath[index - 1])
+			) {
+				if (normalizedPath.length - index <= MAX_INDEXED_SUFFIX_CHARS) {
+					boundarySuffixes.add(normalizedPath.slice(index));
+				} else {
+					hasUnindexedSuffixes = true;
+				}
+			}
+		}
+	}
+
+	return {
+		segmentSuffixes,
+		sortedSegmentSuffixes: [...segmentSuffixes].sort(),
+		boundarySuffixes,
+		normalizedPaths,
+		hasUnindexedSuffixes,
+	};
+}
+
+function matchesKnownPathReference(
+	normalizedRef: string,
+	normalizedPaths: readonly string[],
+): boolean {
+	const pathShaped = normalizedRef.includes("/");
+	return normalizedPaths.some((normalizedPath) => {
+		if (
+			normalizedPath === normalizedRef ||
+			normalizedPath.endsWith("/" + normalizedRef)
+		) return true;
+		if (normalizedPath.endsWith(normalizedRef)) {
+			const boundary = normalizedPath[
+				normalizedPath.length - normalizedRef.length - 1
+			];
+			if (boundary && !PATH_CANDIDATE_CHAR_RE.test(boundary)) return true;
+		}
+		if (!pathShaped) return false;
+		return (
+			normalizedPath.startsWith(normalizedRef + "/") ||
+			normalizedPath.includes("/" + normalizedRef + "/")
+		);
+	});
+}
+
+function sortedHasPrefix(values: readonly string[], prefix: string): boolean {
+	let low = 0;
+	let high = values.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (values[middle] < prefix) low = middle + 1;
+		else high = middle;
+	}
+	return values[low]?.startsWith(prefix) ?? false;
+}
+
+/** Indexed variant for hot loops that check many references against one path set. */
+export function isKnownPathReferenceInIndex(
+	ref: string,
+	index: KnownPathReferenceIndex,
+): boolean {
+	const normalizedRef = normalizePath(ref).replace(/^\/+/, "");
+	if (!normalizedRef) return false;
+	if (
+		index.segmentSuffixes.has(normalizedRef) ||
+		index.boundarySuffixes.has(normalizedRef)
+	) {
+		return true;
+	}
+	if (
+		normalizedRef.includes("/") &&
+		sortedHasPrefix(index.sortedSegmentSuffixes, normalizedRef + "/")
+	) return true;
+	return index.hasUnindexedSuffixes
+		? matchesKnownPathReference(normalizedRef, index.normalizedPaths)
+		: false;
 }
 
 /** Whether an extracted file reference can refer to at least one known path. */
@@ -108,32 +268,8 @@ export function isKnownPathReference(
 ): boolean {
 	const normalizedRef = normalizePath(ref).replace(/^\/+/, "");
 	if (!normalizedRef) return false;
-	const pathShaped = normalizedRef.includes("/");
-	return knownPaths.some((path) => {
-		const normalizedPath = normalizePath(path).replace(/^\/+/, "");
-		if (
-			normalizedPath === normalizedRef ||
-			normalizedPath.endsWith("/" + normalizedRef)
-		)
-			return true;
-
-		// The coarse file regex begins again after characters it cannot consume
-		// (spaces, `@`, non-ASCII letters). Ground that exact trailing fragment,
-		// but never an arbitrary mid-segment suffix such as `uth.ts` for `auth.ts`.
-		if (normalizedPath.endsWith(normalizedRef)) {
-			const boundary =
-				normalizedPath[normalizedPath.length - normalizedRef.length - 1];
-			if (boundary && !/[\w./-]/.test(boundary)) return true;
-		}
-		if (!pathShaped) return false;
-
-		// A dotted directory may legitimately name a complete parent segment.
-		// Never accept a partial segment such as `Foo.App` for `Foo.Application`.
-		return normalizedPath.split("/").some((_, index, parts) =>
-			parts
-				.slice(index)
-				.join("/")
-				.startsWith(normalizedRef + "/"),
-		);
-	});
+	return matchesKnownPathReference(
+		normalizedRef,
+		knownPaths.map((path) => normalizePath(path).replace(/^\/+/, "")),
+	);
 }

@@ -6,7 +6,12 @@ import {
 } from "../src/utils/extraction.ts";
 import { pruneRedundant } from "../src/utils/pruning.ts";
 import { parseSummary } from "../src/domain/summary-parse.ts";
-import { buildUniquePathNeedles } from "../src/utils/file-needles.ts";
+import {
+  buildKnownPathReferenceIndex,
+  buildPathNeedleOwnershipIndex,
+  buildUniquePathNeedles,
+} from "../src/utils/file-needles.ts";
+import { extractFileRefs } from "../src/utils/file-ref-detect.ts";
 import { chunkLlmMessages } from "../src/phases/synthesize.ts";
 import { verifySummary } from "../src/phases/verify.ts";
 import { resolveProviderWatchdogMs } from "../src/infra/llm-client.ts";
@@ -36,6 +41,10 @@ const fullConversation: LlmMessage[] = Array.from(
 ).flat();
 const incrementalDelta = fullConversation.slice(-100);
 const oneMegabyteSummary = "## Goal\n" + "x".repeat(1_000_000);
+const longDotlessToken = "x".repeat(24_000);
+const longLeadingDotToken = ".a" + "x".repeat(24_000);
+const longUnicodePath = "é".repeat(16_000) + "/Auth.ts";
+const deepSlashPath = "a/".repeat(8_000) + "Auth.ts";
 const collidingPaths = Array.from(
   { length: 500 },
   (_, i) => "packages/p" + i + "/src/index.ts",
@@ -90,8 +99,12 @@ const P95_LIMIT_MS: Record<string, number> = {
   "prune 5k messages": 30,
   "chunk + bound 5k messages": 40,
   "parse 1MB canonical summary": 5,
+  "scan 24k dotless file-ref token": 5,
+  "scan 24k leading-dot file-ref token": 5,
+  "index 16k unicode path": 20,
+  "index 8k-segment path ownership": 20,
   "unique needles across 500 paths": 2,
-  "verify 500 grounded paths": 250,
+  "verify 500 grounded paths": 50,
   "resolve provider watchdog profile": 0.1,
 };
 
@@ -145,6 +158,34 @@ const benchmarks: Benchmark[] = [
     iterations: 5,
     run: () => {
       sink += parseSummary(oneMegabyteSummary).sections[0]?.body.length ?? 0;
+    },
+  },
+  {
+    name: "scan 24k dotless file-ref token",
+    iterations: 20,
+    run: () => {
+      sink += extractFileRefs(longDotlessToken).length;
+    },
+  },
+  {
+    name: "scan 24k leading-dot file-ref token",
+    iterations: 20,
+    run: () => {
+      sink += extractFileRefs(longLeadingDotToken).length;
+    },
+  },
+  {
+    name: "index 16k unicode path",
+    iterations: 5,
+    run: () => {
+      sink += buildKnownPathReferenceIndex([longUnicodePath]).boundarySuffixes.size;
+    },
+  },
+  {
+    name: "index 8k-segment path ownership",
+    iterations: 5,
+    run: () => {
+      sink += buildPathNeedleOwnershipIndex([deepSlashPath]).counts.size;
     },
   },
   {

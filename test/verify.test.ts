@@ -7,7 +7,7 @@ import {
 	formatVerificationGap,
 	patchSummary,
 } from "../src/phases/verify.ts";
-import { verifyAndPatch } from "../src/app/steps/verify.ts";
+import { verifyAndPatch as runVerificationStep } from "../src/app/steps/verify.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
@@ -51,6 +51,20 @@ function makeState(partial: Partial<CompactionState> = {}): CompactionState {
 		compactionVersion: "test",
 		...partial,
 	};
+}
+
+/** Direct step fixtures bypass upstream work but must carry its stage proof. */
+function verifyAndPatch(
+	input: any,
+): ReturnType<typeof runVerificationStep> {
+	return runVerificationStep(Object.assign(input, {
+		_prepared: true,
+		_windowed: true,
+		_recovered: true,
+		_tiered: true,
+		_extracted: true,
+		_synthesized: true,
+	}));
 }
 
 describe("verifySummary", () => {

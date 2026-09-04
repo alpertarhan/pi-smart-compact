@@ -43,6 +43,8 @@ export function asBranchMessage(message: unknown): Message {
  * `role` + `content` to render text, so the upcast is sound.
  */
 export function asSerializableMessages(msgs: LlmMessage[]): Message[] {
+  // SAFETY: `convertToLlm` produced these messages and pruning preserves every
+  // discriminant/identity field required by the corresponding Pi message type.
   return msgs as unknown as Message[];
 }
 

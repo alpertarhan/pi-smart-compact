@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The package now declares its emitted artifact as ESM, and release audit pins that metadata in both source and packed manifests.
+- Internal `light` / `full` tiers are documented as admission/pressure labels; Fast, Balanced, and Thorough remain the controls that change synthesis strategy.
+
+### Fixed
+
+- Empty, truncated, partial, duplicate, or otherwise malformed batch-summary responses are rejected before cache insertion, so deterministic fallback is visible in telemetry and a retry can reach the provider.
+- Pi 0.85 `session_compact_failed` events now clear correlated extension candidates, progress UI, and deferred backup state while recording exactly one error/cancellation outcome.
+- Runtime pipeline transitions now reject a skipped stage even when a fresh object carries no earlier stage marker.
+
+### Performance
+
+- File-reference extraction uses a semantics-preserving linear scanner instead of a regex with quadratic backtracking on long dotless tokens.
+- Summary verification pre-indexes path suffixes and ownership once, removing repeated reference × path normalization and allocation.
+
 ## [9.6.0] - 2026-08-31
 
 ### Added

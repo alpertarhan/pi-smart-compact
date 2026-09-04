@@ -134,6 +134,13 @@ describe("buildState continuity integration", () => {
       explorationRounds: 0,
       modelLabel: "openai/test",
       notify: () => {},
+      _prepared: true,
+      _windowed: true,
+      _recovered: true,
+      _tiered: true,
+      _extracted: true,
+      _synthesized: true,
+      _verified: true,
     };
 
     const result = buildState(rc);

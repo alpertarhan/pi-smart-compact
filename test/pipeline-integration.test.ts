@@ -410,13 +410,13 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(notices.join("\n")).not.toContain("simulated provider outage");
   });
 
-  it("records a one-batch fallback and never caches its degraded synthesis", async () => {
+  it("records a malformed one-batch fallback and never caches its degraded synthesis", async () => {
     const messages = [userMsg("Preserve the release plan"), assistantMsg("Working through the release plan")];
     let calls = 0;
     setLlmClient({
       complete: async () => {
         calls++;
-        if (calls === 1) throw new Error("single batch unavailable");
+        if (calls === 1) return makeSummaryResponse("");
         return makeSummaryResponse(
           "## Goal\nPreserve the release plan\n## Progress\n### Done\n- none\n### In Progress\n- release\n### Blocked\n- none\n## Critical Context\n- keep release evidence",
         );

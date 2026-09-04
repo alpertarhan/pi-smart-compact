@@ -25,9 +25,9 @@
  *
  * Implementation note: mutation is preserved. Each step mutates the input
  * object and returns it cast to the next stage. The `_brand` field on each
- * extension is the only thing that distinguishes stages structurally — it is
- * never read at runtime. This lets us avoid copying ~30 fields per step
- * while still getting compile-time stage tracking.
+ * extension distinguishes stages structurally and is checked by `advance()`
+ * at runtime. This lets us avoid copying ~30 fields per step while retaining
+ * both compile-time and runtime stage tracking.
  *
  * The final `RunContext = StatedRc` alias keeps backwards-compatible imports
  * working for the `applyCompaction` / metrics paths that ran post-`buildState`.
@@ -213,8 +213,9 @@ export type RecoveredRc = RcBase & RecoveredExt;
 
 // ── Stage 4: Tiered ──────────────────────────────────────────────────────────
 //
-// After `selectTier`. If the tier is "none" the orchestrator bails before
-// any further work; only "light" or "full" reach later stages.
+// After `selectTier`. This is an admission gate plus a pressure label for
+// telemetry/UI: execution depth is controlled separately by CompactionMode.
+// If the tier is "none" the orchestrator bails before any further work.
 
 export type ActiveTier = Exclude<CompactionTier, "none">;
 
@@ -338,20 +339,21 @@ const STAGE_REQUIRED_FIELDS: Record<StageMarker, readonly string[]> = {
 /** Runtime-checked, in-place transition between adjacent pipeline stages. */
 export function advance<TIn extends RcBase, TOut extends TIn>(rc: TIn, stage: keyof TOut): TOut {
   if (!STAGE_ORDER.includes(stage as StageMarker)) throw new Error("Unknown pipeline stage: " + String(stage));
-  const marker = stage as StageMarker;
-  const index = STAGE_ORDER.indexOf(marker);
-  const record = rc as unknown as Record<string, unknown>;
-  const hasStageHistory = STAGE_ORDER.some(candidate => record[candidate] === true);
-  if (hasStageHistory) {
-    for (let prior = 0; prior < index; prior++) {
-      if (record[STAGE_ORDER[prior]] !== true) {
-        throw new Error("Pipeline stage out of order: " + marker + " requires " + STAGE_ORDER[prior]);
-      }
-    }
-  }
+	const marker = stage as StageMarker;
+	const index = STAGE_ORDER.indexOf(marker);
+	// SAFETY: `record` is used only for runtime marker/field presence checks;
+	// no value is trusted as a typed stage until every invariant below passes.
+	const record = rc as unknown as Record<string, unknown>;
+	for (let prior = 0; prior < index; prior++) {
+		if (record[STAGE_ORDER[prior]] !== true) {
+			throw new Error("Pipeline stage out of order: " + marker + " requires " + STAGE_ORDER[prior]);
+		}
+	}
   for (const field of STAGE_REQUIRED_FIELDS[marker]) {
     if (!(field in rc)) throw new Error("Pipeline stage " + marker + " missing field: " + field);
-  }
-  Object.defineProperty(rc, marker, { value: true, enumerable: true, configurable: false, writable: false });
-  return rc as unknown as TOut;
+	}
+	Object.defineProperty(rc, marker, { value: true, enumerable: true, configurable: false, writable: false });
+	// SAFETY: all preceding markers and every field required by this stage were
+	// checked above before installing the immutable discriminator.
+	return rc as unknown as TOut;
 }

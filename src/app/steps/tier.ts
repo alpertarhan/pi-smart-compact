@@ -1,11 +1,12 @@
 /**
- * Step 4: select compaction tier.
+ * Step 4: apply the admission gate and record context-pressure tier.
  *
  * Stage: `RecoveredRc` → `TieredRc | null`.
  *
- * Returns `null` for tier="none" so the orchestrator can short-circuit. Only
- * "light" and "full" tiers reach later stages, which is enforced statically
- * by the `ActiveTier` type on `TieredRc.tier`.
+ * Returns `null` for tier="none" so the orchestrator can short-circuit. The
+ * "light" / "full" value is a telemetry and UI pressure label; Fast,
+ * Balanced, and Thorough modes independently control downstream strategy.
+ * `ActiveTier` statically proves that an admitted run cannot carry "none".
  */
 
 import type { RecoveredRc, TieredRc, ActiveTier } from "../run-context.ts";

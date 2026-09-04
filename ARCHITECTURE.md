@@ -23,6 +23,7 @@ section is about lifecycle.
 | --- | --- |
 | `/smart-compact` | Manual command. Explainable target-first preflight or direct args. Bypasses the adaptive pressure gate, not yield/verification gates. |
 | `session_before_compact` | Auto hook. Returns/stages a pending summary or runs under pressure; durable commit waits for matching `session_compact`. |
+| `session_compact_failed` | Pi 0.85 failure hook. Clears extension-owned staged state and records one error/cancellation outcome; older hosts simply never emit it. |
 | `agent_settled` | Opt-in pressure monitor. Requests `ctx.compact()` only; it never runs EESV or consumes/stages pending state. |
 | `smart_compact` tool | Agent-callable. Prepares a pending summary; never compacts mid-turn. |
 | `smart_recall` tool | Searches only the current project's bounded context graph; same session/branch ranks first. |
@@ -36,7 +37,8 @@ token/percentage, queue, in-flight, and per-session cooldown guards, then asks
 Pi for a normal host compaction. Pi re-enters `session_before_compact`, which
 reuses an already tool-staged summary or runs EESV exactly once under the
 host's signal and timeout. The matching `session_compact` event remains the
-only durable commit authority. This keeps proactive triggering out of the
+only durable commit authority; `session_compact_failed` discards the staged
+candidate without committing it. This keeps proactive triggering out of the
 pending/commit state machine and preserves branch-provenance checks.
 
 ### Host dependency boundary
@@ -72,7 +74,7 @@ threads a typed context through ten stages:
 | 1 | prepare | `app/steps/prepare.ts` | config + provider caps + budgets; auth remains lazy |
 | 2 | window | `app/steps/window.ts` | pick the prefix using a calibrated final-summary allowance |
 | 3 | recover | `app/steps/recover.ts` | restore log-truncated messages |
-| 4 | tier | `app/steps/tier.ts` | choose none / light / full |
+| 4 | tier | `app/steps/tier.ts` | admission gate + none / light / full pressure label; mode owns strategy |
 | 5 | extract | `app/steps/extract.ts` | prune + deterministic extraction + cache |
 | 6 | synthesize | `app/steps/synthesize.ts` | single-pass or EESV |
 | 7 | verify | `app/steps/verify.ts` | structural verify + repair; high-risk outcomes require successful tool evidence |
@@ -99,8 +101,8 @@ RcBase
   → StatedRc        (after state)
 ```
 
-Each stage adds a `_prepared` / `_windowed` / … discriminator field that is
-**never read at runtime** — it exists only to carry the type-level proof.
+Each stage adds a `_prepared` / `_windowed` / … discriminator field that
+carries the type-level proof and is checked by `advance()` at runtime.
 Mutation is preserved: a step mutates its input object and casts it to the
 next stage (no per-step copy of ~30 fields). The final alias
 `RunContext = StatedRc` keeps post-`buildState` consumers readable.
@@ -486,7 +488,7 @@ The code is organized into six layers, each with a single responsibility.
 | `app/steps/prepare.ts` | resolve config, provider caps, budgets, and cancellation; stage auth resolves lazily |
 | `app/steps/window.ts` | pick the prefix using provider-calibrated synthesis and deterministic post-processing bounds |
 | `app/steps/recover.ts` | recover full content for log-truncated messages |
-| `app/steps/tier.ts` | choose compaction tier (none / light / full) |
+| `app/steps/tier.ts` | admission gate + context-pressure label (none / light / full); modes own execution depth |
 | `app/steps/extract.ts` | pruning + deterministic extraction with incremental cache |
 | `app/steps/synthesize.ts` | single-pass / EESV synthesis |
 | `app/steps/verify.ts` | structural verification + repair with tool-result trust boundaries |

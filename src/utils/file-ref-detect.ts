@@ -34,8 +34,26 @@ export const CODE_EXT_RE =
  */
 export const VERSION_RE = /^v?\d+(?:\.\d+)+(?:[-+][\w.-]+)?$/i;
 
-/** Coarse-grained `word.ext` matcher used as the candidate generator. */
+/**
+ * Coarse-grained `word.ext` matcher retained as the public candidate grammar.
+ * `extractFileRefs` implements the same match semantics with a linear scanner:
+ * running this greedy expression directly has quadratic backtracking on long
+ * dotless tokens.
+ */
 export const FILE_REF_CANDIDATE_RE = /[\w.\/-]+\.[\w]+/g;
+
+function isAsciiWordCode(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    code === 95 ||
+    (code >= 97 && code <= 122)
+  );
+}
+
+function isCandidateCode(code: number): boolean {
+  return isAsciiWordCode(code) || code === 45 || code === 46 || code === 47;
+}
 
 /**
  * Decide whether a candidate token (already produced by
@@ -66,14 +84,42 @@ export function isLikelyFileRef(candidate: string): boolean {
  * classification.
  */
 export function extractFileRefs(summary: string): string[] {
-  const matcher = new RegExp(FILE_REF_CANDIDATE_RE.source, FILE_REF_CANDIDATE_RE.flags);
   const refs: string[] = [];
-  for (const match of summary.matchAll(matcher)) {
+  let cursor = 0;
+  while (cursor < summary.length) {
+    while (cursor < summary.length && !isCandidateCode(summary.charCodeAt(cursor))) cursor++;
+    const runStart = cursor;
+    while (cursor < summary.length && isCandidateCode(summary.charCodeAt(cursor))) cursor++;
+    const runEnd = cursor;
+
+    // This is the linear equivalent of the regex's greedy first class: use
+    // the last dot that has a word character after it, then consume that word
+    // suffix. A literal dot at runStart cannot match because `[...]+` must
+    // consume at least one character before the regex's `\.`.
+    let extensionDot = -1;
+    for (let index = runStart + 1; index + 1 < runEnd; index++) {
+      if (
+        summary.charCodeAt(index) === 46 &&
+        isAsciiWordCode(summary.charCodeAt(index + 1))
+      ) {
+        extensionDot = index;
+      }
+    }
+    if (extensionDot < 0) continue;
+
+    let matchEnd = extensionDot + 2;
+    while (
+      matchEnd < runEnd &&
+      isAsciiWordCode(summary.charCodeAt(matchEnd))
+    ) {
+      matchEnd++;
+    }
+    const candidate = summary.slice(runStart, matchEnd);
     // `Foo.Application/Services` is a directory path, not a file named
     // `Foo.Application`. A separator immediately after the regex match proves
     // the candidate was only a dotted directory prefix.
-    if (/[\\/]/.test(summary[(match.index ?? 0) + match[0].length] ?? "")) continue;
-    if (isLikelyFileRef(match[0])) refs.push(match[0]);
+    if (/[\\/]/.test(summary[matchEnd] ?? "")) continue;
+    if (isLikelyFileRef(candidate)) refs.push(candidate);
   }
   return refs;
 }

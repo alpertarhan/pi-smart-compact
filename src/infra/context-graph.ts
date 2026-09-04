@@ -81,9 +81,9 @@ export interface ContextGraphStats {
 }
 
 interface SqliteStatement {
-  run(...params: unknown[]): unknown;
-  all(...params: unknown[]): unknown[];
-  get(...params: unknown[]): unknown;
+  run(...params: unknown[]): void;
+  all<Row extends object = Record<string, unknown>>(...params: unknown[]): Row[];
+  get<Row extends object = Record<string, unknown>>(...params: unknown[]): Row | null;
 }
 
 interface SqliteDatabase {
