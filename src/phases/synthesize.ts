@@ -54,18 +54,113 @@ function batchFieldPattern(name: string): RegExp {
 	let pattern = batchFieldPatterns.get(name);
 	if (!pattern) {
 		const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		pattern = new RegExp("\\*\\*" + escaped + "\\*\\*:\\s*(.+?)(?:\\n|$)", "i");
+		pattern = new RegExp(
+			"(?:^|\\n)\\*\\*" + escaped + "\\*\\*:\\s*(.+?)(?:\\n|$)",
+			"i",
+		);
 		batchFieldPatterns.set(name, pattern);
 	}
 	return pattern;
 }
 
-function boundedToolArgs(value: unknown, depth = 0): unknown {
+/** A provider response completed, but did not satisfy the batch-output contract. */
+export class BatchSummaryFormatError extends Error {
+	readonly name = "BatchSummaryFormatError";
+
+	constructor(reason: string) {
+		super("Malformed batch summary response: " + reason);
+	}
+}
+
+const BATCH_REQUIRED_FIELDS = [
+	"Priority",
+	"Summary",
+	"Decisions",
+	"Modified",
+	"Deleted",
+	"Read",
+] as const;
+
+function assertCompleteBatchResponse(
+	stopReason: unknown,
+	sectionMap: ReadonlyMap<number, string>,
+	duplicateIds: ReadonlySet<number>,
+	batchSize: number,
+): void {
+	const reason = String(stopReason ?? "");
+	// `endTurn` is retained for older pi-ai/provider fixtures. Current pi-ai
+	// normalizes an ordinary completion to `stop`.
+	if (reason !== "stop" && reason !== "endTurn") {
+		throw new BatchSummaryFormatError("non-terminal stop reason " + (reason || "unknown"));
+	}
+	if (duplicateIds.size > 0) {
+		throw new BatchSummaryFormatError(
+			"duplicate chunk id(s): " + [...duplicateIds].sort((a, b) => a - b).join(", "),
+		);
+	}
+	const unexpected = [...sectionMap.keys()].filter(
+		(id) => id < 1 || id > batchSize,
+	);
+	if (unexpected.length > 0) {
+		throw new BatchSummaryFormatError(
+			"unexpected chunk id(s): " + unexpected.sort((a, b) => a - b).join(", "),
+		);
+	}
+	const missingSections: number[] = [];
+	for (let id = 1; id <= batchSize; id++) {
+		if (!sectionMap.has(id)) missingSections.push(id);
+	}
+	if (missingSections.length > 0) {
+		throw new BatchSummaryFormatError(
+			"missing chunk section(s): " + missingSections.join(", "),
+		);
+	}
+	for (let id = 1; id <= batchSize; id++) {
+		const section = sectionMap.get(id) ?? "";
+		const missingFields = BATCH_REQUIRED_FIELDS.filter(
+			(field) => !batchFieldPattern(field).test(section),
+		);
+		if (missingFields.length > 0) {
+			throw new BatchSummaryFormatError(
+				"chunk " + id + " missing field(s): " + missingFields.join(", "),
+			);
+		}
+	}
+	const missing: number[] = [];
+	for (let id = 1; id <= batchSize; id++) {
+		const section = sectionMap.get(id);
+		const summary = section?.match(batchFieldPattern("Summary"))?.[1].trim();
+		if (!summary || summary.toLowerCase() === "none") missing.push(id);
+	}
+	if (missing.length > 0) {
+		throw new BatchSummaryFormatError(
+			"missing usable Summary for chunk(s): " + missing.join(", "),
+		);
+	}
+}
+
+type JsonCompatibleValue =
+	| string
+	| number
+	| boolean
+	| null
+	| undefined
+	| JsonCompatibleValue[]
+	| { [key: string]: JsonCompatibleValue };
+
+function boundedToolArgs(value: unknown, depth = 0): JsonCompatibleValue {
 	if (typeof value === "string")
 		return value.length > TRUNC.DETAIL
 			? value.slice(0, TRUNC.DETAIL) + "…"
 			: value;
-	if (value == null || typeof value !== "object" || depth >= 2) return value;
+	if (
+		value == null ||
+		typeof value === "number" ||
+		typeof value === "boolean"
+	) return value;
+	if (typeof value === "bigint") return value.toString();
+	if (typeof value !== "object") return undefined;
+	if (depth >= 2) return "[bounded]";
 	if (Array.isArray(value))
 		return value.slice(0, 8).map((item) => boundedToolArgs(item, depth + 1));
 	return Object.fromEntries(
@@ -543,13 +638,22 @@ export async function summarizeBatch(
 
 	// ID-based parsing: map chunk number -> section content
 	const sectionMap = new Map<number, string>();
+	const duplicateIds = new Set<number>();
 	const sections = output.split(/^### /m).filter((s) => s.trim());
 	for (const sec of sections) {
 		const m = sec.match(/^CHUNK\s+(\d+):\s*(.*?)\n/i);
 		if (m) {
-			sectionMap.set(parseInt(m[1], 10), sec);
+			const id = parseInt(m[1], 10);
+			if (sectionMap.has(id)) duplicateIds.add(id);
+			else sectionMap.set(id, sec);
 		}
 	}
+	assertCompleteBatchResponse(
+		resp.stopReason,
+		sectionMap,
+		duplicateIds,
+		batch.length,
+	);
 
 	const result = batch.map((ch, i) => {
 		const id = i + 1;

@@ -133,13 +133,31 @@ const EXPLORATION_TOOLS: Tool[] = [
   },
 ];
 
-function boundedExplorationValue(value: unknown, depth = 0): unknown {
+type JsonCompatibleValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | JsonCompatibleValue[]
+  | { [key: string]: JsonCompatibleValue };
+
+function boundedExplorationValue(
+  value: unknown,
+  depth = 0,
+): JsonCompatibleValue {
   if (typeof value === "string") {
     return value.length > TRUNC.PREVIEW_XL
       ? value.slice(0, TRUNC.PREVIEW_XL) + "…"
       : value;
   }
-  if (value == null || typeof value !== "object") return value;
+  if (
+    value == null ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object") return undefined;
   if (depth >= 3) return "[bounded]";
   if (Array.isArray(value))
     return value
@@ -157,7 +175,7 @@ function serializeExplorationResult(
   scrubber: SecretScrubber,
 ): string {
   const safe = boundedExplorationValue(scrubber.scrubValue(value).value);
-  const serialized = JSON.stringify(safe);
+  const serialized = JSON.stringify(safe) ?? "null";
   if (serialized.length <= MAX_EXPLORER_OUTPUT_CHARS) return serialized;
 
   let excerptChars = Math.max(

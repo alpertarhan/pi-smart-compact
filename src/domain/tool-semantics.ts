@@ -240,9 +240,25 @@ export function classifyToolOperation(args: unknown, toolName?: string): ToolOpe
   if (hasPath || nameHas(name, ["read"])) return "read";
   return "unknown";
 }
-function stableValue(value: unknown): unknown {
+type StableJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | StableJsonValue[]
+  | { [key: string]: StableJsonValue };
+
+function stableValue(value: unknown): StableJsonValue {
   if (Array.isArray(value)) return value.map(stableValue);
-  if (!value || typeof value !== "object") return value;
+  if (
+    value == null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) return value;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object") return undefined;
   return Object.fromEntries(
     Object.entries(value as Args)
       .sort(([left], [right]) => left.localeCompare(right))

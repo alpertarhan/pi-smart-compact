@@ -29,8 +29,10 @@ import {
 	isDiagnosticConstraintText,
 } from "../utils/extraction.ts";
 import {
-	buildUniquePathNeedles,
-	isKnownPathReference,
+	buildKnownPathReferenceIndex,
+	buildPathNeedleOwnershipIndex,
+	buildUniquePathNeedlesFromIndex,
+	isKnownPathReferenceInIndex,
 	normalizePath,
 } from "../utils/file-needles.ts";
 import * as log from "../utils/logger.ts";
@@ -1117,8 +1119,9 @@ function verifyFileReferences(
 		...(continuity?.unresolvedErrors ?? []).flatMap((error) => error.files),
 		...(continuity?.openLoops ?? []).flatMap((loop) => loop.files),
 	]));
+	const knownFileIndex = buildKnownPathReferenceIndex(knownFiles);
 	for (const ref of new Set(extractFileRefs(summary))) {
-		const grounded = isKnownPathReference(ref, knownFiles)
+		const grounded = isKnownPathReferenceInIndex(ref, knownFileIndex)
 			|| Boolean(evidence.sourceMessages
 				&& sourceSupportsFileReference(ref, evidence.sourceMessages));
 		if (!grounded) addGap(accumulator, { kind: "fabricated-file", ref }, 4);
@@ -1144,9 +1147,11 @@ function verifyProgressConsistency(
 		}, 12);
 	}
 	const doneRefs = new Set(extractFileRefs(done).map(normalizePath));
+	const modifiedPathOwners = buildPathNeedleOwnershipIndex(paths.modified);
 	for (const file of extraction.modifiedFiles) {
-		const needles = buildUniquePathNeedles(file.path, paths.modified);
-		if (!needles.some((needle) => doneRefs.has(normalizePath(needle)))) continue;
+		const needles = buildUniquePathNeedlesFromIndex(file.path, modifiedPathOwners);
+		// Indexed needles are already normalized, as are the extracted Done refs.
+		if (!needles.some((needle) => doneRefs.has(needle))) continue;
 		const unresolved = collected.unresolved.find((error) => {
 			const firstLine = error.message.split(/\r?\n/, 1)[0] ?? "";
 			const refs = extractFileRefs(firstLine).map(normalizePath);

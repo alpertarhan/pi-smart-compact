@@ -308,6 +308,7 @@ describe("adversarial planning and safety", () => {
       flags: { force: true },
       config: { minContextPercent: 60 },
       notify: () => {},
+      _prepared: true,
     } as any);
     expect(window!.accTokens).toBeGreaterThanOrEqual(20_000);
   });

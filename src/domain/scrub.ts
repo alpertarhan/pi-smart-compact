@@ -198,20 +198,20 @@ export class SecretScrubber {
       findings.set("credential", (findings.get("credential") ?? 0) + 1);
       this.total++;
     };
-    const visit = (value: unknown): unknown => {
+    const visit = <Value>(value: Value): Value => {
       if (typeof value === "string") {
         const result = this.scrubText(value);
         mergeFindings(findings, result.findings);
-        return result.value;
+        return result.value as Value;
       }
       if (value == null || typeof value !== "object") return value;
       const cached = seen.get(value);
-      if (cached !== undefined) return cached;
+      if (cached !== undefined) return cached as Value;
       if (Array.isArray(value)) {
         const output: unknown[] = [];
         seen.set(value, output);
         for (const item of value) output.push(visit(item));
-        return output;
+        return output as Value;
       }
       const output: Record<string, unknown> = {};
       seen.set(value, output);
@@ -229,9 +229,9 @@ export class SecretScrubber {
           output[key] = visit(item);
         }
       }
-      return output;
+      return output as Value;
     };
-    const value = visit(input) as T;
+    const value = visit(input);
     return {
       value,
       findings: [...findings].map(([kind, count]) => ({ kind, count })),

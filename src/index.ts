@@ -65,6 +65,26 @@ import { createSmartCompactPolicy } from "./app/smart-compact-policy.ts";
 
 export { findModelById, resolveModels } from "./app/model-routing.ts";
 
+/** Pi 0.85 lifecycle event; kept local so the extension still typechecks with older peers. */
+interface SessionCompactFailedEventCompat {
+  type: "session_compact_failed";
+  reason: "manual" | "threshold" | "overflow";
+  errorMessage?: string;
+  aborted: boolean;
+  willRetry: boolean;
+  fromExtension: boolean;
+}
+
+interface CompactFailedEventApi {
+  on(
+    event: "session_compact_failed",
+    handler: (
+      event: SessionCompactFailedEventCompat,
+      ctx: ExtensionContext,
+    ) => void | Promise<void>,
+  ): void;
+}
+
 /**
  * Translate a `ConsumeResult` into the side-effects the host expects:
  *   - log the reason (warn for expired/mismatch, debug for empty)
@@ -140,13 +160,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   // Filesystem-backed, one-shot handoff survives extension reloads/process
   // restarts while project/session/branch scope prevents sibling leakage.
   const nativeContinuity = createNativeContinuityBridge();
+  const applyFailureWrites = new Map<string, Promise<boolean>>();
   const recordApplyFailure = (
     pending: PendingCompaction,
     reason: CommitDiscardReason,
-  ): void => {
-    if (!pending.metricsSnapshot) return;
+  ): Promise<boolean> | null => {
+    if (!pending.metricsSnapshot) return null;
     const cancelled = reason === "aborted" || reason === "shutdown";
-    void appendMetricsSnapshot(pending.sessionId, {
+    const write = appendMetricsSnapshot(pending.sessionId, {
       ...pending.metricsSnapshot,
       status: cancelled ? "cancelled" : "error",
       failureKind: cancelled
@@ -156,9 +177,18 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
           : "persistence",
       fallbackReason: "native-apply:" + reason,
     });
+    applyFailureWrites.set(pending.runId, write);
+    void write.finally(() => {
+      if (applyFailureWrites.get(pending.runId) === write) {
+        applyFailureWrites.delete(pending.runId);
+      }
+    });
+    return write;
   };
   const commitCandidates = createCompactionCommitStore({
-    onDiscard: recordApplyFailure,
+    onDiscard: (pending, reason) => {
+      void recordApplyFailure(pending, reason);
+    },
   });
   const onNativeApplyError = (runId: string): boolean =>
     Boolean(commitCandidates.discard(runId, "apply-error"));
@@ -184,7 +214,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
       return !signal.aborted;
     } catch (error) {
       log.warn("Failed to stage smart compaction commit candidate", error);
-      recordApplyFailure(pending, "apply-error");
+      void recordApplyFailure(pending, "apply-error");
       return false;
     }
   };
@@ -404,6 +434,32 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
         { projectId, sessionId, branchHeadId },
         renderContinuityCapsule(state),
       );
+  });
+
+  // SAFETY: Pi 0.85 added this event without changing the runtime `on`
+  // contract. Older supported hosts accept the registration and simply never
+  // emit it, so the narrow compatibility cast is safe in both directions.
+  const compactFailedEvents = pi as unknown as CompactFailedEventApi;
+  compactFailedEvents.on("session_compact_failed", async (event, ctx) => {
+    if (!event.fromExtension) return;
+    const sessionId = resolveSessionId(ctx);
+    clearCompactProgress(ctx);
+    const reason: CommitDiscardReason = event.aborted ? "aborted" : "apply-error";
+    const discarded = commitCandidates.clearSession(sessionId, reason);
+    const metricWrites = discarded.flatMap((pending) => {
+      const write = applyFailureWrites.get(pending.runId);
+      return write ? [write] : [];
+    });
+    if (metricWrites.length > 0) await Promise.all(metricWrites);
+    if (discarded.length > 0) {
+      log.warn(
+        "Discarded " +
+          discarded.length +
+          " staged smart compaction after native apply " +
+          (event.aborted ? "abort" : "failure") +
+          (event.errorMessage ? ": " + event.errorMessage : ""),
+      );
+    }
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {

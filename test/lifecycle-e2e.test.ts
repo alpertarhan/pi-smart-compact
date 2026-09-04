@@ -245,6 +245,81 @@ describe("extension lifecycle end to end", () => {
       ),
     ).toHaveLength(1);
 
+    const failedResponse = (await before(
+      { reason: "threshold", signal: new AbortController().signal },
+      ctx,
+    )) as any;
+    const failedRunId = failedResponse.compaction.details.runId as string;
+    const failed = handlers.get("session_compact_failed")![0];
+    const failedEvent = {
+      type: "session_compact_failed",
+      reason: "threshold",
+      errorMessage: "Compaction failed: synthetic host failure",
+      aborted: false,
+      willRetry: false,
+      fromExtension: true,
+    };
+    await failed(failedEvent, ctx);
+    expect(
+      readMetricsLog().filter(
+        (entry) => entry.runId === failedRunId && entry.status === "error",
+      ),
+    ).toHaveLength(1);
+
+    // Failure delivery is idempotent, and a late success cannot commit the
+    // candidate that the failed lifecycle already discarded.
+    await failed(failedEvent, ctx);
+    await applied(
+      {
+        fromExtension: true,
+        compactionEntry: {
+          id: "failed-compaction-entry",
+          details: failedResponse.compaction.details,
+        },
+      },
+      ctx,
+    );
+    expect(loadProjectFingerprint(projectId)?.sessionCount).toBe(1);
+    expect(
+      readMetricsLog().filter((entry) => entry.runId === failedRunId),
+    ).toHaveLength(1);
+
+    const abortedResponse = (await before(
+      { reason: "threshold", signal: new AbortController().signal },
+      ctx,
+    )) as any;
+    const abortedRunId = abortedResponse.compaction.details.runId as string;
+    await failed({ ...failedEvent, errorMessage: undefined, aborted: true }, ctx);
+    expect(
+      readMetricsLog().filter(
+        (entry) => entry.runId === abortedRunId && entry.status === "cancelled",
+      ),
+    ).toHaveLength(1);
+
+    // A native failure not supplied by an extension must not touch a staged
+    // smart-compaction candidate.
+    const unaffectedResponse = (await before(
+      { reason: "threshold", signal: new AbortController().signal },
+      ctx,
+    )) as any;
+    const unaffectedRunId = unaffectedResponse.compaction.details.runId as string;
+    await failed({ ...failedEvent, fromExtension: false }, ctx);
+    await applied(
+      {
+        fromExtension: true,
+        compactionEntry: {
+          id: "unaffected-compaction-entry",
+          details: unaffectedResponse.compaction.details,
+        },
+      },
+      ctx,
+    );
+    expect(
+      readMetricsLog().filter(
+        (entry) => entry.runId === unaffectedRunId && entry.status === "success",
+      ),
+    ).toHaveLength(1);
+
     const shutdown = handlers.get("session_shutdown")![0];
     await shutdown({}, ctx);
   }, 20_000);

@@ -143,6 +143,7 @@ prompt.
 | --- | --- |
 | `/smart-compact` | Explicit manual run. Opens a target-first preflight or accepts direct args, dry-run, focus, and budgets. |
 | `session_before_compact` | Auto path. Returns/stages a verification-scored summary under pressure; durable state waits for matching `session_compact`. |
+| `session_compact_failed` | Pi 0.85 cleanup path. Discards extension-owned staged state and records a failed/cancelled outcome; it is inert on older hosts. |
 | `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. Can be hidden from the agent. |
 | `/smart-compact loops` | Project-level open-loop manager: resolve/reopen, priority, pin/unpin. |
 | `/smart-compact settings` | Unified TUI for branch overrides and every `smartCompact` global setting. Manual `/smart-compact` always remains available. |

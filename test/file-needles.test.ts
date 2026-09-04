@@ -15,9 +15,14 @@
  */
 import { describe, it, expect } from "bun:test";
 import {
+	buildKnownPathReferenceIndex,
+	buildPathNeedleOwnershipIndex,
 	buildPathNeedles,
 	buildUniquePathNeedles,
+	buildUniquePathNeedlesFromIndex,
 	isKnownPathReference,
+	isKnownPathReferenceInIndex,
+	normalizePath,
 	GENERIC_BASENAMES,
 	MIN_BARE_BASENAME_LEN,
 } from "../src/utils/file-needles.ts";
@@ -111,6 +116,43 @@ describe("buildUniquePathNeedles", () => {
 		);
 	});
 
+	it("reuses a suffix ownership index without changing uniqueness", () => {
+		const paths = [
+			"packages/api/src/auth.ts",
+			"packages/web/src/auth.ts",
+			"packages/web/src/routes.ts",
+		];
+		const owners = buildPathNeedleOwnershipIndex(paths);
+		for (const path of paths) {
+			expect(buildUniquePathNeedlesFromIndex(path, owners)).toEqual(
+				buildUniquePathNeedles(path, paths),
+			);
+		}
+	});
+
+	it("bounds pathological suffix indexes without changing long-path matches", () => {
+		const unicodePath = "é".repeat(4_096) + "/Auth.ts";
+		const deepPath = "a/".repeat(2_048) + "Auth.ts";
+		const paths = [unicodePath, deepPath, "short/Auth.ts"];
+		const known = buildKnownPathReferenceIndex(paths);
+
+		expect(known.hasUnindexedSuffixes).toBe(true);
+		expect(isKnownPathReferenceInIndex("Auth.ts", known)).toBe(true);
+		expect(
+			isKnownPathReferenceInIndex(
+				"é".repeat(2_048) + "/Auth.ts",
+				known,
+			),
+		).toBe(true);
+		expect(isKnownPathReferenceInIndex("missing.ts", known)).toBe(false);
+
+		const owners = buildPathNeedleOwnershipIndex(paths);
+		expect(owners.hasUnindexedSuffixes).toBe(true);
+		expect(buildUniquePathNeedlesFromIndex("short/Auth.ts", owners)).toEqual([
+			"short/auth.ts",
+		]);
+	});
+
 	it("recognizes a suffix reference to a known path", () => {
 		expect(
 			isKnownPathReference("api/src/auth.ts", ["packages/api/src/auth.ts"]),
@@ -148,6 +190,58 @@ describe("buildUniquePathNeedles", () => {
 		expect(
 			isKnownPathReference("ma/src/Auth.cs", ["/repo/çalışma/src/Auth.cs"]),
 		).toBe(true);
+	});
+
+	it("keeps indexed lookups identical to the previous matching rules", () => {
+		const legacyMatch = (ref: string, knownPaths: readonly string[]): boolean => {
+			const normalizedRef = normalizePath(ref).replace(/^\/+/, "");
+			if (!normalizedRef) return false;
+			const pathShaped = normalizedRef.includes("/");
+			return knownPaths.some((path) => {
+				const normalizedPath = normalizePath(path).replace(/^\/+/, "");
+				if (
+					normalizedPath === normalizedRef ||
+					normalizedPath.endsWith("/" + normalizedRef)
+				) return true;
+				if (normalizedPath.endsWith(normalizedRef)) {
+					const boundary = normalizedPath[
+						normalizedPath.length - normalizedRef.length - 1
+					];
+					if (boundary && !/[\w./-]/.test(boundary)) return true;
+				}
+				if (!pathShaped) return false;
+				return normalizedPath.split("/").some((_, index, parts) =>
+					parts.slice(index).join("/").startsWith(normalizedRef + "/"),
+				);
+			});
+		};
+
+		let seed = 0xc0ffee;
+		const alphabet = "abXZ19_./- @é\\";
+		const randomText = (maxLength: number): string => {
+			seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+			const length = seed % (maxLength + 1);
+			let text = "";
+			for (let index = 0; index < length; index++) {
+				seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+				text += alphabet[seed % alphabet.length];
+			}
+			return text;
+		};
+
+		for (let sample = 0; sample < 1_000; sample++) {
+			const paths = Array.from(
+				{ length: 1 + (sample % 8) },
+				() => randomText(80),
+			);
+			const index = buildKnownPathReferenceIndex(paths);
+			for (let refIndex = 0; refIndex < 8; refIndex++) {
+				const ref = randomText(40);
+				expect(isKnownPathReferenceInIndex(ref, index)).toBe(
+					legacyMatch(ref, paths),
+				);
+			}
+		}
 	});
 });
 
