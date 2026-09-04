@@ -14,6 +14,7 @@ import {
   matchesKey,
   ScrollView,
   type SelectItem,
+  type ScrollViewOptions,
   SelectList,
   Text,
   truncateToWidth,
@@ -1025,13 +1026,24 @@ export async function showResultScreen(
         c.addChild(new Text("", 0, 0));
       }
 
-      const scroll = new ScrollView(c, {
-        follow: "none",
-        primary: true,
-        overscroll: "contain",
-        scrollbar: "auto",
-        scrollbarStyle: (text) => theme.fg("borderMuted", text),
-      });
+      // Tested 0.84.3 (scrollbarStyle only); 0.85 splits into track/thumb.
+      // Keep triple-prop until min pi >= 0.85, then drop scrollbarStyle.
+      const scrollbarStyle = (text: string) => theme.fg("borderMuted", text);
+      const scroll = new ScrollView(
+        c,
+        {
+          follow: "none",
+          primary: true,
+          overscroll: "contain",
+          scrollbar: "auto",
+          scrollbarStyle,
+          scrollbarTrackStyle: scrollbarStyle,
+          scrollbarThumbStyle: scrollbarStyle,
+        } as ScrollViewOptions & {
+          scrollbarTrackStyle?: (text: string) => string;
+          scrollbarThumbStyle?: (text: string) => string;
+        },
+      );
       const footer = new Container();
       footer.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
       footer.addChild(

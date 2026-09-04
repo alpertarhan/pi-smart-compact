@@ -445,7 +445,7 @@ strategy is:
 ```
 
 `settled` requires a Pi host that emits `agent_settled`; the release boundary is
-verified against Pi 0.84.0 and 0.84.1.
+verified against Pi 0.84.x–0.85.x.
 The settled handler never runs EESV or mutates pending state itself: after
 checking finite context pressure, idle/queue state, per-session in-flight
 deduplication, and cooldown, it asks Pi to compact. The existing
@@ -508,7 +508,7 @@ the run fails closed before staging or apply.
 | `agentToolAccess` | `"inherit" \| "enabled" \| "disabled"` | `"inherit"` | Respect Pi's active tools by default, or explicitly expose/hide `smart_compact`; manual command is unaffected |
 | `autoTrigger` | `boolean` | `true` | Allow smart compaction in Pi's native hook and the selected trigger strategy |
 | `showStatus` | `boolean` | `true` | Show the policy status line (e.g. "manual only") in Pi's footer; set `false` for a clean footer |
-| `autoTriggerStrategy` | `native-hook \| settled` | `native-hook` | `settled` additionally requests Pi's normal compact flow after an idle high-pressure agent run; verified with Pi 0.84.0+ |
+| `autoTriggerStrategy` | `native-hook \| settled` | `native-hook` | `settled` additionally requests Pi's normal compact flow after an idle high-pressure agent run; verified with Pi 0.84.x–0.85.x |
 | `autoTriggerTimeoutMs` | `number` | `120000` | Requested auto cancellation deadline; the host hook clamps it to 60s and four LLM calls, shows live phase progress, then safely unwinds to native recovery |
 | `minContextPercent` | `number` | `60` | Auto/tool context gate; manual `/smart-compact` warns and bypasses it |
 | `backupEnabled` | `boolean` | `true` | Prepare a scrubbed pre-compaction backup; write it only after confirmed apply |
