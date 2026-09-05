@@ -40,7 +40,7 @@ export function registerSmartCompactTool(
     description:
       "EESV smart compaction v" +
       VERSION +
-      " with deterministic extraction, exploration, and verification. Compacts the conversation into a structured summary preserving goals, decisions, open loops, modified files, and critical context. Call only when actual context usage is high; ignore pi-auto-context tool=XX% because that is tool-output ratio, not context fullness. The tool internally checks context usage and skips if not needed.",
+      " with deterministic extraction, exploration, and verification. Prepares and stages a verified summary for the next /compact; this tool does not apply compaction mid-turn. The staged summary expires after 5 minutes. Call only when actual context usage is high; tool=XX% is tool-output ratio, not context fullness. Checks the configured context threshold before starting.",
     promptSnippet: "Smart compaction",
     promptGuidelines: [
       "Use only when actual context usage is high (for example pi-auto-context context>=60%).",
@@ -144,7 +144,7 @@ export function registerSmartCompactTool(
       const sessionId = resolveSessionId(ctx);
       if (!dryRun && pendingRef.peek(sessionId)?.sessionId === sessionId) {
         return textResult(
-          "A smart summary is already staged for this session. The next /compact will use it; no LLM calls were made.",
+          "A smart summary is already staged; context is unchanged. Run /compact before the 5-minute staging TTL expires to apply it. No LLM calls were made.",
         );
       }
 
@@ -166,11 +166,10 @@ export function registerSmartCompactTool(
       }
       if (contextPercent < config.minContextPercent) {
         return textResult(
-          "Context is only " +
-            percent +
-            "% full (" +
-            totalTokens.toLocaleString() +
-            " tokens). Compaction is not needed yet. The tool=97% in status means tool output ratio, NOT context usage.",
+          "Compaction skipped: context " + percent + "% (" + totalTokens.toLocaleString() +
+            " / " + (ctx.model?.contextWindow ?? 0).toLocaleString() + " tokens), below the " +
+            config.minContextPercent + "% agent-tool threshold. tool=XX% measures tool-output ratio, not context usage. " +
+            "For deliberate early compaction, the user can run /smart-compact; preview and safety checks still apply.",
         );
       }
 
@@ -216,9 +215,9 @@ export function registerSmartCompactTool(
                   (staged.details.mode ?? staged.details.profile) +
                   "). Tokens: " +
                   (staged.tokensBefore ?? 0).toLocaleString() +
-                  " — cached for " +
+                  " — staged, not applied, for " +
                   Math.round(FIVE_MINUTES_MS / 60_000) +
-                  " min. The next /compact will use it automatically.",
+                  " min. Context is unchanged. Run /compact within that time to apply it; expiry discards the candidate.",
               },
             ],
             details: staged.details,

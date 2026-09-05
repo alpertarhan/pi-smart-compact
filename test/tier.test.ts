@@ -5,6 +5,7 @@ describe("selectTier overflow recovery", () => {
   it("bypasses the percentage gate after Pi reports a provider overflow", () => {
     const rc = {
       branch: [],
+      msgs: [],
       flags: { force: false, autoTriggered: true, overflowRecovery: true },
       contextPercent: 25,
       totalTokens: 50_000,

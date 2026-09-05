@@ -391,7 +391,9 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
         hasPending
           ? "Smart compact prepared in " + dur + " — awaiting native /compact"
           : runFailed
-            ? "Smart compact stopped safely in " + dur + " · no summary applied · Pi fallback continues"
+            ? "Smart compact stopped safely in " + dur + (base.flags.skipCompact
+              ? " · no summary staged · context unchanged"
+              : " · no summary applied · Pi fallback continues")
             : "Smart compact run finished in " + dur,
         runFailed ? "warning" : "info",
       );

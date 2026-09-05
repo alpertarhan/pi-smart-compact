@@ -12,6 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { resolveCompactionMessages, hasTruncatedMessages } from "../src/utils/session-log.ts";
 import type { SessionMessageEntry } from "../src/types.ts";
+import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 
 let prevHome: string | undefined;
 let tmp: string;
@@ -48,6 +49,17 @@ function entryWith(id: string, content: string): SessionMessageEntry {
 }
 
 describe("resolveCompactionMessages with streaming parser", () => {
+  it("recovers host-visible custom and branch summaries by original entry ID", async () => {
+    const entries = [
+      { type: "custom_message", id: "custom", timestamp: "2026-01-01T00:00:00Z", customType: "restore", content: "RESTORED_FULL_TEXT", display: true },
+      { type: "branch_summary", id: "branch", timestamp: "2026-01-01T00:00:00Z", summary: "BRANCH_FULL_TEXT", fromId: "old" },
+    ];
+    fs.writeFileSync(makeSessionsDir("host-visible"), entries.map(e => JSON.stringify(e)).join("\n"));
+    const truncated = contextMessageEntries(entries.map(e => ({ ...e, content: "head…✂900", summary: "head…✂900" })));
+    const recovered = await resolveCompactionMessages("host-visible", truncated);
+    expect(JSON.stringify(recovered)).toContain("RESTORED_FULL_TEXT");
+    expect(JSON.stringify(recovered)).toContain("BRANCH_FULL_TEXT");
+  });
   it("recovers messages from a small log", async () => { writeLog("sess-1", [
     { id: "e-0", role: "user", content: "hello" },
     { id: "e-1", role: "assistant", content: "world" },

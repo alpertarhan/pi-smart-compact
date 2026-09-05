@@ -74,6 +74,17 @@ describe("metrics reporting", () => {
     expect(report).toContain("Stage provider/model comparison");
   });
 
+  it("separates failed provider calls from successful deterministic compaction", () => {
+    const report = metricsReport.buildMetricsReport([{
+      ts: new Date().toISOString(), sessionId: "synthetic", status: "success", method: "heuristic",
+      totalCalls: 2, totalInput: 0, totalOutput: 0, totalCacheHit: 0, avgLatency: 5, cacheHitRate: 0,
+      providerRoutes: [{ stage: "synthesize", provider: "openai", model: "test", calls: 2, successes: 0, avgLatencyMs: 5, inputTokens: 0, outputTokens: 0, failures: { authentication: 2 } }],
+    }]);
+    expect(report).toContain("success 1");
+    expect(report).toContain("2/2 calls failed");
+    expect(report).toContain('"authentication":2');
+  });
+
   it("attributes pre-repair quality only to one successful synthesis route", () => {
     const svc = services.createServices();
     for (const phase of ["explore", "batch", "patch"] as const) {

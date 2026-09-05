@@ -13,7 +13,6 @@ import type { PendingCompaction } from "./types.ts";
 import {
   MIN_TOKEN_THRESHOLD,
   FIVE_MINUTES_MS,
-  AUTO_TRIGGER_MAX_LLM_CALLS,
   AUTO_TRIGGER_TIMEOUT_CAP_MS,
 } from "./constants.ts";
 import { loadConfig } from "./utils/config.ts";
@@ -341,10 +340,6 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
             onNativeApplyError,
             autoTriggered: true,
             overflowRecovery: event.reason === "overflow",
-            maxLlmCalls: Math.min(
-              config.maxLlmCalls,
-              AUTO_TRIGGER_MAX_LLM_CALLS,
-            ),
             timeoutMs: effectiveTimeoutMs,
             abortSignal: event.signal,
             cancellationOut,

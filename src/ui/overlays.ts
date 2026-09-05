@@ -357,8 +357,8 @@ export function formatPreflightSummary(
       );
     return lines;
   }
-  const stateReserve = Math.ceil(
-    plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO,
+  const stateReserve = Math.max(0,
+    (plan.finalSummaryAllowanceTokens ?? plan.summaryBudgetTokens + Math.ceil(plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO)) - plan.summaryBudgetTokens,
   );
   const lines = [
     "Plan  " +

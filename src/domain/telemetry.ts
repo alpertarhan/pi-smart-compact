@@ -62,12 +62,14 @@ export interface PrivacySafeTelemetry {
   privacy: "aggregate-only; no session ids, project ids, prompts, summaries, paths, or error text";
 }
 
-function errorFields(error: unknown): { name: string; message: string; status: number | null; code: string } {
+function errorFields(error: unknown, seen = new Set<object>()): { name: string; message: string; status: number | null; code: string } {
   if (!error || typeof error !== "object") {
     return { name: "", message: String(error ?? ""), status: null, code: "" };
   }
+  if (seen.has(error) || seen.size >= 8) return { name: "", message: "", status: null, code: "" };
+  seen.add(error);
   const value = error as { name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; code?: unknown; cause?: unknown };
-  const cause = value.cause && value.cause !== error ? errorFields(value.cause) : null;
+  const cause = value.cause ? errorFields(value.cause, seen) : null;
   const numericStatus = Number(value.status ?? value.statusCode);
   return {
     name: typeof value.name === "string" ? value.name : cause?.name ?? "",
@@ -81,13 +83,14 @@ function errorFields(error: unknown): { name: string; message: string; status: n
 export function classifyTelemetryFailure(error: unknown, timedOut = false): TelemetryFailureKind {
   const fields = errorFields(error);
   const text = (fields.name + " " + fields.code + " " + fields.message).toLowerCase();
-  if (timedOut || /timeout|timed out|watchdog|deadline/.test(text)) return "timeout";
+  if (timedOut) return "timeout";
+  if (/max(?:imum)? output|output.?limit|visible[ -]output|length limit/.test(text)) return "output-limit";
+  if (/timeout|timed out|watchdog|deadline/.test(text)) return "timeout";
   if (fields.name.toLowerCase() === "verificationgateerror") return "verification";
   if (fields.name.toLowerCase() === "yieldgateerror") return "yield";
   if (/budgetexceeded|token budget|call budget|latency budget/.test(text)) return "budget";
   if (fields.status === 429 || /rate.?limit|too many requests|quota/.test(text)) return "rate-limit";
   if (fields.status === 401 || fields.status === 403 || /unauthori[sz]ed|authentication|api.?key|credential/.test(text)) return "authentication";
-  if (/max(?:imum)? output|output.?limit|visible output|length limit/.test(text)) return "output-limit";
   if (/abort|cancel/.test(text)) return "cancelled";
   if (/native compaction|persist|write|rename|filesystem|sqlite|database/.test(text)) return "persistence";
   if (/verificationgateerror|verification gate|verification.*(?:gap|summary)/.test(text)) return "verification";

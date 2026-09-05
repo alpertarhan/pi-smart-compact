@@ -306,6 +306,13 @@ export function buildMetricsReport(
     "## Stage provider/model comparison",
     ...(providerRoutes.length ? providerRoutes : ["- No stage-route evidence yet"]),
     "",
+    "## Recent provider call failures (not compaction outcomes)",
+    ...entries.slice(-20).flatMap(entry => (entry.providerRoutes ?? [])
+      .filter(route => route.successes < route.calls)
+      .map(route => "- " + route.stage + " / " + route.provider + "/" + route.model + ": " +
+        (route.calls - route.successes) + "/" + route.calls + " calls failed; " +
+        (route.failures ? JSON.stringify(route.failures) : "legacy cause unclassified"))),
+    "",
     "## Failure taxonomy",
     ...(Object.keys(insights.failures).length
       ? Object.entries(insights.failures).map(([kind, count]) => "- " + kind + ": " + count)

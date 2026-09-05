@@ -20,6 +20,7 @@ import {
   type TokenEstimator,
 } from "../utils/tokens.ts";
 import { MODE_POLICIES } from "./mode-policy.ts";
+import { contextMessageEntries } from "../infra/ai-messages.ts";
 import type { CompactionWindowPlan } from "./run-context.ts";
 import {
   estimateFinalSummaryAllowance,
@@ -128,11 +129,7 @@ export function prepareManualPreflightContext(
       ? ctx.sessionManager.buildContextEntries()
       : ctx.sessionManager.getBranch()
   ) as unknown[];
-  const msgs = branch.filter(
-    (entry): entry is SessionMessageEntry =>
-      (entry as { type?: string; message?: unknown }).type === "message" &&
-      (entry as { message?: unknown }).message != null,
-  );
+  const msgs = contextMessageEntries(branch);
   const totalTokens = ctx.getContextUsage()?.tokens ?? 0;
   const modelContextWindow = ctx.model?.contextWindow;
   const contextWindowTokens =
@@ -140,7 +137,7 @@ export function prepareManualPreflightContext(
       ? (modelContextWindow as number)
       : 0;
   const contextPercent = safeContextPercent(totalTokens, modelContextWindow);
-  const toolPercent = computeToolCharPercentage(branch);
+  const toolPercent = computeToolCharPercentage(msgs);
   const overflowedContext =
     contextWindowTokens > 0 && totalTokens > contextWindowTokens;
   const estimator = makeTokenEstimator(

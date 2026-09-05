@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [9.6.2] - 2026-09-05
+
+### Fixed
+
+- Verification preserves short negation, accepts faithfully copied multi-clause instructions without hiding additional contradictions, and stops treating grounded filenames such as `published.md` as release claims.
+- Post-state verification uses the same path-evidence budget as synthesis, preventing Fast summaries from growing through false repair loops.
+- Zero-valued call/input overrides resolve to preset budgets; native automatic runs keep the four-call ceiling through mode refinement.
+- Planning and recovery preserve Pi-visible custom, branch-summary, and compaction-summary entries with their original IDs. Anchor boundaries use IDs rather than message-only offsets.
+- Text serialization no longer silently truncates tool results at 2,000 characters, including deferred pre-prune backups. Redaction and context-exclusion boundaries remain intact.
+
+### Changed
+
+- Threshold skips explain the actual model window, configured threshold, and manual early-compaction path. Agent-tool responses explicitly distinguish five-minute staging from application.
+- Provider failures have content-free categories, actionable warnings, and per-route failure counts even when deterministic fallback succeeds. Deterministic final assembly is labeled heuristic, not EESV generation.
+- Error UI avoids raw response bodies and explains when a Pi restart with `DEBUG=smart-compact` is useful. Output-cap watchdogs no longer count as timeouts, and cyclic error causes cannot break classification.
+- Preflight displays the actual calibrated post-summary reserve instead of a separate 25% estimate.
+
+### Tests
+
+- Added regression coverage for these verifier, budget, host-context, backup, diagnostic, and UI contracts, plus 20MB tool-history pruning, extraction, and lossless-text benchmark fixtures.
+
+### Release notes
+
+- Stable release approved by the maintainer with an explicit canary-evidence exception: the required 20 applied canary runs have not been collected. Deterministic checks are not evidence of a completed live canary.
+- No configuration migration or automatic provider-route change. Live provider failure diagnosis remains open; the new categories make subsequent failures diagnosable. Fast still rejects summaries that cannot safely meet the target budget.
+
 ## [9.6.1] - 2026-09-04
 
 ### Changed

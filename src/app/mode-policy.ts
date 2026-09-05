@@ -1,6 +1,7 @@
 import type {
   CompactionMode, CompactionState, CompressionProfile, EffectiveCompactionMode, StructuredExtraction,
 } from "../types.ts";
+import { AUTO_TRIGGER_MAX_LLM_CALLS } from "../constants.ts";
 
 export interface ModePolicy {
   profile: CompressionProfile;
@@ -93,7 +94,14 @@ export function batchOutputLimit(mode: EffectiveCompactionMode, chunks: number, 
   return Math.min(Math.max(budget.min, chunks * budget.perChunk), budget.max, providerMax);
 }
 
-export function effectiveBudget(configured: number, modeDefault: number): number {
+export function effectiveBudget(configured: number, modeDefault: number, override?: number): number {
+  if (override !== undefined && override > 0) return override;
   if (configured <= 0) return modeDefault;
   return Math.min(configured, modeDefault);
+}
+
+/** Shared by initial preparation and auto-mode refinement. Zero means preset, never unlimited. */
+export function resolveCallBudget(configured: number, mode: EffectiveCompactionMode, override?: number, automatic = false): number {
+  const budget = effectiveBudget(configured, MODE_POLICIES[mode].maxLlmCalls, override);
+  return automatic ? Math.min(budget, AUTO_TRIGGER_MAX_LLM_CALLS) : budget;
 }

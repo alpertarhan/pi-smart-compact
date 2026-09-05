@@ -16,9 +16,26 @@
  * which is the preferred pattern for any new code that talks to a provider.
  */
 
-import type { Message } from "@earendil-works/pi-ai";
-import type { LlmMessage } from "../types.ts";
+import { contentText, type Message } from "@earendil-works/pi-ai";
+import type { LlmMessage, SessionMessageEntry } from "../types.ts";
+import { convertToLlm, sessionEntryToContextMessages, serializeConversation, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SecretScrubber } from "../domain/scrub.ts";
+
+/** Preserve the host's context projection and original entry IDs, including custom and branch summaries. */
+export function contextMessageEntries(entries: readonly unknown[]): SessionMessageEntry[] {
+  // SAFETY: these are host SessionManager entries, not provider-supplied data.
+  return (entries as readonly SessionEntry[]).flatMap(entry =>
+    convertToLlm(sessionEntryToContextMessages(entry)).map(message => ({ type: "message" as const, id: entry.id, message })),
+  );
+}
+
+/** Text transcript without the host summarizer's implicit 2,000-character tool-result cap. */
+export function serializeConversationText(messages: LlmMessage[]): string {
+  return asSerializableMessages(messages).map(message => message.role === "toolResult"
+    ? "[Tool result]: " + contentText(message.content, "")
+    : serializeConversation([message]),
+  ).filter(Boolean).join("\n\n");
+}
 
 /**
  * Upcast a raw branch entry's `message` to a `Message` for `convertToLlm`.

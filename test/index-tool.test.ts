@@ -4,6 +4,23 @@ import { BUDGET_LIMITS } from "../src/constants.ts";
 import { registerSmartCompactTool } from "../src/app/register-smart-compact-tool.ts";
 
 describe("smart_compact tool cancellation", () => {
+  it("explains the actual threshold, model window, and manual early-compaction option", async () => {
+    let tool: any;
+    registerSmartCompactTool({ registerTool: (definition: any) => { tool = definition; } } as any, {
+      pendingRef: { peek: () => undefined } as any, runLock: {} as any,
+      onNativeApplyError: () => false, policy: { isAgentToolEnabled: () => true } as any,
+    });
+    const result = await tool.execute("low-usage", {}, undefined, () => {}, {
+      model: { contextWindow: 272_000 }, getContextUsage: () => ({ tokens: 102_957 }),
+      sessionManager: { getSessionId: () => "early-compact" },
+    });
+    expect(result.content[0].text).toContain("38%");
+    expect(result.content[0].text).toContain("272,000");
+    expect(result.content[0].text).toContain("threshold");
+    expect(result.content[0].text).toContain("/smart-compact");
+    expect(result.content[0].text).not.toContain("tool=97%");
+    expect(tool.description).toContain("stages");
+  });
   it("keeps manual settings explicit when TUI is unavailable", async () => {
     let command: any;
     const notifications: Array<{ message: string; level: string }> = [];
@@ -133,7 +150,8 @@ describe("smart_compact tool cancellation", () => {
       failure = error;
     }
     expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain("synthetic pipeline failure");
+    expect((failure as Error).message).toContain("internal");
+    expect((failure as Error).message).not.toContain("synthetic pipeline failure");
   });
 
   it("does not start the pipeline when the host signal is already aborted", async () => {

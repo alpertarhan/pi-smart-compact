@@ -68,6 +68,29 @@ function verifyAndPatch(
 }
 
 describe("verifySummary", () => {
+	it("preserves short negation and checks additional contradictions beside verbatim clauses", () => {
+		const cases = [
+			["No new dependencies", "New dependencies", false],
+			["No new dependencies", "No new dependencies", true],
+			["Do not deploy now; deploy only after approval", "Do not deploy now; deploy only after approval", true],
+			["Do not deploy now; deploy only after approval", "Do not deploy now; deploy only after approval\n- Deploy now without approval", false],
+		] as const;
+		for (const [source, target, ok] of cases) {
+			const extraction = makeExtraction({ constraints: [{ index: 0, text: source, category: "prohibition", confidence: 1 }] });
+			const summary = assembleFallback([], extraction).replace(source, target);
+			expect(verifySummary(summary, extraction).ok).toBe(ok);
+		}
+	});
+
+	it("does not treat known path evidence as a release claim, but still checks prose in file sections", () => {
+		const extraction = makeExtraction({ readFiles: ["docs/published.md", "src/released.ts"] });
+		const evidence = { sourceMessages: [] };
+		const summary = assembleFallback([], extraction);
+		expect(verifySummary(summary, extraction, null, evidence).gaps).toEqual([]);
+		const fabricated = summary + "\n## Files Read\n- Published the release\n";
+		expect(verifySummary(fabricated, extraction, null, evidence).gaps.some(g => g.kind === "unsupported-claim")).toBe(true);
+	});
+
 	it("returns perfect score for complete coverage", () => {
 		const extraction = makeExtraction({
 			modifiedFiles: [
