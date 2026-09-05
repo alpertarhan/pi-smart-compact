@@ -124,6 +124,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
   const verificationEvidence = {
     sourceMessages: rc.llmMessages,
     steering: { focus: rc.focus, note: rc.userNote },
+    summaryBudgetTokens: rc.profileCfg?.summaryBudgetTokens ?? 6_000,
   };
   let postVerification = verifySummary(summary, extraction, compactionState, verificationEvidence);
   const postInitialScore = postVerification.score;

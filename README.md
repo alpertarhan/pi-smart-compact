@@ -154,8 +154,9 @@ The interactive command uses the configured summary route and exact execution
 planner before spending LLM tokens. Its compact decision card compares the
 three modes by estimated after-size and saving, highlights the recommendation,
 and keeps only the selected plan plus hard tool-pair/zero-gap guarantees in the
-primary view. The plan reserves 25% of the LLM summary allowance for verified
-state/delta/continuity sections added after synthesis. Technical estimator,
+primary view. The plan reserves a calibrated allowance for verified
+state/delta/continuity sections added after synthesis (at least 25% of the LLM
+summary budget). The preview displays that actual allowance. Technical estimator,
 target, route, and boundary data stays under `D` instead of crowding the decision.
 
 - `↑` / `↓` changes `Fast`, `Balanced`, or `Thorough` and recalculates the plan.
@@ -185,8 +186,17 @@ During execution a two-line live brief shows the EESV phase chain and the
 meaningful current action; it states that the conversation remains unchanged
 until verified Apply. Routine phase toasts and raw per-batch watchdog/provider
 errors are suppressed by default: handled fallbacks appear as one content-free
-brief. `verbose` restores routine phase notices; full stack diagnostics require
-`DEBUG=smart-compact`.
+brief with a failure category and next action. `verbose` (also spelled `debug`)
+restores routine phase notices, not stack traces. For raw local diagnostics,
+restart Pi with `DEBUG=smart-compact`; logs may contain private conversation evidence.
+
+A skip at **38% / 102,957 tokens** means usage is below the configured
+`minContextPercent` (60% by default), relative to the active model's window.
+It does not mean 100K tokens is universally small. `tool=XX%` measures a different
+quantity. Use `/smart-compact` for deliberate early compaction with preview and
+unchanged verification/yield gates. The agent tool only **stages** a summary;
+run `/compact` within five minutes to apply it. With automatic compaction disabled,
+no background action consumes that candidate.
 
 ### Focus and budgets
 
@@ -250,7 +260,11 @@ independent of modes:
 | Verification repair | `verificationModel` | summary/selected model |
 
 Every run persists per-stage provider, model, reliability, latency, and token
-telemetry with schema-versioned verifier quality. `bun run provider-eval`
+telemetry with schema-versioned verifier quality. Failed dispatched calls also
+retain content-free categories (authentication, rate-limit, timeout, and so on),
+including runs completed by deterministic fallback. `/smart-compact metrics`
+separates those call failures from the compaction outcome; older records without
+categories remain explicitly unclassified. `bun run provider-eval`
 builds an advisory matrix by context pressure and tool density; it never edits
 configuration or selects a model. Legacy rows contribute operational evidence
 but not quality because old verifier score semantics are incompatible.
@@ -315,8 +329,13 @@ guidance for reaching the target.
   disappearing when they leave the unresolved set.
 - Cross-session guard and five-minute TTL for pending summaries
 - Session-log recovery for older, truncated tool results
-- The full selected pre-prune conversation is scrubbed and prepared in memory;
-  its 0600 backup is written only after the matching native compaction succeeds.
+- Host-visible custom messages, branch summaries, and earlier compaction summaries
+  participate in planning and extraction, with original entry IDs. Context-excluded
+  messages and extension-private state stay excluded.
+- Recovered pre-prune conversation text is backed up without an additional tool-result
+  length cap. Text backups are not binary attachment archives and remain subject to
+  configured redaction and available session-log recovery. The 0600 backup is
+  materialized and written only after the matching native compaction succeeds.
   Marker-owned retention leaves foreign files in custom directories untouched.
 - Private artifact directories are enforced as 0700 and files as 0600; stale state snapshots and orphaned atomic-write temp files are removed during bounded retention sweeps.
 
@@ -600,7 +619,7 @@ TUI, using a shared lock and atomic replacement while preserving other keys.
 | Path | Purpose |
 | --- | --- |
 | `settings.json` | Host configuration; the settings TUI can update `smartCompact` defaults |
-| `compact-backups/` | Full selected pre-prune conversation backups, scrubbed before write and retention-pruned |
+| `compact-backups/` | Recovered selected pre-prune text backups without tool-output truncation; scrubbed and retention-pruned |
 | `.cache/compact-extraction-<session>.json` | Incremental extraction cache |
 | `.cache/compact-metrics.jsonl` | Tail-retained metrics log; 5 MiB cap |
 | `.cache/smart-compact-report.html` | Local HTML dashboard |

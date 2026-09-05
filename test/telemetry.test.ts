@@ -39,6 +39,15 @@ describe("privacy-safe canary telemetry", () => {
     expect(classifyTelemetryFailure(new Error("unexpected invariant"))).toBe("internal");
   });
 
+  it("bounds cyclic causes and distinguishes output watchdogs from timeouts", () => {
+    const first = new Error("provider request failed");
+    const second = Object.assign(new Error("unauthorized"), { status: 401, cause: first });
+    first.cause = second;
+    expect(classifyTelemetryFailure(first)).toBe("authentication");
+    expect(classifyTelemetryFailure(new Error("Codex visible-output watchdog stopped generation"))).toBe("output-limit");
+    expect(classifyTelemetryFailure(new Error("Codex visible-output watchdog stopped generation"), true)).toBe("timeout");
+  });
+
   it("holds a canary until the sample floor is met", () => {
     const report = assessCanary([
       ...Array.from({ length: 20 }, () => metric("stable")),

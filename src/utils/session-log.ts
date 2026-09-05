@@ -22,7 +22,7 @@ import { StringDecoder } from "node:string_decoder";
 import { extractText, TRUNCATE_RE } from "./extraction.ts";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
-import { asBranchMessage } from "../infra/ai-messages.ts";
+import { asBranchMessage, contextMessageEntries } from "../infra/ai-messages.ts";
 import {
   sessionsDir as sessionsDirPath,
   home as piHome,
@@ -308,15 +308,11 @@ async function readOriginalMessageMap(
       } catch {
         continue;
       }
-      if (
-        entry.type !== "message" ||
-        !entry.id ||
-        !remaining.has(entry.id) ||
-        !entry.message
-      )
-        continue;
+      if (!entry.id || !remaining.has(entry.id)) continue;
       remaining.delete(entry.id);
-      const normalized = normalizeLogMessage(entry.message, entry.timestamp);
+      const normalized = entry.type === "message" && entry.message
+        ? normalizeLogMessage(entry.message, entry.timestamp)
+        : contextMessageEntries([entry])[0]?.message as LlmMessage | undefined;
       if (normalized) map.set(entry.id, normalized);
       if (remaining.size === 0) break;
     }

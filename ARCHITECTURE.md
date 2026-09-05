@@ -150,7 +150,10 @@ preserve the actual route.
 
 `app/steps/window.ts` starts from Pi's compaction-aware
 `buildContextEntries()` view, never the append-only session history, and builds
-a content-free `CompactionWindowPlan` from the selected mode budget:
+a content-free `CompactionWindowPlan` from the selected mode budget. The shared
+`contextMessageEntries()` adapter uses Pi's `sessionEntryToContextMessages()` and
+`convertToLlm()`, retaining host-visible custom/branch/compaction summaries and
+original entry IDs while excluding private or context-disabled entries:
 
 - **hard `toolCall` / `toolResult` guard** — never orphan a result from its call
 - **soft recent-user/checkpoint/topical preferences** — retain raw only when the resulting suffix still fits the planned budget
@@ -171,11 +174,13 @@ keeps chunked recovery instead of sending an oversized one-shot prompt to
 native summarization. Manual runs use the profile's absolute adaptive tail, so
 model-window size cannot turn an explicit command into a full-context no-op.
 
-Before summarization the pipeline serializes and scrubs the full selected
-conversation into an in-memory prepared backup, then prunes redundant messages,
-loads the previous verified summary plus bounded continuity state, checks the
-incremental extraction cache, and loads the project fingerprint. The backup is
-written atomically only after the matching native compaction is confirmed.
+Before summarization the pipeline keeps a deferred reference to the recovered
+pre-prune messages, prunes redundant messages, loads prior continuity, checks the
+extraction cache, and loads the project fingerprint. Both synthesis and backup
+text use `serializeConversationText()` without the host summarizer's implicit
+2,000-character tool-result cap. Structural and text redaction remain enforced;
+binary attachment archival is outside this text format. The backup materializes
+and writes atomically only after the matching native compaction is confirmed.
 
 ### Extract
 
@@ -237,7 +242,12 @@ evidence is never copied into failure metrics. Both gates remain mandatory:
 summary-derived continuity fields cannot become evidence for their own initial
 verification.
 Polarity checks are symmetric: adding negation to a positive fact is rejected
-just as removing negation from a prohibition is. Unresolved-error source
+just as removing negation from a prohibition is. Short negation tokens such as
+`no` survive token filtering. Verbatim source clauses are not compared against
+the whole instruction's polarity, while additional contradictory clauses remain
+checked. Exact grounded path representations are not outcome claims; prose in
+file sections is still verified. Synthesis and post-state verification use the
+same summary budget for path encoding. Unresolved-error source
 snippets and fallback-rendered evidence share `summaryEvidenceLine()`, so
 Markdown prefixes and multiline wrapping cannot create false missing-error gaps.
 
@@ -264,8 +274,10 @@ and success telemetry. Aborted/unconfirmed candidates write none of them. The
 UI reports `Applied` only after that correlated commit and emits a separate
 warning if any durable side effect was partial.
 `ui/error-format.ts` converts verification/yield failures to one bounded,
-content-free diagnostic and collapses unknown multiline errors; full stacks are
-suppressed by default and emitted only under explicit `DEBUG=smart-compact`.
+content-free diagnostic and next action, including unknown/provider errors.
+Per-call categories survive in aggregated route metrics even when fallback
+succeeds; raw errors never enter that telemetry. Full stacks are suppressed by
+default and require restarting Pi with explicit `DEBUG=smart-compact`.
 Manual execution uses a two-line widget: a colored EESV phase chain plus a
 phase-specific action brief. Before Apply it explicitly says the conversation
 is unchanged. Routine info toasts are hidden unless `verbose`; handled provider,

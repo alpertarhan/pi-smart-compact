@@ -86,15 +86,8 @@ function branchIndexToMsgIndex(
   branchIdx: number,
   msgs: SessionMessageEntry[],
 ): number {
-  let msgCount = 0;
-  for (let i = 0; i <= branchIdx && i < branchEntries.length; i++) {
-    const e = branchEntries[i] as Record<string, unknown> | undefined;
-    if (e?.type === "message") {
-      if (msgCount >= msgs.length) return msgs.length - 1;
-      msgCount++;
-    }
-  }
-  return Math.max(0, Math.min(msgCount - 1, msgs.length - 1));
+  const id = (branchEntries[branchIdx] as { id?: string } | undefined)?.id;
+  return Math.max(0, msgs.findIndex(entry => entry.id === id));
 }
 
 export type SmartBoundaryKind = "anchor" | "topical";

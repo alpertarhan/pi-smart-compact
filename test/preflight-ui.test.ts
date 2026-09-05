@@ -130,6 +130,13 @@ describe("smart compact preflight UI", () => {
       .toContain("summary up to 6K + ~1.5K verified-state reserve");
   });
 
+  it("shows the actual calibrated allowance rather than a second hard-coded reserve", () => {
+    const item = preview("fast", true);
+    item.plan!.finalSummaryAllowanceTokens = 15_000;
+    expect(formatPreflightSummary(item, "openai/summary").join("\n"))
+      .toContain("summary up to 6K + ~9K verified-state reserve");
+  });
+
   it("renders the three-mode decision card, supports D, and never exceeds width", async () => {
     const result = await showCompactUI(context((component, done) => {
       const narrowLines = component.render(36);

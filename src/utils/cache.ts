@@ -57,6 +57,7 @@ import {
   type SmartCompactServices,
 } from "../infra/services.ts";
 import { toolOperationSignature } from "../domain/tool-semantics.ts";
+import { classifyTelemetryFailure } from "../domain/telemetry.ts";
 
 // ── Cache Options ──
 
@@ -289,6 +290,7 @@ export async function trackedComplete(
         cacheWriteTokens: 0,
         latencyMs: Date.now() - start,
         success: false,
+        failureKind: classifyTelemetryFailure(err),
       },
       svc,
     );

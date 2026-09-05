@@ -18,7 +18,7 @@ import {
 } from "../../utils/helpers.ts";
 
 export function selectTier(rc: RecoveredRc): TieredRc | null {
- const toolPercent = computeToolCharPercentage(rc.branch);
+ const toolPercent = computeToolCharPercentage(rc.msgs);
  const tier: ActiveTier | "none" = rc.flags.overflowRecovery
   ? "full"
   : rc.flags.force

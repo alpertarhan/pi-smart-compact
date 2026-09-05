@@ -17,6 +17,7 @@ import { verifySummary } from "../src/phases/verify.ts";
 import { resolveProviderWatchdogMs } from "../src/infra/llm-client.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
+import { serializeConversationText } from "../src/infra/ai-messages.ts";
 
 const fullConversation: LlmMessage[] = Array.from(
   { length: 2_500 },
@@ -39,6 +40,13 @@ const fullConversation: LlmMessage[] = Array.from(
     },
   ],
 ).flat();
+// Message count alone hid multi-megabyte tool-result regressions. Include
+// distinct file reads, mixed Unicode/log output, failures, and tail evidence.
+const largeConversation: LlmMessage[] = Array.from({ length: 500 }, (_, i): LlmMessage[] => [
+  { role: "assistant", content: [{ type: "toolCall", id: "large-" + i, name: "read", arguments: { path: "src/file-" + i + ".ts" } }] },
+  { role: "toolResult", toolCallId: "large-" + i, toolName: "read", isError: i % 10 === 0,
+    content: [{ type: "text", text: ("line " + i + ": ölçüm output value;\n").repeat(1600).slice(0, 40_000) + "END-EVIDENCE-" + i }] },
+]).flat();
 const incrementalDelta = fullConversation.slice(-100);
 const oneMegabyteSummary = "## Goal\n" + "x".repeat(1_000_000);
 const longDotlessToken = "x".repeat(24_000);
@@ -97,6 +105,9 @@ const P95_LIMIT_MS: Record<string, number> = {
   "incremental hit (legacy full index)": 5,
   "incremental hit (optimized)": 3,
   "prune 5k messages": 30,
+  "prune 20MB tool history": 1_000,
+  "extract 20MB tool history": 1_000,
+  "serialize 20MB backup text": 250,
   "chunk + bound 5k messages": 40,
   "parse 1MB canonical summary": 5,
   "scan 24k dotless file-ref token": 5,
@@ -109,6 +120,13 @@ const P95_LIMIT_MS: Record<string, number> = {
 };
 
 const benchmarks: Benchmark[] = [
+  { name: "prune 20MB tool history", iterations: 1, run: () => { sink += pruneRedundant(largeConversation).messages.length; } },
+  { name: "extract 20MB tool history", iterations: 1, run: () => { sink += extractStructured(largeConversation, PROFILES.balanced).messageCount; } },
+  { name: "serialize 20MB backup text", iterations: 1, run: () => {
+    const transcript = serializeConversationText(largeConversation);
+    if (!transcript.endsWith("END-EVIDENCE-499")) throw new Error("Backup tail lost");
+    sink += transcript.length;
+  } },
   {
     name: "incremental hit (legacy full index)",
     iterations: 20,
@@ -238,7 +256,7 @@ function measure(benchmark: Benchmark): Measurement {
 }
 
 console.log(
-  "pi-smart-compact hot-path benchmark (5,000 messages, 100-message delta)",
+  "pi-smart-compact hot-path benchmark (5,000 messages, 100-message delta, 20MB tool history)",
 );
 const measurements = benchmarks.map((benchmark) => ({
   name: benchmark.name,

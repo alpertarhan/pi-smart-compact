@@ -8,7 +8,7 @@
 
 import type { RcBase, PreparedRc, ResolvedAuth } from "../run-context.ts";
 import { advance } from "../run-context.ts";
-import { effectiveBudget, MODE_POLICIES } from "../mode-policy.ts";
+import { effectiveBudget, resolveCallBudget, MODE_POLICIES } from "../mode-policy.ts";
 import { DEFAULT_CONFIG } from "../../constants.ts";
 import { getProviderCaps } from "../../utils/tokens.ts";
 import { loadConfig } from "../../utils/config.ts";
@@ -53,11 +53,8 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
         : config.maxLatencyMs;
   }
   const policy = MODE_POLICIES[rc.mode];
-  const callBudget =
-    rc.maxLlmCalls ?? effectiveBudget(config.maxLlmCalls, policy.maxLlmCalls);
-  const inputBudget =
-    rc.maxLlmInputTokens ??
-    effectiveBudget(config.maxLlmInputTokens, policy.maxInputTokens);
+  const callBudget = resolveCallBudget(config.maxLlmCalls, rc.mode, rc.maxLlmCalls, rc.flags.autoTriggered && !rc.flags.skipCompact);
+  const inputBudget = effectiveBudget(config.maxLlmInputTokens, policy.maxInputTokens, rc.maxLlmInputTokens);
   rc.services.budget = new BudgetGuard(
     callBudget,
     rc.timeoutMs,

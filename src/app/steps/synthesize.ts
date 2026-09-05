@@ -35,6 +35,7 @@ import {
 	continuityRisk,
 	deterministicExtractionConfidence,
 	effectiveBudget,
+	resolveCallBudget,
 	MODE_POLICIES,
 	modeFromLegacyProfile,
 	resolveMode,
@@ -49,6 +50,7 @@ import {
 	synthesisCacheKey,
 } from "../../infra/synthesis-cache.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
+import { formatGenerationFailureForUi } from "../../ui/error-format.ts";
 
 export async function summarizeConversation(
 	rc: ExtractedRc,
@@ -69,10 +71,8 @@ export async function summarizeConversation(
 			rc.mode = refined;
 			const policy = MODE_POLICIES[refined];
 			rc.services.budget.setLimits(
-				rc.maxLlmCalls ??
-					effectiveBudget(rc.config.maxLlmCalls, policy.maxLlmCalls),
-				rc.maxLlmInputTokens ??
-					effectiveBudget(rc.config.maxLlmInputTokens, policy.maxInputTokens),
+				resolveCallBudget(rc.config.maxLlmCalls, refined, rc.maxLlmCalls, rc.flags.autoTriggered && !rc.flags.skipCompact),
+				effectiveBudget(rc.config.maxLlmInputTokens, policy.maxInputTokens, rc.maxLlmInputTokens),
 				policy.maxOutputTokens,
 			);
 			// The retention window and output allowance were already planned before
@@ -202,8 +202,8 @@ export async function summarizeConversation(
 		generationFallbacks.push("summary route unavailable");
 		log.debugError("Summary route unavailable", error);
 		rc.notify(
-			"Summary route unavailable · using deterministic fallback",
-			"info",
+			"Summary route unavailable · using deterministic fallback [" + formatGenerationFailureForUi(error) + "]",
+			"warning",
 		);
 	}
 
@@ -253,8 +253,8 @@ export async function summarizeConversation(
 			generationFallbacks.push("single-pass generation failed");
 			log.debugError("Single-pass synthesis used deterministic fallback", err);
 			rc.notify(
-				"Single-pass generation stopped · using deterministic fallback",
-				"info",
+				"Single-pass generation stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]",
+				"warning",
 			);
 			finalSummary = assembleFallback(
 				[],
@@ -444,8 +444,8 @@ export async function summarizeConversation(
 						generationFallbacks.push("1 synthesis batch fallback");
 						log.debugError("Synthesis batch used deterministic fallback", err);
 						rc.notify(
-							"Synthesis batch stopped · deterministic evidence fallback preserved coverage",
-							"info",
+							"Synthesis batch stopped · deterministic evidence fallback preserved coverage [" + formatGenerationFailureForUi(err) + "]",
+							"warning",
 						);
 						showProgressOverlay(rc.ctx, {
 							phase: 3,
@@ -566,8 +566,8 @@ export async function summarizeConversation(
 				);
 				rc.notify(
 					failedBatches.length +
-						" synthesis batch(es) stopped · deterministic evidence fallback preserved coverage",
-					"info",
+						" synthesis batch(es) stopped · deterministic evidence fallback preserved coverage [" + formatGenerationFailureForUi(failedBatches[0]) + "]",
+					"warning",
 				);
 				showProgressOverlay(rc.ctx, {
 					phase: 3,
@@ -590,6 +590,7 @@ export async function summarizeConversation(
 			explorationRounds,
 			totalBatches: batches.length,
 		});
+		method = "eesv";
 		try {
 			const r = await assembleLLM(
 				summaries,
@@ -605,11 +606,13 @@ export async function summarizeConversation(
 				rc.previousState,
 			);
 			if (r?.startsWith("##")) finalSummary = r;
-			else throw new Error("bad");
+			else throw new Error("Invalid summary response");
 		} catch (err) {
 			cacheable = false;
 			generationFallbacks.push("assembly generation failed");
 			log.debugError("Assembly used deterministic fallback", err);
+			rc.notify("Assembly stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]", "warning");
+			method = "heuristic";
 			finalSummary = assembleFallback(
 				summaries,
 				extraction,
@@ -618,7 +621,6 @@ export async function summarizeConversation(
 				rc.previousState,
 			);
 		}
-		method = "eesv";
 	}
 
 	Object.assign(rc, {

@@ -33,6 +33,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extractWithCache } from "../src/app/steps/extract.ts";
+import { prepareRun } from "../src/app/steps/prepare.ts";
+import { buildState } from "../src/app/steps/state.ts";
+import { verifyAndPatch } from "../src/app/steps/verify.ts";
+import { assembleFallback } from "../src/phases/synthesize.ts";
+import { AUTO_TRIGGER_MAX_LLM_CALLS, DEFAULT_CONFIG, PROFILES } from "../src/constants.ts";
+import { aggregateProviderRoutes } from "../src/domain/provider-evaluation.ts";
 import { summarizeConversation } from "../src/app/steps/synthesize.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
 import type { LlmClient } from "../src/infra/llm-client.ts";
@@ -147,6 +153,34 @@ afterEach(() => {
 });
 
 describe("pipeline integration: extract -> synthesize (single-pass)", () => {
+  it("resolves zero budget overrides before enforcing the automatic call ceiling", async () => {
+    const rc = makeTieredRc([]);
+    rc.config = { ...DEFAULT_CONFIG, maxLatencyMs: 0, maxLlmCalls: 0 };
+    rc.mode = "balanced";
+    rc.maxLlmCalls = 0;
+    rc.flags.autoTriggered = true;
+    await prepareRun(rc);
+    for (let i = 0; i < AUTO_TRIGGER_MAX_LLM_CALLS; i++) rc.services.budget.reserveCall(1, 1);
+    expect(() => rc.services.budget.reserveCall(1, 1)).toThrow("budget");
+  });
+
+  it("keeps Fast path encoding stable through post-state verification", async () => {
+    const rc = makeTieredRc([]);
+    rc.profileCfg = { ...PROFILES.aggressive };
+    rc.profile = "aggressive";
+    rc.mode = "fast";
+    rc.totalTokens = 100_000;
+    (rc as any).compactionPlan = { summaryBudgetTokens: 3_000, retainedTokens: 1_000, fixedContextTokens: 0, targetAfterTokens: 80_000, projectedAfterTokens: 80_000 };
+    const extracted = extractWithCache(rc);
+    extracted.extraction.readFiles = Array.from({ length: 200 }, (_, i) => "src/" + "directory/".repeat(15) + `module-${i}.ts`);
+    const summary = assembleFallback([], extracted.extraction, undefined, 3_000);
+    const synthesized = Object.assign(extracted, { _synthesized: true, finalSummary: summary, summaries: [], method: "heuristic" }) as any;
+    const verified = await verifyAndPatch(synthesized);
+    const stated = buildState(verified);
+    expect(stated.verificationProvenance.deterministicPatched).toEqual([]);
+    expect(stated.finalSummary.length).toBeLessThan(summary.length + 2_000);
+  });
+
   it("bounds long lineage while retaining pre-compaction state heads", () => {
     const lineage = Array.from({ length: 1_001 }, (_, index) => ({
       id: "entry-" + (index + 1),
@@ -230,7 +264,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     const truncatedEvidence = "TRUNCATED-MIDDLE-BACKUP-EVIDENCE";
     const longToolResult: LlmMessage = {
       role: "toolResult", toolCallId: "long-output", isError: false, timestamp: Date.now(),
-      content: [{ type: "text", text: "a".repeat(MAX_TOOL_OUTPUT_CHARS) + truncatedEvidence + "b".repeat(MAX_TOOL_OUTPUT_CHARS) }],
+      content: [{ type: "text", text: "a".repeat(4_000) + truncatedEvidence + "b".repeat(MAX_TOOL_OUTPUT_CHARS) }],
     };
     const messages = [
       userMsg("Preserve the selected span"), assistantMsg(removedEvidence), longToolResult,
@@ -274,6 +308,13 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
       resetConfigCache();
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it("does not re-truncate preserved assistant and tool evidence at serialization", () => {
+    const tool: LlmMessage = { role: "toolResult", toolName: "bash", toolCallId: "long", isError: true, content: [{ type: "text", text: "output ".repeat(600) + "CRITICAL_END_SENTINEL" }] };
+    // Error output survives pruning and must survive the synthesis serializer too.
+    const extracted = extractWithCache(makeTieredRc([userMsg("Diagnose the failure"), tool]));
+    expect(extracted.convText).toContain("CRITICAL_END_SENTINEL");
   });
 
   it("produces a summary when the LLM returns a well-formed markdown response", async () => {
@@ -406,8 +447,11 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.method).toBe("heuristic");
     expect(synthesized.finalSummary.length).toBeGreaterThan(0);
     expect(synthesized.llmCalls).toBe(1);
-    expect(notices).toContain("Single-pass generation stopped · using deterministic fallback");
+    expect(notices.join("\n")).toContain("Single-pass generation stopped");
+    expect(notices.join("\n")).toContain("provider");
     expect(notices.join("\n")).not.toContain("simulated provider outage");
+    expect(aggregateProviderRoutes(tiered.services.metrics.snapshot())[0]?.failures).toEqual({ provider: 1 });
+    expect(JSON.stringify(tiered.services.metrics.snapshot())).not.toContain("simulated provider outage");
   });
 
   it("records a malformed one-batch fallback and never caches its degraded synthesis", async () => {
@@ -437,7 +481,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
 
     const first = await summarizeConversation(makeExtracted());
     expect(first.generationFallbacks).toContain("1 synthesis batch fallback");
-    expect(notices).toContain("Synthesis batch stopped · deterministic evidence fallback preserved coverage");
+    expect(notices.join("\n")).toContain("Synthesis batch stopped · deterministic evidence fallback preserved coverage");
     expect(calls).toBe(2);
 
     await summarizeConversation(makeExtracted());

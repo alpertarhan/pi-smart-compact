@@ -44,9 +44,8 @@ import {
 } from "../../utils/fingerprint.ts";
 import { getPreviousCompactionContext } from "../../utils/helpers.ts";
 import { isPrefixOf, legacyPrefixMatch } from "../../utils/id-fingerprint.ts";
-import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import {
-  asSerializableMessages,
+  serializeConversationText,
   scrubLlmMessages,
 } from "../../infra/ai-messages.ts";
 import { prepareConversationBackup } from "../../utils/backups.ts";
@@ -101,7 +100,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
 
   const extractionStart = pruneEnd;
   const convText = rc.services.scrubber.scrubText(
-    serializeConversation(asSerializableMessages(rc.llmMessages)),
+    serializeConversationText(rc.llmMessages),
   ).value;
   const convTokens = rc.estimator.text(convText);
   let preparedBackup: PreparedConversationBackup | undefined;
@@ -115,9 +114,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
         selectedMessages,
         rc.services.scrubber,
       );
-      const backupText = serializeConversation(
-        asSerializableMessages(safeMessages),
-      );
+      const backupText = serializeConversationText(safeMessages);
       const scrubbed = rc.services.scrubber.scrubText(backupText);
       // Scrub false-positives permanently damage the backup (a restore brings
       // back redacted text) — surface redactions so the user can review.

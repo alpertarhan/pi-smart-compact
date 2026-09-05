@@ -31,6 +31,7 @@ import {
 } from "../../constants.ts";
 import { safeContextPercent, type TokenEstimator } from "../../utils/tokens.ts";
 import { isRecord } from "../../utils/type-guards.ts";
+import { contextMessageEntries } from "../../infra/ai-messages.ts";
 
 export type { CompactionWindowPlan } from "../run-context.ts";
 
@@ -342,10 +343,7 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
     typeof manager.buildContextEntries === "function"
       ? manager.buildContextEntries()
       : manager.getBranch();
-  const msgs = branch.filter(
-    (entry: { type: string; message?: unknown }) =>
-      entry.type === "message" && entry.message != null,
-  ) as SessionMessageEntry[];
+  const msgs = contextMessageEntries(branch);
   if (msgs.length < 3) {
     if (rc.flags.force)
       rc.notify(

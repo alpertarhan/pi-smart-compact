@@ -109,6 +109,8 @@ export interface LLMCallMetric {
  cacheWriteTokens: number;
  latencyMs: number;
  success: boolean;
+ /** Content-free provider failure category; never stores response/error text. */
+ failureKind?: TelemetryFailureKind;
  /** True when provider usage was absent or partial and local estimates were used. */
  usageEstimated?: boolean;
 }
@@ -121,6 +123,7 @@ export interface ProviderRouteMetric {
  model: string;
  calls: number;
  successes: number;
+ failures?: Partial<Record<TelemetryFailureKind, number>>;
  avgLatencyMs: number;
  inputTokens: number;
  outputTokens: number;

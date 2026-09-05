@@ -52,7 +52,7 @@ export function providerStage(phase: LLMCallMetric["phase"]): ProviderRouteStage
 export function aggregateProviderRoutes(metrics: readonly LLMCallMetric[]): ProviderRouteMetric[] {
   const groups = new Map<string, {
     stage: ProviderRouteStage; provider: string; model: string; calls: number;
-    successes: number; latency: number; input: number; output: number;
+    successes: number; latency: number; input: number; output: number; failures: NonNullable<ProviderRouteMetric["failures"]>;
   }>();
   for (const metric of metrics) {
     const stage = providerStage(metric.phase);
@@ -60,10 +60,11 @@ export function aggregateProviderRoutes(metrics: readonly LLMCallMetric[]): Prov
     const key = stage + "\u0000" + provider + "\u0000" + metric.model;
     const group = groups.get(key) ?? {
       stage, provider, model: metric.model, calls: 0, successes: 0,
-      latency: 0, input: 0, output: 0,
+      latency: 0, input: 0, output: 0, failures: {},
     };
     group.calls++;
     if (metric.success) group.successes++;
+    else if (metric.failureKind) group.failures[metric.failureKind] = (group.failures[metric.failureKind] ?? 0) + 1;
     group.latency += Math.max(0, metric.latencyMs);
     group.input += Math.max(0, metric.inputTokens)
       + Math.max(0, metric.cacheHitTokens)
@@ -77,6 +78,7 @@ export function aggregateProviderRoutes(metrics: readonly LLMCallMetric[]): Prov
     model: group.model,
     calls: group.calls,
     successes: group.successes,
+    ...(Object.keys(group.failures).length ? { failures: group.failures } : {}),
     avgLatencyMs: group.calls ? Math.round(group.latency / group.calls) : 0,
     inputTokens: group.input,
     outputTokens: group.output,

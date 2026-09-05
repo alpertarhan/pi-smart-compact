@@ -156,7 +156,10 @@ function hasListedPath(
 	return false;
 }
 
-function outcomeClaims(summary: string): string[] {
+function outcomeClaims(summary: string, pathEvidence: ReadonlyMap<string, string>): string[] {
+	// Only exact, grounded path representations are exempt. Prose in a file
+	// section still needs outcome evidence; a heading is not a trust boundary.
+	const pathLines = new Set(Array.from(pathEvidence, ([path, display]) => [path, display, "`" + path + "`"]).flat());
 	return Array.from(
 		new Set(
 			summary
@@ -167,7 +170,7 @@ function outcomeClaims(summary: string): string[] {
 						.replace(/^\[[ x]\]\s+/i, "")
 						.trim(),
 				)
-				.filter((line) => line.length > 0 && !line.startsWith("#"))
+				.filter((line) => line.length > 0 && !line.startsWith("#") && !pathLines.has(line))
 				.filter((line) => HIGH_RISK_OUTCOME_RE.test(line))
 				.filter(
 					(line) =>
@@ -587,7 +590,7 @@ function stemToken(token: string): string {
 function semanticTokens(text: string): string[] {
 	return (text.normalize("NFKC").match(/[\p{L}\p{N}_-]+/gu) ?? [])
 		.map(stemToken)
-		.filter((token) => token.length > 2);
+		.filter((token) => token.length > 2 || NEGATION_MARKERS.has(token));
 }
 
 interface SemanticShape {
@@ -638,7 +641,8 @@ function hasEffectiveTargetNegation(tokens: string[], anchor: string): boolean {
 		const nearbyNegations = tokens
 			.slice(nearbyStart, anchorIndex + 3)
 			.map((near, offset) =>
-				NEGATION_MARKERS.has(near) ? nearbyStart + offset : -1,
+				NEGATION_MARKERS.has(near) && !(near === "without" && nearbyStart + offset > anchorIndex)
+					? nearbyStart + offset : -1,
 			)
 			.filter((index) => index >= 0);
 		const governingStart = Math.max(0, anchorIndex - 3);
@@ -736,6 +740,9 @@ function hasSemanticEvidence(source: string, target: string): boolean {
 }
 
 function hasSemanticContradiction(source: string, target: string): boolean {
+	// Do not apply a whole instruction's polarity to one of its own clauses.
+	// Other target fragments remain checked, even beside a verbatim copy.
+	const sourceFragments = new Set(semanticFragments(source).map(tokens => tokens.join(" ")));
 	const { sourceTokens, concepts, anchor, negative, conditional } =
 		semanticShape(source);
 	if (!anchor) return false;
@@ -744,7 +751,7 @@ function hasSemanticContradiction(source: string, target: string): boolean {
 		Math.max(1, Math.ceil(concepts.length * 0.6)),
 	);
 	return semanticFragments(target).some((tokens) => {
-		if (!tokens.includes(anchor)) return false;
+		if (!tokens.includes(anchor) || sourceFragments.has(tokens.join(" "))) return false;
 		const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
 		// Sharing a generic anchor such as "release" or "file" is not enough:
 		// another constraint in the same section must overlap the actual concepts.
@@ -1169,6 +1176,7 @@ function verifyProgressConsistency(
 function verifyOpenLoopsAndClaims(
 	summary: string,
 	parsed: CanonicalSummary,
+	paths: PathVerificationData,
 	extraction: StructuredExtraction,
 	continuity: CompactionState | null,
 	evidence: VerificationEvidence,
@@ -1184,7 +1192,7 @@ function verifyOpenLoopsAndClaims(
 	}
 	if (!evidence.sourceMessages) return;
 	const tools = successfulToolEvidence(evidence.sourceMessages);
-	for (const claim of outcomeClaims(summary)) {
+	for (const claim of outcomeClaims(summary, paths.rendered)) {
 		if (!successfulToolSupportsClaim(claim, tools, extraction)) {
 			addGap(accumulator, { kind: "unsupported-claim", claim }, 20);
 		}
@@ -1227,6 +1235,7 @@ export function verifySummary(
 	verifyOpenLoopsAndClaims(
 		summary,
 		parsed,
+		paths,
 		extraction,
 		continuity,
 		evidence,

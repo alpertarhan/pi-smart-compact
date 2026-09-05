@@ -5,6 +5,9 @@ import type { SessionMessageEntry } from "../src/types.ts";
 import { getProviderCaps, makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
 import { POST_SUMMARY_RESERVE_RATIO } from "../src/constants.ts";
 import { verifyCompactionYield } from "../src/domain/yield-gate.ts";
+import { buildSessionContext, convertToLlm, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { prepareManualPreflightContext } from "../src/app/preflight.ts";
+import { recoverSessionLog } from "../src/app/steps/recover.ts";
 
 function messageEntry(
   id: string,
@@ -49,6 +52,27 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
 }
 
 describe("resolveCompactionWindow tool-result boundary", () => {
+  it("preserves every host-visible entry through preview, planning, and recovery", async () => {
+    const branch: SessionEntry[] = [
+      { type: "custom_message", id: "custom", parentId: null, timestamp: "2026-01-01T00:00:00Z", customType: "smart-compact-restore", content: "RESTORED_SENTINEL: schema 7 is mandatory", display: false },
+      { type: "branch_summary", id: "branch", parentId: "custom", timestamp: "2026-01-01T00:00:00Z", fromId: "old", summary: "BRANCH_SENTINEL: port 9123" },
+      { type: "custom", id: "private", parentId: "branch", timestamp: "2026-01-01T00:00:00Z", customType: "private-state", data: "NOT_LLM_VISIBLE" },
+      ...Array.from({ length: 15 }, (_, i) => messageEntry("msg-" + i, i ? "msg-" + (i-1) : "private", { role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: ("Work item " + i + " ").repeat(1300) }], timestamp: i })) as SessionEntry[],
+    ];
+    const rc = makePreparedRc(branch as unknown as SessionMessageEntry[], 6_000);
+    rc.ctx.getContextUsage = () => ({ tokens: 70_000 }) as any;
+    const preview = prepareManualPreflightContext(rc.ctx, { provider: "openai", id: "test" } as any, new TokenCalibrationStore());
+    const window = resolveCompactionWindow(rc)!;
+    expect(window).not.toBeNull();
+    expect(preview.msgs.map(e => e.id)).toEqual(window.msgs.map(e => e.id));
+    const recovered = await recoverSessionLog(window);
+    const host = convertToLlm(buildSessionContext(branch).messages);
+    expect(recovered.llmMessages).toEqual(host.slice(0, window.keepFrom));
+    expect(JSON.stringify(recovered.llmMessages)).toContain("RESTORED_SENTINEL");
+    expect(JSON.stringify(recovered.llmMessages)).toContain("BRANCH_SENTINEL");
+    expect(JSON.stringify(recovered.llmMessages)).not.toContain("NOT_LLM_VISIBLE");
+  });
+
   it("does not compact the only user turn just to retain a trailing tool result", () => {
     const toolCallId = "call_test|fc_test";
     const branch: SessionMessageEntry[] = [
