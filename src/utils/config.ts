@@ -469,13 +469,19 @@ const NUMERIC_RULES: readonly NumericRule[] = [
     key: "codexMaxCallMs",
     valid: (value) => validNumericLimit("codexMaxCallMs", value),
     message: () =>
-      "smart-compact config: codexMaxCallMs must be 0 or 5000–300000; 0 derives a cap from maxTokens.",
+      "smart-compact config: codexMaxCallMs must be 0 or 5000–3600000; 0 derives a cap from maxTokens.",
   },
   {
     key: "maxLatencyMs",
     valid: (value) => validNumericLimit("maxLatencyMs", value),
     message: () =>
-      "smart-compact config: maxLatencyMs must be 0 or 5000–600000; 0 means unlimited.",
+      "smart-compact config: maxLatencyMs must be 0 or 5000–7200000; 0 means unlimited.",
+  },
+  {
+    key: "pendingTtlMs",
+    valid: (value) => validNumericLimit("pendingTtlMs", value),
+    message: () =>
+      "smart-compact config: pendingTtlMs must be 1000–3600000 (staged summary TTL).",
   },
   {
     key: "minContextPercent",

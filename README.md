@@ -415,6 +415,7 @@ Add `smartCompact` to `~/.pi/agent/settings.json`:
     "maxLlmInputTokens": 0,
     "codexMaxCallMs": 0,
     "maxLatencyMs": 0,
+    "pendingTtlMs": 300000,
     "focusWeighting": true,
     "zeroCallEnabled": true,
     "contextGraphEnabled": true,
@@ -540,8 +541,9 @@ the run fails closed before staging or apply.
 | `scrubPii` | `boolean` | `false` | Email/phone/card-shaped redaction |
 | `maxLlmCalls` | integer `0–100` | `8` | Global ceiling combined with the selected mode |
 | `maxLlmInputTokens` | integer `0–1000000` | `0` | `0` uses the selected mode's aggregate prompt-token cap |
-| `codexMaxCallMs` | integer `0` or `5000–300000` | `0` | ChatGPT Codex per-call watchdog; `0` derives 15–90s from requested output tokens |
-| `maxLatencyMs` | `0` or `5000–600000` | `0` | Pipeline cancellation deadline; `0` means unlimited |
+| `codexMaxCallMs` | integer `0` or `5000–3600000` | `0` | ChatGPT Codex per-call watchdog; `0` derives 15–90s from requested output tokens (scaled by the provider's timeout multiplier) |
+| `maxLatencyMs` | `0` or `5000–7200000` | `0` | Pipeline cancellation deadline; `0` means unlimited |
+| `pendingTtlMs` | integer `1000–3600000` | `300000` | How long a staged summary waits for run+session commit before expiry |
 | `focusWeighting` | `boolean` | `true` | Weight focused topics/paths higher |
 | `zeroCallEnabled` | `boolean` | `true` | Use deterministic synthesis for high-confidence Fast runs |
 | `contextGraphEnabled` | `boolean` | `true` | Index verified state and enable project-scoped recall/save tools |

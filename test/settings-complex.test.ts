@@ -92,6 +92,7 @@ describe("complex settings coverage", () => {
       "maxLlmInputTokens",
       "codexMaxCallMs",
       "maxLatencyMs",
+      "pendingTtlMs",
       "backupDir",
       "pinPaths",
       "profiles.light.summaryBudgetTokens",

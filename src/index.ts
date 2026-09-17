@@ -185,6 +185,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     return write;
   };
   const commitCandidates = createCompactionCommitStore({
+    ttlMs: loadConfig().pendingTtlMs,
     onDiscard: (pending, reason) => {
       void recordApplyFailure(pending, reason);
     },

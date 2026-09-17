@@ -331,6 +331,36 @@ describe("validateSmartCompactConfig", () => {
     expect(invalid.maxLatencyMs).toBeUndefined();
   });
 
+  it("accepts slow-model timeout values up to the raised ceilings (#61)", () => {
+    const sc: Record<string, unknown> = {
+      codexMaxCallMs: 1_800_000,
+      maxLatencyMs: 7_200_000,
+    };
+    validateSmartCompactConfig(sc);
+    expect(sc.codexMaxCallMs).toBe(1_800_000);
+    expect(sc.maxLatencyMs).toBe(7_200_000);
+
+    const over: Record<string, unknown> = {
+      codexMaxCallMs: 3_600_001,
+      maxLatencyMs: 7_200_001,
+    };
+    validateSmartCompactConfig(over);
+    expect(over.codexMaxCallMs).toBeUndefined();
+    expect(over.maxLatencyMs).toBeUndefined();
+  });
+
+  it("validates pendingTtlMs and defaults to five minutes", () => {
+    const sc: Record<string, unknown> = { pendingTtlMs: 60_000 };
+    validateSmartCompactConfig(sc);
+    expect(sc.pendingTtlMs).toBe(60_000);
+
+    const bad: Record<string, unknown> = { pendingTtlMs: 999 };
+    validateSmartCompactConfig(bad);
+    expect(bad.pendingTtlMs).toBeUndefined();
+
+    expect(DEFAULT_CONFIG.pendingTtlMs).toBe(300000);
+  });
+
   it("ships roadmap features with explicit safety defaults", () => {
     expect(DEFAULT_CONFIG.requireApproval).toBe(true);
     expect(DEFAULT_CONFIG.scrubSecrets).toBe(true);

@@ -82,16 +82,17 @@ export const CONFIG_NUMERIC_LIMITS = {
 	maxLlmInputTokens: { min: 0, max: 1_000_000, integer: true },
 	codexMaxCallMs: {
 		min: 5_000,
-		max: 300_000,
+		max: 3_600_000,
 		integer: true,
 		zeroOrRange: true,
 	},
 	maxLatencyMs: {
 		min: 5_000,
-		max: 600_000,
+		max: 7_200_000,
 		integer: true,
 		zeroOrRange: true,
 	},
+	pendingTtlMs: { min: 1_000, max: 3_600_000, integer: true },
 } as const;
 
 export const DEFAULT_CONFIG = {
@@ -118,6 +119,7 @@ export const DEFAULT_CONFIG = {
 	maxLlmInputTokens: 0,
 	codexMaxCallMs: 0,
 	maxLatencyMs: 0,
+	pendingTtlMs: 300000,
 	focusWeighting: true,
 	zeroCallEnabled: true,
 	contextGraphEnabled: true,
