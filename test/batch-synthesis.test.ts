@@ -218,4 +218,92 @@ describe("summarizeBatch response validation", () => {
 				));
 		}
 	});
+
+	it("self-heals a length-truncated batch with one minimal-reasoning retry (#62)", async () => {
+		const calls: Array<Record<string, unknown>> = [];
+		const services = createServices({
+			thinkingLevels: {
+				summaryThinkingLevel: "high",
+				segmentationThinkingLevel: null,
+			},
+			llm: {
+				complete: async (_m: unknown, _b: unknown, opts: Record<string, unknown>) => {
+				calls.push(opts);
+				return response(valid, calls.length === 1 ? "length" : "stop");
+			},
+			},
+		});
+
+		const result = await summarizeBatch(
+			[chunk],
+			extraction,
+			model,
+			{ apiKey: "test" },
+			undefined,
+			services,
+			1_000,
+			"session",
+		);
+
+		expect(result[0].summary).toBe("Atomic writes remain required.");
+		expect(calls.length).toBe(2);
+		expect(calls[0].reasoning).toBe("high"); // configured level on first attempt
+		expect(calls[1].reasoning).toBe("minimal"); // retry caps thinking
+	});
+
+	it("still throws (deterministic fallback upstream) when the retry also length-truncates", async () => {
+		let calls = 0;
+		const services = createServices({
+			thinkingLevels: {
+				summaryThinkingLevel: "high",
+				segmentationThinkingLevel: null,
+			},
+			llm: {
+				complete: async () => {
+					calls++;
+					return response(valid, "length");
+				},
+			},
+		});
+
+		await expectBatchFormatError(
+			summarizeBatch([chunk], extraction, model, { apiKey: "test" }, undefined, services),
+		);
+		expect(calls).toBe(2); // one attempt + one retry
+	});
+
+	it("skips the retry when the configured level is already minimal", async () => {
+		let calls = 0;
+		const services = createServices({
+			llm: {
+				complete: async () => {
+					calls++;
+					return response(valid, "length");
+				},
+			},
+		});
+
+		await expectBatchFormatError(
+			summarizeBatch([chunk], extraction, model, { apiKey: "test" }, undefined, services),
+		);
+		expect(calls).toBe(1); // default config is minimal → retry would be a no-op
+	});
+
+	it("does not retry non-length format failures", async () => {
+		let calls = 0;
+		const second = { ...chunk, topic: "Follow-up", startIndex: 1, endIndex: 1 };
+		const services = createServices({
+			llm: {
+				complete: async () => {
+				calls++;
+				return response(valid + "\n\n" + valid); // duplicate chunk ids
+				},
+			},
+		});
+
+		await expectBatchFormatError(
+			summarizeBatch([chunk, second], extraction, model, { apiKey: "test" }, undefined, services),
+		);
+		expect(calls).toBe(1);
+	});
 });
