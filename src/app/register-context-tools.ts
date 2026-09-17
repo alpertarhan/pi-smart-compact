@@ -321,7 +321,9 @@ export function registerContextTools(
     },
   });
 
-  availability.apply();
+  // Deferred to session_start: pi 0.85+ rejects action methods (getActiveTools)
+  // during the loading phase, and session_start fires after register in every
+  // mode (startup, reload, new, resume, fork) — before any agent activity.
   pi.on("session_start", availability.apply);
   return availability;
 }

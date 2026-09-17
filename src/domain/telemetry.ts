@@ -84,7 +84,7 @@ export function classifyTelemetryFailure(error: unknown, timedOut = false): Tele
   const fields = errorFields(error);
   const text = (fields.name + " " + fields.code + " " + fields.message).toLowerCase();
   if (timedOut) return "timeout";
-  if (/max(?:imum)? output|output.?limit|visible[ -]output|length limit/.test(text)) return "output-limit";
+  if (/max(?:imum)? output|output.?limit|visible[ -]output|length limit|stop reason length/.test(text)) return "output-limit";
   if (/timeout|timed out|watchdog|deadline/.test(text)) return "timeout";
   if (fields.name.toLowerCase() === "verificationgateerror") return "verification";
   if (fields.name.toLowerCase() === "yieldgateerror") return "yield";
