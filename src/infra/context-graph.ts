@@ -582,7 +582,11 @@ function addFact(
     node.factKey,
     scope.branchHeadId ?? "",
   );
-  if (sameActiveFact(latestLineageFact(db, scope, kind, node.factKey), node))
+  const latest = latestLineageFact(db, scope, kind, node.factKey);
+  if (sameActiveFact(latest, node)) return;
+  // A resolved/superseded tombstone for this fact key is terminal (#66):
+  // re-derivation from the transcript must not resurrect it as active.
+  if (latest && latest.status !== "active" && node.status === "active")
     return;
   upsertNode(db, node);
   linkNodes(
@@ -766,12 +770,12 @@ export function indexCompactionState(
               ? 0.98
               : 0.88,
         });
-        if (
-          sameActiveFact(
-            latestLineageFact(db, scope, "loop", node.factKey),
-            node,
-          )
-        )
+        const latestLoop = latestLineageFact(db, scope, "loop", node.factKey);
+        if (sameActiveFact(latestLoop, node)) continue;
+        // Tombstones are terminal (#66): an extraction pass that still sees
+        // the loop's content in the transcript must not flip it back to
+        // active. Re-openable only via an explicit override, not re-ingest.
+        if (latestLoop && latestLoop.status !== "active" && node.status === "active")
           continue;
         upsertNode(db, node);
         linkNodes(db, projectId, sessionNode.id, node.id, "contains", 1, now);

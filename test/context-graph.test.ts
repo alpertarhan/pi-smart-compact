@@ -262,6 +262,118 @@ describe("persistent context graph", () => {
     ).toHaveLength(1);
   });
 
+  it("does not resurrect a resolved fact when a later pass re-derives it (#66)", () => {
+    const error = {
+      id: "error",
+      message: "Recurring deployment port is occupied",
+      tool: "bash",
+      files: [],
+    };
+
+    indexCompactionState(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        unresolvedErrors: [error],
+      }),
+    );
+    expect(
+      recallContext(scope(), "deployment port occupied", {
+        sessionOnly: true,
+        kinds: ["error"],
+      }),
+    ).toHaveLength(1);
+
+    // Resolve it — via the same path the /loops resolve command feeds.
+    indexCompactionState(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        resolvedErrors: [error],
+      }),
+    );
+    expect(
+      recallContext(scope(), "deployment port occupied", {
+        sessionOnly: true,
+        kinds: ["error"],
+      }),
+    ).toEqual([]);
+
+    // A later compaction still sees the error in the transcript and
+    // re-reports it as unresolved — the tombstone must win.
+    indexCompactionState(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        unresolvedErrors: [error],
+      }),
+    );
+    expect(
+      recallContext(scope(), "deployment port occupied", {
+        sessionOnly: true,
+        kinds: ["error"],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not resurrect a resolved loop when a later pass re-reports it (#66)", () => {
+    const loop = {
+      id: "loop",
+      type: "follow-up" as const,
+      summary: "Finish the migration checklist",
+      status: "open" as const,
+      priority: "high" as const,
+      files: [],
+    };
+
+    indexCompactionState(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        openLoops: [loop],
+      }),
+    );
+    expect(
+      recallContext(scope(), "migration checklist", {
+        sessionOnly: true,
+        kinds: ["loop"],
+      }),
+    ).toHaveLength(1);
+
+    // User resolves the loop via the override path (/smart-compact loops).
+    indexCompactionState(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        factOverrides: [
+          {
+            id: "override",
+            kind: "loop",
+            summaryKey: "finish the migration checklist",
+            status: "resolved",
+            updatedAt: Date.now(),
+          },
+        ],
+      }),
+    );
+    expect(
+      recallContext(scope(), "migration checklist", {
+        sessionOnly: true,
+        kinds: ["loop"],
+      }),
+    ).toEqual([]);
+
+    // The transcript still contains the loop content; a later pass
+    // re-reports it as open — the tombstone must win.
+    indexCompactionState(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        openLoops: [loop],
+      }),
+    );
+    expect(
+      recallContext(scope(), "migration checklist", {
+        sessionOnly: true,
+        kinds: ["loop"],
+      }),
+    ).toEqual([]);
+  });
+
   it("keeps common-ancestor facts active on a sibling after one branch resolves them", () => {
     const decision = {
       id: "decision",
