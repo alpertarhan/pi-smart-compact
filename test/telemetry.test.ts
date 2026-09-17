@@ -32,6 +32,14 @@ describe("privacy-safe canary telemetry", () => {
     expect(classifyTelemetryFailure(Object.assign(new Error("aborted"), { name: "AbortError" }), true)).toBe("timeout");
     expect(classifyTelemetryFailure(new Error("LLM call budget exhausted"))).toBe("budget");
     expect(classifyTelemetryFailure(new Error("maximum output length limit"))).toBe("output-limit");
+    expect(
+      classifyTelemetryFailure(
+        Object.assign(
+          new Error("Malformed batch summary response: non-terminal stop reason length"),
+          { name: "BatchSummaryFormatError" },
+        ),
+      ),
+    ).toBe("output-limit");
     expect(classifyTelemetryFailure(new Error("native compaction write failed"))).toBe("persistence");
     expect(classifyTelemetryFailure(new Error("provider stream failed"))).toBe("provider");
     expect(classifyTelemetryFailure(Object.assign(new Error("Verification gate rejected summary"), { name: "VerificationGateError" }))).toBe("verification");

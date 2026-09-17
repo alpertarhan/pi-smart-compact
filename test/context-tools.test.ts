@@ -57,6 +57,14 @@ function registeredTools(options?: {
   return { tools, active, handlers };
 }
 
+/** Mirrors the real lifecycle: register finishes, then session_start fires. */
+function started(tools: ReturnType<typeof registeredTools>) {
+  for (const handler of tools.handlers.get("session_start") ?? []) {
+    handler({}, context());
+  }
+  return tools;
+}
+
 function context(approved = true, cwd = process.cwd()) {
   return {
     cwd,
@@ -89,10 +97,12 @@ describe("context memory tools", () => {
   });
 
   it("hides both context tools when contextGraphEnabled=false and keeps them otherwise", () => {
-    const disabled = registeredTools({ contextGraphEnabled: false });
+    const disabled = started(
+      registeredTools({ contextGraphEnabled: false }),
+    );
     expect([...disabled.active]).toEqual(["read"]);
 
-    const enabled = registeredTools({ contextGraphEnabled: true });
+    const enabled = started(registeredTools({ contextGraphEnabled: true }));
     expect([...enabled.active]).toEqual([
       "read",
       "smart_recall",
@@ -101,10 +111,12 @@ describe("context memory tools", () => {
   });
 
   it("restores only tools hidden by config after a same-process re-enable", () => {
-    const extension = registeredTools({
-      contextGraphEnabled: false,
-      activeTools: ["read", "smart_save_memory"],
-    });
+    const extension = started(
+      registeredTools({
+        contextGraphEnabled: false,
+        activeTools: ["read", "smart_save_memory"],
+      }),
+    );
     expect([...extension.active]).toEqual(["read"]);
 
     writeContextGraphSetting(true);
