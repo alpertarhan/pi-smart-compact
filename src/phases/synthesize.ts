@@ -29,6 +29,7 @@ import {
 	type TokenEstimator,
 } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
+import * as log from "../utils/logger.ts";
 import { extractText } from "../utils/extraction.ts";
 import { filterToolCalls } from "../utils/type-guards.ts";
 import {
@@ -597,63 +598,96 @@ export async function summarizeBatch(
 	const cached = cacheKey ? getCachedBatch(cacheKey) : null;
 	if (cached) return cached;
 
-	const resp = await trackedComplete(
-		"batch",
-		model,
+	const messages = [
 		{
-			systemPrompt: COMPACT_SYSTEM_PREFIX,
-			messages: [
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: promptPrefix }],
-					timestamp: Date.now(),
-				},
-				{
-					role: "user" as const,
-					content: [{ type: "text" as const, text: dynamicSuffix }],
-					timestamp: Date.now(),
-				},
-			],
+			role: "user" as const,
+			content: [{ type: "text" as const, text: promptPrefix }],
+			timestamp: Date.now(),
 		},
 		{
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			maxTokens:
-				maxOutputTokens ??
-				Math.min(
-					Math.max(1_000, batch.length * 250),
-					4_096,
-					getProviderCaps(model.provider).maxOutputTokens,
-				),
-			signal,
+			role: "user" as const,
+			content: [{ type: "text" as const, text: dynamicSuffix }],
+			timestamp: Date.now(),
 		},
-		services,
-	);
-	const output = resp.content
-		.filter(
-			(c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text",
-		)
-		.map((c) => c.text)
-		.join("\n");
+	];
+	const baseOpts = {
+		apiKey: auth.apiKey,
+		headers: auth.headers,
+		maxTokens:
+			maxOutputTokens ??
+			Math.min(
+				Math.max(1_000, batch.length * 250),
+				4_096,
+				getProviderCaps(model.provider).maxOutputTokens,
+			),
+		signal,
+	};
 
-	// ID-based parsing: map chunk number -> section content
-	const sectionMap = new Map<number, string>();
-	const duplicateIds = new Set<number>();
-	const sections = output.split(/^### /m).filter((s) => s.trim());
-	for (const sec of sections) {
-		const m = sec.match(/^CHUNK\s+(\d+):\s*(.*?)\n/i);
-		if (m) {
-			const id = parseInt(m[1], 10);
-			if (sectionMap.has(id)) duplicateIds.add(id);
-			else sectionMap.set(id, sec);
+	const attempt = async (
+		reasoning?: "minimal",
+	): Promise<Map<number, string>> => {
+		const resp = await trackedComplete(
+			"batch",
+			model,
+			{
+				systemPrompt: COMPACT_SYSTEM_PREFIX,
+				messages,
+			},
+			reasoning === undefined ? baseOpts : { ...baseOpts, reasoning },
+			services,
+		);
+		const output = resp.content
+			.filter(
+				(c): c is import("@earendil-works/pi-ai").TextContent =>
+					c.type === "text",
+		)
+			.map((c) => c.text)
+			.join("\n");
+
+		// ID-based parsing: map chunk number -> section content
+		const sectionMap = new Map<number, string>();
+		const duplicateIds = new Set<number>();
+		const sections = output.split(/^### /m).filter((s) => s.trim());
+		for (const sec of sections) {
+			const m = sec.match(/^CHUNK\s+(\d+):\s*(.*?)\n/i);
+			if (m) {
+				const id = parseInt(m[1], 10);
+				if (sectionMap.has(id)) duplicateIds.add(id);
+				else sectionMap.set(id, sec);
+			}
+		}
+		assertCompleteBatchResponse(
+			resp.stopReason,
+			sectionMap,
+			duplicateIds,
+			batch.length,
+		);
+		return sectionMap;
+	};
+
+	let sectionMap: Map<number, string>;
+	try {
+		sectionMap = await attempt();
+	} catch (err) {
+		// Self-healing (#62): on many local OpenAI-compatible servers,
+		// reasoning tokens share the batch output budget. A `length` stop
+		// means thinking starved the batch contract before any text was
+		// complete. One retry at minimal reasoning — the configured level
+		// stays untouched for other batches. If the retry also fails, the
+		// caller's deterministic fallback covers it as before.
+		if (
+			err instanceof BatchSummaryFormatError &&
+			/non-terminal stop reason length/.test(err.message) &&
+			services?.thinkingLevels.summaryThinkingLevel !== "minimal"
+		) {
+			log.info(
+				"Batch synthesis exhausted the output budget (reasoning shared it); retrying once with minimal reasoning",
+			);
+			sectionMap = await attempt("minimal");
+		} else {
+			throw err;
 		}
 	}
-	assertCompleteBatchResponse(
-		resp.stopReason,
-		sectionMap,
-		duplicateIds,
-		batch.length,
-	);
 
 	const result = batch.map((ch, i) => {
 		const id = i + 1;

@@ -409,6 +409,17 @@ export async function summarizeConversation(
 
 		const concurrency = rc.providerCaps.concurrencyLimit;
 
+		// Preflight (#62): an unset summary thinking level defers to the
+		// provider default, which on local reasoning servers shares the batch
+		// output budget with thinking tokens. Self-healing retry handles it,
+		// but the user should know why a batch took two calls.
+		if (rc.services.thinkingLevels.summaryThinkingLevel == null) {
+			rc.notify(
+				"Summary thinking level unset — provider-default reasoning may share the batch output budget (length-truncated batches retry once at minimal reasoning)",
+				"info",
+			);
+		}
+
 		if (totalBatches <= 1) {
 			const single = batches[0];
 			if (single) {
