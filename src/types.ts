@@ -63,6 +63,8 @@ export interface CompactConfig {
  /** ChatGPT Codex per-call watchdog; 0 derives 15–90s from the requested output cap. */
  codexMaxCallMs: number;
  maxLatencyMs: number; // 0 = unlimited soft budget; hard timeout stays separate
+ /** Staged-summary retention before commit; default 5 minutes. */
+ pendingTtlMs: number;
  focusWeighting: boolean;
  zeroCallEnabled: boolean;
  contextGraphEnabled: boolean;
