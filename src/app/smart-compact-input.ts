@@ -7,7 +7,13 @@ export interface SmartCompactInput {
   mode?: CompactionMode;
   verbose: boolean;
   dryRun: boolean;
-  action?: "metrics" | "dashboard" | "restore" | "loops" | "settings";
+  action?:
+    | "metrics"
+    | "dashboard"
+    | "restore"
+    | "loops"
+    | "settings"
+    | "forget";
   focus?: string;
   note?: string;
   maxLlmCalls?: number;
@@ -125,6 +131,7 @@ const ACTIONS: Record<string, SmartCompactInput["action"]> = {
   restore: "restore",
   loops: "loops",
   settings: "settings",
+  forget: "forget",
 };
 
 const MODES: Record<string, CompactionMode | "light"> = {

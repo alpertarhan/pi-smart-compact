@@ -20,6 +20,10 @@ import {
 import { estimateTokens, safeContextPercent } from "../utils/tokens.ts";
 import { scheduleCompactionStateIndex } from "../infra/context-graph.ts";
 import {
+  forgetProjectGraph,
+  getContextGraphStats,
+} from "../infra/context-graph.ts";
+import {
   branchEntryIds,
   isUnresolvedSessionId,
   resolveSessionId,
@@ -181,6 +185,56 @@ async function restoreBackup(ctx: ExtensionCommandContext): Promise<void> {
   }
 }
 
+async function forgetProjectMemory(ctx: ExtensionCommandContext): Promise<void> {
+  if (ctx.mode !== "tui") {
+    ctx.ui.notify(
+      "Forgetting project memory requires TUI mode for its confirmation dialog",
+      "warning",
+    );
+    return;
+  }
+  const projectId = deriveProjectIdFromCwd(ctx.cwd);
+  if (!projectId) {
+    ctx.ui.notify(
+      "Project memory must be forgotten from a project directory",
+      "warning",
+    );
+    return;
+  }
+  const stats = getContextGraphStats(projectId);
+  if (!stats.totalNodes) {
+    ctx.ui.notify("No persisted memory for this project", "info");
+    return;
+  }
+  const confirmed = await ctx.ui.confirm(
+    "Forget project memory?",
+    "Permanently delete " +
+      stats.totalNodes +
+      " memory nodes (" +
+      stats.sessions +
+      " session" +
+      (stats.sessions === 1 ? "" : "s") +
+      ") for this project, including FTS copies and edges. This cannot be undone. Compaction state (restore data) and backups are kept.",
+  );
+  if (!confirmed) {
+    ctx.ui.notify("Forget cancelled — project memory untouched", "info");
+    return;
+  }
+  if (!forgetProjectGraph(projectId)) {
+    ctx.ui.notify(
+      "Forget failed — the graph database reported an error (see DEBUG=smart-compact log)",
+      "error",
+    );
+    return;
+  }
+  ctx.ui.notify(
+    "Forgotten: deleted " +
+      stats.totalNodes +
+      " memory nodes for this project",
+    "info",
+  );
+}
+
 async function manageOpenLoops(ctx: ExtensionCommandContext): Promise<void> {
   const projectId = deriveProjectIdFromCwd(ctx.cwd);
   if (!projectId) {
@@ -317,6 +371,7 @@ export function registerSmartCompactCommand(
         "restore",
         "loops",
         "settings",
+        "forget",
         "fast",
         "balanced",
         "thorough",
@@ -359,6 +414,10 @@ export function registerSmartCompactCommand(
         }
         if (input.action === "loops") {
           await manageOpenLoops(ctx);
+          return;
+        }
+        if (input.action === "forget") {
+          await forgetProjectMemory(ctx);
           return;
         }
         if (input.action === "settings") {

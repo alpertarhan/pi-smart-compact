@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   closeContextMemory,
   flushCompactionStateIndexes,
+  forgetProjectGraph,
   formatRecallResults,
   getContextGraphStats,
   indexCompactionState,
@@ -64,6 +65,76 @@ afterEach(() => {
   flushCompactionStateIndexes();
   process.env.HOME = originalHome;
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+it("forgets a project's memory completely and leaves other projects intact (#63)", () => {
+  indexCompactionState(
+    "project-a",
+    state("project-a", "session-a", "branch-a", {
+      goal: "Ship the doomed release",
+      openLoops: [
+        {
+          id: "loop",
+          type: "follow-up" as const,
+          summary: "Delete me: migration checklist",
+          status: "open" as const,
+          priority: "high" as const,
+          files: [],
+        },
+      ],
+    }),
+  );
+  indexCompactionState(
+    "project-b",
+    state("project-b", "session-b", "branch-b", {
+      goal: "Keep the survivor release",
+    }),
+  );
+
+  expect(getContextGraphStats("project-a").totalNodes).toBeGreaterThan(0);
+
+  expect(forgetProjectGraph("project-a")).toBe(true);
+
+  expect(getContextGraphStats("project-a").totalNodes).toBe(0);
+  expect(
+    recallContext(
+      scope("project-a", "session-a", "branch-a"),
+      "doomed release",
+      { sessionOnly: true },
+    ),
+  ).toEqual([]);
+  expect(
+    recallContext(
+      scope("project-a", "session-a", "branch-a"),
+      "migration checklist",
+      { sessionOnly: true },
+    ),
+  ).toEqual([]);
+
+  // The FTS copy is gone too: a fresh query for forgotten content finds
+  // nothing even before any reindex.
+  const db = new Database(contextGraphFile(), { readonly: true });
+  const ftsRows = db
+    .query("SELECT count(*) AS n FROM context_nodes_fts WHERE content LIKE ?")
+    .get("%migration checklist%") as { n: number };
+  const edgeRows = db
+    .query(
+      "SELECT count(*) AS n FROM context_edges WHERE project_id = ?",
+    )
+    .get("project-a") as { n: number };
+  db.close();
+  expect(ftsRows.n).toBe(0);
+  expect(edgeRows.n).toBe(0);
+
+  // Sibling project untouched.
+  expect(getContextGraphStats("project-b").totalNodes).toBeGreaterThan(0);
+  expect(
+    recallContext(
+      scope("project-b", "session-b", "branch-b"),
+      "survivor release",
+      { sessionOnly: true },
+    ),
+  ).toHaveLength(1);
 });
 
 it("normalizes the graph directory to owner-only permissions", () => {

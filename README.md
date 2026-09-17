@@ -45,6 +45,7 @@ Then run `/smart-compact` for an explainable preflight before anything changes.
 /smart-compact restore                              # browse and restore backups
 /smart-compact loops                                # manage persisted open loops
 /smart-compact settings                             # unified branch + global settings TUI
+/smart-compact forget                               # permanently delete this project's graph memory
 ```
 
 Command controls are consumed only from the left edge. Once note text starts,
@@ -146,6 +147,7 @@ prompt.
 | `session_compact_failed` | Pi 0.85 cleanup path. Discards extension-owned staged state and records a failed/cancelled outcome; it is inert on older hosts. |
 | `smart_compact` tool | Agent path. Produces a pending summary for Pi's next natural compact; does not compact mid-turn. Can be hidden from the agent. |
 | `/smart-compact loops` | Project-level open-loop manager: resolve/reopen, priority, pin/unpin. |
+| `/smart-compact forget` | Permanently deletes the project's graph memory (nodes, edges, FTS copies) after an explicit confirmation. Compaction state used for restore and backups are kept. |
 | `/smart-compact settings` | Unified TUI for branch overrides and every `smartCompact` global setting. Manual `/smart-compact` always remains available. |
 
 ### Manual preflight

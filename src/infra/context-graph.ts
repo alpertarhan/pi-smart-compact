@@ -1369,3 +1369,32 @@ export function getContextGraphStats(projectId: string): ContextGraphStats {
     return { totalNodes: 0, activeNodes: 0, sessions: 0, lastUpdatedAt: null };
   }
 }
+
+/**
+ * Permanently forget all graph memory for a project (#63): FTS copies,
+ * edges, and nodes in one transaction. Drains any queued index writes
+ * first so a scheduled compaction cannot resurrect the memory afterwards.
+ * Compaction state files (restore data) and backups are left intact.
+ */
+export function forgetProjectGraph(projectId: string): boolean {
+  try {
+    flushCompactionStateIndexes();
+    const db = openDatabase();
+    const transaction = db.transaction(() => {
+      db.query(
+        "DELETE FROM context_nodes_fts WHERE node_id IN (SELECT id FROM context_nodes WHERE project_id = ?)",
+      ).run(projectId);
+      db.query("DELETE FROM context_edges WHERE project_id = ?").run(
+        projectId,
+      );
+      db.query("DELETE FROM context_nodes WHERE project_id = ?").run(
+        projectId,
+      );
+    });
+    transaction();
+    return true;
+  } catch (error) {
+    log.warn("forgetProjectGraph failed", error);
+    return false;
+  }
+}

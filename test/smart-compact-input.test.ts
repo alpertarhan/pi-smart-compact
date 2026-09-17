@@ -16,6 +16,12 @@ describe("smart compact input parsing", () => {
     }
   });
 
+  it("parses the forget action", () => {
+    const result = parseSmartCompactCommand("forget", () => false);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.action).toBe("forget");
+  });
+
   it("consumes only leading control tokens and preserves mode-like note words", () => {
     const result = parseSmartCompactCommand(
       "openai/gpt-5 balanced --max-calls=4 focus on fast startup in src/auth.ts",
