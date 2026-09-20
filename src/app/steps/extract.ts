@@ -52,6 +52,7 @@ import { prepareConversationBackup } from "../../utils/backups.ts";
 import {
   loadScopedCompactionState,
   renderContinuityCapsule,
+  retireSupersededConstraints,
 } from "../../utils/state.ts";
 import {
   boundedBranchLineageIds,
@@ -335,6 +336,21 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
       : {}),
   };
   const previousState = loadScopedCompactionState(continuityScope, ancestryIds);
+  // Retire constraints the user has since released (#72): without this, a
+  // stale rule re-mined from an embedded prior summary fail-closes the gate
+  // against the factually correct new state. Both gates and the persisted
+  // state consume the result via rc.factOverrides.
+  const factOverrides = retireSupersededConstraints(
+    [
+      ...extraction.constraints.map((item) => ({
+        text: item.text,
+        index: item.index,
+      })),
+      ...(previousState?.constraints ?? []).map((item) => ({ text: item.text })),
+    ],
+    rc.llmMessages,
+    previousState?.factOverrides ?? [],
+  );
   const continuity = previousState
     ? renderContinuityCapsule(previousState)
     : "";
@@ -351,6 +367,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
     projectId: string;
     continuityScope: typeof continuityScope;
     previousState: import("../../types.ts").CompactionState | null;
+    factOverrides: import("../../types.ts").ContinuityOverride[];
     convText: string;
     convTokens: number;
     backupPath: string | null;
@@ -366,6 +383,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   out.projectId = projectId;
   out.continuityScope = continuityScope;
   out.previousState = previousState;
+  out.factOverrides = factOverrides;
   out.convText = convText;
   out.convTokens = convTokens;
   out.backupPath = backupPath;

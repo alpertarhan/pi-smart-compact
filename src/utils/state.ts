@@ -15,6 +15,7 @@ import type {
   LoopOverride,
   ContinuityOverride,
   ContinuityScope,
+  LlmMessage,
 } from "../types.ts";
 import {
   VERSION,
@@ -27,9 +28,11 @@ import {
 import { inferSessionType, normalizeFactKey } from "./helpers.ts";
 import {
   isCompactionStatusText,
-  isDiagnosticConstraintText,
+  isNonLiveConstraintText,
   isTransientToolDiagnostic,
+  extractText,
 } from "./extraction.ts";
+import { releasesConstraint } from "../phases/verify.ts";
 import * as log from "./logger.ts";
 import {
   compactionStateFile,
@@ -72,7 +75,7 @@ export function sanitizeCompactionStateEvidence(
   const goal =
     state.goal && !isCompactionStatusText(state.goal) ? state.goal : null;
   const constraints = state.constraints.filter(
-    (item) => !isDiagnosticConstraintText(item.text),
+    (item) => !isNonLiveConstraintText(item.text),
   );
   const unresolvedErrors = state.unresolvedErrors.filter(
     (item) => !isNoise(item.message),
@@ -332,6 +335,51 @@ export function upsertContinuityOverride(
   const copy = overrides.slice();
   copy[index] = next;
   return copy;
+}
+
+/**
+ * Retire constraints the conversation has since released.
+ *
+ * A rule stated once ("don't push yet") and released later ("push it now")
+ * used to live forever: continuity merges it into every later state, and the
+ * gate then reads the factually correct summary as a contradiction (-20, an
+ * unpatchable gap) on every run. The newer user message is the better evidence,
+ * so it supersedes the constraint instead of losing to it — the released rule
+ * is kept as critical context, not as a rule the summary must still satisfy.
+ *
+ * Only *later* user messages count, and only an explicit polarity flip on the
+ * same concepts (the same check the gate uses) — a restatement does not retire.
+ */
+export function retireSupersededConstraints(
+  constraints: ReadonlyArray<{ text: string; index?: number }>,
+  msgs: LlmMessage[],
+  overrides: ContinuityOverride[],
+): ContinuityOverride[] {
+  if (!constraints.length) return overrides;
+  const userTexts: Array<{ index: number; text: string }> = [];
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i]?.role !== "user") continue;
+    const text = extractText(msgs[i].content).trim();
+    if (text.length < 4 || text.startsWith("/")) continue;
+    if (isNonLiveConstraintText(text)) continue;
+    userTexts.push({ index: i, text: text.slice(0, TRUNC.MESSAGE) });
+  }
+  if (!userTexts.length) return overrides;
+  let next = overrides;
+  for (const constraint of constraints) {
+    // A state-carried constraint has no index: every current message is newer.
+    const from = constraint.index ?? -1;
+    const release = userTexts.find(
+      (msg) =>
+        msg.index > from && releasesConstraint(constraint.text, msg.text),
+    );
+    if (!release) continue;
+    next = upsertContinuityOverride(next, "constraint", constraint.text, {
+      status: "superseded",
+      replacement: release.text.slice(0, TRUNC.CONSTRAINT_TEXT),
+    });
+  }
+  return next;
 }
 
 function applyContinuityOverrides(

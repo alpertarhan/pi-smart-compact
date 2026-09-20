@@ -561,6 +561,34 @@ export function isDiagnosticConstraintText(text: string): boolean {
   );
 }
 
+/**
+ * This extension's own gate/notify prose. Operators paste a failed run's error
+ * back into the session to ask about it; without this the next run mines
+ * "do not bypass verification" as a prohibition and checks the summary against
+ * it — each retry adding evidence that makes the next retry fail harder.
+ */
+const OWN_OUTPUT_RE =
+  /(?:verification stopped apply|yield check stopped apply|smart compact failed|do not bypass verification|conversation unchanged|review \/smart-compact metrics|restart pi with debug=smart-compact)/i;
+
+/** `[x] Did the thing` is a completion record, not a live rule. `[ ]` stays. */
+const COMPLETED_CHECKLIST_RE = /^\[[xX✓✔]\]\s*\S/;
+
+/**
+ * Text that must never become a constraint: tool noise, this extension's own
+ * output, compaction status lines, and completed checklist items. Constraints
+ * are checked against the summary by the verification gate, so a non-rule here
+ * costs 20 points and fail-closes the session permanently.
+ */
+export function isNonLiveConstraintText(text: string): boolean {
+  const candidate = text.replace(/^\s*[-*]\s+/, "").trim();
+  return (
+    isDiagnosticConstraintText(candidate) ||
+    isCompactionStatusText(candidate) ||
+    OWN_OUTPUT_RE.test(candidate) ||
+    COMPLETED_CHECKLIST_RE.test(candidate)
+  );
+}
+
 export function mineConstraints(
   msgs: LlmMessage[],
 ): StructuredExtraction["constraints"] {
@@ -575,8 +603,7 @@ export function mineConstraints(
     // the entire recap (including notices) into one bogus constraint.
     for (const raw of text.split(/\n+/)) {
       const candidate = raw.replace(/^\s*[-*]\s+/, "").trim();
-      if (candidate.length < 10 || isDiagnosticConstraintText(candidate))
-        continue;
+      if (candidate.length < 10 || isNonLiveConstraintText(candidate)) continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
         if (!re.test(candidate)) continue;
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");

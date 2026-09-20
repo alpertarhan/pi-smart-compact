@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Verification gate no longer fail-closes on re-compacted sessions (#72): the deterministic extraction stopped mining this extension's own error prose, `[x]` completion records, and compaction status lines as live constraints.
+- Constraints released mid-session are now retired instead of contradicting the factually correct summary: a later user message that reverses a deferral rule ("do not push yet" → "ok push it now") supersedes it, the replacement is kept as critical context, and both the post-synthesis and post-state gates honor the retirement. Standing rules ("never commit directly to main") still require an explicit rich reversal, so terse imperatives sharing one verb cannot silently drop a live rule.
+- Regression coverage: 19 tests reproducing the issue #72 poison classes, retirement semantics, gate behavior, and persistence through the merged continuity state.
+
 ## [9.6.2] - 2026-09-05
 
 ### Fixed

@@ -13,6 +13,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type {
 	CompactionState,
+	ContinuityOverride,
 	StructuredExtraction,
 	VerificationGap,
 	VerificationGateStage,
@@ -26,8 +27,9 @@ import { extractFileRefs } from "../utils/file-ref-detect.ts";
 import {
 	buildToolCallIndex,
 	extractText,
-	isDiagnosticConstraintText,
+	isNonLiveConstraintText,
 } from "../utils/extraction.ts";
+import { normalizeFactKey } from "../utils/helpers.ts";
 import {
 	buildKnownPathReferenceIndex,
 	buildPathNeedleOwnershipIndex,
@@ -59,6 +61,8 @@ export interface VerificationEvidence {
 	sourceMessages?: readonly LlmMessage[];
 	steering?: { focus?: string; note?: string };
 	summaryBudgetTokens?: number;
+	/** Run-scoped fact overrides (e.g. constraints retired this run). */
+	factOverrides?: readonly ContinuityOverride[];
 }
 
 const HIGH_RISK_OUTCOME_RE =
@@ -739,7 +743,7 @@ function hasSemanticEvidence(source: string, target: string): boolean {
 	});
 }
 
-function hasSemanticContradiction(source: string, target: string): boolean {
+export function hasSemanticContradiction(source: string, target: string): boolean {
 	// Do not apply a whole instruction's polarity to one of its own clauses.
 	// Other target fragments remain checked, even beside a verbatim copy.
 	const sourceFragments = new Set(semanticFragments(source).map(tokens => tokens.join(" ")));
@@ -771,6 +775,35 @@ function hasSemanticContradiction(source: string, target: string): boolean {
 			!tokens.some((token) => CONDITION_MARKERS.has(token))
 		);
 	});
+}
+
+/**
+ * Deferral semantics: the constraint explicitly postpones an action
+ * ("not yet", "until", "first") rather than banning it outright. A user who
+ * set a deferral can release it with a terse later message.
+ */
+const TEMPORAL_CONSTRAINT_RE =
+	/\b(?:yet|until|before|first|for now|hold off|wait|henüz|şimdilik|önce)\b/iu;
+
+/**
+ * True when `release` (a later user message) frees `constraint`.
+ *
+ * Two safe paths: a rich release trips the full contradiction check, and a
+ * terse release ("ok push it now") flips the polarity of the constrained
+ * action — but only for deferral constraints. Standing rules ("never commit
+ * directly to main") keep the strict check: a terse imperative sharing one
+ * verb must not silently drop a live rule the summary is still checked
+ * against.
+ */
+export function releasesConstraint(constraint: string, release: string): boolean {
+	if (hasSemanticContradiction(constraint, release)) return true;
+	if (!TEMPORAL_CONSTRAINT_RE.test(constraint)) return false;
+	const { anchor, negative } = semanticShape(constraint);
+	if (!anchor || !negative) return false;
+	return semanticFragments(release).some(
+		(tokens) =>
+			tokens.includes(anchor) && !hasEffectiveTargetNegation(tokens, anchor),
+	);
 }
 
 export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
@@ -890,6 +923,14 @@ function collectVerificationEvidence(
 	if (evidence.steering?.note?.trim()) {
 		steeringConstraints.push({ text: evidence.steering.note });
 	}
+	// A constraint the user has since released is not evidence the summary must
+	// match: state legitimately changes mid-session, and re-mining it from an
+	// embedded prior summary would otherwise contradict the correct new state.
+	const retired = new Set(
+		[...(continuity?.factOverrides ?? []), ...(evidence.factOverrides ?? [])]
+			.filter((item) => item.kind === "constraint" && item.status !== "active")
+			.map((item) => item.summaryKey),
+	);
 	const constraints = uniqueByText(
 		[
 			...extraction.constraints.flatMap((item) =>
@@ -901,7 +942,11 @@ function collectVerificationEvidence(
 			...steeringConstraints,
 		],
 		(item) => item.text,
-	).filter((item) => !isDiagnosticConstraintText(item.text));
+	).filter(
+		(item) =>
+			!isNonLiveConstraintText(item.text) &&
+			!retired.has(normalizeFactKey(item.text)),
+	);
 	const decisions = uniqueByText(
 		[
 			...extraction.decisions.flatMap((item) =>
