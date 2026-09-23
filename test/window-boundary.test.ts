@@ -66,7 +66,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(window).not.toBeNull();
     expect(preview.msgs.map(e => e.id)).toEqual(window.msgs.map(e => e.id));
     const recovered = await recoverSessionLog(window);
-    const host = convertToLlm(buildSessionContext(branch).messages);
+    const host = convertToLlm(buildSessionContext(branch).messages) as typeof recovered.llmMessages;
     expect(recovered.llmMessages).toEqual(host.slice(0, window.keepFrom));
     expect(JSON.stringify(recovered.llmMessages)).toContain("RESTORED_SENTINEL");
     expect(JSON.stringify(recovered.llmMessages)).toContain("BRANCH_SENTINEL");
