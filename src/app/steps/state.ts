@@ -76,7 +76,11 @@ export function buildState(rc: VerifiedRc): StatedRc {
   );
   const summarizedGoal = summaryEvidenceLine(findSection(summary, "goal")?.body ?? "", TRUNC.MESSAGE);
   currentState.scope = rc.continuityScope;
-  currentState.factOverrides = prevState?.factOverrides ?? [];
+  // factOverrides from the extract step already start from prevState's list
+  // (upsert semantics), so it is the merged run result.
+  currentState.factOverrides = rc.factOverrides.length
+    ? rc.factOverrides
+    : (prevState?.factOverrides ?? []);
   let compactionState = mergeCompactionStates(prevState, currentState);
   // Positive filesystem evidence resolves legacy/cache false deletions. Missing
   // or unresolvable paths remain conservative and continue to be preserved.
@@ -125,6 +129,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
     sourceMessages: rc.llmMessages,
     steering: { focus: rc.focus, note: rc.userNote },
     summaryBudgetTokens: rc.profileCfg?.summaryBudgetTokens ?? 6_000,
+    factOverrides: rc.factOverrides,
   };
   let postVerification = verifySummary(summary, extraction, compactionState, verificationEvidence);
   const postInitialScore = postVerification.score;

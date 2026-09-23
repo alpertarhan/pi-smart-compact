@@ -31,6 +31,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 		sourceMessages: rc.llmMessages,
 		steering: { focus: rc.focus, note: rc.userNote },
 		summaryBudgetTokens,
+		factOverrides: rc.factOverrides,
 	};
 
 	showProgressOverlay(rc.ctx, {
