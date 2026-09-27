@@ -6,6 +6,7 @@ import path from "node:path";
 import smartCompactExtension from "../src/index.ts";
 import { branchEntryIds } from "../src/infra/session-identity.ts";
 import { resetLlmClient, setLlmClient } from "../src/infra/llm-client.ts";
+import { __resetProcessCalibrationForTests } from "../src/infra/services.ts";
 import { loadProjectFingerprint } from "../src/utils/fingerprint.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 import { loadScopedCompactionState } from "../src/utils/state.ts";
@@ -52,6 +53,9 @@ beforeEach(() => {
   resetConfigCache();
   resetLlmClient();
   resetIssuesForTests();
+  // Reported usage in these fixtures feeds process-wide token calibration;
+  // start every case from the uncalibrated estimator.
+  __resetProcessCalibrationForTests();
 });
 
 afterEach(() => {
@@ -437,7 +441,7 @@ describe("extension lifecycle end to end", () => {
   });
 
   it.each([
-    ["settled", "unchanged"], ["background", "unchanged"],
+    ["settled", "unchanged"], ["background", "unchanged"], ["background", "stale-tail"],
     ["settled", "instructions"], ["settled", "model-event"], ["settled", "model-silent"], ["settled", "grown-tail"],
     ["settled", "pivot-cancelled"], ["settled", "pivot-finished"], ["settled", "native-reserve"],
   ])("requests %s compaction through the correlated host lifecycle (%s)", async (strategy, change) => {
@@ -573,11 +577,12 @@ describe("extension lifecycle end to end", () => {
             appliedRunIds.push(response.compaction.details.runId);
             // Provider-reported usage of the extension's own calls rides the
             // result into Pi's session totals, priced at the run model's rates.
-            // The settled strategy's first run owns every call so far; later
-            // runs (and the background fixture's stale-discard + cached fresh
-            // run) may reuse caches and report only their own calls, or none.
+            // The first applied run owns every call so far (settled fresh run
+            // or the prepared background candidate); later runs, and the fresh
+            // run after a stale discard, may reuse caches and report only
+            // their own calls, or none.
             const usage = response.compaction.usage;
-            if (strategy === "settled" && appliedRunIds.length === 1) {
+            if (appliedRunIds.length === 1 && change !== "stale-tail") {
               const { cost, ...tokens } = usage;
               expect(tokens).toEqual({ input: reportedInput, output: 100 * llmCalls, cacheRead: 0, cacheWrite: 0, totalTokens: reportedInput + 100 * llmCalls });
               expect(cost.input).toBeCloseTo(reportedInput / 1_000_000, 12);
@@ -664,7 +669,11 @@ describe("extension lifecycle end to end", () => {
       expect(compactRequests).toBe(0);
       expect(readMetricsLog().filter(entry => entry.status === "success")).toHaveLength(0);
       session.appendMessage({ role: "user", content: [{ type: "text", text: "TAIL_AFTER_BACKGROUND_SNAPSHOT" }], timestamp: Date.now() });
-      usageTokens = model.contextWindow * 0.85;
+      // Growth that crosses the 80% apply gate but stays inside the mode
+      // target's headroom keeps the prepared candidate valid at apply; growth
+      // past the headroom is discarded as stale and a fresh run (synthesis
+      // cache, no new model call) applies instead.
+      usageTokens = change === "stale-tail" ? model.contextWindow * 0.85 : totalTokens + Math.ceil(model.contextWindow * 0.05) + 1;
     }
     const settled = () => dispatch(handlers, "agent_settled", { type: "agent_settled" }, ctx);
     await settled();
@@ -680,6 +689,17 @@ describe("extension lifecycle end to end", () => {
           entry.runId === appliedRunIds[0],
       ),
     ).toHaveLength(1);
+    if (strategy === "background") {
+      const applied = readMetricsLog().find(entry => entry.runId === appliedRunIds[0] && entry.status === "success")!;
+      const discarded = readMetricsLog().filter(entry => entry.status === "discarded");
+      if (change === "stale-tail") {
+        expect(applied.preparation).toBeUndefined();
+        expect(discarded.map(entry => entry.preparationDiscardReason)).toEqual(["stale"]);
+      } else {
+        expect(applied.preparation).toBe("background");
+        expect(discarded).toHaveLength(0);
+      }
+    }
 
     await settled();
     expect(compactRequests).toBe(1);
@@ -703,7 +723,7 @@ describe("extension lifecycle end to end", () => {
     expect([callsBeforeTool, callsBeforeTool + 1]).toContain(llmCalls); // identical prefixes may hit synthesis cache
     const callsAfterTool = llmCalls;
 
-    if (change !== "unchanged") {
+    if (change !== "unchanged" && change !== "stale-tail") {
       // Isolate staged reuse: rejected candidates must fall through to the native
       // host, not silently apply an old plan or make another nested model call.
       settings.smartCompact.autoTrigger = false;

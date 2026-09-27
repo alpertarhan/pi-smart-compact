@@ -306,6 +306,11 @@ export function createProductionServices(overrides: ServiceOverrides = {}): Smar
   });
 }
 
+/** @internal Test-only: forget process-wide calibration learned from reported usage. */
+export function __resetProcessCalibrationForTests(): void {
+ processTokenCalibration.clear();
+}
+
 // ── Process-default registry ─────────────────────────────────────────────────
 //
 // Production runs use the run-scoped services injected through RunContext.
