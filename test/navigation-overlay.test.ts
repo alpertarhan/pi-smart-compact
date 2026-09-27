@@ -313,7 +313,7 @@ describe("navigation settings", () => {
 });
 
 describe("home navigation entry", () => {
-  function home(enabled: boolean) {
+  function home(enabled: boolean, row = 0) {
     const finished: Array<HomeAction | undefined> = [];
     const actions = harnessActions(enabled);
     const list = createHomeList({
@@ -332,7 +332,8 @@ describe("home navigation entry", () => {
     }, (action) => finished.push(action), () => { });
     list.selectItem("history");
     list.handleInput(ENTER);
-    list.handleInput(ENTER); // first row: Session navigation
+    for (let index = 0; index < row; index++) list.handleInput(DOWN);
+    list.handleInput(ENTER); // row 0: Session navigation, row 1: Hand off to a new session
     return finished;
   }
 
@@ -350,6 +351,10 @@ describe("home navigation entry", () => {
   it("opens navigation from History & recovery only while it is enabled", () => {
     expect(home(true)).toEqual(["navigation"]);
     expect(home(false)).toEqual([]);
+  });
+
+  it("offers the handoff from History & recovery", () => {
+    expect(home(true, 1)).toEqual(["handoff"]);
   });
 
   it("shows a held automatic trim on the cleanup row and still queues it on select", () => {

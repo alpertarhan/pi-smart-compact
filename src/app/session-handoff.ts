@@ -16,6 +16,7 @@ import { isRecord } from "../utils/type-guards.ts";
 import { lastAnchorBoundary } from "./context-operations.ts";
 import { ANCHOR_CUSTOM_TYPE, anchorFromEntry } from "./navigation-data.ts";
 import { executeRecall } from "./register-context-tools.ts";
+import { showHandoffPanel } from "../ui/handoff-overlay.ts";
 
 const QUERY_MAX_CHARS = 500;
 const ANCHOR_SUMMARY_MAX_CHARS = 12_000;
@@ -164,19 +165,41 @@ export function buildHandoff(sources: HandoffSources, scrubber: SecretScrubber):
  };
 }
 
-/** `/smart-compact handoff [note]`: open a new session seeded with the handoff anchor. */
-export async function runHandoff(ctx: ExtensionCommandContext, note: string | undefined): Promise<void> {
+export interface PreparedHandoff {
+ sources: HandoffSources;
+ handoff: Handoff;
+ names: string[];
+}
+
+/** The memory search behind `smart_recall`, bounded for the seed. */
+export function recallForHandoff(ctx: ExtensionContext): (query: string) => Promise<string> {
+ return async query => (await executeRecall({ query, limit: HANDOFF_RECALL_LIMIT }, undefined, ctx)).content.map(part => part.text).join("\n");
+}
+
+/** Collect once and build the seed; null when nothing was recorded and no note was given. */
+export async function prepareHandoff(
+ ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+ note: string | undefined,
+ recall: (query: string) => Promise<string>,
+): Promise<PreparedHandoff | null> {
  const config = loadConfig();
- const sources = await collectHandoffSources(ctx, config, {
-  note,
-  recall: async query => (await executeRecall({ query, limit: HANDOFF_RECALL_LIMIT }, undefined, ctx)).content.map(part => part.text).join("\n"),
- });
- if (!sources.anchor && !sources.ledger && !sources.note && !sources.recall?.query) {
-  notifyUser(ctx, "Nothing to hand off yet. Mark this point (Home › History & recovery › Session navigation) or add a note: /smart-compact handoff -- <note>", "warning");
-  return;
- }
- const handoff = buildHandoff(sources, new SecretScrubber(config.scrubSecrets, config.scrubPii));
- const names = handoffSourceNames(sources);
+ const sources = await collectHandoffSources(ctx, config, { note, recall });
+ if (!sources.anchor && !sources.ledger && !sources.note && !sources.recall?.query) return null;
+ return {
+  sources,
+  handoff: buildHandoff(sources, new SecretScrubber(config.scrubSecrets, config.scrubPii)),
+  names: handoffSourceNames(sources),
+ };
+}
+
+/** One-line summary of a prepared seed. */
+export function handoffHeader(prepared: PreparedHandoff): string {
+ return `Seed: ${prepared.handoff.content.length} chars · sources: ${prepared.names.join(", ")}`;
+}
+
+/** Open the new session seeded with `prepared`. Call only with no overlay open. */
+export async function openHandoff(ctx: ExtensionCommandContext, prepared: PreparedHandoff): Promise<void> {
+ const { sources, handoff, names } = prepared;
  try {
   const result = await ctx.newSession({
    parentSession: ctx.sessionManager.getSessionFile(),
@@ -196,4 +219,23 @@ export async function runHandoff(ctx: ExtensionCommandContext, note: string | un
  } catch (error) {
   notifyUser(ctx, "Handoff failed: " + errorDetail(error), "error");
  }
+}
+
+/**
+ * `/smart-compact handoff [dry-run] [-- note]`: open a new session seeded with
+ * the handoff anchor, or with `dryRun` only show the seed.
+ */
+export async function runHandoff(ctx: ExtensionCommandContext, note: string | undefined, options: { dryRun?: boolean } = {}): Promise<void> {
+ if (options.dryRun && !ctx.hasUI) {
+  notifyUser(ctx, "Handoff preview needs a UI; run without dry-run to open the session.", "warning");
+  return;
+ }
+ const prepared = await prepareHandoff(ctx, note, recallForHandoff(ctx));
+ if (!prepared) {
+  notifyUser(ctx, "Nothing to hand off yet. Mark this point (Home › History & recovery › Session navigation) or add a note: /smart-compact handoff -- <note>", "warning");
+  return;
+ }
+ if (!options.dryRun) await openHandoff(ctx, prepared);
+ else if (ctx.mode === "tui") await showHandoffPanel(ctx, { preview: prepared });
+ else notifyUser(ctx, handoffHeader(prepared) + "\n\n" + prepared.handoff.content, "info");
 }

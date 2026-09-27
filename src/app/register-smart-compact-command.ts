@@ -58,13 +58,14 @@ import { formatCompactErrorForUi } from "../ui/error-format.ts";
 import { findModelById, resolveModels } from "./model-routing.ts";
 import type { PendingSlot } from "./pending-slot.ts";
 import { runSmartCompact } from "./run-smart-compact.ts";
-import { runHandoff } from "./session-handoff.ts";
+import { openHandoff, prepareHandoff, recallForHandoff, runHandoff } from "./session-handoff.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 import { parseSmartCompactCommand } from "./smart-compact-input.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
 import { describeEffectiveState, describeReadiness, type EffectiveRuntimeState } from "./effective-state.ts";
 import type { GlobalConfigPath } from "../utils/config.ts";
 import { showNavigationPanel } from "../ui/navigation-overlay.ts";
+import { showHandoffPanel } from "../ui/handoff-overlay.ts";
 import type { NavigationController } from "./register-navigation.ts";
 interface SmartCompactCommandDependencies {
  pendingRef: PendingSlot;
@@ -620,7 +621,7 @@ export function registerSmartCompactCommand(
      return;
     }
     if (input.action === "handoff") {
-     await runHandoff(ctx, input.note);
+     await runHandoff(ctx, input.note, { dryRun: input.dryRun });
      return;
     }
     if (input.action === "settings") {
@@ -654,6 +655,10 @@ export function registerSmartCompactCommand(
       else if (action === "storage") await showStorage(ctx);
       else if (action === "trim") queueLocalCleanup(ctx, dependencies);
       else if (action === "navigation" && dependencies.navigation) await showNavigationPanel(ctx, dependencies.navigation.panel(ctx));
+      else if (action === "handoff") {
+       const prepared = await showHandoffPanel(ctx, { prepare: note => prepareHandoff(ctx, note, recallForHandoff(ctx)) });
+       if (prepared) await openHandoff(ctx, prepared);
+      }
       break;
      }
      return;

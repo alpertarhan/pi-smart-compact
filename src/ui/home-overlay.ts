@@ -41,7 +41,7 @@ import type { NavigationPanelActions } from "../app/navigation-types.ts";
 import { type DeferredTrim, formatDeferredTrim } from "../app/register-smart-context-tool.ts";
 
 export type HomeAction =
-  | "compact" | "trim" | "metrics" | "dashboard" | "restore" | "loops" | "forget" | "storage" | "navigation";
+  | "compact" | "trim" | "metrics" | "dashboard" | "restore" | "loops" | "forget" | "storage" | "navigation" | "handoff";
 
 
 export interface HomeOptions {
@@ -233,7 +233,7 @@ export function createHomeList(
     id: "history",
     label: "History & recovery",
     currentValue: "",
-    description: (options.navigation ? "Browse or return to anchors in this session, restore a backup" : "Restore a backup") +
+    description: (options.navigation ? "Browse or return to anchors in this session, hand off to a new session, restore a backup" : "Hand off to a new session, restore a backup") +
       ", review unfinished tasks, or inspect saved tool output.",
   };
   const metrics: SettingItem = { id: "metrics", label: "Metrics", currentValue: "", description: "Report and dashboard, including the effective state." };
@@ -396,6 +396,12 @@ export function createHomeList(
           ? "Browse anchors, mark this point, search earlier sessions, or return to an anchor after reviewing it."
           : "Session navigation is off in Settings › Agent tools & navigation.",
       }] : []),
+      {
+        id: "handoff",
+        label: "Hand off to a new session",
+        currentValue: "",
+        description: "Continue in a fresh session seeded with this session's anchor, ledger, always-kept files and memory. You add a note and review the seed first; nothing opens until you confirm.",
+      },
       { id: "restore", label: "Restore a backup", currentValue: "", description: "Pick an earlier conversation state to restore." },
       { id: "loops", label: "Unfinished tasks", currentValue: "", description: "Review unresolved tasks kept across compactions." },
       {

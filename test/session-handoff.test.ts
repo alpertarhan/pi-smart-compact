@@ -242,4 +242,40 @@ describe("/smart-compact handoff", () => {
     expect(opened).toEqual([]);
     expect(notices).toEqual([{ message: "Nothing to hand off yet. Mark this point (Home › History & recovery › Session navigation) or add a note: /smart-compact handoff -- <note>", level: "warning" }]);
   });
+
+  it("dry-run shows the seed in a non-TUI UI and opens nothing", async () => {
+    const sm = SessionManager.inMemory(cwd);
+    withAnchor(sm);
+    const { ctx, notices, opened } = context(sm);
+
+    await command().handler("handoff dry-run -- continue parser", ctx);
+
+    expect(opened).toEqual([]);
+    expect(notices).toHaveLength(1);
+    const [notice] = notices;
+    expect(notice.level).toBe("info");
+    const [header, ...rest] = notice.message.split("\n\n");
+    const content = rest.join("\n\n");
+    expect(header).toBe(`Seed: ${content.length} chars · sources: note, anchor, recall`);
+    expect(content).toContain("## Note\ncontinue parser");
+  });
+
+  it("dry-run without a UI warns and opens nothing", async () => {
+    const sm = SessionManager.inMemory(cwd);
+    withAnchor(sm);
+    const { ctx, notices, opened } = context(sm);
+    Object.assign(ctx, { hasUI: false, mode: "print" });
+    const written: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      await command().handler("handoff dry-run -- continue parser", ctx);
+    } finally {
+      process.stderr.write = write;
+    }
+
+    expect(opened).toEqual([]);
+    expect(notices).toEqual([]);
+    expect(written.join("")).toContain("Handoff preview needs a UI; run without dry-run to open the session.");
+  });
 });

@@ -93,7 +93,7 @@ The header shows `Context:` (current usage or why compaction is blocked) and
 | **Compact now** | Opens the compact picker to choose a mode and summary model. Shows `unavailable` with a reason when blocked. |
 | **Clean up tool output** | Queues local cleanup (`no model call`). Applies at the next completed turn. Shows `held for a cold cache` with the reason when automatic cleanup is holding a batch; selecting it applies that batch at the next completed turn instead. |
 | **Settings** | `How it runs`, `Summary format`, `Models`, `Memory`, `Agent tools & navigation`, `Advanced settings`. |
-| **History & recovery** | `Session navigation`, `Restore a backup`, `Unfinished tasks`, `Storage`, `Forget local project memory`. |
+| **History & recovery** | `Session navigation`, `Hand off to a new session`, `Restore a backup`, `Unfinished tasks`, `Storage`, `Forget local project memory`. |
 | **Status & help** | `Readiness & details`, `Which action should I use?`, `Metrics` (`Report`, `Dashboard`). |
 
 Keys on every list: `↑`/`↓` choose, `Enter` select, `Esc` back (from Home,
@@ -370,7 +370,7 @@ readable in browse and search.
 ### Hand off to a new session
 
 ```text
-/smart-compact handoff [-- note]
+/smart-compact handoff [dry-run] [-- note]
 ```
 
 Opens a new Pi session seeded with one handoff message assembled from what
@@ -387,6 +387,16 @@ The message is saved as an anchor named `handoff-<first 8 characters of this
 session id>`, so navigation lists it and cleanup keeps it. The new session
 records this one as its parent; this session is not modified. With no anchor,
 ledger or note, nothing opens.
+
+From Home → **History & recovery** → **Hand off to a new session**: write an
+optional note (`Enter` continues, empty skips), then review the seed: its
+size and sources, **Read the full seed**, and **Open the new session**. The
+selection starts on **Go back**; `Esc` goes back one step, and on the note
+field closes. Nothing opens until you confirm.
+
+`dry-run` only shows the seed and opens nothing: in the TUI as the same
+read-only preview, in other UI modes as a message. Without a UI it warns and
+does nothing.
 
 ## Agent tools
 
@@ -727,6 +737,7 @@ Without a UI, warnings and errors go to stderr.
 /smart-compact loops                   manage open loops
 /smart-compact forget                  forget local project memory (TUI only)
 /smart-compact handoff [-- note]       new session seeded with anchor, ledger, pinned files, recall
+/smart-compact handoff dry-run [-- note]   preview the seed; opens nothing
 ```
 
 Direct compaction takes, in any order at the start: a model
