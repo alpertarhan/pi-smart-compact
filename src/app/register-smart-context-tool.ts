@@ -67,7 +67,7 @@ interface TrimMark extends DeferredTrim {
 }
 
 /** True when `leafId` is still on the branch with no newer context rewrite after it. */
-function unchangedSince(branch: SessionEntry[], leafId: string): boolean {
+export function unchangedSince(branch: SessionEntry[], leafId: string): boolean {
   const leaf = branch.findIndex(entry => entry.id === leafId);
   return leaf >= 0 && !branch.slice(leaf + 1).some(entry =>
     entry.type === "context_edit" || entry.type === "compaction" || entry.type === "branch_summary");

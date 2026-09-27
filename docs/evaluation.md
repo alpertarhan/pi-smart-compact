@@ -24,6 +24,7 @@ one class to another.
 | Offline lifecycle runs | `task-eval` (default), `session-pilot`, `context-compat-pilot`, `native-host-pilot` (default) | Real Pi `AgentSession`/tool/storage lifecycle with scripted model transport; oracle plumbing | Autonomous model decisions, live token cost or billing |
 | Opt-in live probes | `provider-eval:live`, `task-eval --live`, `visual-pilot --live`, `PSC_NATIVE_LIVE=1`, Hindsight live canary | One bounded sample on one date, model and account | Production quality, other models, invoice-level cost |
 | Local telemetry | `provider-eval`, `telemetry-report`, dashboards | Aggregates over runs recorded on this machine | Anything about runs not recorded, or statistical confidence |
+| Replay estimates | `replay-eval` | Estimated prompt tokens and catalog-priced deltas for recorded sessions under alternative trim policies | Real savings, provider cache behavior, billing |
 
 Rules that apply everywhere:
 
@@ -316,6 +317,38 @@ Reports show used and discarded preparation, time to ready, wait to use or
 discard, reuse rate and discarded spend. Stage routes keep input, cache-read,
 cache-write and output classes and mark estimated usage. These are measurements
 only: savings floors, cooldowns, pressure gates and TTLs are unchanged by them.
+
+### Replay estimates
+
+`bun run replay-eval --sessions=<dir|file[,file…]> [--out=/abs/dir] [--json]
+[--break-even=8,16,24,48] [--rebuild-min=16384] [--limit=N]` replays recorded
+session files in memory (never written; input mtimes are checked afterwards)
+and judges the automatic-trim timing constants `AUTO_TRIM_BREAK_EVEN_REQUESTS`
+and `REBUILD_MIN_TOKENS`. Recorded automatic trims are removed first so every
+policy starts from the same history. Policies:
+
+- `none`: no automatic trim.
+- `pressure`: the old rule; a ready batch commits at a turn boundary only when
+  the estimated prompt reaches 0.8 × the catalog context window.
+- `timed-<N>`: the current rule with `N` in place of the break-even limit;
+  pressure commits, `N* ≤ N` commits (`break-even`), otherwise the batch is held
+  and applied at the first request after the previous request's cache lifetime
+  (`cold`). Planning, cooldown and protected prefixes use the extension's own
+  `planContextTrim`/`trimEntries`/`trimTokens`.
+
+Cost model per request: the projected context is estimated per message; the
+cached prefix is the longest run of identical projected messages shared with
+the previous request (0 after the cache lifetime or a model switch);
+`uncached = prompt − cached`; a rebuild is `uncached ≥ max(--rebuild-min,
+0.5 × prompt)`; price = `cacheRead × cached + (cacheWrite, else input) ×
+uncached` at catalog rates. System prompt, tool definitions and output are
+identical across policies and excluded. The recorded baseline (usage and
+`usage.cost.total`) is the only measured figure; subscription requests report
+tokens only. `--json` writes `<out>/replay-eval.json` with session ids and
+numbers, no message text or paths. Absolute estimates are not calibrated to
+recorded usage (a first run over three Codex sessions estimated about 4× the
+recorded `input + cacheRead`); compare policies by their Δ, never by the
+absolute column.
 
 ## Pilots and dated reports
 

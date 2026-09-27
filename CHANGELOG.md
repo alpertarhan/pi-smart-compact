@@ -24,6 +24,11 @@
   `break-even`, `cold`, `manual`, `agent`); `smart_context` `status` reports a
   held batch as `deferredTrim`. The rule uses catalog price ratios and token
   estimates, not measured cache behavior.
+- `bun run replay-eval --sessions=<dir|file>` replays recorded sessions read-only
+  and estimates prompt tokens and catalog-priced cost per request under the
+  `none`, `pressure` and `timed-<N>` trim policies (`--break-even`,
+  `--rebuild-min`, `--limit`, `--json`), next to the recorded usage. Replay
+  estimates only; see `docs/evaluation.md`.
 - The compaction result returned to Pi carries the provider-reported usage of
   the applied run (EESV stage calls or the provider-native compaction
   request), priced at each route model's catalog rates, so Pi's session
