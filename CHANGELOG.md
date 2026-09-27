@@ -9,6 +9,11 @@
   longer pays by Pi's $0.05 rule, counted net of the cache write the held
   trim avoids; Home notes the stop. The host cache ledger and
   `replay-eval` count a `cache_warm` refresh as keeping the prefix alive.
+- At session start a notice names loaded extensions known to compact or edit
+  the same history (pi-openai-toolkit, context-fold, pi-fold,
+  pi-context-prune, pi-dcp, pi-toolkit's `context` tool), matched by exact
+  command/tool names and whole package path segments, and advises keeping
+  only one loaded. Nothing is blocked; unknown extensions are not detected.
 - `/smart-compact handoff [-- note]` opens a new Pi session seeded with one
   anchor message assembled from recorded state: the note, the latest branch
   anchor, the continuity ledger (last Continuity compaction, else the saved

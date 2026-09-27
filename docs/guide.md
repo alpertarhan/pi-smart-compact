@@ -546,6 +546,13 @@ state, backups and artifacts are not affected.
 
 ## Working with other extensions and features
 
+At session start Pi Continuity checks the loaded commands and tools for known
+compaction or context-editing extensions (pi-openai-toolkit, context-fold,
+pi-fold, pi-context-prune, pi-dcp, pi-toolkit's `context` tool) and shows one
+notice naming them. The check is name-based evidence, not proof, and finds
+nothing for unknown extensions; the runtime notices below (foreign compaction
+applied, foreign cache rebuilds) still cover those.
+
 ### pi-toolkit
 
 Session navigation replaces the anchor, recall and pivot features of
