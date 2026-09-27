@@ -159,6 +159,18 @@ page points back at the source it paged
 (`[Archived smart_context read of id=<source-id>, …]`), so the agent re-reads
 the source instead of the copy.
 
+Superseded output goes first. A read-only result whose path a later call
+writes, edits or deletes (`write`, `edit`, path-carrying mutating tools, or a
+literal `bash` target such as `sed -i`, `>` or `rm`), or reads again in full
+(a plain `read` without `offset`/`limit`; searches, listings, symbol reads and
+ranged reads never count), is archived before other outputs, edited ones
+before re-read ones, each in session order; the 32-output cap then keeps
+them. The marker's subject line says why, e.g.
+`path: src/a.ts (superseded: edited later)` or
+`(superseded: read again in full later)`. Paths match only as written after
+normalization (`./src/a.ts` = `src/a.ts`, but not `/repo/src/a.ts`). This
+changes only the order and the note, never which outputs are eligible.
+
 Automatic trimming is separate and off by default: turn on
 **Automatic cleanup** (`contextHygieneEnabled`). A batch needs at least 16,384
 characters of net savings and eight assistant turns after the last trim,

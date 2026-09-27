@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
-  classifyTool, classifyToolOperation, extractToolPath, isArchivableToolResult, isReadOnlyResearchTool, normalizeToolName, toolCallSubject,
+  classifyTool, classifyToolOperation, extractToolPath, fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, normalizeToolName,
+  toolCallSubject,
 } from "../src/domain/tool-semantics.ts";
 
 describe("classifyTool", () => {
@@ -114,5 +115,25 @@ describe("toolCallSubject", () => {
     expect(toolCallSubject("ls", { path: "src" })).toBe("path: src");
     expect(toolCallSubject("smart_context", { action: "read", id: "x" })).toBeUndefined();
     expect(toolCallSubject("read", {})).toBeUndefined();
+  });
+});
+
+describe("fileOperationPaths", () => {
+  it("separates read targets from written, edited and deleted targets", () => {
+    expect(fileOperationPaths("read", { path: "./src/a.ts" })).toEqual({ reads: ["src/a.ts"], writes: [] });
+    expect(fileOperationPaths("grep", { pattern: "x", path: "src/" })).toEqual({ reads: ["src/"], writes: [] });
+    expect(fileOperationPaths("grep", { pattern: "x" })).toEqual({ reads: [], writes: [] });
+    expect(fileOperationPaths("write", { path: "src/a.ts", content: "" })).toEqual({ reads: [], writes: ["src/a.ts"] });
+    expect(fileOperationPaths("edit", { path: "src/x/../a.ts", oldText: "a", newText: "b" })).toEqual({ reads: [], writes: ["src/a.ts"] });
+    expect(fileOperationPaths("delete_file", { path: "src/a.ts" })).toEqual({ reads: [], writes: ["src/a.ts"] });
+    expect(fileOperationPaths("bash", { command: "sed -i '' 's/a/b/' src/a.ts && echo x > out.txt; rm -f old.ts" }))
+      .toEqual({ reads: [], writes: ["src/a.ts", "out.txt", "old.ts"] });
+    expect(fileOperationPaths("bash", { command: "cat src/a.ts" })).toEqual({ reads: [], writes: [] });
+  });
+
+  it("ignores unknown tools and non-object arguments", () => {
+    expect(fileOperationPaths("mystery", { path: "src/a.ts" })).toEqual({ reads: [], writes: [] });
+    expect(fileOperationPaths("read", null)).toEqual({ reads: [], writes: [] });
+    expect(fileOperationPaths("read", { path: "AGENTS.md" })).toEqual({ reads: [], writes: [] });
   });
 });

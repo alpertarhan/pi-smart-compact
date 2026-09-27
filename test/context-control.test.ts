@@ -646,6 +646,79 @@ describe("toolkit anchor coexistence", () => {
   });
 });
 
+describe("superseded outputs", () => {
+  const edit = (session: SessionManager, path: string) => toolBatch(session, "edit", "ok", false, { path, oldText: "a", newText: "b" });
+  const markerOf = (plan: ReturnType<typeof planContextTrim>, index: number) =>
+    String((plan.entries[index] as Extract<SessionBoundaryDraft, { type: "context_edit" }>).replacement!.content);
+
+  it("archives outputs of files edited or read again later first, with a marker note", () => {
+    const session = manager();
+    const reads = Array.from({ length: 40 }, (_, i) => toolBatch(session, "read", `file ${i + 1}\n` + "x".repeat(5_000), false, { path: `src/f${i + 1}.ts` }));
+    toolBatch(session, "read", "short", false, { path: "src/f35.ts" });
+    edit(session, "src/f37.ts");
+    edit(session, "src/f38.ts");
+    toolBatch(session, "write", "ok", false, { path: "src/f39.ts", content: "" });
+    tail(session);
+    toolBatch(session, "write", "ok", false, { path: "src/f40.ts", content: "" }); // inside the protected recent tail
+    const plan = planContextTrim(session.getBranch());
+    const chosen = [37, 38, 39, 40, 35, ...Array.from({ length: 27 }, (_, i) => i + 1)];
+    expect(plan.references).toHaveLength(32);
+    expect(plan.references).toEqual(chosen.map(n => reads[n - 1].result));
+    expect(plan.superseded).toBe(5);
+    expect(markerOf(plan, 0).split("\n")[1]).toBe("path: src/f37.ts (superseded: edited later)");
+    expect(markerOf(plan, 4).split("\n")[1]).toBe("path: src/f35.ts (superseded: read again in full later)");
+    expect(markerOf(plan, 5).split("\n")[1]).toBe("path: src/f1.ts");
+    const markers = plan.references.map((_, index) => markerOf(plan, index).length);
+    expect(plan.savedChars).toBe(chosen.reduce((sum, n, index) => sum + `file ${n}\n`.length + 5_000 - markers[index], 0));
+    expect(JSON.stringify(planContextTrim(session.getBranch()))).toBe(JSON.stringify(plan));
+  });
+
+  it("never matches relative against absolute paths", () => {
+    const session = manager();
+    const [a, b, c] = ["a", "b", "c"].map(name => toolBatch(session, "read", name.repeat(5_000), false, { path: `src/${name}.ts` }));
+    edit(session, `${process.cwd()}/src/a.ts`);
+    edit(session, "src/c.ts");
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([c.result, a.result, b.result]);
+    expect(markerOf(plan, 1)).not.toContain("superseded");
+  });
+
+  it("counts only a later full plain read as reading again", () => {
+    const session = manager();
+    const batch = (name: string, args: ToolCall["arguments"], size = 5_000) => toolBatch(session, name, "o".repeat(size), false, args);
+    const control = batch("read", { path: "src/z.ts" });
+    const dir = batch("grep", { pattern: "x", path: "src/dir" });
+    const symbol = batch("read_symbol", { path: "src/s.ts", symbol: "A" });
+    const grepped = batch("grep", { pattern: "x", path: "src/g.ts" });
+    const ranged = batch("read", { path: "src/o.ts" });
+    batch("ls", { path: "src/dir" }, 10);
+    batch("read_symbol", { path: "src/s.ts", symbol: "B" }, 10);
+    batch("read", { path: "src/g.ts" }, 10);
+    batch("read", { path: "src/o.ts", offset: 10 }, 10);
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([grepped.result, control.result, dir.result, symbol.result, ranged.result]);
+    expect(plan.superseded).toBe(1);
+    expect(markerOf(plan, 0).split("\n")[1]).toBe("pattern: x (superseded: read again in full later)");
+  });
+
+  it("keeps superseded outputs in the anchor prefix and the recent tail", () => {
+    const session = manager();
+    const prefix = toolBatch(session, "read", "p".repeat(5_000), false, { path: "src/p.ts" });
+    anchorBatch(session, "milestone");
+    const post = toolBatch(session, "read", "q".repeat(5_000), false, { path: "src/q.ts" });
+    const recent = toolBatch(session, "read", "r".repeat(5_000), false, { path: "src/r.ts" });
+    edit(session, "src/r.ts");
+    edit(session, "src/p.ts");
+    session.appendMessage(assistant([{ type: "text", text: "done" }]));
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([post.result]);
+    expect(plan.references).not.toContain(prefix.result);
+    expect(plan.references).not.toContain(recent.result);
+  });
+});
+
 describe("agent mutation policy", () => {
   it("blocks agent-requested mutations while status, plan and read stay available", async () => {
     const h = harness({ canMutate: false });

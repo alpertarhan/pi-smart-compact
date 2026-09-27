@@ -69,6 +69,14 @@
   command line, or search pattern), the first non-empty output line, and up
   to three error/failure/warning lines, each whitespace-normalized and cut to
   100 characters.
+- Trimming archives superseded output first: read-only results whose path a
+  later call writes, edits or deletes (including literal `bash` targets),
+  then results whose path a later plain `read` without `offset`/`limit`
+  shows again in full, then the rest, each in session order, within the same
+  32-output cap. Their markers add `(superseded: edited later)` or
+  `(superseded: read again in full later)` to the
+  subject line. Paths match after `path.normalize` only. Eligibility is
+  unchanged.
 
 ### Fixed
 

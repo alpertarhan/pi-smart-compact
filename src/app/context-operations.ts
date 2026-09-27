@@ -1,9 +1,11 @@
 /** Session-local, append-only context edits. Original evidence stays in Pi's JSONL. */
-import { buildSessionProjection, type SessionBoundaryDraft, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+  buildSessionProjection, type ProjectedSessionEntry, type SessionBoundaryDraft, type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import type { ModelCostRates, ToolCall } from "@earendil-works/pi-ai";
 import { TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
 import {
-  isArchivableToolResult, isReadOnlyResearchTool, isShellTool, normalizeToolName, toolCallSubject,
+  fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, isShellTool, normalizeToolName, toolCallSubject,
 } from "../domain/tool-semantics.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { extractText, flattenToolCallBlock, type FlatToolCall } from "../utils/extraction.ts";
@@ -163,19 +165,20 @@ function digestLine(line: string, max = TRIM_DIGEST_LINE_CHARS): string {
 }
 
 /**
- * Deterministic trim marker: a retrieval line, then the call's subject, the first output line
- * and up to three risk lines, bounded by TRIM_MARKER_MAX_LINES / TRIM_MARKER_MAX_CHARS.
+ * Deterministic trim marker: a retrieval line, then the call's subject (with an optional note),
+ * the first output line and up to three risk lines, bounded by TRIM_MARKER_MAX_LINES / TRIM_MARKER_MAX_CHARS.
  */
-export function buildTrimMarker(input: { toolName: string; entryId: string; text: string; call?: { name: string; arguments: unknown } }): string {
-  const { toolName, entryId, text, call } = input;
+export function buildTrimMarker(input: { toolName: string; entryId: string; text: string; call?: { name: string; arguments: unknown }; note?: string }): string {
+  const { toolName, entryId, text, call, note } = input;
   const args = call?.arguments && typeof call.arguments === "object" ? call.arguments as Record<string, unknown> : {};
   const origin = call && normalizeToolName(call.name) === "smart_context" && args.action === "read" && typeof args.id === "string"
     ? digestLine(args.id, 64) : "";
   const head = origin && !origin.endsWith("…")
     ? `[Archived smart_context read of id=${origin}, ${text.length} chars. Retrieve with smart_context action=read id=${origin}.]`
     : `[Archived ${digestLine(toolName, 64)} output, ${text.length} chars. Retrieve with smart_context action=read id=${entryId}.]`;
-  const subject = call ? digestLine(toolCallSubject(call.name, args) ?? "") : "";
-  const lines = subject ? [subject] : [];
+  const suffix = note ? " " + digestLine(note, 48) : "";
+  const subject = call ? digestLine(toolCallSubject(call.name, args) ?? "", TRIM_DIGEST_LINE_CHARS - suffix.length) : "";
+  const lines = subject ? [subject + suffix] : [];
   const seen = new Set<string>();
   let risks = 0;
   for (const raw of text.split("\n")) {
@@ -208,6 +211,39 @@ function archivableResults(branch: SessionEntry[]): Map<string, ToolCall> {
   return results;
 }
 
+type Superseded = "edited" | "reread";
+const SUPERSEDED_NOTE: Record<Superseded, string> = { edited: "(superseded: edited later)", reread: "(superseded: read again in full later)" };
+
+/**
+ * Results whose read path a later assistant call writes/deletes (`edited`) or reads again in
+ * full (`reread`: a plain `read` without `offset`/`limit`; searches, symbol and ranged reads never count).
+ */
+function supersededResults(projection: ProjectedSessionEntry[], candidates: Map<string, ToolCall>): Map<string, Superseded> {
+  const lastWrite = new Map<string, number>();
+  const lastRead = new Map<string, number>();
+  projection.forEach(({ messages }, index) => {
+    const message = messages[0];
+    if (message?.role !== "assistant") return;
+    for (const block of message.content) {
+      if (block.type !== "toolCall") continue;
+      for (const flat of flattenToolCallBlock(block)) {
+        const { reads, writes } = fileOperationPaths(flat.name, flat.arguments);
+        for (const path of writes) lastWrite.set(path, index);
+        const full = normalizeToolName(flat.name) === "read" && flat.arguments.offset == null && flat.arguments.limit == null;
+        if (full) for (const path of reads) lastRead.set(path, index);
+      }
+    }
+  });
+  const result = new Map<string, Superseded>();
+  projection.forEach(({ sourceEntry }, index) => {
+    const call = candidates.get(sourceEntry.id);
+    const reads = call ? flattenToolCallBlock(call).flatMap(flat => fileOperationPaths(flat.name, flat.arguments).reads) : [];
+    if (reads.some(path => (lastWrite.get(path) ?? -1) > index)) result.set(sourceEntry.id, "edited");
+    else if (reads.some(path => (lastRead.get(path) ?? -1) > index)) result.set(sourceEntry.id, "reread");
+  });
+  return result;
+}
+
 export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   if (afterId && !branch.some(entry => entry.id === afterId)) throw new Error("Trim boundary is not on the active branch.");
   const candidates = archivableResults(branch);
@@ -218,23 +254,31 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   const projection = buildSessionProjection(branch).entries;
   const assistantIndexes = projection.flatMap((entry, index) => entry.messages[0]?.role === "assistant" ? [index] : []);
   const cutoff = assistantIndexes.at(-KEEP_RECENT_TURNS) ?? 0;
-  const entries: SessionBoundaryDraft[] = [];
-  const references: string[] = [];
-  let savedChars = 0;
-  for (const { sourceEntry, messages } of projection.slice(0, cutoff)) {
+  const superseded = supersededResults(projection, candidates);
+  const rank = (id: string) => { const reason = superseded.get(id); return reason === "edited" ? 0 : reason === "reread" ? 1 : 2; };
+  // Superseded outputs first (edited before reread), each group in branch order; the cap then prefers them.
+  const eligible = projection.slice(0, cutoff).flatMap(({ sourceEntry, messages }) => {
     const message = messages[0];
     const call = candidates.get(sourceEntry.id);
     if (!call || protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id) || message?.role !== "toolResult"
-      || message.isError || message.content.some(block => block.type !== "text")) continue;
+      || message.isError || message.content.some(block => block.type !== "text")) return [];
     const text = extractText(message.content);
-    if (text.length < MIN_TRIM_CHARS) continue;
+    return text.length < MIN_TRIM_CHARS ? [] : [{ id: sourceEntry.id, toolName: message.toolName, call, text }];
+  }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
+  const entries: SessionBoundaryDraft[] = [];
+  const references: string[] = [];
+  let savedChars = 0;
+  for (const { id, toolName, call, text } of eligible) {
     const flat = flattenToolCallBlock(call);
-    const marker = buildTrimMarker({ toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined });
-    entries.push({ type: "context_edit", targetId: sourceEntry.id, replacement: { content: marker } });
-    references.push(sourceEntry.id);
+    const reason = superseded.get(id);
+    const marker = buildTrimMarker({
+      toolName, entryId: id, text, call: flat.length === 1 ? flat[0] : undefined, note: reason && SUPERSEDED_NOTE[reason],
+    });
+    entries.push({ type: "context_edit", targetId: id, replacement: { content: marker } });
+    references.push(id);
     savedChars += text.length - marker.length;
-    if (entries.length >= MAX_TRIM_EDITS) break;
   }
+  const supersededCount = eligible.filter(item => superseded.has(item.id)).length;
   if (entries.length) entries.push(contextControlEntry({ version: 1, action: "trim", references }));
   // Branch-persisted cooldown survives reload/fork; never rewrite a cached prefix every turn.
   const lastChange = branch.findLastIndex(entry => {
@@ -244,7 +288,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   const turnsSinceChange = branch.slice(lastChange + 1).filter(entry => entry.type === "message" && entry.message.role === "assistant").length;
   const cooldownTurns = lastChange < 0 ? 0 : Math.max(0, AUTO_TRIM_COOLDOWN_TURNS - turnsSinceChange);
   const automatic = savedChars < MIN_AUTO_TRIM_SAVING_CHARS ? "insufficient-savings" : cooldownTurns > 0 ? "cooldown" : "ready";
-  return { entries, references, savedChars, automatic, cooldownTurns };
+  return { entries, references, savedChars, automatic, cooldownTurns, superseded: supersededCount };
 }
 
 /** The plan's context edits followed by a trim control entry recording `cause`. */

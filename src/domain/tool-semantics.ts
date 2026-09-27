@@ -8,6 +8,8 @@
  * exposes only explicit literal mutation targets for extraction provenance.
  * Pure: no I/O, no async, no globals.
  */
+import { normalize } from "node:path";
+
 type Args = Record<string, unknown>;
 
 /**
@@ -256,6 +258,27 @@ export function extractShellFileOperations(args: unknown): ShellFileOperations {
   return {
     modified: Array.from(new Set(modified)),
     deleted: Array.from(new Set(deleted.filter(file => !modified.includes(file)))),
+  };
+}
+
+/**
+ * File paths a call reads (read-only tools carrying a path) or writes/deletes (mutating
+ * tools by `classifyToolOperation`, plus literal shell targets). `path.normalize` only:
+ * relative and absolute forms never match, so an unknown relation stays unsuperseded.
+ */
+export function fileOperationPaths(name: string, args: unknown): { reads: string[]; writes: string[] } {
+  const input = args && typeof args === "object" ? args as Args : {};
+  const path = extractToolPath(input);
+  const writes: string[] = [];
+  if (isShellTool(name)) {
+    const shell = extractShellFileOperations(input);
+    writes.push(...shell.modified, ...shell.deleted);
+  } else if (path && ["mutate", "delete"].includes(classifyToolOperation(input, name))) {
+    writes.push(path);
+  }
+  return {
+    reads: path && !writes.length && isReadOnlyResearchTool(name, input) ? [normalize(path)] : [],
+    writes: Array.from(new Set(writes.map(item => normalize(item)))),
   };
 }
 

@@ -146,7 +146,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (params.action === "plan") {
         const plan = planContextTrim(branch, state.checkpoint?.originId);
         return reply(JSON.stringify({
-          outputs: plan.references.length, savedChars: plan.savedChars,
+          outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
           batch: plan.automatic, cooldownTurns: plan.cooldownTurns,
           note: "No changes applied. Automatic hygiene also requires enablement and an uncontested boundary; it commits under pressure, at price break-even, or once the prompt cache is cold. Estimates are not billed-token savings."
         }));
