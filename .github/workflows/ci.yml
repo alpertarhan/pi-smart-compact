@@ -39,6 +39,8 @@ jobs:
 
       - name: Test
         run: bun test
+      - name: Adversarial gate
+        run: bun run gate
       - name: Hot-path benchmark gate
         run: bun run bench
       - name: Build

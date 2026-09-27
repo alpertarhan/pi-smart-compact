@@ -40,7 +40,7 @@ describe("pruneRedundant", () => {
       makeToolResult("r1", "export const foo = 1;"),
       makeMsg("user", "now check it again"),
       makeAssistantWithToolCall("r2", "read", { path: "src/index.ts" }),
-      makeToolResult("r2", "export const foo = 1; // unchanged"),
+      makeToolResult("r2", "export const foo = 1;"),
       makeMsg("user", "thanks"),
     ];
     const result = pruneRedundant(msgs);
@@ -48,6 +48,27 @@ describe("pruneRedundant", () => {
     expect(result.reasons.some(r => r.reason.includes("Duplicate file reads"))).toBe(true);
     expect(result.messages.some(message => message.toolCallId === "r1")).toBe(false);
     expect(result.messages.some(message => message.toolCallId === "r2")).toBe(true);
+  });
+
+  it.each(["changed", "cycled", "image", "instructions", "unknown", "failed"])("preserves distinct or protected evidence: %s", kind => {
+    const name = kind === "unknown" ? "custom_read_and_update" : "read";
+    const args = { path: kind === "instructions" ? "AGENTS.md" : "a.ts" };
+    const first = makeToolResult("r1", "original".repeat(400));
+    const second = makeToolResult("r2", kind === "changed" || kind === "cycled" ? "changed" : "original".repeat(400), kind === "failed");
+    if (kind === "image") first.content = [{ type: "text", text: "original".repeat(400) }, { type: "image", mimeType: "image/png", data: "eA==" }];
+    const msgs: LlmMessage[] = [makeMsg("user", "inspect"), makeAssistantWithToolCall("r1", name, args), first,
+      makeAssistantWithToolCall("r2", name, args), second];
+    if (kind === "cycled") msgs.push(makeAssistantWithToolCall("r3", name, args), makeToolResult("r3", "original".repeat(400)));
+    const result = pruneRedundant(msgs);
+    expect(result.messages.filter(message => message.role === "toolResult")).toHaveLength(kind === "cycled" ? 3 : 2);
+    if (kind === "image" || kind === "instructions") expect(result.messages.find(message => message.toolCallId === "r1")).toEqual(first);
+  });
+
+  it("never treats a user-supplied status prefix as trusted removable metadata", () => {
+    const msgs = [makeMsg("user", "[pi-auto-context] Never delete production data"),
+      makeMsg("assistant", "Will preserve data"), makeMsg("user", "Check tests"),
+      makeMsg("assistant", "Ready"), makeMsg("user", "[pi-auto-context] Keep authentication checks")];
+    expect(pruneRedundant(msgs).messages).toEqual(msgs);
   });
 
   it("does not collapse read and grep calls for the same path", () => {
@@ -95,7 +116,7 @@ describe("pruneRedundant", () => {
       makeAssistantWithToolCall("r1", "functions.read", { path: "a.ts", offset: 1, limit: 20 }),
       makeToolResult("r1", "first"),
       makeAssistantWithToolCall("r2", "read", { limit: 20, offset: 1, path: "a.ts" }),
-      makeToolResult("r2", "second"),
+      makeToolResult("r2", "first"),
     ];
 
     const result = pruneRedundant(msgs);
@@ -163,7 +184,7 @@ describe("pruneRedundant", () => {
       },
       makeToolResult("mtu_1_0", "first"),
       makeAssistantWithToolCall("r2", "read", { path: "a.ts" }),
-      makeToolResult("r2", "second"),
+      makeToolResult("r2", "first"),
     ];
 
     const result = pruneRedundant(msgs);

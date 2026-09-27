@@ -27,6 +27,7 @@ import type {
 } from "../../types.ts";
 import { saveProjectFingerprint } from "../../utils/fingerprint.ts";
 import { saveCompactionState } from "../../utils/state.ts";
+import { localGraphOpsAllowed } from "../memory-backend.ts";
 import { scheduleCompactionStateIndex } from "../../infra/context-graph.ts";
 import { loadConfig } from "../../utils/config.ts";
 import { appendMetricsSnapshot } from "../../utils/cache.ts";
@@ -44,7 +45,9 @@ import { asBranchMessage } from "../../infra/ai-messages.ts";
 import { clearCompactProgress } from "../../ui/overlays.ts";
 import { formatCompactErrorForUi } from "../../ui/error-format.ts";
 import { branchEntryIds } from "../../infra/session-identity.ts";
+import { fingerprintContext } from "../pending-slot.ts";
 
+import { errorDetail, notifyUser, recordIssue } from "../../utils/issues.ts";
 import * as log from "../../utils/logger.ts";
 
 /**
@@ -77,7 +80,7 @@ export async function persistAppliedState(
     if (!saveCompactionState(pending.projectId, pending.compactionState)) {
       failures.push("continuity state");
     } else if (
-      loadConfig().contextGraphEnabled &&
+      localGraphOpsAllowed(loadConfig()) &&
       !(await scheduleCompactionStateIndex(
         pending.projectId,
         pending.compactionState,
@@ -154,7 +157,7 @@ export function runDamageDetection(rc: RunContext): void {
       writeRemediationHints(rc.projectId, damage.reReadFiles);
     }
   } catch (err) {
-    log.debugError("Damage detection skipped", err);
+    recordIssue({ key: "damage.detect", message: "Damage detection was skipped (" + errorDetail(err) + "). The compaction is unaffected.", error: err });
   }
 }
 
@@ -181,6 +184,8 @@ export function stagePendingCompaction(
     summary: rc.finalSummary,
     firstKeptEntryId: rc.firstKeptId,
     originBranchHeadId,
+    contextSnapshot: fingerprintContext(rc.msgs),
+    readerSignature: rc.readerSignature,
     tokensBefore: rc.totalTokens,
     details: rc.details,
     metricsSnapshot,
@@ -206,7 +211,6 @@ export function stagePendingCompaction(
 export function applyCompaction(rc: StatedRc): void {
   if (rc.flags.skipCompact || rc.flags.autoTriggered) return;
   rc.ctx.compact({
-    customInstructions: "Use pre-computed smart summary from /smart-compact",
     onComplete: () => {
       /* session_compact owns correlated success feedback */
     },
@@ -227,7 +231,7 @@ export function applyCompaction(rc: StatedRc): void {
         });
       }
       log.debugError("Native compaction apply failed", e);
-      rc.ctx.ui.notify(formatCompactErrorForUi(e), "error");
+      notifyUser(rc.ctx, formatCompactErrorForUi(e), "error");
     },
   });
 }

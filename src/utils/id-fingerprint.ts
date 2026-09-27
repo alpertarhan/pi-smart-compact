@@ -24,7 +24,17 @@
  */
 
 import crypto from "node:crypto";
-import type { EntryIdFingerprint } from "../types.ts";
+import type { EntryIdFingerprint, LlmMessage } from "../types.ts";
+
+/** Content proof for projected/recovered messages whose source IDs can stay unchanged. */
+export function hashMessages(messages: readonly LlmMessage[], count = messages.length): string {
+  const hash = crypto.createHash("sha256");
+  for (let index = 0; index < Math.min(count, messages.length); index++) {
+    hash.update(JSON.stringify(messages[index]));
+    hash.update("\n");
+  }
+  return hash.digest("hex");
+}
 
 /** Tail length; chosen to cover one "user → assistant → many tool turns" cycle. */
 export const FINGERPRINT_TAIL_LEN = 16;

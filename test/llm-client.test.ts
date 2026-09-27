@@ -1,19 +1,10 @@
 /// <reference types="bun" />
 
-/**
- * LLM client seam.
- *
- * Confirms that `trackedComplete` resolves the active client at call time,
- * which is the mechanism that lets tests substitute a fake without touching
- * `complete` from pi-ai. Also verifies `resetLlmClient` restores the default.
- */
+/** Provider-bound request limits, routing, and bounded failure behavior. */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
-  setLlmClient,
   resetLlmClient,
-  defaultLlmClient,
-  getLlmClient,
-  rawLlmClient,
+  setLlmClient,
   isChatGptCodex,
   resolveCodexWatchdogMs,
   resolveProviderWatchdogMs,
@@ -23,7 +14,12 @@ import {
 import type { LlmCompleteOptions } from "../src/infra/llm-client.ts";
 import { createServices } from "../src/infra/services.ts";
 import { trackedComplete } from "../src/utils/cache.ts";
-import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
+import type { Model, Api, AssistantMessage, Context, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { streamSimple as stockStreamSimple } from "@earendil-works/pi-ai/compat";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const model = {
   id: "test-model",
@@ -39,26 +35,40 @@ describe("llm-client seam", () => {
     resetLlmClient();
   });
 
-  it("delegates to the installed client", async () => {
-    let captured: { phase?: string; model?: Model<Api> } = {};
-    setLlmClient({
-      complete: async (m) => {
-        captured.model = m;
-        return {
-          content: [{ type: "text" as const, text: "ok" }],
-          usage: { input: 10, output: 5, cacheRead: 0 },
-        } as any;
-      },
+  it("refuses an oversized stage request before reserving budget or dispatching", async () => {
+    let dispatches = 0;
+    const services = createServices({
+      llm: {
+        complete: async () => {
+          dispatches++;
+          throw new Error("unexpected provider dispatch");
+        }
+      }
     });
+    await expect(trackedComplete("batch", { ...model, contextWindow: 8192, maxTokens: 256 },
+      { systemPrompt: "x".repeat(48_000), messages: [] },
+      { apiKey: "synthetic", maxTokens: 256 }, services,
+    )).rejects.toMatchObject({ name: "ModelCapacityError", phase: "batch" });
+    expect(dispatches).toBe(0);
+    expect(services.budget.callCount()).toBe(0);
+  });
 
-    const resp = await trackedComplete(
-      "batch",
-      model,
-      { systemPrompt: "x", messages: [] } as any,
-      { apiKey: "k" } as any,
-    );
-    expect(captured.model?.id).toBe("test-model");
-    expect(resp.usage?.input).toBe(10);
+  it("includes clamped output headroom in capacity admission", async () => {
+    let dispatches = 0;
+    const services = createServices({
+      llm: {
+        complete: async () => {
+          dispatches++;
+          throw new Error("unexpected provider dispatch");
+        }
+      }
+    });
+    await expect(trackedComplete("patch", { ...model, contextWindow: 8192, maxTokens: 8192 },
+      { systemPrompt: "short request", messages: [] },
+      { apiKey: "synthetic", maxTokens: 100_000 }, services,
+    )).rejects.toMatchObject({ name: "ModelCapacityError", phase: "patch" });
+    expect(dispatches).toBe(0);
+    expect(services.budget.callCount()).toBe(0);
   });
 
   it("clamps every tracked request to the model output limit", async () => {
@@ -85,6 +95,24 @@ describe("llm-client seam", () => {
     );
 
     expect(capturedMaxTokens).toBe(2_048);
+  });
+
+  it("rejects nominally fitting requests that the SDK would shrink below their output allowance", async () => {
+    let dispatches = 0;
+    const services = createServices({
+      llm: {
+        complete: async () => {
+          dispatches++;
+          throw new Error("unexpected provider dispatch");
+        }
+      }
+    });
+    await expect(trackedComplete("batch", { ...model, contextWindow: 8192, maxTokens: 2048 },
+      { systemPrompt: "x".repeat(12_000), messages: [] },
+      { apiKey: "synthetic", maxTokens: 2048 }, services,
+    )).rejects.toMatchObject({ name: "ModelCapacityError", phase: "batch" });
+    expect(dispatches).toBe(0);
+    expect(services.budget.callCount()).toBe(0);
   });
 
   it("uses the run config snapshot by phase and preserves explicit overrides", async () => {
@@ -119,36 +147,74 @@ describe("llm-client seam", () => {
     expect(captured).toEqual(["low", "high", "minimal"]);
   });
 
-  it("maps generic reasoning through completeSimple before building the provider payload", async () => {
-    const { getModel } = await import("@earendil-works/pi-ai/compat");
-    const openaiModel = getModel("openai", "gpt-5.4");
-    expect(openaiModel).toBeDefined();
-    let payload: any;
-
-    await expect(
-      rawLlmClient.complete(
-        openaiModel!,
-        {
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: "hi" }],
-              timestamp: Date.now(),
-            },
-          ],
-        },
-        {
-          apiKey: "test",
-          reasoning: "low",
-          onPayload: (value) => {
-            payload = value;
-            throw new Error("payload captured");
+  it("routes each run through its own session runtime and registered provider override", async () => {
+    const wire: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+    const chunk = (payload: unknown) => "data: " + JSON.stringify(payload) + "\n\n";
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        wire.push({ headers: request.headers, body: JSON.parse(await request.text()) });
+        return new Response(
+          chunk({ id: "c1", object: "chat.completion.chunk", created: 1, model: "m1", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] }) +
+            chunk({ id: "c1", object: "chat.completion.chunk", created: 1, model: "m1", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 } }) +
+            "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "llm-runtime-"));
+    // One runtime per session, each with its own credential and provider override.
+    const session = async (name: string) => {
+      const authPath = path.join(home, name + "-auth.json");
+      fs.writeFileSync(authPath, JSON.stringify({ loopback: { type: "api_key", key: "key-" + name } }), { mode: 0o600 });
+      const runtime = await ModelRuntime.create({
+        authPath, modelsPath: null, modelsStorePath: path.join(home, name + "-models.json"),
+        allowModelNetwork: false, refreshOnCreate: false,
+      });
+      runtime.registerProvider("loopback", {
+        api: "openai-completions",
+        baseUrl: String(server.url),
+        models: [{ id: "m1", name: "M1", reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8_000, maxTokens: 1_000 }],
+        // Like a subscription adapter: own headers, and final payload normalization after the caller's hook.
+        streamSimple: (target: Model<Api>, context: Context, options?: SimpleStreamOptions) => stockStreamSimple(target, context, {
+          ...options,
+          headers: { ...options?.headers, "x-session": name },
+          onPayload: async (payload, requestModel) => {
+            const next = ((await options?.onPayload?.(payload, requestModel)) ?? payload) as Record<string, unknown>;
+            return { ...next, normalized: name + (next.caller === true ? "+caller" : "") };
           },
-        },
-      ),
-    ).rejects.toThrow("payload captured");
+        }),
+      });
+      return { runtime, model: runtime.getModel("loopback", "m1")! };
+    };
+    try {
+      const a = await session("a");
+      const b = await session("b");
+      const body = { systemPrompt: "s", messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "hi" }], timestamp: 1 }] };
+      const noReasoning = { summaryThinkingLevel: null, segmentationThinkingLevel: null } as const;
+      const servicesA = createServices({ modelRuntime: a.runtime, thinkingLevels: noReasoning });
+      const servicesB = createServices({ modelRuntime: b.runtime });
+      const caller = { apiKey: "stage-key", maxTokens: 50, onPayload: (payload: unknown) => ({ ...(payload as object), caller: true }) };
 
-    expect(payload?.reasoning?.effort).toBe("low");
+      await trackedComplete("single-pass", a.model, body, caller, servicesA);
+      await trackedComplete("single-pass", b.model, body, { ...caller, reasoning: "low" }, servicesB);
+
+      expect(wire.map(({ headers }) => [headers.get("x-session"), headers.get("authorization")])).toEqual([
+        ["a", "Bearer key-a"],
+        ["b", "Bearer key-b"],
+      ]);
+      expect(wire[0].body).toMatchObject({ caller: true, normalized: "a+caller" });
+      expect(wire[0].body.reasoning_effort).toBeUndefined();
+      expect(wire[1].body).toMatchObject({ caller: true, normalized: "b+caller", reasoning_effort: "low" });
+
+      // A test override still wins over every run's runtime, even when installed late.
+      setLlmClient({ complete: async () => ({ role: "assistant", content: [], usage: { input: 1, output: 1 } }) as unknown as AssistantMessage });
+      await trackedComplete("single-pass", a.model, body, caller, servicesA);
+      expect(wire).toHaveLength(2);
+    } finally {
+      server.stop(true);
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("does not retry provider requests and caches the growing exploration loop", async () => {
@@ -243,9 +309,4 @@ describe("llm-client seam", () => {
     expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
-  it("resetLlmClient restores the default", () => {
-    setLlmClient({ complete: async () => ({}) as any });
-    resetLlmClient();
-    expect(getLlmClient()).toBe(defaultLlmClient);
-  });
 });

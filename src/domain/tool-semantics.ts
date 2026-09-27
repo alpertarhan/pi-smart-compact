@@ -54,6 +54,27 @@ export function extractToolPath(args: unknown): string | undefined {
   return undefined;
 }
 
+/** Explicit instruction/skill sources stay inline even when their read is recoverable. */
+export function isInstructionSource(args: Args): boolean {
+  return PATH_KEYS.some(key => {
+    const source = typeof args[key] === "string" ? args[key].replaceAll("\\", "/") : "";
+    return /(?:^|\/)(?:AGENTS|CLAUDE|GEMINI|SKILL|copilot-instructions)\.md$/i.test(source)
+      || /(?:^|\/)skills?\//i.test(source);
+  });
+}
+
+// ponytail: conservative allowlist; retain unknown tools until their side effects are understood.
+const READ_ONLY_TOOLS = new Set([
+  "read", "grep", "find", "ls", "symbol_search", "module_report", "project_report", "read_symbol", "read_enclosing",
+  "search_web", "read_url_content", "find_text_in_url_content", "summarize_url_content", "get_search_content",
+]);
+export function isReadOnlyResearchTool(toolName: string, input: Args): boolean {
+  if (isInstructionSource(input)) return false;
+  const name = normalizeToolName(toolName);
+  if (name === "smart_context") return ["status", "plan", "search", "read", "trim", "rewind"].includes(String(input.action));
+  return READ_ONLY_TOOLS.has(name);
+}
+
 export interface ShellFileOperations {
   modified: string[];
   deleted: string[];

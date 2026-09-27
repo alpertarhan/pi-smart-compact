@@ -10,7 +10,7 @@ import {
   classifyToolOperation,
   extractToolPath,
 } from "../domain/tool-semantics.ts";
-import * as log from "./logger.ts";
+import { errorDetail, recordIssue } from "./issues.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
 import {
   appendLineLockedAsync,
@@ -214,7 +214,7 @@ export function logDamageReport(
     JSON.stringify(entry),
     RUNTIME_LOG_MAX_BYTES,
   ).catch((e) => {
-    log.warn("logDamageReport failed", e);
+    recordIssue({ key: "damage.log", message: "Damage report could not be written (" + errorDetail(e) + "). Compaction is unaffected.", error: e });
   });
 }
 
@@ -306,7 +306,7 @@ export function writeRemediationHints(
       updatedAt: Date.now(),
     });
   } catch (e) {
-    log.warn("writeRemediationHints failed", e);
+    recordIssue({ key: "damage.hints", message: "Re-read file hints could not be saved (" + errorDetail(e) + "). The next compaction may not prioritise those files.", error: e });
   }
 }
 

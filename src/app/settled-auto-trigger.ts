@@ -5,7 +5,7 @@ import type { CompactConfig } from "../types.ts";
 import { MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
 import { safeContextPercent } from "../utils/tokens.ts";
-import * as log from "../utils/logger.ts";
+import { errorDetail, reportIssue } from "../utils/issues.ts";
 
 export interface SettledAutoTrigger {
   request(ctx: ExtensionContext, config: CompactConfig): Promise<void>;
@@ -42,7 +42,7 @@ export function createSettledAutoTrigger(
   };
 
   const request = async (ctx: ExtensionContext, config: CompactConfig): Promise<void> => {
-    if (!config.autoTrigger || config.autoTriggerStrategy !== "settled") return;
+    if (!config.autoTrigger || !["settled", "background"].includes(config.autoTriggerStrategy)) return;
 
     const sessionId = resolveSessionId(ctx);
     if (isUnresolvedSessionId(sessionId) || active.has(sessionId)) return;
@@ -76,12 +76,20 @@ export function createSettledAutoTrigger(
             finish();
           },
           onError: error => {
-            log.debugError("Settled smart compact request failed", error);
+            reportIssue({
+              key: "auto.settled-apply",
+              message: "Pi could not run the automatic compaction (" + errorDetail(error) + "). Conversation unchanged. Run /smart-compact manually if context is high.",
+              error,
+            }, ctx);
             finish();
           },
         });
       } catch (error) {
-        log.debugError("Settled smart compact request failed", error);
+        reportIssue({
+          key: "auto.settled-apply",
+          message: "Pi could not run the automatic compaction (" + errorDetail(error) + "). Conversation unchanged. Run /smart-compact manually if context is high.",
+          error,
+        }, ctx);
         finish();
       }
     });

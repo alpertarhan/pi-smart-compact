@@ -124,11 +124,7 @@ export function prepareManualPreflightContext(
   summaryModel: Model<Api>,
   tokenCalibration: TokenCalibrationStore,
 ): ManualPreflightContext {
-  const branch = (
-    typeof ctx.sessionManager.buildContextEntries === "function"
-      ? ctx.sessionManager.buildContextEntries()
-      : ctx.sessionManager.getBranch()
-  ) as unknown[];
+  const branch = ctx.sessionManager.getBranch();
   const msgs = contextMessageEntries(branch);
   const totalTokens = ctx.getContextUsage()?.tokens ?? 0;
   const modelContextWindow = ctx.model?.contextWindow;

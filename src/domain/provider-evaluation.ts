@@ -16,12 +16,19 @@ export interface ProviderEvaluationCell {
   calls: number;
   successRate: number;
   avgLatencyMs: number;
+  /** Quota-inclusive: input + cacheRead + cacheWrite + output per call. */
   avgTokensPerCall: number;
+  avgCacheReadTokensPerCall: number;
+  avgCacheWriteTokensPerCall: number;
   avgQuality: number | null;
   qualityCoverage: number;
   score: number;
   confidence: number;
   eligible: boolean;
+  /** Present when any contributing run used estimated usage. */
+  usageBasis?: "reported" | "estimated";
+  /** Subscription (OAuth) rows must never be priced at API rates. */
+  billing?: "api" | "subscription";
 }
 
 export interface ProviderRouteRecommendation {
@@ -52,7 +59,9 @@ export function providerStage(phase: LLMCallMetric["phase"]): ProviderRouteStage
 export function aggregateProviderRoutes(metrics: readonly LLMCallMetric[]): ProviderRouteMetric[] {
   const groups = new Map<string, {
     stage: ProviderRouteStage; provider: string; model: string; calls: number;
-    successes: number; latency: number; input: number; output: number; failures: NonNullable<ProviderRouteMetric["failures"]>;
+    successes: number; latency: number; input: number; cacheRead: number; cacheWrite: number;
+    output: number; failures: NonNullable<ProviderRouteMetric["failures"]>;
+    estimatedCalls: number; reportedCalls: number; subscriptionCalls: number; apiCalls: number;
   }>();
   for (const metric of metrics) {
     const stage = providerStage(metric.phase);
@@ -60,29 +69,47 @@ export function aggregateProviderRoutes(metrics: readonly LLMCallMetric[]): Prov
     const key = stage + "\u0000" + provider + "\u0000" + metric.model;
     const group = groups.get(key) ?? {
       stage, provider, model: metric.model, calls: 0, successes: 0,
-      latency: 0, input: 0, output: 0, failures: {},
+      latency: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, failures: {},
+      estimatedCalls: 0, reportedCalls: 0, subscriptionCalls: 0, apiCalls: 0,
     };
     group.calls++;
     if (metric.success) group.successes++;
     else if (metric.failureKind) group.failures[metric.failureKind] = (group.failures[metric.failureKind] ?? 0) + 1;
     group.latency += Math.max(0, metric.latencyMs);
-    group.input += Math.max(0, metric.inputTokens)
-      + Math.max(0, metric.cacheHitTokens)
-      + Math.max(0, metric.cacheWriteTokens ?? 0);
+    group.input += Math.max(0, metric.inputTokens);
+    group.cacheRead += Math.max(0, metric.cacheHitTokens);
+    group.cacheWrite += Math.max(0, metric.cacheWriteTokens ?? 0);
     group.output += Math.max(0, metric.outputTokens);
+    if (metric.usageEstimated === true) group.estimatedCalls++;
+    else if (metric.usageEstimated === false) group.reportedCalls++;
+    if (metric.billing === "subscription") group.subscriptionCalls++;
+    else if (metric.billing === "api") group.apiCalls++;
     groups.set(key, group);
   }
-  return [...groups.values()].map(group => ({
-    stage: group.stage,
-    provider: group.provider,
-    model: group.model,
-    calls: group.calls,
-    successes: group.successes,
-    ...(Object.keys(group.failures).length ? { failures: group.failures } : {}),
-    avgLatencyMs: group.calls ? Math.round(group.latency / group.calls) : 0,
-    inputTokens: group.input,
-    outputTokens: group.output,
-  }));
+  return [...groups.values()].map(group => {
+    const usageBasis: ProviderRouteMetric["usageBasis"] = group.estimatedCalls > 0
+      ? "estimated"
+      : group.calls > 0 && group.reportedCalls === group.calls ? "reported" : undefined;
+    const billing: ProviderRouteMetric["billing"] = group.subscriptionCalls > 0
+      ? "subscription"
+      : group.calls > 0 && group.apiCalls === group.calls ? "api" : undefined;
+    return {
+      stage: group.stage,
+      provider: group.provider,
+      model: group.model,
+      calls: group.calls,
+      successes: group.successes,
+      ...(Object.keys(group.failures).length ? { failures: group.failures } : {}),
+      avgLatencyMs: group.calls ? Math.round(group.latency / group.calls) : 0,
+      inputTokens: group.input,
+      ...(group.cacheRead > 0 ? { cacheReadTokens: group.cacheRead } : {}),
+      ...(group.cacheWrite > 0 ? { cacheWriteTokens: group.cacheWrite } : {}),
+      outputTokens: group.output,
+      // Unknown basis stays absent; never guess "reported".
+      ...(usageBasis ? { usageBasis } : {}),
+      ...(billing ? { billing } : {}),
+    };
+  });
 }
 
 export function providerScenario(entry: Pick<CompactMetricsEntry, "contextPercent" | "toolPercent">): ProviderScenario {
@@ -103,8 +130,12 @@ interface AggregateCell {
   successes: number;
   latencyCallMs: number;
   tokens: number;
+  cacheRead: number;
+  cacheWrite: number;
   qualityTotal: number;
   qualityRuns: number;
+  estimatedRuns: number;
+  subscriptionRuns: number;
 }
 
 function validPersistedRoutes(value: unknown): ProviderRouteMetric[] {
@@ -123,7 +154,11 @@ function validPersistedRoutes(value: unknown): ProviderRouteMetric[] {
       && typeof item.successes === "number" && Number.isFinite(item.successes)
       && typeof item.avgLatencyMs === "number" && Number.isFinite(item.avgLatencyMs)
       && typeof item.inputTokens === "number" && Number.isFinite(item.inputTokens)
-      && typeof item.outputTokens === "number" && Number.isFinite(item.outputTokens);
+      && typeof item.outputTokens === "number" && Number.isFinite(item.outputTokens)
+      && (item.cacheReadTokens === undefined || typeof item.cacheReadTokens === "number" && Number.isFinite(item.cacheReadTokens) && item.cacheReadTokens >= 0)
+      && (item.cacheWriteTokens === undefined || typeof item.cacheWriteTokens === "number" && Number.isFinite(item.cacheWriteTokens) && item.cacheWriteTokens >= 0)
+      && (item.usageBasis === undefined || item.usageBasis === "reported" || item.usageBasis === "estimated")
+      && (item.billing === undefined || item.billing === "api" || item.billing === "subscription");
   });
 }
 
@@ -141,6 +176,8 @@ function legacyRoute(entry: CompactMetricsEntry): ProviderRouteMetric[] {
     successes: successful ? entry.totalCalls : 0,
     avgLatencyMs: entry.avgLatency,
     inputTokens: entry.totalInput,
+    ...(entry.totalCacheHit > 0 ? { cacheReadTokens: entry.totalCacheHit } : {}),
+    ...((entry.totalCacheWrite ?? 0) > 0 ? { cacheWriteTokens: entry.totalCacheWrite } : {}),
     outputTokens: entry.totalOutput,
   }];
 }
@@ -166,13 +203,21 @@ export function evaluateProviderMetrics(
       const group = groups.get(key) ?? {
         stage: route.stage, scenario, provider: route.provider, model: route.model,
         runs: 0, calls: 0, successes: 0, latencyCallMs: 0, tokens: 0,
-        qualityTotal: 0, qualityRuns: 0,
+        cacheRead: 0, cacheWrite: 0, qualityTotal: 0, qualityRuns: 0,
+        estimatedRuns: 0, subscriptionRuns: 0,
       };
       group.runs++;
       group.calls += route.calls;
       group.successes += Math.max(0, Math.min(route.calls, route.successes));
       group.latencyCallMs += Math.max(0, route.avgLatencyMs) * route.calls;
-      group.tokens += Math.max(0, route.inputTokens) + Math.max(0, route.outputTokens);
+      // Cached tokens stay in the quota denominator; the split is preserved
+      // separately so subscription rows are never priced at API rates.
+      group.tokens += Math.max(0, route.inputTokens) + Math.max(0, route.outputTokens)
+        + Math.max(0, route.cacheReadTokens ?? 0) + Math.max(0, route.cacheWriteTokens ?? 0);
+      group.cacheRead += Math.max(0, route.cacheReadTokens ?? 0);
+      group.cacheWrite += Math.max(0, route.cacheWriteTokens ?? 0);
+      if (route.usageBasis === "estimated") group.estimatedRuns++;
+      if (route.billing === "subscription") group.subscriptionRuns++;
       if (entry.metricsSchemaVersion === 2 && typeof route.qualityScore === "number") {
         group.qualityTotal += route.qualityScore;
         group.qualityRuns++;
@@ -205,12 +250,16 @@ export function evaluateProviderMetrics(
       successRate: Math.round(successRate * 1_000) / 1_000,
       avgLatencyMs: Math.round(avgLatencyMs),
       avgTokensPerCall: Math.round(avgTokensPerCall),
+      avgCacheReadTokensPerCall: group.calls ? Math.round(group.cacheRead / group.calls) : 0,
+      avgCacheWriteTokensPerCall: group.calls ? Math.round(group.cacheWrite / group.calls) : 0,
       avgQuality: avgQuality == null ? null : Math.round(avgQuality * 10) / 10,
       qualityCoverage: Math.round(qualityCoverage * 1_000) / 1_000,
       score: Math.round(score * 1_000) / 1_000,
       confidence: Math.round(confidence * 1_000) / 1_000,
       eligible: group.runs >= minSamples && successRate >= 0.8
         && qualityCoverage >= 0.5 && avgQuality != null && avgQuality >= 85,
+      ...(group.estimatedRuns > 0 ? { usageBasis: "estimated" as const } : {}),
+      ...(group.subscriptionRuns > 0 ? { billing: "subscription" as const } : {}),
     };
   }).sort((a, b) => a.stage.localeCompare(b.stage) || a.scenario.localeCompare(b.scenario) || b.score - a.score);
 
@@ -257,15 +306,19 @@ export function formatProviderEvaluation(report: ProviderEvaluationReport): stri
   const lines = [
     "# Provider Evaluation (advisory only)", "",
     "The selected Pi model remains the default. Apply a stage route only after representative quality evidence.", "",
-    "| Stage | Scenario | Provider/model | Runs | Success | Quality | Latency | Score | Confidence |",
-    "|---|---|---|---:|---:|---:|---:|---:|---:|",
+    "Tokens per call are quota-inclusive (new input + cache read + cache write + output); the cache split is shown separately. `~` marks estimated usage; `sub` marks subscription (OAuth) routes, which must never be priced at API rates.", "",
+    "| Stage | Scenario | Provider/model | Runs | Success | Quality | Latency | Tokens/call | Cache R/W per call | Basis | Score | Confidence |",
+    "|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|",
   ];
   for (const cell of report.cells) {
     lines.push(
       "| " + cell.stage + " | " + cell.scenario + " | " + cell.provider + "/" + cell.model +
       " | " + cell.runs + " | " + Math.round(cell.successRate * 100) + "% | " +
       (cell.avgQuality == null ? "n/a" : cell.avgQuality.toFixed(1)) + " | " +
-      cell.avgLatencyMs + "ms | " + cell.score.toFixed(3) + " | " + Math.round(cell.confidence * 100) + "% |",
+      cell.avgLatencyMs + "ms | " + cell.avgTokensPerCall + " | " +
+      cell.avgCacheReadTokensPerCall + "/" + cell.avgCacheWriteTokensPerCall + " | " +
+      (cell.usageBasis === "estimated" ? "~" : cell.usageBasis === "reported" ? "" : "?") + (cell.billing === "subscription" ? "sub" : cell.billing === "api" ? "api" : "?") + " | " +
+      cell.score.toFixed(3) + " | " + Math.round(cell.confidence * 100) + "% |",
     );
   }
   lines.push("", "## Recommendations", "");

@@ -4,11 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  closeContextMemory,
+  closeContextMemoryByRef,
   flushCompactionStateIndexes,
   forgetProjectGraph,
   formatRecallResults,
   getContextGraphStats,
+  getContextGraphMemoryCounts,
   indexCompactionState,
   recallContext,
   saveContextMemory,
@@ -18,6 +19,7 @@ import {
 import type { CompactionState } from "../src/types.ts";
 import { contextGraphFile } from "../src/infra/paths.ts";
 import { mergeCompactionStates } from "../src/utils/state.ts";
+import { resetConfigCache } from "../src/utils/config.ts";
 
 const originalHome = process.env.HOME;
 let home = "";
@@ -136,6 +138,87 @@ it("forgets a project's memory completely and leaves other projects intact (#63)
     ),
   ).toHaveLength(1);
 });
+it("derives-only scoped forget preserves manual memories and counts provenance", () => {
+  indexCompactionState(
+    "project-a",
+    state("project-a", "session-a", "branch-a", {
+      goal: "Derived reset survivor check",
+    }),
+  );
+  const memory = saveContextMemory(scope(), {
+    kind: "decision",
+    title: "Manual survivor",
+    content: "Manual memories survive a derived-only reset",
+  });
+  const db = new Database(contextGraphFile());
+  db.query(`
+    INSERT INTO context_nodes(
+      id, project_id, session_id, branch_head_id, kind, fact_key, title, content,
+      status, source, confidence, related_paths, created_at, updated_at
+    ) VALUES ('legacy-1', 'project-a', '*', NULL, 'topic', 'legacy', 'Legacy', 'no provenance', 'active', 'import', 1, '[]', 1, 1)
+  `).run();
+  db.close();
+
+  const before = getContextGraphMemoryCounts("project-a");
+  expect(before.manual).toBe(1);
+  expect(before.derived).toBeGreaterThan(0);
+  expect(before.unknown).toBe(1);
+
+  expect(forgetProjectGraph("project-a", "derived-only")).toBe(true);
+
+  const after = getContextGraphMemoryCounts("project-a");
+  expect(after.derived).toBe(0);
+  expect(after.manual).toBe(1);
+  expect(after.unknown).toBe(1);
+  expect(recallContext(scope(), "manual memories survive")[0].id).toBe(memory.id);
+
+  expect(forgetProjectGraph("project-a", "all")).toBe(true);
+  expect(getContextGraphMemoryCounts("project-a")).toEqual({
+    manual: 0,
+    derived: 0,
+    unknown: 0,
+  });
+});
+
+it("closes a manual memory by ref only inside its own project", () => {
+  const memory = saveContextMemory(scope("project-a", "session-a", "branch-a"), {
+    kind: "constraint",
+    title: "Scoped",
+    content: "Ref closes only within the owning project",
+  });
+  saveContextMemory(scope("project-b", "session-b", "branch-b"), {
+    kind: "constraint",
+    title: "Other",
+    content: "Sibling project fact",
+  });
+
+  expect(closeContextMemoryByRef("project-b", memory.id)).toBeNull();
+  const closed = closeContextMemoryByRef("project-a", memory.id);
+  expect(closed?.closed).toBe(1);
+  expect(closeContextMemoryByRef("project-a", memory.id)).toBeNull();
+});
+
+it("renders resolvable refs only for manual recall results", () => {
+  const memory = saveContextMemory(scope(), {
+    kind: "decision",
+    title: "Ref render",
+    content: "Manual items render a ref line",
+  });
+  indexCompactionState(
+    "project-a",
+    state("project-a", "session-a", "branch-a", { goal: "Derived goal" }),
+  );
+  const text = formatRecallResults(
+    recallContext(scope(), "ref render derived goal"),
+  );
+  const manual = text.slice(text.indexOf("Ref render"));
+  expect(manual.slice(0, manual.indexOf("</smart_recall_evidence>"))).toContain(
+    "Ref: local:" + memory.id,
+  );
+  const derived = text.slice(text.indexOf("Derived goal"));
+  expect(derived.slice(0, derived.indexOf("</smart_recall_evidence>"))).not.toContain("Ref:");
+});
+
 
 it("normalizes the graph directory to owner-only permissions", () => {
   const graphDir = path.dirname(contextGraphFile());
@@ -239,6 +322,27 @@ describe("persistent context graph", () => {
     expect(results.filter(Boolean)).toHaveLength(64);
     expect(results[64]).toBe(false);
     expect(getContextGraphStats("project-a").sessions).toBe(64);
+  });
+
+  it("cancels queued index jobs when the selected backend changes before the drain", async () => {
+    const agentDir = path.join(home, ".pi", "agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    const scheduled = scheduleCompactionStateIndex(
+      "project-a",
+      state("project-a", "session-a", "branch-a", {
+        decisions: [
+          { id: "switch", summary: "Queued before the backend switch", type: "explicit" },
+        ],
+      }),
+    );
+    // The global selection changes between schedule and drain.
+    fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({
+      smartCompact: { memoryBackend: "hindsight", contextGraphEnabled: true },
+    }));
+    resetConfigCache();
+    flushCompactionStateIndexes();
+    expect(await scheduled).toBe(false);
+    expect(fs.existsSync(contextGraphFile())).toBe(false);
   });
 
   it("settles a permanent database-open failure once without retrying forever", async () => {
@@ -981,9 +1085,10 @@ describe("persistent context graph", () => {
     expect(results[0].source).toBe("manual");
     expect(results[0].relatedPaths).toContain("package.json");
     expect(getContextGraphStats("project-a").activeNodes).toBeGreaterThan(0);
-    expect(
-      closeContextMemory("project-a", "procedure", input.content, "resolved"),
-    ).toBe(1);
+    expect(closeContextMemoryByRef("project-a", first.id)).toMatchObject({
+      closed: 1,
+      kind: "procedure",
+    });
     expect(recallContext(scope(), "frozen install audit")).toEqual([]);
   });
 
@@ -993,7 +1098,7 @@ describe("persistent context graph", () => {
       title: "Existing",
       content: "active cap sentinel",
     };
-    saveContextMemory(scope(), existing);
+    const savedExisting = saveContextMemory(scope(), existing);
     const db = new Database(contextGraphFile());
     const insert = db.query(`
       INSERT INTO context_nodes(
@@ -1015,9 +1120,7 @@ describe("persistent context graph", () => {
       }),
     ).toThrow("Project memory limit reached");
 
-    expect(
-      closeContextMemory("project-a", "context", existing.content, "resolved"),
-    ).toBe(1);
+    expect(closeContextMemoryByRef("project-a", savedExisting.id)?.closed).toBe(1);
     expect(() =>
       saveContextMemory(scope(), {
         kind: "context",

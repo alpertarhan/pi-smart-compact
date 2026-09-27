@@ -4,7 +4,7 @@ import { damageReportsFile, metricsDashboardFile } from "../infra/paths.ts";
 import { atomicWriteFileSync, readJsonlTail } from "../infra/fs.ts";
 import type { DamageTelemetryEntry } from "../domain/telemetry.ts";
 import { buildDashboardInsights, type DashboardInsights } from "./dashboard-insights.ts";
-import * as log from "../utils/logger.ts";
+import { errorDetail, recordIssue } from "../utils/issues.ts";
 import { readMetricsLog } from "../utils/cache.ts";
 import { metricDuration, metricMs, metricNum, metricPct } from "./dashboard-format.ts";
 
@@ -28,7 +28,7 @@ function compactNumber(value: number): string {
 
 function statusClass(status?: string): "good" | "warn" | "bad" {
   if (status === "timeout" || status === "error") return "bad";
-  if (status === "dry-run" || status === "cancelled") return "warn";
+  if (status === "dry-run" || status === "cancelled" || status === "discarded") return "warn";
   return "good";
 }
 
@@ -47,11 +47,16 @@ interface MetricsDashboardSummary {
   timeout: number;
   error: number;
   dryRun: number;
+  cancelled: number;
+  discarded: number;
+  /** success / (success + timeout + error): neutral statuses excluded. */
   successRate: number;
   avgDuration: number;
   p95Duration: number;
   totalCalls: number;
   totalInput: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
   totalOutput: number;
   totalSaved: number;
   avgScore: number;
@@ -72,21 +77,29 @@ function summarizeDashboard(entries: CompactMetricsEntry[]): MetricsDashboardSum
   const durations = entries.map(metricDuration).filter(Boolean);
   const success = entries.filter(e => statusLabel(e.status) === "success").length;
   const timeout = entries.filter(e => e.status === "timeout").length;
-  const error = entries.filter(e => e.status === "error").length;
+  const error = entries.filter(e => e.status === "error" && e.failureKind !== "cancelled").length;
   const dryRun = entries.filter(e => e.status === "dry-run").length;
+  const cancelled = entries.filter(e => e.status === "cancelled" || (e.status === "error" && e.failureKind === "cancelled")).length;
+  const discarded = entries.filter(e => e.status === "discarded").length;
   const scored = entries.map(e => e.verificationScore).filter((v): v is number => typeof v === "number");
+  // Voluntary cancellations and discarded preparation are neutral: not
+  // successes, not failures.
+  const evidence = success + timeout + error;
   return {
     runs: entries.length,
     success,
     timeout,
     error,
     dryRun,
-    successRate: entries.length ? success / entries.length : 0,
+    cancelled,
+    discarded,
+    successRate: evidence ? success / evidence : 0,
     avgDuration: Math.round(average(durations)),
     p95Duration: percentile(durations, 95),
     totalCalls: entries.reduce((sum, e) => sum + (e.totalCalls ?? 0), 0),
-    totalInput: entries.reduce((sum, e) =>
-      sum + (e.totalInput ?? 0) + (e.totalCacheHit ?? 0) + (e.totalCacheWrite ?? 0), 0),
+    totalInput: entries.reduce((sum, e) => sum + (e.totalInput ?? 0), 0),
+    totalCacheRead: entries.reduce((sum, e) => sum + (e.totalCacheHit ?? 0), 0),
+    totalCacheWrite: entries.reduce((sum, e) => sum + (e.totalCacheWrite ?? 0), 0),
     totalOutput: entries.reduce((sum, e) => sum + (e.totalOutput ?? 0), 0),
     totalSaved: entries.reduce((sum, e) => sum + (e.tokensSaved ?? 0), 0),
     avgScore: Math.round(average(scored)),
@@ -158,7 +171,7 @@ function comparisonRows(groups: MetricsGroupSummary[]): string {
 }
 
 function providerRouteRows(insights: DashboardInsights): string {
-  if (!insights.providers.length) return `<tr><td colspan="9" class="empty">No stage-route evidence yet</td></tr>`;
+  if (!insights.providers.length) return `<tr><td colspan="10" class="empty">No stage-route evidence yet</td></tr>`;
   return insights.providers.map(item => `<tr>
     <td>${escapeHtml(item.stage)}</td><td><strong>${escapeHtml(item.provider + "/" + item.model)}</strong></td>
     <td class="num">${metricNum(item.runs)}</td><td class="num">${metricNum(item.calls)}</td>
@@ -167,6 +180,7 @@ function providerRouteRows(insights: DashboardInsights): string {
     <td class="num">${metricPct(item.qualityCoverage)}</td>
     <td class="num">${escapeHtml(metricMs(item.avgLatencyMs))}</td>
     <td class="num">${metricNum(item.avgTokensPerCall)}</td>
+    <td class="num">${metricNum(item.avgCacheReadTokensPerCall)}r/${metricNum(item.avgCacheWriteTokensPerCall)}w ${escapeHtml((item.usageBasis === "estimated" ? "~" : "") + (item.billing === "subscription" ? "sub" : item.billing === "api" ? "api" : "?"))}</td>
   </tr>`).join("\n");
 }
 
@@ -174,7 +188,7 @@ function canaryRows(insights: DashboardInsights): string {
   const baseline = insights.canary.baseline;
   const canary = insights.canary.canary;
   const rows: Array<[string, string, string]> = [
-    ["Runs (total/applied)", metricNum(baseline.runs) + "/" + metricNum(baseline.appliedRuns), metricNum(canary.runs) + "/" + metricNum(canary.appliedRuns)],
+    ["Runs (total/attempted/applied)", metricNum(baseline.runs) + "/" + metricNum(baseline.attemptedRuns) + "/" + metricNum(baseline.appliedRuns), metricNum(canary.runs) + "/" + metricNum(canary.attemptedRuns) + "/" + metricNum(canary.appliedRuns)],
     ["Success", metricPct(baseline.successRate), metricPct(canary.successRate)],
     ["Verify quality", baseline.avgQuality?.toFixed(1) ?? "—", canary.avgQuality?.toFixed(1) ?? "—"],
     ["p95 duration", metricMs(baseline.p95LatencyMs), metricMs(canary.p95LatencyMs)],
@@ -206,6 +220,12 @@ function failureRows(insights: DashboardInsights): string {
   return rows.sort((a, b) => b[1] - a[1]).map(([kind, count]) => `<tr><td>${escapeHtml(kind)}</td><td class="num">${metricNum(count)}</td></tr>`).join("\n");
 }
 
+function preparationReasonRows(insights: DashboardInsights): string {
+  const rows = Object.entries(insights.preparation.discardReasons);
+  if (!rows.length) return `<tr><td colspan="2" class="empty">No discards recorded</td></tr>`;
+  return rows.sort((a, b) => b[1] - a[1]).map(([kind, count]) => `<tr><td>${escapeHtml(kind)}</td><td class="num">${metricNum(count)}</td></tr>`).join("\n");
+}
+
 function phaseRows(entry?: CompactMetricsEntry): string {
   const timings = entry?.phaseTimings ?? [];
   if (!timings.length) return `<tr><td colspan="3" class="empty">No phase timings yet</td></tr>`;
@@ -225,8 +245,7 @@ function recentRunRows(entries: CompactMetricsEntry[]): string {
     <td>${escapeHtml(entry.provider ?? entry.model?.split("/")[0])}</td>
     <td>${escapeHtml(entry.method)}</td>
     <td>${escapeHtml(entry.runType)}</td>
-    <td>${escapeHtml((entry.version ?? "legacy") + "/" + (entry.releaseChannel ?? "stable"))}</td>
-    <td>${badge(entry.status)}</td>
+    <td>${escapeHtml((entry.version ?? "legacy") + "/" + (entry.releaseChannel ?? "unknown"))}</td>
     <td class="num">${escapeHtml(metricMs(metricDuration(entry)))}</td>
     <td class="num">${typeof entry.verificationScore === "number" ? metricNum(entry.verificationScore) : "—"}</td>
     <td class="num">${typeof entry.tokensSaved === "number" ? metricNum(entry.tokensSaved) : "—"}</td>
@@ -268,15 +287,19 @@ export function buildMetricsReport(
     "- " + item.stage + " / " + item.provider + "/" + item.model + ": n=" + item.runs +
     ", reliability=" + metricPct(item.reliability) + ", quality=" + (item.avgQuality?.toFixed(1) ?? "—") +
     " (coverage " + metricPct(item.qualityCoverage) + "), latency=" + metricMs(item.avgLatencyMs) +
-    ", tokens/call=" + item.avgTokensPerCall,
+    ", tokens/call=" + item.avgTokensPerCall + " (cache " + item.avgCacheReadTokensPerCall + "r/" + item.avgCacheWriteTokensPerCall + "w)"
+    + (item.usageBasis === "estimated" ? " [~estimated]" : "") + (item.billing === "subscription" ? " [subscription — not API-billable]" : ""),
   );
+  const preparation = insights.preparation;
   return [
     "# Smart Compact Metrics",
     "",
-    "Runs: " + summary.runs + " (success " + summary.success + ", dry-run " + summary.dryRun + ", timeout " + summary.timeout + ", error " + summary.error + ")",
-    "Reliability: " + metricPct(summary.successRate),
+    "Runs: " + summary.runs + " (success " + summary.success + ", dry-run " + summary.dryRun
+      + ", timeout " + summary.timeout + ", error " + summary.error
+      + ", cancelled " + summary.cancelled + ", discarded " + summary.discarded + ")",
+    "Reliability: " + metricPct(summary.successRate) + " over real attempts (success+timeout+error; cancellations and discards are neutral)",
     "Latency: avg " + summary.avgDuration + "ms, p95 " + summary.p95Duration + "ms",
-    "LLM calls: " + summary.totalCalls + ", input " + summary.totalInput + "t, output " + summary.totalOutput + "t",
+    "LLM calls: " + summary.totalCalls + ", input " + summary.totalInput + "t, cache read " + summary.totalCacheRead + "t, cache write " + summary.totalCacheWrite + "t, output " + summary.totalOutput + "t",
     "Extraction cache: avg " + (extractionCacheRuns.length ? metricPct(extractionCacheAvg) : "—") + " across " + extractionCacheRuns.length + " measured run(s)",
     "Tokens saved: " + summary.totalSaved + "t, average verification score: " + summary.avgScore,
     "Data Confidence: " + confidence.score + "/100 (telemetry completeness; target ≥85 " + (confidence.targetMet ? "met" : "not met") + ")",
@@ -317,6 +340,18 @@ export function buildMetricsReport(
     ...(Object.keys(insights.failures).length
       ? Object.entries(insights.failures).map(([kind, count]) => "- " + kind + ": " + count)
       : ["- No schema-v2 failures classified"]),
+    ...(preparation.preparedRuns > 0 ? [
+      "",
+      "## Preparation policy",
+      "- Prepared " + preparation.preparedRuns + " · used " + preparation.usedRuns + " · discarded " + preparation.discardedRuns
+        + (preparation.otherOutcomes ? " · failed " + preparation.otherOutcomes : ""),
+      "- Reuse rate " + (preparation.reuseRate == null ? "n/a" : metricPct(preparation.reuseRate))
+        + " · median ready " + (preparation.medianReadyMs ?? "n/a") + "ms · median wait " + (preparation.medianWaitMs ?? "n/a") + "ms",
+      "- Discard reasons: " + (Object.entries(preparation.discardReasons).map(([kind, count]) => kind + "=" + count).join(", ") || "none"),
+      "- Discarded spend (counted once, never applied evidence): " + preparation.discardedCost.calls + " calls, "
+        + preparation.discardedCost.inputTokens + "t in, " + preparation.discardedCost.cacheReadTokens + "t cache read, "
+        + preparation.discardedCost.cacheWriteTokens + "t cache write, " + preparation.discardedCost.outputTokens + "t out",
+    ] : []),
   ].join("\n");
 }
 
@@ -358,7 +393,16 @@ export function writeMetricsDashboard(
         <div class="panel"><h2>Profile comparison</h2><div class="table-wrap"><table><thead><tr><th>Profile</th><th class="num">Runs</th><th class="num">Avg</th><th class="num">p95</th><th class="num">Score</th><th class="num">Calls</th><th class="num">Saved</th><th>Reliability</th></tr></thead><tbody>${comparisonRows(profileGroups)}</tbody></table></div></div>
         <div class="panel"><h2>Provider comparison</h2><div class="table-wrap"><table><thead><tr><th>Provider</th><th class="num">Runs</th><th class="num">Avg</th><th class="num">p95</th><th class="num">Score</th><th class="num">Calls</th><th class="num">Saved</th><th>Reliability</th></tr></thead><tbody>${comparisonRows(providerGroups)}</tbody></table></div></div>
       </section>
-      <section class="panel section"><h2>Stage provider/model comparison <span class="muted">quality coverage is explicit</span></h2><div class="table-wrap"><table><thead><tr><th>Stage</th><th>Provider/model</th><th class="num">Runs</th><th class="num">Calls</th><th class="num">Reliable</th><th class="num">Quality</th><th class="num">Coverage</th><th class="num">Latency</th><th class="num">Tokens/call</th></tr></thead><tbody>${providerRouteRows(insights)}</tbody></table></div></section>
+      <section class="panel section"><h2>Stage provider/model comparison <span class="muted">quality coverage is explicit · tokens/call are quota-inclusive</span></h2><div class="table-wrap"><table><thead><tr><th>Stage</th><th>Provider/model</th><th class="num">Runs</th><th class="num">Calls</th><th class="num">Reliable</th><th class="num">Quality</th><th class="num">Coverage</th><th class="num">Latency</th><th class="num">Tokens/call</th><th class="num">Cache r/w · basis</th></tr></thead><tbody>${providerRouteRows(insights)}</tbody></table></div></section>
+      ${insights.preparation.preparedRuns > 0 ? `<section class="two section">
+        <div class="panel"><h2>Preparation policy <span class="muted">measurements only — no auto-tuning</span></h2><div class="table-wrap"><table><tbody>
+          <tr><td>Prepared / used / discarded</td><td class="num">${metricNum(insights.preparation.preparedRuns)} / ${metricNum(insights.preparation.usedRuns)} / ${metricNum(insights.preparation.discardedRuns)}${insights.preparation.otherOutcomes ? " · failed " + metricNum(insights.preparation.otherOutcomes) : ""}</td></tr>
+          <tr><td>Reuse rate</td><td class="num">${insights.preparation.reuseRate == null ? "—" : metricPct(insights.preparation.reuseRate)}</td></tr>
+          <tr><td>Median ready / wait</td><td class="num">${insights.preparation.medianReadyMs ?? "—"}ms / ${insights.preparation.medianWaitMs ?? "—"}ms</td></tr>
+          <tr><td>Discarded spend (counted once)</td><td class="num">${metricNum(insights.preparation.discardedCost.calls)} calls · ${metricNum(insights.preparation.discardedCost.inputTokens)}t in · ${metricNum(insights.preparation.discardedCost.cacheReadTokens)}t cache r · ${metricNum(insights.preparation.discardedCost.cacheWriteTokens)}t cache w · ${metricNum(insights.preparation.discardedCost.outputTokens)}t out</td></tr>
+        </tbody></table></div></div>
+        <div class="panel"><h2>Discard reasons</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th class="num">Runs</th></tr></thead><tbody>${preparationReasonRows(insights)}</tbody></table></div></div>
+      </section>` : ""}
       <section class="two section">
         <div class="panel"><h2>Data Confidence evidence</h2><div class="table-wrap"><table><tbody>
           <tr><td>Sample</td><td class="num">${insights.confidence.sampleScore}/25</td></tr><tr><td>Schema v2</td><td class="num">${insights.confidence.schemaScore}/25</td></tr><tr><td>Quality coverage</td><td class="num">${insights.confidence.qualityScore}/20</td></tr><tr><td>Completeness</td><td class="num">${insights.confidence.completenessScore}/20</td></tr><tr><td>Freshness</td><td class="num">${insights.confidence.freshnessScore}/10</td></tr>
@@ -371,5 +415,8 @@ export function writeMetricsDashboard(
     const fp = metricsDashboardFile();
     atomicWriteFileSync(fp, html);
     return fp;
-  } catch (e) { log.warn("writeMetricsDashboard failed", e); return null; }
+  } catch (e) {
+    recordIssue({ key: "metrics.dashboard", message: "Metrics dashboard could not be written (" + errorDetail(e) + ").", error: e });
+    return null;
+  }
 }

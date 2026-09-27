@@ -214,6 +214,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
         first.currentEntryIds.at(-1),
         first.currentEntryIds,
         first.currentKeptEntryIds,
+        first.llmMessages,
       );
 
       const notices: string[] = [];
@@ -227,6 +228,23 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
       expect(notices).toContain("Phase 1 Cached: exact pruned conversation reused");
     } finally {
       try { fs.unlinkSync(extractionCacheFile(sessionId)); } catch {}
+    }
+  });
+
+  it("invalidates cached evidence when content changes under the same entry IDs", () => {
+    const sessionId = "edited-cache-" + crypto.randomUUID();
+    try {
+      const firstRc = makeTieredRc([userMsg("Implement obsolete payments"), assistantMsg("Working on it")]);
+      firstRc.sessionId = sessionId;
+      extractWithCache(firstRc);
+      const nextRc = makeTieredRc([userMsg("Implement current authentication"), assistantMsg("Working on it")]);
+      nextRc.sessionId = sessionId;
+      const next = extractWithCache(nextRc);
+      expect(next.services.extractionCacheStats.snapshot().hits).toBe(0);
+      expect(next.extraction.mainGoal).toContain("current authentication");
+      expect(JSON.stringify(next.extraction)).not.toContain("obsolete payments");
+    } finally {
+      fs.rmSync(extractionCacheFile(sessionId), { force: true });
     }
   });
 
@@ -449,7 +467,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.llmCalls).toBe(1);
     expect(notices.join("\n")).toContain("Single-pass generation stopped");
     expect(notices.join("\n")).toContain("provider");
-    expect(notices.join("\n")).not.toContain("simulated provider outage");
+    expect(notices.join("\n")).toContain("provider (simulated provider outage)");
     expect(aggregateProviderRoutes(tiered.services.metrics.snapshot())[0]?.failures).toEqual({ provider: 1 });
     expect(JSON.stringify(tiered.services.metrics.snapshot())).not.toContain("simulated provider outage");
   });

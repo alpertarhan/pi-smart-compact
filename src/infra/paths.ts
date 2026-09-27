@@ -85,6 +85,11 @@ export function nativeContinuityDir(): string {
  return path.join(smartCompactCacheDir(), "native-continuity");
 }
 
+/** Durable, private tool-output spill files, distinct from disposable caches. */
+export function toolArtifactsDir(): string {
+ return path.join(piAgentDir(), "smart-compact-artifacts");
+}
+
 /** Project-scoped persistent context graph (SQLite + FTS5). */
 export function contextGraphFile(): string {
  return path.join(smartCompactCacheDir(), "context-graph.sqlite");

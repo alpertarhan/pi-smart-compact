@@ -9,6 +9,20 @@ import type { LlmMessage } from "../src/types.ts";
 import { computeToolCharPercentage, smartKeepBoundary } from "../src/utils/helpers.ts";
 
 describe("host-visible context projection", () => {
+  it("applies replacements and omissions without changing source IDs", () => {
+    const branch = [
+      { type: "message", id: "replace", parentId: null, message: { role: "user", content: "OBSOLETE_REPLACED" } },
+      { type: "message", id: "omit", parentId: "replace", message: { role: "user", content: "OBSOLETE_OMITTED" } },
+      { type: "context_edit", id: "edit", parentId: "omit", targetId: "replace", replacement: { content: "Current facts" } },
+      { type: "context_edit", id: "delete", parentId: "edit", targetId: "omit", replacement: null },
+    ];
+    const projected = contextMessageEntries(branch);
+    expect(projected.map(entry => entry.id)).toEqual(["replace"]);
+    expect(projected[0].message).toMatchObject({ content: "Current facts" });
+    expect(JSON.stringify(projected)).not.toContain("OBSOLETE");
+    expect(branch[0].message?.content).toBe("OBSOLETE_REPLACED");
+  });
+
   it("preserves prior compaction and anchor IDs while excluding private and context-disabled entries", () => {
     const branch = [
       { type: "compaction", id: "compaction", timestamp: "2026-01-01T00:00:00Z", summary: "Previous facts", tokensBefore: 100 },
@@ -16,7 +30,7 @@ describe("host-visible context projection", () => {
       { type: "message", id: "anchor", message: { role: "toolResult", toolName: "context", toolCallId: "anchor-1", content: [{ type: "text", text: "Decision checkpoint" }], details: { anchor: "checkpoint" }, timestamp: 0 } },
       { type: "message", id: "tool", message: { role: "toolResult", toolName: "read", toolCallId: "call-1", content: [{ type: "text", text: "x".repeat(200) }], timestamp: 0 } },
       { type: "custom", id: "private", customType: "state", data: "PRIVATE_SENTINEL" },
-    ];
+    ].map((entry, index, entries) => ({ ...entry, parentId: entries[index - 1]?.id ?? null }));
     const msgs = contextMessageEntries(branch);
     expect(msgs.map(entry => entry.id)).toEqual(["compaction", "anchor", "tool"]);
     expect(JSON.stringify(msgs)).not.toContain("PRIVATE_SENTINEL");

@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
+import { errorDetail, reportIssue } from "../utils/issues.ts";
 import * as log from "../utils/logger.ts";
 
 const SMART_COMPACT_TOOL_NAME = "smart_compact";
@@ -127,6 +128,9 @@ function configDefaults(): DesiredSmartCompactPolicy {
 }
 
 function statusText(policy: SmartCompactPolicySnapshot): string | undefined {
+  if (!policy.agentToolEnabled && policy.agentToolAccess !== "disabled" && loadConfig().toolLoading === "lazy") {
+    return "smart-compact: on-demand tools" + (policy.autoTrigger ? "" : " · auto off");
+  }
   if (policy.agentToolEnabled && policy.autoTrigger) return undefined;
   if (!policy.agentToolEnabled && !policy.autoTrigger) {
     return "smart-compact: manual only";
@@ -139,7 +143,7 @@ function statusText(policy: SmartCompactPolicySnapshot): string | undefined {
   return "smart-compact: auto off";
 }
 
-export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
+export function createSmartCompactPolicy(pi: ExtensionAPI, syncTools: () => void): SmartCompactPolicy {
   let overrides: Partial<DesiredSmartCompactPolicy> = {};
 
   const desired = (): DesiredSmartCompactPolicy => ({
@@ -157,38 +161,18 @@ export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
 
   const apply = (ctx: ExtensionContext): SmartCompactPolicySnapshot => {
     const current = desired();
-    const active = pi.getActiveTools();
-    const hasTool = active.includes(SMART_COMPACT_TOOL_NAME);
-    if (current.agentToolAccess === "enabled" && !hasTool) {
-      pi.setActiveTools([...new Set([...active, SMART_COMPACT_TOOL_NAME])]);
-    } else if (current.agentToolAccess === "disabled" && hasTool) {
-      pi.setActiveTools(
-        active.filter((name) => name !== SMART_COMPACT_TOOL_NAME),
-      );
-    }
+    syncTools();
     const effective = snapshot();
     ctx.ui.setStatus(STATUS_KEY, current.showStatus ? statusText(effective) : undefined);
     return effective;
   };
 
-  const restoreToolMembership = (enabled: boolean): void => {
-    const active = pi.getActiveTools();
-    const hasTool = active.includes(SMART_COMPACT_TOOL_NAME);
-    if (enabled && !hasTool) {
-      pi.setActiveTools([...new Set([...active, SMART_COMPACT_TOOL_NAME])]);
-    } else if (!enabled && hasTool) {
-      pi.setActiveTools(
-        active.filter((name) => name !== SMART_COMPACT_TOOL_NAME),
-      );
-    }
-  };
 
   const persist = (
     next: Partial<DesiredSmartCompactPolicy>,
     ctx: ExtensionContext,
   ): SmartCompactPolicyUpdate => {
     const previous = overrides;
-    const previousToolEnabled = effectiveToolState();
     overrides = next;
     try {
       const effective = apply(ctx);
@@ -201,9 +185,14 @@ export function createSmartCompactPolicy(pi: ExtensionAPI): SmartCompactPolicy {
       log.debugError("Smart Compact policy update failed", error);
       overrides = previous;
       try {
-        restoreToolMembership(previousToolEnabled);
+        syncTools();
       } catch (rollbackError) {
-        log.debugError("Smart Compact policy rollback failed", rollbackError);
+        reportIssue({
+          key: "policy.rollback",
+          severity: "error",
+          message: "Rolling back a failed setting change also failed (" + errorDetail(rollbackError) + "). Tool visibility may not match the setting. Use /tools to check, then restart Pi.",
+          error: rollbackError,
+        }, ctx);
       }
       const rolledBack = snapshot();
       const previousDesired = desired();

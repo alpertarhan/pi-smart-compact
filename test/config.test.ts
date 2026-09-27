@@ -86,24 +86,54 @@ describe("validateSmartCompactConfig", () => {
     expect(invalid.agentToolAccess).toBeUndefined();
   });
 
+  it("keeps context hygiene opt-in and independent of compaction", () => {
+    expect(DEFAULT_CONFIG.contextHygieneEnabled).toBe(false);
+    const config: Record<string, unknown> = { contextHygieneEnabled: true, autoTrigger: false };
+    validateSmartCompactConfig(config);
+    expect(config).toEqual({ contextHygieneEnabled: true, autoTrigger: false });
+    const invalid: Record<string, unknown> = { contextHygieneEnabled: "true" };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.contextHygieneEnabled).toBeUndefined();
+  });
+
+  it("keeps artifact offload opt-in and boolean-only", () => {
+    expect(DEFAULT_CONFIG.artifactOffloadEnabled).toBe(false);
+    const enabled: Record<string, unknown> = { artifactOffloadEnabled: true };
+    validateSmartCompactConfig(enabled);
+    expect(enabled.artifactOffloadEnabled).toBe(true);
+    const invalid: Record<string, unknown> = { artifactOffloadEnabled: "true" };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.artifactOffloadEnabled).toBeUndefined();
+  });
+
   it("deletes invalid autoTrigger (string)", () => {
     const sc = { autoTrigger: "true" };
     validateSmartCompactConfig(sc);
     expect("autoTrigger" in sc).toBe(false);
   });
 
-  it("validates the opt-in settled auto-trigger strategy", () => {
+  it("validates the opt-in automatic strategies", () => {
     expect(DEFAULT_CONFIG.autoTriggerStrategy).toBe("native-hook");
-    for (const strategy of ["native-hook", "settled"]) {
+    for (const strategy of ["native-hook", "settled", "background"]) {
       const valid: Record<string, unknown> = { autoTriggerStrategy: strategy };
       validateSmartCompactConfig(valid);
       expect(valid.autoTriggerStrategy).toBe(strategy);
     }
     const invalid: Record<string, unknown> = {
-      autoTriggerStrategy: "background",
+      autoTriggerStrategy: "unsupported",
     };
     validateSmartCompactConfig(invalid);
     expect(invalid.autoTriggerStrategy).toBeUndefined();
+  });
+
+  it("keeps the experimental visual archive opt-in and boolean-only", () => {
+    expect(DEFAULT_CONFIG.visualArchiveEnabled).toBe(false);
+    const valid: Record<string, unknown> = { visualArchiveEnabled: true };
+    validateSmartCompactConfig(valid);
+    expect(valid.visualArchiveEnabled).toBe(true);
+    const invalid: Record<string, unknown> = { visualArchiveEnabled: "true" };
+    validateSmartCompactConfig(invalid);
+    expect(invalid.visualArchiveEnabled).toBeUndefined();
   });
 
   it("deletes invalid autoTriggerTimeoutMs (string)", () => {
@@ -242,6 +272,18 @@ describe("validateSmartCompactConfig", () => {
     const sc2 = { minContextPercent: 100 };
     validateSmartCompactConfig(sc2);
     expect(sc2.minContextPercent).toBe(100);
+  });
+
+  it("discards prepare percentages that are not below the effective apply gate", () => {
+    for (const sc of [
+      { prepareContextPercent: 60 }, // equals default apply gate 60
+      { prepareContextPercent: 70, minContextPercent: 65 },
+      { prepareContextPercent: 65, minContextPercent: 65 },
+      { prepareContextPercent: 61, minContextPercent: 150 }, // invalid apply → default 60
+    ] as Record<string, unknown>[]) {
+      validateSmartCompactConfig(sc);
+      expect("prepareContextPercent" in sc).toBe(false);
+    }
   });
 
   it("has default minContextPercent of 60", () => {

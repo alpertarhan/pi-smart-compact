@@ -6,7 +6,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import type { StructuredExtraction } from "../types.ts";
-import * as log from "./logger.ts";
+import { errorDetail, recordIssue } from "./issues.ts";
 import { home, projectFingerprintFile } from "../infra/paths.ts";
 import {
   acquireLock,
@@ -374,7 +374,7 @@ export async function saveProjectFingerprint(
     }
     return true;
   } catch (error) {
-    log.warn("saveProjectFingerprint failed", error);
+    recordIssue({ key: "fingerprint.save", message: "Project fingerprint could not be saved (" + errorDetail(error) + ").", error });
     return false;
   }
 }

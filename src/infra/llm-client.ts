@@ -1,26 +1,21 @@
 /**
  * LLM client seam.
  *
- * Why we have a seam at all:
+ * Production requests go through the requesting session's public model
+ * runtime (`ctx.modelRegistry`), never pi-ai's standalone completers: only the
+ * session runtime applies request-time auth, OAuth and extension provider
+ * overrides registered with `pi.registerProvider` (e.g. a subscription
+ * adapter that owns final payload normalization). Clients are built per run
+ * from that runtime, so one session can never route through another's.
  *
- *  - pi-ai's completers are the only runtime entry points into a model.
- *    Importing them directly from utility modules tied even the metrics test
- *    path to the peer dependency, which made `bun test` fail when the peer
- *    was not installed.
- *
- *  - Test fakes need to assert which `phase` was used, control failures, and
- *    return synthetic usage tokens for calibration tests.
- *
- *  - Future provider fallback work (per `implement-llm-provider-fallback`)
- *    becomes a single-file change instead of a cross-module refactor.
+ * Test fakes need to assert which `phase` was used, control failures, and
+ * return synthetic usage tokens, so `setLlmClient` installs a process-wide
+ * test override that takes precedence over every run's runtime client.
  *
  * The interface is intentionally narrow: a single `complete()` method matching
  * the pi-ai shape, plus the same options object existing callers already pass.
- *
- * The default implementation keeps `complete()` for existing calls and uses
- * `completeSimple()` when generic reasoning is explicitly configured.
- * `setLlmClient` is exposed for tests and wrapping/fallback clients. Both
- * completers are resolved below through the host's compat alias.
+ * Provider-specific `stream()` keeps existing calls; `streamSimple()` is used
+ * when generic reasoning is explicitly configured.
  */
 
 import type {
@@ -35,80 +30,39 @@ import type {
 } from "@earendil-works/pi-ai";
 import { getProviderCaps } from "../utils/tokens.ts";
 
-// pi-ai 0.80 moved the completers to the `/compat` subpath. They are resolved
-// with dynamic imports rather than static ones:
-//
-//  - A STATIC `import { complete }` breaks either context: the root specifier
-//    has no `complete` export in raw node/test resolution, and importing the
-//    `/compat` subpath statically is not aliased by some host builds and fails
-//    at module load.
-//  - A dynamic `import("@earendil-works/pi-ai/compat")` works in BOTH: the pi
-//    host's extension loader (getAliases + VIRTUAL_MODULES) aliases the
-//    `/compat` subpath to the compat entrypoint, and raw resolution finds
-//    `/compat` directly. It runs on first use (never at module load), so a
-//    resolution hiccup can never break extension loading, and test fakes that
-//    inject their own client via setLlmClient never trigger it.
-type CompleteFn<TOptions> = (
-  model: Model<Api>,
-  body: Context,
-  opts: TOptions,
-) => Promise<AssistantMessage>;
-type StreamFn<TOptions> = (
-  model: Model<Api>,
-  body: Context,
-  opts: TOptions,
-) => AssistantMessageEventStream;
 export type LlmCompleteOptions = SimpleStreamOptions & {
   codexWatchdogMs?: number;
 };
 
-let _complete: CompleteFn<ProviderStreamOptions> | null = null;
-let _completeSimple: CompleteFn<SimpleStreamOptions> | null = null;
-let _stream: StreamFn<ProviderStreamOptions> | null = null;
-let _streamSimple: StreamFn<SimpleStreamOptions> | null = null;
-
-async function resolveComplete(): Promise<CompleteFn<ProviderStreamOptions>> {
-  if (_complete) return _complete;
-  const mod = await import("@earendil-works/pi-ai/compat");
-  const fn = mod.complete;
-  if (typeof fn !== "function")
-    throw new Error("smart-compact: pi-ai /compat did not export complete()");
-  _complete = fn;
-  return fn;
+/** The public session model runtime slice used for requests (`ctx.modelRegistry`). */
+export interface LlmModelRuntime {
+  stream(model: Model<Api>, context: Context, options?: ProviderStreamOptions): AssistantMessageEventStream;
+  streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
 }
 
-async function resolveCompleteSimple(): Promise<
-  CompleteFn<SimpleStreamOptions>
-> {
-  if (_completeSimple) return _completeSimple;
-  const mod = await import("@earendil-works/pi-ai/compat");
-  const fn = mod.completeSimple;
-  if (typeof fn !== "function")
-    throw new Error(
-      "smart-compact: pi-ai /compat did not export completeSimple()",
-    );
-  _completeSimple = fn;
-  return fn;
+/** `ctx.modelRegistry.isUsingOAuth(model)`, false when unavailable or throwing. */
+export function usesOAuth(ctx: { modelRegistry?: unknown }, model: Model<Api>): boolean {
+  const registry = ctx.modelRegistry as { isUsingOAuth?: (model: Model<Api>) => boolean } | undefined;
+  try {
+    return registry?.isUsingOAuth?.(model) === true;
+  } catch {
+    return false;
+  }
 }
 
-async function resolveStream(): Promise<StreamFn<ProviderStreamOptions>> {
-  if (_stream) return _stream;
-  const mod = await import("@earendil-works/pi-ai/compat");
-  if (typeof mod.stream !== "function")
-    throw new Error("smart-compact: pi-ai /compat did not export stream()");
-  _stream = mod.stream;
-  return _stream;
-}
-
-async function resolveStreamSimple(): Promise<StreamFn<SimpleStreamOptions>> {
-  if (_streamSimple) return _streamSimple;
-  const mod = await import("@earendil-works/pi-ai/compat");
-  if (typeof mod.streamSimple !== "function")
-    throw new Error(
-      "smart-compact: pi-ai /compat did not export streamSimple()",
-    );
-  _streamSimple = mod.streamSimple;
-  return _streamSimple;
+function openStream(
+  runtime: LlmModelRuntime,
+  model: Model<Api>,
+  body: Context,
+  opts: LlmCompleteOptions,
+): AssistantMessageEventStream {
+  // The runtime resolves auth per request: an explicit `apiKey` would force its
+  // API-key path and skip stored OAuth, and the pre-resolved headers are the
+  // ones it merges itself. Stage auth stays a preflight availability check.
+  const { apiKey: _apiKey, headers: _headers, ...options } = opts;
+  return options.reasoning === undefined
+    ? runtime.stream(model, body, options as ProviderStreamOptions)
+    : runtime.streamSimple(model, body, options);
 }
 
 export interface LlmClient {
@@ -237,6 +191,7 @@ export async function withProviderDeadline(
 }
 
 async function completeChatGptCodex(
+  runtime: LlmModelRuntime,
   model: Model<Api>,
   body: Context,
   opts: LlmCompleteOptions,
@@ -259,10 +214,7 @@ async function completeChatGptCodex(
 
   try {
     const limited = { ...opts, signal: controller.signal };
-    const events =
-      opts.reasoning === undefined
-        ? (await resolveStream())(model, body, limited as ProviderStreamOptions)
-        : (await resolveStreamSimple())(model, body, limited);
+    const events = openStream(runtime, model, body, limited);
     let final: AssistantMessage | undefined;
     for await (const event of events) {
       visibleChars += streamedChars(event);
@@ -296,44 +248,36 @@ async function completeChatGptCodex(
   }
 }
 
-/** Raw client — map generic reasoning only when explicitly configured. */
-export const rawLlmClient: LlmClient = {
-  complete: async (model, body, originalOpts) => {
-    const opts = withCodexWireLimit(model, originalOpts);
-    return withProviderDeadline(
-      opts,
-      async (bounded) => {
-        if (isChatGptCodex(model))
-          return completeChatGptCodex(model, body, bounded);
-        const response =
-          bounded.reasoning === undefined
-            ? await (await resolveComplete())(
-                model,
-                body,
-                bounded as ProviderStreamOptions,
-              )
-            : await (await resolveCompleteSimple())(model, body, bounded);
-        return assertSuccessful(response);
-      },
-      model.provider,
-    );
-  },
-};
+/** Client for one session runtime — maps generic reasoning only when explicitly configured. */
+export function createModelRuntimeLlmClient(runtime: LlmModelRuntime): LlmClient {
+  return {
+    complete: async (model, body, originalOpts) => {
+      const opts = withCodexWireLimit(model, originalOpts);
+      return withProviderDeadline(
+        opts,
+        async (bounded) => {
+          if (isChatGptCodex(model))
+            return completeChatGptCodex(runtime, model, body, bounded);
+          return assertSuccessful(await openStream(runtime, model, body, bounded).result());
+        },
+        model.provider,
+      );
+    },
+  };
+}
 
-/** Production default: never replay an expensive compaction request automatically. */
-export const defaultLlmClient: LlmClient = rawLlmClient;
+let _override: LlmClient | undefined;
 
-let _client: LlmClient = defaultLlmClient;
-
-export function getLlmClient(): LlmClient {
-  return _client;
+/** The test/wrapping override, resolved at call time; undefined in production. */
+export function getLlmClient(): LlmClient | undefined {
+  return _override;
 }
 
 export function setLlmClient(client: LlmClient): void {
-  _client = client;
+  _override = client;
 }
 
-/** Restore the production client. Tests should always pair `setLlmClient` with this. */
+/** Remove the override. Tests should always pair `setLlmClient` with this. */
 export function resetLlmClient(): void {
-  _client = defaultLlmClient;
+  _override = undefined;
 }

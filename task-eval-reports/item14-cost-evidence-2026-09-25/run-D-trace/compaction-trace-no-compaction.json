@@ -1,0 +1,31 @@
+{
+  "arm": "no-compaction",
+  "generatedAt": "2026-09-25T21:25:53.647Z",
+  "trace": [
+    {
+      "kind": "summary_request",
+      "phase": "reopen",
+      "inFlightCompactions": 0,
+      "startedCompactions": 0,
+      "requestInputTokens": 106268,
+      "seq": 1,
+      "at": 1790371535803
+    },
+    {
+      "kind": "before_reload",
+      "phase": "reopen",
+      "inFlightCompactions": 0,
+      "startedCompactions": 0,
+      "seq": 2,
+      "at": 1790371538600
+    },
+    {
+      "kind": "after_reload",
+      "phase": "reopen",
+      "inFlightCompactions": 0,
+      "startedCompactions": 0,
+      "seq": 3,
+      "at": 1790371538607
+    }
+  ]
+}

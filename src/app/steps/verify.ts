@@ -18,7 +18,7 @@ import {
 	VerificationGateError,
 } from "../../phases/verify.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
-import * as log from "../../utils/logger.ts";
+import { errorDetail, recordIssue } from "../../utils/issues.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { assembleFallback } from "../../phases/synthesize.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
@@ -128,10 +128,11 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 				rc.services,
 			);
 		} catch (error) {
-			log.debugError(
-				"LLM verification patch used deterministic fallback",
+			recordIssue({
+				key: "verify.patch",
+				message: "Semantic repair of verification gaps failed (" + errorDetail(error) + "); deterministic repair was used and the verification gate still applies.",
 				error,
-			);
+			});
 		}
 		if (summary !== beforePatch) {
 			llmPatched = true;

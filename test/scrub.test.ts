@@ -161,7 +161,7 @@ describe("trackedComplete secret boundary", () => {
     });
     await trackedComplete(
       "single-pass",
-      { id: "test", provider: "openai" } as any,
+      { id: "test", provider: "openai", contextWindow: 128_000, maxTokens: 4096 } as any,
       {
         messages: [
           {

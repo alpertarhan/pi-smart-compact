@@ -2,6 +2,7 @@
  * Core type definitions for the Smart Compact extension.
  */
 
+import type { NativeState } from "./infra/native-protocol.ts";
 import type {
  Model,
  Api,
@@ -21,7 +22,7 @@ export type CompressionProfile = "light" | "balanced" | "aggressive";
 export type EffectiveCompactionMode = "fast" | "balanced" | "thorough";
 /** `aggressive` is accepted only as a legacy input and resolves to Fast. */
 export type CompactionMode = "auto" | EffectiveCompactionMode | "aggressive";
-export type AutoTriggerStrategy = "native-hook" | "settled";
+export type AutoTriggerStrategy = "native-hook" | "settled" | "background";
 type AgentToolAccess = "inherit" | "enabled" | "disabled";
 
 export interface ProfileConfig {
@@ -32,6 +33,10 @@ export interface ProfileConfig {
  singlePassMaxTokens: number;
  batchMaxTokens: number;
 }
+
+export type MemoryBackend = "local" | "hindsight" | "mnemopi";
+/** Summary engine: EESV pipeline, or the current provider's native compaction. */
+export type CompactionEngine = "eesv" | "native";
 
 export interface CompactConfig {
  /** Execution preset. `profile` remains the backwards-compatible compression detail knob. */
@@ -45,15 +50,23 @@ export interface CompactConfig {
  segmentationThinkingLevel: ThinkingLevel | null;
  /** Whether Smart Compact inherits, enables, or disables its agent tool. */
  agentToolAccess: AgentToolAccess;
+ /** Model-visible tool groups: on demand, all permitted groups, or none. */
+ toolLoading: "lazy" | "eager" | "off";
  autoTrigger: boolean;
  /** Show the policy status line in Pi's footer. */
  showStatus: boolean;
- /** Native hook participation, or an opt-in proactive request after an idle agent run. */
+ /** Native hook, idle pressure trigger, or early background preparation plus idle trigger. */
  autoTriggerStrategy: AutoTriggerStrategy;
  autoTriggerTimeoutMs: number;
  backupEnabled: boolean;
  backupDir: string;
  minContextPercent: number; // Don't compact below this threshold
+ /**
+  * Background timing only: context % at which speculative preparation starts.
+  * null = Auto (adaptive lead before minContextPercent). An explicit value must
+  * be below the effective minContextPercent, which stays the apply gate.
+  */
+ prepareContextPercent: number | null;
  requireApproval: boolean;
  scrubSecrets: boolean;
  scrubPii: boolean;
@@ -68,6 +81,42 @@ export interface CompactConfig {
  focusWeighting: boolean;
  zeroCallEnabled: boolean;
  contextGraphEnabled: boolean;
+ /**
+  * Ordered, unique, non-empty engine priority; the first success applies.
+  * Independent of mode (fast/balanced/thorough).
+  */
+ compactionEngines: CompactionEngine[];
+ /** Memory destination for confirmed save/recall tools. `local` never contacts a server. */
+ memoryBackend: MemoryBackend;
+ /** Hindsight API base URL (https; plain http only for loopback). */
+ hindsightBaseUrl: string | null;
+ /** Hindsight memory bank; required explicitly, never inferred. */
+ hindsightBankId: string | null;
+ /** Name of the environment variable holding the Hindsight API key; never the key itself. */
+ hindsightApiKeyEnv: string | null;
+ /** Hindsight request timeout. */
+ hindsightTimeoutMs: number;
+ /** Server-side recall budget. */
+ hindsightRecallMaxTokens: number;
+ /**
+  * Mnemopi data directory: absolute or `~/` path. null = the dedicated
+  * Smart Compact-owned directory under Pi's agent directory.
+  */
+ mnemopiDataDir: string | null;
+ /** Experimental: add bounded bitmap evidence beside the verified text summary. */
+ visualArchiveEnabled: boolean;
+ /** Spill oversized safe tool results before they enter model context. */
+ artifactOffloadEnabled: boolean;
+ /** Pressure-gated, recoverable context hygiene, independent of automatic compaction. */
+ contextHygieneEnabled: boolean;
+ /** Session anchors and context navigation; independent of recoverable cleanup. */
+ contextNavigationEnabled: boolean;
+ contextRecallEnabled: boolean;
+ contextPivotEnabled: boolean;
+ contextAnchorCacheEnabled: boolean;
+ contextAnchorStatusEnabled: boolean;
+ /** Read the context-management guide only on explicit demand. */
+ contextGuidanceEnabled: boolean;
  telemetryChannel: "stable" | "canary";
  adaptiveDamageFeedback: boolean;
  onlineDamageMonitor: boolean;
@@ -94,15 +143,15 @@ export interface ProviderCapabilities {
 
 export interface LLMCallMetric {
  phase:
-  | "probe"
-  | "explore"
-  | "explore-loop"
-  | "explore-retry"
-  | "explore-direct"
-  | "single-pass"
-  | "batch"
-  | "assemble"
-  | "patch";
+ | "probe"
+ | "explore"
+ | "explore-loop"
+ | "explore-retry"
+ | "explore-direct"
+ | "single-pass"
+ | "batch"
+ | "assemble"
+ | "patch";
  model: string;
  provider?: string;
  inputTokens: number;
@@ -115,6 +164,8 @@ export interface LLMCallMetric {
  failureKind?: TelemetryFailureKind;
  /** True when provider usage was absent or partial and local estimates were used. */
  usageEstimated?: boolean;
+ /** How this route authenticates; subscription usage must never be priced at API rates. */
+ billing?: "api" | "subscription";
 }
 
 export type ProviderRouteStage = "explore" | "synthesize" | "verify";
@@ -128,7 +179,14 @@ export interface ProviderRouteMetric {
  failures?: Partial<Record<TelemetryFailureKind, number>>;
  avgLatencyMs: number;
  inputTokens: number;
+ /** Provider prompt-cache tokens, kept split from input/output for quota honesty. */
+ cacheReadTokens?: number;
+ cacheWriteTokens?: number;
  outputTokens: number;
+ /** "estimated" when any contributing call lacked provider usage. */
+ usageBasis?: "reported" | "estimated";
+ /** Subscription (OAuth) routes are not billable at API prices. */
+ billing?: "api" | "subscription";
  /** Stage-local summary quality before deterministic/LLM repair. */
  qualityScore?: number;
  qualityBasis?: "pre-repair-verification";
@@ -136,16 +194,16 @@ export interface ProviderRouteMetric {
 
 export interface PipelinePhaseTiming {
  phase:
-  | "prepare"
-  | "recover"
-  | "prune"
-  | "extract"
-  | "explore"
-  | "synthesize"
-  | "verify"
-  | "state"
-  | "persist"
-  | "damage";
+ | "prepare"
+ | "recover"
+ | "prune"
+ | "extract"
+ | "explore"
+ | "synthesize"
+ | "verify"
+ | "state"
+ | "persist"
+ | "damage";
  durationMs: number;
 }
 
@@ -166,6 +224,9 @@ export type VerificationGateStage = "post-synthesis" | "post-state";
 
 export interface CompactMetricsEntry {
  ts: string;
+ /** Content-free estimates; actual image billing is charged on later agent requests. */
+ visualTokens?: number;
+ visualFrames?: number;
  /** Local-only lifecycle id used to join post-compaction observations. */
  runId?: string;
  metricsSchemaVersion?: 2;
@@ -192,7 +253,16 @@ export interface CompactMetricsEntry {
  model?: string;
  provider?: string;
  runType?: "manual" | "auto" | "tool";
- status?: "success" | "timeout" | "error" | "dry-run" | "cancelled";
+ /** "discarded" = speculative preparation completed but was never applied. */
+ status?: "success" | "timeout" | "error" | "dry-run" | "cancelled" | "discarded";
+ /** Set when this run's summary came from speculative background preparation. */
+ preparation?: "background";
+ /** Why prepared work was dropped; only meaningful with status "discarded". */
+ preparationDiscardReason?: PreparationDiscardReason;
+ /** Creation-to-ready latency of the reused preparation, when known. */
+ preparationReadyMs?: number;
+ /** Ready-to-apply wait of the reused preparation, when known. */
+ preparationWaitMs?: number;
  contextPercent?: number;
  toolPercent?: number;
  tokensBefore?: number;
@@ -231,7 +301,18 @@ export interface CompactMetricsEntry {
  /** Durable post-apply side effects; compaction itself may still have succeeded. */
  persistenceStatus?: "complete" | "partial";
  persistenceFailures?: string[];
+ engineAttempts?: EngineAttempt[];
 }
+
+/** Content-free reasons speculative preparation can be dropped unused. */
+export type PreparationDiscardReason =
+ | "ttl"
+ | "branch"
+ | "config"
+ | "session"
+ | "superseded"
+ | "cancelled"
+ | "stale";
 
 export interface TopicBoundary {
  afterIndex: number;
@@ -252,10 +333,18 @@ export interface ChunkSummary {
  priority: "critical" | "high" | "normal" | "low";
 }
 
+export interface VisualArchive {
+ version: 1;
+ reader: { provider: string; id: string; api: string };
+ sources: Array<{ id: string; text: string }>;
+ frames: Array<{ data: string; width: number; height: number }>;
+ estimatedTokens: number;
+}
+
 export interface SmartCompactDetails {
  /** Correlates session_before_compact staging with session_compact commit. */
  runId?: string;
- method: "eesv" | "single-pass" | "heuristic";
+ method: "eesv" | "single-pass" | "heuristic" | "native";
  generationFallbacks?: string[];
  chunkCount: number;
  topics: string[];
@@ -295,7 +384,27 @@ export interface SmartCompactDetails {
  redactions?: number;
  compactionState?: CompactionState;
  openLoops?: OpenLoop[];
+ visualArchive?: VisualArchive;
+ visualTokens?: number;
+ /** Ordered engine outcomes for this run; the applied engine is last. */
+ engineAttempts?: EngineAttempt[];
+ /** Provider API of an applied native compaction (decides replay readability). */
+ nativeApi?: string;
+ /**
+  * Opaque provider compaction state (native engine only). Persisted in the
+  * compaction entry and replayed via before_provider_request on the same
+  * route; never mutated, scrubbed or logged. Validate with isNativeState.
+  */
+ native?: NativeState;
 }
+
+export interface EngineAttempt {
+ engine: CompactionEngine;
+ outcome: "applied" | "skipped" | "failed";
+ /** Literal, content-free reason for skipped/failed attempts. */
+ reason?: string;
+}
+
 
 /**
  * Tiny mutable single-slot ref cell. We use it (instead of bare
@@ -334,6 +443,10 @@ export interface PendingCompaction {
  firstKeptEntryId: string;
  /** Branch head that produced this summary; must still be in active ancestry. */
  originBranchHeadId: string;
+ /** Reader identity and limits captured before preparation; absent proof cannot be reused. */
+ readerSignature?: string;
+ /** Content proof for the projected snapshot; appended tail messages are allowed. */
+ contextSnapshot?: { messageCount: number; hash: string };
  tokensBefore: number;
  details: SmartCompactDetails;
  /** Complete metrics payload, appended only after Pi emits session_compact. */
@@ -567,6 +680,8 @@ export interface CachedExtraction {
  entryIdsFp?: EntryIdFingerprint;
  /** Compact pruned fingerprint (replaces `keptEntryIds` for new caches). */
  keptEntryIdsFp?: EntryIdFingerprint;
+ /** Hash of the exact pruned message domain; IDs alone do not capture context edits. */
+ messagePrefixHash?: string;
 }
 
 /** An open loop — unresolved task detected during compaction */
@@ -652,6 +767,8 @@ export interface SessionMessageEntry {
  type: "message";
  id: string;
  message: unknown;
+ /** Intentional host projection: never replace it with raw JSONL content. */
+ contextEdited?: boolean;
 }
 
 export interface ProgressState {

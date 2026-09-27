@@ -82,6 +82,24 @@ describe("loadConfig", () => {
     expect(config.profiles.balanced).toEqual(PROFILES.balanced);
   });
 
+  it("uses Fast for a legacy aggressive profile unless mode is explicit, preserving budgets and stored settings", () => {
+    for (const [mode, expected] of [[undefined, "fast"], ["auto", "auto"], ["thorough", "thorough"]] as const) {
+      writeSettings({
+        smartCompact: {
+          profile: "aggressive",
+          ...(mode === undefined ? {} : { mode }),
+          profiles: { aggressive: { keepRecentTokens: 7_000 } },
+        },
+      });
+      const before = fs.readFileSync(settings, "utf8");
+      const config = loadConfig();
+      expect(config.mode).toBe(expected);
+      expect(config.profile).toBe("aggressive");
+      expect(config.profiles.aggressive.keepRecentTokens).toBe(7_000);
+      expect(fs.readFileSync(settings, "utf8")).toBe(before);
+    }
+  });
+
   it("isolates cached and default nested values from caller mutation", () => {
     writeSettings({});
     const first = loadConfig();

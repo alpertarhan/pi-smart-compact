@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -32,12 +32,16 @@ try {
   const manifestPath = join(workspace, "package.json");
   const manifest = JSON.parse(await Bun.file(manifestPath).text()) as {
     peerDependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
   };
   const originalManifest = JSON.stringify(manifest, null, 2) + "\n";
 
-  // Pin only the isolated install. Restore the wildcard peer manifest before
+  // Pin only the isolated install. Restore the published manifest before
   // validation so package-boundary tests still exercise the published shape.
-  for (const name of piPackages) manifest.peerDependencies[name] = version;
+  for (const name of [...piPackages, "@earendil-works/pi-server"]) {
+    manifest.devDependencies[name] = version;
+    if (name in manifest.peerDependencies) manifest.peerDependencies[name] = version;
+  }
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   try { unlinkSync(join(workspace, "bun.lock")); } catch { /* absent lock is fine */ }
 
@@ -46,6 +50,23 @@ try {
   // Initialize metadata in the isolated copy without carrying source history.
   await run(["git", "init", "-q"]);
   await run(["bun", "install", "--ignore-scripts"]);
+  // The optional runtime package needs its own postinstall to replace the
+  // placeholder CLI shipped in bun/bin. Run exactly that script, so the
+  // isolated copy does not execute unrelated dependency lifecycle scripts.
+  const bunRuntimeDir = join(workspace, "node_modules", "bun");
+  if (existsSync(bunRuntimeDir)) {
+    const child = Bun.spawn(["node", "install.js"], {
+      cwd: bunRuntimeDir,
+      env: Bun.env,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const postinstallExit = await child.exited;
+    if (postinstallExit !== 0) {
+      throw new Error("node install.js in node_modules/bun exited with " + postinstallExit);
+    }
+  }
   writeFileSync(manifestPath, originalManifest);
 
   for (const name of piPackages) {

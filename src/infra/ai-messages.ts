@@ -18,14 +18,21 @@
 
 import { contentText, type Message } from "@earendil-works/pi-ai";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
-import { convertToLlm, sessionEntryToContextMessages, serializeConversation, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, convertToLlm, serializeConversation, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SecretScrubber } from "../domain/scrub.ts";
 
-/** Preserve the host's context projection and original entry IDs, including custom and branch summaries. */
+/** Project a full selected branch, preserving source IDs and intentional edits. */
 export function contextMessageEntries(entries: readonly unknown[]): SessionMessageEntry[] {
-  // SAFETY: these are host SessionManager entries, not provider-supplied data.
-  return (entries as readonly SessionEntry[]).flatMap(entry =>
-    convertToLlm(sessionEntryToContextMessages(entry)).map(message => ({ type: "message" as const, id: entry.id, message })),
+  // SAFETY: getBranch() returns host SessionManager entries in ancestry order.
+  const projection = buildSessionProjection(entries as SessionEntry[]);
+  const editedIds = new Set(projection.entries.flatMap(({ sourceEntry }) =>
+    sourceEntry.type === "context_edit" ? [sourceEntry.targetId] : [],
+  ));
+  return projection.entries.flatMap(({ sourceEntry, messages }) =>
+    convertToLlm(messages).map(message => ({
+      type: "message" as const, id: sourceEntry.id, message,
+      ...(editedIds.has(sourceEntry.id) ? { contextEdited: true } : {}),
+    })),
   );
 }
 

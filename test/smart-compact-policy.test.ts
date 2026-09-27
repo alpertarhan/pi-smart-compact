@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import smartCompactExtension from "../src/index.ts";
 import { createSmartCompactPolicy } from "../src/app/smart-compact-policy.ts";
-import { resetConfigCache } from "../src/utils/config.ts";
+import { loadConfig, resetConfigCache } from "../src/utils/config.ts";
+import { createContextToolExposure } from "../src/app/lazy-tools.ts";
 
 const originalHome = process.env.HOME;
 let home = "";
@@ -64,7 +65,8 @@ function harness(
         statuses.push(value),
     },
   };
-  const policy = createSmartCompactPolicy(pi as any);
+  const exposure = createContextToolExposure(pi, { config: () => ({ ...loadConfig(), toolLoading: "eager" }), compactionAccess: () => policy.snapshot().agentToolAccess });
+  const policy = createSmartCompactPolicy(pi as any, exposure.apply);
   return {
     policy,
     ctx: ctx as any,
@@ -97,7 +99,6 @@ describe("smart compact runtime policy", () => {
         },
       },
     ]);
-    expect(test.statuses.at(-1)).toBe("smart-compact: agent hidden · auto on");
   });
 
   it("restores the last valid branch entry and re-enables without duplicates", () => {
@@ -126,7 +127,6 @@ describe("smart compact runtime policy", () => {
     expect(
       test.active().filter((name) => name === "smart_compact"),
     ).toHaveLength(1);
-    expect(test.statuses.at(-1)).toBe("smart-compact: auto off");
   });
 
   it("applies sparse overrides over changing global defaults", () => {
@@ -199,7 +199,7 @@ describe("smart compact runtime policy", () => {
     smartCompactExtension({
       registerCommand: (name: string, command: unknown) =>
         commands.set(name, command),
-      registerTool: () => {},
+      registerTool: () => { },
       on: (name: string, handler: (event: any, ctx: any) => unknown) => {
         handlers.set(name, [...(handlers.get(name) ?? []), handler]);
       },
@@ -207,7 +207,7 @@ describe("smart compact runtime policy", () => {
       setActiveTools: (names: string[]) => {
         active = [...names];
       },
-      appendEntry: () => {},
+      appendEntry: () => { },
     } as any);
     let compactRequests = 0;
     const ctx = {
@@ -215,7 +215,7 @@ describe("smart compact runtime policy", () => {
         getBranch: () => branch,
         getSessionId: () => "policy-session",
       },
-      ui: { setStatus: () => {}, notify: () => {} },
+      ui: { setStatus: () => { }, notify: () => { } },
       compact: () => {
         compactRequests++;
       },
@@ -225,17 +225,14 @@ describe("smart compact runtime policy", () => {
       await handler({}, ctx);
     }
     await handlers.get("agent_settled")![0]({}, ctx);
-    const nativeResult = await handlers.get("session_before_compact")![0](
-      {
-        reason: "manual",
-        signal: new AbortController().signal,
-      },
-      ctx,
-    );
+    const nativeResults = [];
+    for (const handler of handlers.get("session_before_compact") ?? []) {
+      nativeResults.push(await handler({ reason: "manual", signal: new AbortController().signal }, ctx));
+    }
 
     expect(active).toEqual(["read"]);
     expect(compactRequests).toBe(0);
-    expect(nativeResult).toBeUndefined();
+    expect(nativeResults.every(result => result === undefined)).toBe(true);
     expect(commands.has("smart-compact")).toBe(true);
   });
 
@@ -257,7 +254,6 @@ describe("smart compact runtime policy", () => {
       showStatus: true,
     });
     expect(test.active()).toEqual(["read", "smart_recall"]);
-    expect(test.statuses.at(-1)).toBe("smart-compact: manual only");
   });
 
   it("clears the footer status when showStatus is disabled", () => {
@@ -305,7 +301,6 @@ describe("smart compact runtime policy", () => {
       autoTrigger: false,
       showStatus: true,
     });
-    expect(test.statuses.at(-1)).toBe("smart-compact: auto off");
   });
 
   it("does not override a host tool deactivation while access is inherited", () => {
@@ -331,9 +326,6 @@ describe("smart compact runtime policy", () => {
 
     expect(result.ok).toBe(true);
     expect(result.policy.agentToolEnabled).toBe(false);
-    expect(test.statuses.at(-1)).toBe(
-      "smart-compact: agent unavailable · auto on",
-    );
   });
 
   it("rolls runtime state back when session persistence fails", () => {

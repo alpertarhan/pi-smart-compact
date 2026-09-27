@@ -9,30 +9,36 @@ import {
   type SelectItem,
   SelectList,
   type SettingItem,
-  SettingsList,
   Text,
 } from "@earendil-works/pi-tui";
-import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import {
   CONFIG_NUMERIC_LIMITS,
   PROFILE_NUMERIC_BOUNDS,
   PROFILES,
 } from "../constants.ts";
-import type { CompactConfig, CompressionProfile } from "../types.ts";
+import type { CompactConfig, CompressionProfile, EffectiveCompactionMode } from "../types.ts";
 import {
   type GlobalConfigPath,
   type GlobalConfigValue,
+  isValidMnemopiDataDir,
   loadConfig,
   readGlobalConfigValue,
   writeGlobalConfigValue,
 } from "../utils/config.ts";
+import { CHANGED_MARK, SmartSettingsList } from "./settings-list.ts";
+import type { ModelFeasibility } from "../app/model-feasibility.ts";
+import { MODE_POLICIES } from "../app/mode-policy.ts";
+import {
+  isValidHindsightBankId,
+  normalizeHindsightBaseUrl,
+} from "../infra/hindsight-client.ts";
 
 export type GlobalConfigWriter = (
   path: GlobalConfigPath,
   value: GlobalConfigValue,
 ) => Promise<CompactConfig>;
 
-interface InputSetting {
+export interface InputSetting {
   id: GlobalConfigPath;
   label: string;
   description: string;
@@ -41,21 +47,21 @@ interface InputSetting {
   format(value: GlobalConfigValue): string;
 }
 
-const MODEL_SETTINGS = [
+export const MODEL_SETTINGS = [
   {
     id: "summaryModel",
     label: "Summary model",
-    description: "Model used for synthesis and verification fallback.",
+    description: "Writes the summary. Default: the chat model.",
   },
   {
     id: "segmentationModel",
-    label: "Segmentation model",
-    description: "Optional model used for transcript exploration.",
+    label: "Topic split model",
+    description: "Splits long conversations into topics before summarizing. Default: the summary model.",
   },
   {
     id: "verificationModel",
-    label: "Verification model",
-    description: "Optional model used for repair after verification.",
+    label: "Check & repair model",
+    description: "Fixes gaps the checker finds in a summary. Default: the summary model.",
   },
 ] as const satisfies ReadonlyArray<{
   id: GlobalConfigPath;
@@ -94,70 +100,167 @@ function scalarFormat(value: GlobalConfigValue): string {
   return value === undefined ? "default" : String(value);
 }
 
-const LIMIT_SETTINGS: readonly InputSetting[] = [
-  {
-    id: "minContextPercent",
-    label: "Minimum context percent",
-    description: "Auto compaction starts at or above this context usage.",
-    placeholder: "0–100; blank uses default",
-    parse: numberParser(CONFIG_NUMERIC_LIMITS.minContextPercent),
-    format: scalarFormat,
-  },
-  {
-    id: "autoTriggerTimeoutMs",
-    label: "Auto-trigger timeout",
-    description: "Maximum host auto-compaction time in milliseconds.",
-    placeholder: "1000–300000; blank uses default",
-    parse: numberParser(CONFIG_NUMERIC_LIMITS.autoTriggerTimeoutMs),
-    format: scalarFormat,
-  },
+export const MIN_CONTEXT_SETTING: InputSetting = {
+  id: "minContextPercent",
+  label: "Start at context %",
+  description: "When idle / Prepare in background: compacts once context use reaches this %. Before Pi's compaction: Smart Compact replaces Pi's summary only above this %; Pi decides when.",
+  placeholder: "0–100; blank uses default",
+  parse: numberParser(CONFIG_NUMERIC_LIMITS.minContextPercent),
+  format: scalarFormat,
+};
+
+const parsePreparePercent = numberParser(CONFIG_NUMERIC_LIMITS.prepareContextPercent);
+
+export const PREPARE_CONTEXT_SETTING: InputSetting = {
+  id: "prepareContextPercent",
+  label: "Prepare at context %",
+  description:
+    "Prepare in background only: starts the summary at this %; it is applied at Start at context %, so this must be lower. Auto starts 8k–32k tokens earlier.",
+  placeholder: "0–100 below Start at; auto or blank = Auto",
+  parse: (input) => (input.trim().toLowerCase() === "auto" ? undefined : parsePreparePercent(input)),
+  format: (value) => (value === undefined || value === null ? "Auto" : String(value)),
+};
+
+export const LIMIT_SETTINGS: readonly InputSetting[] = [
   {
     id: "maxLlmCalls",
-    label: "Maximum LLM calls",
-    description: "Zero uses the selected mode's call cap.",
+    label: "Max model calls per run",
+    description: "Stops a compaction run after this many model calls. 0 uses the mode's limit.",
     placeholder: "0–100; blank uses default",
     parse: numberParser(CONFIG_NUMERIC_LIMITS.maxLlmCalls),
     format: scalarFormat,
   },
   {
     id: "maxLlmInputTokens",
-    label: "Maximum LLM input tokens",
-    description: "Zero uses the selected mode's token cap.",
+    label: "Max input tokens per run",
+    description: "Stops a run once model input reaches this many tokens. 0 uses the mode's limit.",
     placeholder: "0–1000000; blank uses default",
     parse: numberParser(CONFIG_NUMERIC_LIMITS.maxLlmInputTokens),
     format: scalarFormat,
   },
   {
-    id: "codexMaxCallMs",
-    label: "Codex call watchdog",
-    description: "Zero derives the per-call watchdog automatically.",
-    placeholder: "0 or 5000–3600000; blank uses default",
-    parse: numberParser(CONFIG_NUMERIC_LIMITS.codexMaxCallMs),
-    format: scalarFormat,
-  },
-  {
     id: "maxLatencyMs",
-    label: "Pipeline latency limit",
-    description: "Zero disables the overall pipeline deadline.",
+    label: "Run time limit (ms)",
+    description: "Stops a whole compaction run after this long; the conversation stays unchanged. 0 = no limit.",
     placeholder: "0 or 5000–7200000; blank uses default",
     parse: numberParser(CONFIG_NUMERIC_LIMITS.maxLatencyMs),
     format: scalarFormat,
   },
   {
+    id: "autoTriggerTimeoutMs",
+    label: "Automatic run time limit (ms)",
+    description: "Stops an automatic compaction after this long and lets Pi's own compaction run instead.",
+    placeholder: "1000–300000; blank uses default",
+    parse: numberParser(CONFIG_NUMERIC_LIMITS.autoTriggerTimeoutMs),
+    format: scalarFormat,
+  },
+  {
+    id: "codexMaxCallMs",
+    label: "Stuck-call timeout (ms)",
+    description: "Cancels a single model call that stops responding (mainly ChatGPT/Codex). 0 picks a value automatically.",
+    placeholder: "0 or 5000–3600000; blank uses default",
+    parse: numberParser(CONFIG_NUMERIC_LIMITS.codexMaxCallMs),
+    format: scalarFormat,
+  },
+  {
     id: "pendingTtlMs",
-    label: "Staged summary TTL",
-    description: "How long a staged summary waits for commit before expiry.",
+    label: "Prepared summary lifetime (ms)",
+    description: "A prepared summary not applied within this time is discarded.",
     placeholder: "1000–3600000; blank uses default",
     parse: numberParser(CONFIG_NUMERIC_LIMITS.pendingTtlMs),
     format: scalarFormat,
   },
 ];
 
-const PATH_SETTINGS: readonly InputSetting[] = [
+function nullableTextParser(
+  pattern: (value: string) => boolean,
+  message: string,
+): (input: string) => string | undefined {
+  return (input) => {
+    const value = input.trim();
+    if (!value) return undefined;
+    if (!pattern(value)) throw new Error(message);
+    return value;
+  };
+}
+
+export const HINDSIGHT_SETTINGS: readonly InputSetting[] = [
   {
+    id: "hindsightBaseUrl",
+    label: "Server URL",
+    description: "Hindsight server that receives confirmed saves. HTTPS (plain http only for localhost).",
+    placeholder: "https://hindsight.example.com; blank clears",
+    parse: nullableTextParser((value) => {
+      try {
+        normalizeHindsightBaseUrl(value);
+        return true;
+      } catch {
+        return false;
+      }
+    }, "Enter an https URL without credentials, query, or fragment (http only for loopback)."),
+    format: scalarFormat,
+  },
+  {
+    id: "hindsightBankId",
+    label: "Memory bank",
+    description: "Bank that stores this project's memories. Required; never guessed.",
+    placeholder: "letters, digits, . _ -; blank clears",
+    parse: nullableTextParser(
+      isValidHindsightBankId,
+      "Bank ids use 1–128 letters, digits, '.', '_' or '-'.",
+    ),
+    format: scalarFormat,
+  },
+  {
+    id: "hindsightApiKeyEnv",
+    label: "API key variable",
+    description: "Name of the environment variable that holds the key. Never enter the key itself.",
+    placeholder: "HINDSIGHT_API_TOKEN; blank clears",
+    parse: nullableTextParser(
+      (value) => /^[A-Z_][A-Z0-9_]{0,127}$/.test(value),
+      "Enter an environment variable name such as HINDSIGHT_API_TOKEN.",
+    ),
+    format: scalarFormat,
+  },
+  {
+    id: "hindsightTimeoutMs",
+    label: "Request timeout (ms)",
+    description: "Gives up on one Hindsight request after this long.",
+    placeholder: "1000–60000; blank uses default",
+    parse: numberParser(CONFIG_NUMERIC_LIMITS.hindsightTimeoutMs),
+    format: scalarFormat,
+  },
+  {
+    id: "hindsightRecallMaxTokens",
+    label: "Recall size (tokens)",
+    description: "How much the server may return per recall. Output is also capped locally.",
+    placeholder: "128–4096; blank uses default",
+    parse: numberParser(CONFIG_NUMERIC_LIMITS.hindsightRecallMaxTokens),
+    format: scalarFormat,
+  },
+];
+
+export const MNEMOPI_DATA_DIR_SETTING: InputSetting = {
+  id: "mnemopiDataDir",
+  label: "Mnemopi data folder",
+  description:
+    "Where Mnemopi keeps its SQLite files, kept apart per project. Default: a folder owned by Smart Compact in Pi's agent directory.",
+  placeholder: "Absolute or ~/ path; blank uses default",
+  parse(input) {
+    const value = input.trim();
+    if (!value) return undefined;
+    if (!isValidMnemopiDataDir(value)) {
+      throw new Error("Enter an absolute path or a ~/ path; relative paths are not allowed.");
+    }
+    return value;
+  },
+  format: (value) => (value === undefined || value === null ? "Default" : String(value)),
+};
+
+export const BACKUP_DIR_SETTING: InputSetting = {
     id: "backupDir",
-    label: "Backup directory",
-    description: "Directory for recovery Markdown files.",
+    label: "Backup folder",
+    description: "Where conversation backups are written before a compaction is applied.",
     placeholder: "Absolute path; blank uses default",
     parse(input) {
       const value = input.trim();
@@ -171,11 +274,12 @@ const PATH_SETTINGS: readonly InputSetting[] = [
       return value;
     },
     format: scalarFormat,
-  },
-  {
+};
+
+export const PIN_PATHS_SETTING: InputSetting = {
     id: "pinPaths",
-    label: "Pinned paths",
-    description: "Comma-separated file paths that summaries must preserve.",
+    label: "Always-kept files",
+    description: "Comma-separated file paths every summary must keep.",
     placeholder: "src/api.ts, docs/design.md; blank clears",
     parse(input) {
       const trimmed = input.trim();
@@ -196,25 +300,32 @@ const PATH_SETTINGS: readonly InputSetting[] = [
           ? value.join(", ") || "none"
           : String(value);
     },
-  },
-];
+};
 
 const PROFILE_FIELDS = [
-  ["summaryBudgetTokens", "Summary budget"],
-  ["keepRecentTokens", "Recent raw tail"],
-  ["minChunkTokens", "Minimum chunk"],
-  ["maxChunkTokens", "Maximum chunk"],
-  ["singlePassMaxTokens", "Single-pass limit"],
+  ["summaryBudgetTokens", "Summary size"],
+  ["keepRecentTokens", "Recent turns kept"],
+  ["minChunkTokens", "Min chunk size"],
+  ["maxChunkTokens", "Max chunk size"],
+  ["singlePassMaxTokens", "One-pass limit"],
   ["batchMaxTokens", "Batch limit"],
 ] as const;
 
-function profileSettings(profile: CompressionProfile): InputSetting[] {
+/** Each run mode reads the budgets stored under its own profile key. */
+const MODE_BUDGETS = (Object.keys(MODE_POLICIES) as EffectiveCompactionMode[]).map((mode) => ({
+  mode,
+  profile: MODE_POLICIES[mode].profile,
+  label: mode[0].toUpperCase() + mode.slice(1),
+}));
+
+export function profileSettings(profile: CompressionProfile): InputSetting[] {
+  const modeLabel = MODE_BUDGETS.find((budget) => budget.profile === profile)!.label;
   return PROFILE_FIELDS.map(([key, label]) => {
     const [min, max] = PROFILE_NUMERIC_BOUNDS[key];
     return {
       id: `profiles.${profile}.${key}` as GlobalConfigPath,
       label,
-      description: `${profile} profile token budget; related chunk bounds must remain consistent.`,
+      description: `Tokens used when a run is ${modeLabel}, including when Auto picks it. Related chunk sizes must stay consistent.`,
       placeholder: `${min}–${max}; blank uses built-in`,
       parse: numberParser({ min, max }),
       format: scalarFormat,
@@ -262,7 +373,7 @@ class InputSettingEditor extends Container implements Focusable {
     super();
     this.addChild(new Text(setting.label, 0, 0));
     this.addChild(new Text(setting.description, 0, 0));
-    this.addChild(new Text(`Hint: ${setting.placeholder}`, 0, 0));
+    this.addChild(new Text(`Allowed: ${setting.placeholder}`, 0, 0));
     this.addChild(new Text("", 0, 0));
     this.input.setValue(initial);
     this.input.handleInput("\x1b[F");
@@ -310,6 +421,8 @@ class InputSettingEditor extends Container implements Focusable {
 
 interface ModelChoice extends SelectItem {
   settingValue: string;
+  /** Visible but not selectable, with the reason. */
+  blocked?: string;
 }
 
 class ModelSettingEditor extends Container implements Focusable {
@@ -335,7 +448,7 @@ class ModelSettingEditor extends Container implements Focusable {
     done: () => void,
   ) {
     super();
-    this.addChild(new Text("Search provider/model", 0, 0));
+    this.addChild(new Text("Type to search models", 0, 0));
     this.addChild(this.search);
     this.addChild(new Text("", 0, 0));
     this.list = new SelectList(models, 10, {
@@ -355,7 +468,12 @@ class ModelSettingEditor extends Container implements Focusable {
       this.status.setText("Saving…");
       this.requestRender();
       const selected = models.find((candidate) => candidate.value === item.value);
-      if (!selected) return;
+      if (!selected || selected.blocked) {
+        this.saving = false;
+        this.status.setText(selected?.blocked ? selected.label + " cannot be used: " + selected.blocked : "");
+        this.requestRender();
+        return;
+      }
       this.pending = save(selected.settingValue)
         .then(done)
         .catch((error) => {
@@ -394,63 +512,127 @@ class ModelSettingEditor extends Container implements Focusable {
   }
 }
 
-function inputSettingsList(
+/** Row label with the "changed from default" bullet, matching category rows. */
+export function inputLabel(setting: InputSetting): string {
+  return setting.label + (readGlobalConfigValue(setting.id) !== undefined ? CHANGED_MARK : "");
+}
+
+/** Format the stored override the way the input row displays it. */
+export function inputDisplay(setting: InputSetting): string {
+  return setting.format(readGlobalConfigValue(setting.id));
+}
+
+export function inputEffectiveDescription(setting: InputSetting, config: CompactConfig): string {
+  return `${setting.description} Now: ${setting.format(effectiveValue(config, setting.id))}.`;
+}
+
+/** One row that opens an inline editor for a validated text/number setting. */
+export function inputSettingItem(
+  setting: InputSetting,
+  requestRender: () => void,
+  writeConfig: GlobalConfigWriter,
+  onWritten: (config: CompactConfig) => void = () => {},
+): SettingItem {
+  const item: SettingItem = {
+    id: setting.id,
+    label: inputLabel(setting),
+    description: inputEffectiveDescription(setting, loadConfig()),
+    currentValue: inputDisplay(setting),
+  };
+  item.submenu = (_current, close) => {
+    const persisted = readGlobalConfigValue(setting.id);
+    return new InputSettingEditor(
+      setting,
+      persisted === undefined
+        ? ""
+        : Array.isArray(persisted)
+          ? persisted.join(", ")
+          : String(persisted),
+      requestRender,
+      async (value) => {
+        const effective = await writeConfig(setting.id, value);
+        item.label = inputLabel(setting);
+        item.currentValue = setting.format(value);
+        item.description = inputEffectiveDescription(setting, effective);
+        onWritten(effective);
+      },
+      close,
+    );
+  };
+  return item;
+}
+
+export function inputSettingsList(
   settings: readonly InputSetting[],
   requestRender: () => void,
   done: () => void,
   writeConfig: GlobalConfigWriter,
-): SettingsList {
-  const config = loadConfig();
-  const items: SettingItem[] = settings.map((setting) => {
-    const override = readGlobalConfigValue(setting.id);
-    const item: SettingItem = {
-      id: setting.id,
-      label: setting.label,
-      description: `${setting.description} Effective global value: ${setting.format(effectiveValue(config, setting.id))}.`,
-      currentValue: setting.format(override),
-    };
-    item.submenu = (_current, close) => {
-      const persisted = readGlobalConfigValue(setting.id);
-      return new InputSettingEditor(
-        setting,
-        persisted === undefined
-          ? ""
-          : Array.isArray(persisted)
-            ? persisted.join(", ")
-            : String(persisted),
-        requestRender,
-        async (value) => {
-          const effective = await writeConfig(setting.id, value);
-          item.currentValue = setting.format(value);
-          item.description = `${setting.description} Effective global value: ${setting.format(effectiveValue(effective, setting.id))}.`;
-        },
-        close,
-      );
-    };
-    return item;
+): SmartSettingsList {
+  const items = settings.map((setting) => inputSettingItem(setting, requestRender, writeConfig));
+  const byId = new Map(settings.map((setting) => [setting.id as string, setting]));
+  return new SmartSettingsList(items, 9, () => {}, done, (id) => {
+    const setting = byId.get(id);
+    const item = items.find((candidate) => candidate.id === id);
+    if (!setting || !item) return;
+    void writeConfig(setting.id, undefined).then((config) => {
+      item.label = inputLabel(setting);
+      item.currentValue = setting.format(undefined);
+      item.description = inputEffectiveDescription(setting, config);
+      requestRender();
+    });
   });
-  return new SettingsList(
-    items,
-    9,
-    getSettingsListTheme(),
-    () => {},
-    done,
-  );
 }
+
+/** Rows for the three run modes, each opening the six budgets its profile stores. */
+export function profileBudgetsList(
+  requestRender: () => void,
+  done: () => void,
+  writeConfig: GlobalConfigWriter,
+): SmartSettingsList {
+  const modes: SettingItem[] = MODE_BUDGETS.map(({ mode, profile, label }) => ({
+    id: mode,
+    label,
+    description: `Token budgets used when a run is ${label}, including when Auto picks ${label}.`,
+    currentValue: countChangedPaths(profileSettings(profile).map((setting) => setting.id)),
+    submenu: (_current, close) =>
+      inputSettingsList(profileSettings(profile), requestRender, close, writeConfig),
+  }));
+  return new SmartSettingsList(modes, 7, () => {}, done);
+}
+
+/** "N changed" or "defaults" for a set of stored paths. */
+export function countChangedPaths(ids: readonly GlobalConfigPath[]): string {
+  const changed = ids.filter((id) => readGlobalConfigValue(id) !== undefined).length;
+  return changed ? `${changed} changed` : "defaults";
+}
+
+export function profileConfigPaths(): GlobalConfigPath[] {
+  return PROFILE_NAMES.flatMap((profile) => profileSettings(profile).map((setting) => setting.id));
+}
+
+const STAGE_BY_SETTING = {
+  summaryModel: "summary",
+  segmentationModel: "segmentation",
+  verificationModel: "verification",
+} as const;
 
 export function modelSettingsItems(
   ctx: ExtensionCommandContext,
   requestRender: () => void,
   writeConfig: GlobalConfigWriter = writeGlobalConfigValue,
+  feasibility?: ModelFeasibility,
 ): SettingItem[] {
   const config = loadConfig();
   return MODEL_SETTINGS.map((setting) => {
     const override = readGlobalConfigValue(setting.id);
     const current = typeof override === "string" ? override : "default";
+    const fallback = setting.id === "summaryModel" ? "chat model" : "summary model";
+    const describe = (effective: CompactConfig) =>
+      `${setting.description} Now: ${effective[setting.id] ?? fallback}.`;
     const item: SettingItem = {
       id: setting.id,
       label: setting.label,
-      description: `${setting.description} Effective global value: ${String(config[setting.id])}.`,
+      description: describe(config),
       currentValue: current,
     };
     item.submenu = (_value, close) => {
@@ -459,22 +641,27 @@ export function modelSettingsItems(
         typeof persisted === "string" ? persisted : "default";
       const effective = loadConfig();
       item.currentValue = selectedValue;
-      item.description = `${setting.description} Effective global value: ${String(effective[setting.id])}.`;
+      item.description = describe(effective);
       const available: ModelChoice[] = ctx.modelRegistry
         .getAvailable()
-        .map((model) => ({
-          value: `${model.provider}/${model.id} — ${model.name}`,
-          settingValue: `${model.provider}/${model.id}`,
-          label: `${model.provider}/${model.id}`,
-          description: model.name,
-        }))
+        .map((model) => {
+          const check = feasibility?.(model, STAGE_BY_SETTING[setting.id]);
+          const blocked = check && !check.selectable ? check.reason ?? "not eligible" : undefined;
+          return {
+            value: `${model.provider}/${model.id} — ${model.name}`,
+            settingValue: `${model.provider}/${model.id}`,
+            label: `${model.provider}/${model.id}`,
+            description: blocked ? "unavailable: " + blocked : model.name,
+            ...(blocked ? { blocked } : {}),
+          };
+        })
         .sort((left, right) => left.value.localeCompare(right.value));
       const choices: ModelChoice[] = [
         {
-          value: "default — use active session model",
+          value: `default — use the ${fallback}`,
           settingValue: "default",
           label: "default",
-          description: "Remove the global model override",
+          description: `Use the ${fallback}`,
         },
         ...available,
       ];
@@ -499,7 +686,7 @@ export function modelSettingsItems(
             selected === "default" ? undefined : selected,
           );
           item.currentValue = selected;
-          item.description = `${setting.description} Effective global value: ${String(effective[setting.id])}.`;
+          item.description = describe(effective);
         },
         close,
       );
@@ -508,88 +695,25 @@ export function modelSettingsItems(
   });
 }
 
-export function complexSettingsCategories(
+/** Row that opens the model picker for one model setting. */
+export function modelSettingItem(
+  id: (typeof MODEL_SETTINGS)[number]["id"],
   ctx: ExtensionCommandContext,
   requestRender: () => void,
-  writeConfig: GlobalConfigWriter = writeGlobalConfigValue,
-): SettingItem[] {
-  return [
-    {
-      id: "models",
-      label: "Global models",
-      description: "Stage-specific model routing",
-      currentValue: "3 settings",
-      submenu: (_value, done) =>
-        new SettingsList(
-          modelSettingsItems(ctx, requestRender, writeConfig),
-          7,
-          getSettingsListTheme(),
-          () => {},
-          done,
-        ),
-    },
-    {
-      id: "limits",
-      label: "Global limits & performance",
-      description: "Context threshold, call budgets, and timeouts",
-      currentValue: "6 settings",
-      submenu: (_value, done) =>
-        inputSettingsList(
-          LIMIT_SETTINGS,
-          requestRender,
-          done,
-          writeConfig,
-        ),
-    },
-    {
-      id: "paths",
-      label: "Global paths",
-      description: "Backup directory and pinned summary paths",
-      currentValue: "2 settings",
-      submenu: (_value, done) =>
-        inputSettingsList(
-          PATH_SETTINGS,
-          requestRender,
-          done,
-          writeConfig,
-        ),
-    },
-    {
-      id: "profiles",
-      label: "Global profile budgets",
-      description: "Advanced token-budget tuning for each profile",
-      currentValue: "3 profiles",
-      submenu: (_value, done) => {
-        const profiles: SettingItem[] = PROFILE_NAMES.map((profile) => ({
-          id: profile,
-          label: profile,
-          description: `Six token-budget settings for the ${profile} profile.`,
-          currentValue: "6 settings",
-          submenu: (_current, close) =>
-            inputSettingsList(
-              profileSettings(profile),
-              requestRender,
-              close,
-              writeConfig,
-            ),
-        }));
-        return new SettingsList(
-          profiles,
-          7,
-          getSettingsListTheme(),
-          () => {},
-          done,
-        );
-      },
-    },
-  ];
+  writeConfig: GlobalConfigWriter,
+  feasibility?: ModelFeasibility,
+): SettingItem {
+  return modelSettingsItems(ctx, requestRender, writeConfig, feasibility).find((item) => item.id === id)!;
 }
 
 export function complexConfigPaths(): GlobalConfigPath[] {
   return [
     ...MODEL_SETTINGS.map((setting) => setting.id),
+    MIN_CONTEXT_SETTING.id,
     ...LIMIT_SETTINGS.map((setting) => setting.id),
-    ...PATH_SETTINGS.map((setting) => setting.id),
+    BACKUP_DIR_SETTING.id,
+    PIN_PATHS_SETTING.id,
+    ...HINDSIGHT_SETTINGS.map((setting) => setting.id),
     ...PROFILE_NAMES.flatMap((profile) =>
       profileSettings(profile).map((setting) => setting.id),
     ),

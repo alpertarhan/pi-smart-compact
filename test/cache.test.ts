@@ -468,7 +468,7 @@ describe("saveCachedExtraction / loadCachedExtraction", () => {
     const cachedKeptEntryIds = basePruning.keptIndices.map(i => baseEntryIds[i]);
     const cachedExtraction = extractStructured(basePruning.messages, pc);
 
-    const currentMsgs = [...baseMsgs, readCall("r2", "a.ts"), readResult("r2", "new content")];
+    const currentMsgs = [...baseMsgs, readCall("r2", "a.ts"), readResult("r2", "old content")];
     const currentEntryIds = currentMsgs.map((_, i) => "e-" + i);
     const currentPruning = pruneRedundant(currentMsgs);
     const currentKeptEntryIds = currentPruning.keptIndices.map(i => currentEntryIds[i]);

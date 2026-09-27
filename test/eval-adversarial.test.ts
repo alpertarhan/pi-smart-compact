@@ -307,7 +307,7 @@ describe("adversarial planning and safety", () => {
       profile: "balanced",
       flags: { force: true },
       config: { minContextPercent: 60 },
-      notify: () => {},
+      notify: () => { },
       _prepared: true,
     } as any);
     expect(window!.accTokens).toBeGreaterThanOrEqual(20_000);
@@ -394,7 +394,7 @@ describe("adversarial planning and safety", () => {
       },
     });
     const args = [
-      { id: "m", provider: "openai" } as any,
+      { id: "m", provider: "openai", contextWindow: 128_000, maxTokens: 4096 } as any,
       { messages: [] } as any,
       {},
       services,

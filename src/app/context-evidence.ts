@@ -1,0 +1,117 @@
+/** One bounded retrieval surface for native-history references, visual excerpts, and spill files. */
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { SecretScrubber } from "../domain/scrub.ts";
+import { extractToolPath } from "../domain/tool-semantics.ts";
+import { extractText } from "../utils/extraction.ts";
+import { inspectContext, readContextReference } from "./context-operations.ts";
+import { activeVisualArchive } from "./visual-archive.ts";
+import { artifactId, branchToolArtifacts, readToolArtifact, type ToolArtifact } from "./tool-artifacts.ts";
+
+export const MAX_SEARCH_SOURCES = 32;
+export const MAX_SEARCH_CHARS = 4 * 1024 * 1024;
+export const MAX_READ_CHARS = 4_096;
+
+interface EvidenceSource {
+  id: string;
+  kind: "session-output" | "visual-excerpt" | "tool-artifact";
+  tool: string;
+  source: string;
+  chars: number;
+}
+
+export function contextEvidence(branch: SessionEntry[], sessionId: string, scrubber: SecretScrubber) {
+  const state = inspectContext(branch, sessionId);
+  const artifacts = branchToolArtifacts(branch, state.references);
+  const payloads = new Map<string, ToolArtifact>();
+  const visual = activeVisualArchive(branch);
+  const entries = new Map(branch.map(entry => [entry.id, entry]));
+  const calls = new Map<string, string>();
+  for (const entry of branch) {
+    if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+    for (const block of entry.message.content) {
+      if (block.type !== "toolCall") continue;
+      const value = extractToolPath(block.arguments) ?? block.arguments.url ?? block.arguments.query;
+      if (typeof value === "string") calls.set(block.id, scrubber.scrubText(value).value.slice(0, 200));
+    }
+  }
+  const records = new Map<string, EvidenceSource>();
+  for (const id of state.references) {
+    if (artifacts.has(id)) continue; // list the source, not its archived preview too
+    const entry = entries.get(id);
+    if (entry?.type !== "message" || entry.message.role !== "toolResult") continue;
+    records.set(id, { id, kind: "session-output", tool: entry.message.toolName,
+      source: calls.get(entry.message.toolCallId) ?? entry.message.toolName, chars: extractText(entry.message.content).length });
+  }
+  for (const source of visual?.archive.sources ?? []) {
+    records.set(source.id, { id: source.id, kind: "visual-excerpt", tool: "historical-read", source: "Bounded visual excerpt", chars: source.text.length });
+  }
+  for (const artifact of artifacts.values()) {
+    const id = artifactId(artifact);
+    payloads.set(id, artifact); // Existing content IDs remain valid read aliases.
+    const source = scrubber.scrubText(artifact.source).value;
+    const key = JSON.stringify([id, artifact.tool, source]);
+    // Keep every distinct provenance, but repeated identical observations add no noise.
+    records.delete(key);
+    records.set(key, { id, kind: "tool-artifact", tool: artifact.tool, source, chars: artifact.chars });
+  }
+  const list = [...records.values()].reverse();
+  const read = async (id: string): Promise<string> => {
+    const artifact = artifacts.get(id) ?? payloads.get(id);
+    const source = visual?.archive.sources.find(item => item.id === id);
+    const text = artifact ? await readToolArtifact(artifact) : source?.text ?? readContextReference(branch, sessionId, id);
+    // All representations are redacted in full before matching or paging.
+    return scrubber.scrubText(text).value;
+  };
+  const search = async (query: string, offset: number, limit: number, id?: string) => {
+    if (!query.trim() || query.length > 200) throw new Error("search requires 1–200 characters of literal text.");
+    const sources = id ? list.filter(source => source.id === id) : list;
+    if (id && !sources.length) throw new Error("No matching archived source on the active branch.");
+    const matches: Array<{ id: string; source: string; matched: "text" | "source"; line: number; offset: number; excerpt: string }> = [];
+    const unavailable: string[] = [];
+    let cursor = Math.min(offset, sources.length);
+    let scanned = 0;
+    let chars = 0;
+    while (cursor < sources.length && scanned < MAX_SEARCH_SOURCES && matches.length < limit) {
+      const source = sources[cursor];
+      if (chars + source.chars > MAX_SEARCH_CHARS) {
+        if (scanned === 0) { unavailable.push(source.id); cursor++; }
+        break;
+      }
+      cursor++;
+      scanned++;
+      chars += source.chars;
+      let text: string;
+      try { text = await read(source.id); }
+      catch { unavailable.push(source.id); continue; }
+      const at = text.indexOf(query);
+      if (at < 0 && !source.source.includes(query)) continue;
+      const start = Math.max(0, at - 80);
+      matches.push({ id: source.id, source: source.source, matched: at < 0 ? "source" : "text",
+        line: text.slice(0, Math.max(0, at)).split("\n").length,
+        offset: start, excerpt: text.slice(start, Math.min(text.length, start + 320)) });
+    }
+    return { matches, scanned, unavailable, nextOffset: cursor < sources.length ? cursor : null };
+  };
+  return { state, list, read, search, visualExcerpts: visual?.archive.sources.length };
+}
+
+/** Line reads are still character-capped; nextOffset can finish a single oversized line. */
+export function evidencePage(text: string, offset: number, limit: number, line?: number) {
+  let start = offset;
+  let end: number;
+  if (line !== undefined) {
+    if (!Number.isSafeInteger(line) || line < 1 || offset !== 0 || limit > 200) throw new Error("Line reads require line >= 1, offset 0, and limit <= 200 lines.");
+    start = 0;
+    for (let current = 1; current < line && start < text.length; current++) {
+      const next = text.indexOf("\n", start);
+      start = next < 0 ? text.length : next + 1;
+    }
+    end = start;
+    for (let count = 0; count < limit && end < text.length && end - start < MAX_READ_CHARS; count++) {
+      const next = text.indexOf("\n", end);
+      end = next < 0 ? text.length : next + 1;
+    }
+    end = Math.min(end, start + MAX_READ_CHARS);
+  } else end = Math.min(text.length, offset + Math.min(limit, MAX_READ_CHARS));
+  return { text: text.slice(start, end), nextOffset: end < text.length ? end : null };
+}

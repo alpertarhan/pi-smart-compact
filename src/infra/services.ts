@@ -22,14 +22,16 @@
  * when recreated for each compaction. Tests keep isolated defaults.
  *
  * Services that are stateless or already inject through their own seam
- * (`LlmClient`, `Clock`, file system helpers in `infra/fs.ts`) are exposed via
- * the container for convenience but never mutated through it.
+ * (`Clock`, file system helpers in `infra/fs.ts`) are exposed via the
+ * container for convenience but never mutated through it. The LLM client is
+ * built from the requesting session's model runtime, never a process global.
  */
 
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { Clock } from "./clock.ts";
 import { systemClock } from "./clock.ts";
-import type { LlmClient } from "./llm-client.ts";
-import { getLlmClient } from "./llm-client.ts";
+import type { LlmClient, LlmModelRuntime } from "./llm-client.ts";
+import { createModelRuntimeLlmClient, getLlmClient } from "./llm-client.ts";
 import crypto from "node:crypto";
 import type { CompactConfig, LLMCallMetric } from "../types.ts";
 import { DEFAULT_CONFIG, METRICS_BUFFER_MAX, ONE_HOUR_MS } from "../constants.ts";
@@ -250,19 +252,32 @@ export interface SmartCompactServices {
   codexWatchdogMs: number;
   /** Per-run prompt-cache namespace for providers that support prompt caching. */
   compactSessionId: string;
+  /** Whether a route authenticates via OAuth (subscription); stamps the metrics billing basis. */
+  isUsingOAuth?: (model: Model<Api>) => boolean;
 }
 
 export function makeCompactSessionId(): string {
   return "sc-" + Date.now().toString(36) + "-" + crypto.randomBytes(4).toString("hex");
 }
 
-export function createServices(overrides: Partial<SmartCompactServices> = {}): SmartCompactServices {
+/** Construction inputs: service overrides plus the session model runtime requests go through. */
+export type ServiceOverrides = Partial<SmartCompactServices> & { modelRuntime?: LlmModelRuntime };
+
+const noRuntimeClient: LlmClient = {
+  complete: async () => {
+    throw new Error("Smart Compact: no session model runtime for provider requests");
+  },
+};
+
+export function createServices(overrides: ServiceOverrides = {}): SmartCompactServices {
+  const runtimeClient = overrides.modelRuntime
+    ? createModelRuntimeLlmClient(overrides.modelRuntime)
+    : noRuntimeClient;
   return {
     clock: overrides.clock ?? systemClock,
-    // Lazy delegate, not `getLlmClient()` captured eagerly: the llm-client
-    // seam promises call-time resolution, so a `setLlmClient` installed
-    // after this bag was created must still be honoured.
-    llm: overrides.llm ?? { complete: (...args) => getLlmClient().complete(...args) },
+    // Lazy delegate: a `setLlmClient` test override installed after this bag
+    // was created must still take precedence over the session runtime.
+    llm: overrides.llm ?? { complete: (...args) => (getLlmClient() ?? runtimeClient).complete(...args) },
     toolSupport: overrides.toolSupport ?? new ToolSupportCache(),
     metrics: overrides.metrics ?? new MetricsSink(),
     extractionCacheStats: overrides.extractionCacheStats ?? new ExtractionCacheStats(),
@@ -275,6 +290,7 @@ export function createServices(overrides: Partial<SmartCompactServices> = {}): S
     },
     codexWatchdogMs: overrides.codexWatchdogMs ?? DEFAULT_CONFIG.codexMaxCallMs,
     compactSessionId: overrides.compactSessionId ?? makeCompactSessionId(),
+    ...(overrides.isUsingOAuth ? { isUsingOAuth: overrides.isUsingOAuth } : {}),
   };
 }
 
@@ -282,7 +298,7 @@ const processToolSupport = new ToolSupportCache();
 const processTokenCalibration = new TokenCalibrationStore();
 
 /** Production run services: per-run metrics/budgets, shared bounded provider knowledge. */
-export function createProductionServices(overrides: Partial<SmartCompactServices> = {}): SmartCompactServices {
+export function createProductionServices(overrides: ServiceOverrides = {}): SmartCompactServices {
   return createServices({
     toolSupport: processToolSupport,
     tokenCalibration: processTokenCalibration,

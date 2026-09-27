@@ -68,6 +68,16 @@ function verifyAndPatch(
 }
 
 describe("verifySummary", () => {
+	it.each([
+		"HOME was a temporary directory during the run, so no user files were touched; the token was never printed.",
+		"The standalone compaction endpoint returns the complete canonical next output window, potentially retained items plus encrypted state. Replay all returned items, avoid duplicate tails, and never pretend opaque content is a verified text summary.",
+	])("accepts intact deterministic constraints without a contradictory preview: %s", (text) => {
+		const extraction = makeExtraction({ constraints: [{ index: 0, text, category: "prohibition", confidence: 1 }] });
+		const summary = assembleFallback([], extraction);
+		const result = repairSummaryDeterministically(summary, verifySummary(summary, extraction), extraction);
+		expect(result.result.gaps).toEqual([]);
+		expect(result.summary).toContain(text);
+	});
 	it("preserves short negation and checks additional contradictions beside verbatim clauses", () => {
 		const cases = [
 			["No new dependencies", "New dependencies", false],
@@ -1113,8 +1123,8 @@ describe("verifyAndPatch", () => {
 			summaries: [],
 			mode: "fast",
 			flags: { autoTriggered: true },
-			notify: () => {},
-			vlog: () => {},
+			notify: () => { },
+			vlog: () => { },
 			services: createServices(),
 		} as any);
 		expect(result.verified).toBe(true);
@@ -1157,17 +1167,16 @@ describe("verifyAndPatch", () => {
 			summaries: [],
 			mode: "thorough",
 			flags: { autoTriggered: true },
-			summaryModel: { provider: "openai", id: "summary" },
-			verifyModel: { provider: "anthropic", id: "verifier" },
+			summaryModel: { provider: "openai", id: "summary", contextWindow: 128_000, maxTokens: 8192 },
+			verifyModel: { provider: "anthropic", id: "verifier", contextWindow: 128_000, maxTokens: 8192 },
 			summaryAuth: { apiKey: "summary-key" },
 			verifyAuth: { apiKey: "verify-key" },
 			cancellation: { signal: new AbortController().signal },
 			services,
-			notify: () => {},
-			vlog: () => {},
+			notify: () => { },
+			vlog: () => { },
 		} as any);
 		expect(routedModel).toBe("anthropic/verifier");
-		expect(result.llmCalls).toBe(services.metrics.summary().totalCalls);
 		expect(result.llmCalls).toBe(1);
 	});
 
@@ -1183,9 +1192,9 @@ describe("verifyAndPatch", () => {
 			summaries: [],
 			mode: "fast",
 			flags: { autoTriggered: true },
-			notify: () => {},
+			notify: () => { },
 			services: createServices(),
-			vlog: () => {},
+			vlog: () => { },
 		} as any);
 		expect(result.finalSummary).not.toContain("src/invented.ts");
 		expect(result.verificationProvenance.qualityFloorUsed).toBe(false);
@@ -1234,8 +1243,8 @@ describe("verifyAndPatch", () => {
 			mode: "fast",
 			flags: { autoTriggered: true },
 			services: createServices(),
-			notify: () => {},
-			vlog: () => {},
+			notify: () => { },
+			vlog: () => { },
 		} as any);
 		expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
 		expect(result.finalSummary).toContain(
@@ -1270,8 +1279,8 @@ describe("verifyAndPatch", () => {
 			mode: "fast",
 			flags: { autoTriggered: true },
 			services: createServices(),
-			notify: () => {},
-			vlog: () => {},
+			notify: () => { },
+			vlog: () => { },
 		} as any);
 		expect(result.verificationProvenance.initialScore).toBe(90);
 		expect(result.verificationProvenance.qualityFloorUsed).toBe(true);
@@ -1324,7 +1333,7 @@ describe("verifyAndPatch", () => {
 			notify: (message: string, type: string) => {
 				if (type === "error") uiErrors.push(message);
 			},
-			vlog: () => {},
+			vlog: () => { },
 		} as any);
 		await expect(rejection).rejects.toMatchObject({
 			name: "VerificationGateError",
@@ -1344,8 +1353,8 @@ describe("verifyAndPatch", () => {
 				extraction,
 				flags: { autoTriggered: true },
 				services: createServices(),
-				notify: () => {},
-				vlog: () => {},
+				notify: () => { },
+				vlog: () => { },
 			} as any);
 			expect(result.finalSummary).toContain(path);
 			expect(result.verificationProvenance.initialScore).toBe(95);

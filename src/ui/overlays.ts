@@ -2,1376 +2,1162 @@
  * TUI overlays: model/profile selection, progress, result screen.
  */
 
+import { notifyUser } from "../utils/issues.ts";
 import type {
-  ExtensionCommandContext,
-  ExtensionContext,
+ ExtensionCommandContext,
+ ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, type Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../constants.ts";
 import {
-  Container,
-  Key,
-  matchesKey,
-  ScrollView,
-  type SelectItem,
-  type ScrollViewOptions,
-  SelectList,
-  Text,
-  truncateToWidth,
-  visibleWidth,
-  VStack,
+ Container,
+ Key,
+ type KeyId,
+ matchesKey,
+ type SelectItem,
+ SelectList,
+ Text,
+ truncateToWidth,
+ visibleWidth,
+ wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
+import type { ModelFeasibility } from "../app/model-feasibility.ts";
 import type {
-  CompactConfig,
-  CompactionMode,
-  ModelOption,
-  ProgressState,
-  SmartCompactDetails,
-  StructuredExtraction,
+ CompactConfig,
+ CompactionMode,
+ ModelOption,
+ ProgressState,
+ SmartCompactDetails,
+ StructuredExtraction,
 } from "../types.ts";
 import {
-  createProductionServices,
-  type SmartCompactServices,
+ createProductionServices,
+ type SmartCompactServices,
 } from "../infra/services.ts";
 import {
-  effectivePromptInputTokens,
-  getExtractionCacheStats,
-  getMetricsSummary,
+ effectivePromptInputTokens,
+ getExtractionCacheStats,
+ getMetricsSummary,
 } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
 import {
-  planManualPreflight,
-  preflightDamageMedian,
-  prepareManualPreflightContext,
-  type ManualPreflight,
+ planManualPreflight,
+ preflightDamageMedian,
+ prepareManualPreflightContext,
+ type ManualPreflight,
 } from "../app/preflight.ts";
 import { compactionPlanReasonText } from "../app/steps/window.ts";
-import type { EffectiveCompactionMode } from "../types.ts";
+import type { CompactionEngine, EffectiveCompactionMode } from "../types.ts";
+import { loadConfig } from "../utils/config.ts";
 import path from "node:path";
 
-function renderContextBar(
-  theme: Theme,
-  pct: number,
-  tokens: number,
-  barLen = 24,
-): string {
-  const clamped = Math.min(Math.max(pct, 0), 100);
-  const filled = Math.min(barLen, Math.round((clamped / 100) * barLen));
-  const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
-  const color = clamped > 80 ? "error" : clamped > 50 ? "warning" : "success";
-  // IMPORTANT: Do NOT destructure theme.fg into a local variable.
-  // The Theme.fg() method uses `this.fgColors` internally — destructuring
-  // loses the `this` binding and causes "Cannot read properties of undefined (reading 'fgColors')".
-  return (
-    theme.fg("text", "  Context: ") +
-    theme.fg(color, bar) +
-    theme.fg("text", " " + clamped + "%") +
-    theme.fg("dim", " (" + (tokens ?? 0).toLocaleString() + "t)")
-  );
-}
-
-function renderTokenBar(
-  theme: Theme,
-  before: number,
-  after: number,
-  label: string,
-  barLen = 30,
-): string {
-  const ratio = before > 0 ? after / before : 0;
-  const savedPct = Math.round((1 - ratio) * 100);
-  const filled = Math.min(barLen, Math.round(ratio * barLen));
-  const bar = "\u2588".repeat(filled) + "\u2591".repeat(barLen - filled);
-  const savedColor =
-    savedPct >= 50 ? "success" : savedPct >= 25 ? "warning" : "error";
-  return (
-    theme.fg("text", "  " + label + ": ") +
-    theme.fg(savedColor, bar) +
-    theme.fg("text", " " + (after ?? 0).toLocaleString() + "t") +
-    theme.fg(savedColor, " (saved " + savedPct + "%)")
-  );
-}
-
 async function selectModel(
-  ctx: ExtensionCommandContext,
-  opts: {
-    contextTokens: number;
-    contextPercent: number;
-    activeModelLabel: string;
-    defaultModelIndex: number;
-  },
+ ctx: ExtensionCommandContext,
+ opts: {
+  contextTokens: number;
+  contextPercent: number;
+  activeModelLabel: string;
+  defaultModelIndex: number;
+  feasibility?: ModelFeasibility;
+  /** Mode highlighted in the picker; capacity is judged for this plan. */
+  mode?: CompactionMode;
+ },
 ): Promise<ModelOption | null> {
-  const available = ctx.modelRegistry.getAvailable();
-  const options: ModelOption[] = available.map((m) => {
-    // Mirror the provider caps table: known-tool-capable providers get
-    // `true`, unknown ones get "probe" so exploration runtime-probes them
-    // exactly once and caches the result on the per-run services container.
-    const caps = getProviderCaps(m.provider);
-    return {
-      value: m.provider + "/" + m.id,
-      label:
-        m.provider +
-        "/" +
-        m.id +
-        (m.contextWindow >= 200000
-          ? " (" + Math.round(m.contextWindow / 1000) + "K)"
-          : ""),
-      model: m,
-      supportsTools: caps.supportsTools,
-    };
+ const available = ctx.modelRegistry.getAvailable();
+ const modeName = opts.mode
+  ? ((MODE_LABELS as Record<string, string>)[opts.mode] ?? opts.mode)
+  : undefined;
+ const blocked = (model: Model<Api>): string | undefined => {
+  const check = opts.feasibility?.(model, "summary", opts.mode);
+  return check && !check.selectable ? check.reason ?? "not eligible" : undefined;
+ };
+ const options: ModelOption[] = available.map((m) => ({
+  value: m.provider + "/" + m.id,
+  label: m.provider + "/" + m.id,
+  model: m,
+  // Known-tool-capable providers get `true`; unknown ones get "probe" so
+  // exploration runtime-probes them once per run.
+  supportsTools: getProviderCaps(m.provider).supportsTools,
+ }));
+ const items: SelectItem[] = options.map((o, i) => ({
+  value: "model:" + i,
+  label: o.label,
+  description: blocked(o.model)
+   ? "unavailable"
+   : compactTokenCount(o.model.contextWindow) + " window" + (i === opts.defaultModelIndex ? " · selected" : ""),
+ }));
+ const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+  const c = new Container();
+  c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+  c.addChild(
+   new Text(theme.fg("accent", theme.bold("Choose summary model")), 1, 0),
+  );
+  c.addChild(
+   new Text(
+    theme.fg(
+     "dim",
+     "Writes the compaction summary. Active context: " +
+     opts.activeModelLabel +
+     " (unchanged) · " +
+     compactTokenCount(opts.contextTokens) +
+     ", " +
+     Math.round(opts.contextPercent) +
+     "% full",
+    ),
+    1,
+    0,
+   ),
+  );
+  c.addChild(new Text("", 0, 0));
+  const sel = new SelectList(items, Math.min(items.length, 10), {
+   selectedPrefix: (t) => theme.fg("accent", t),
+   selectedText: (t) => theme.fg("accent", t),
+   description: (t) => theme.fg("muted", t),
+   scrollInfo: (t) => theme.fg("dim", t),
+   noMatch: (t) => theme.fg("warning", t),
   });
-  const items: SelectItem[] = options.map((o, i) => ({
-    value: "model:" + i,
-    label: o.label,
-    description:
-      i === opts.defaultModelIndex
-        ? "← selected summary route"
-        : o.value === opts.activeModelLabel
-          ? "active context model"
-          : undefined,
-  }));
-  const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-    const c = new Container();
-    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    c.addChild(
-      new Text(
-        theme.fg("accent", theme.bold("  Smart Compact — Advanced model")),
-        1,
-        0,
-      ),
-    );
-    c.addChild(
-      new Text(
-        theme.fg(
-          "dim",
-          "  Architecture: EESV (Extract \u2192 Explore \u2192 Synthesize \u2192 Verify)",
-        ),
-        0,
-        0,
-      ),
-    );
-    c.addChild(new Text("", 0, 0));
-    c.addChild(
-      new Text(
-        renderContextBar(theme, opts.contextPercent, opts.contextTokens),
-        0,
-        0,
-      ),
-    );
-    c.addChild(
-      new Text(
-        theme.fg("dim", "  Active context: " + opts.activeModelLabel),
-        0,
-        0,
-      ),
-    );
-    c.addChild(
-      new Text(
-        theme.fg(
-          "dim",
-          "  Selected summary route: " +
-            (options[opts.defaultModelIndex]?.value ?? "?"),
-        ),
-        0,
-        0,
-      ),
-    );
-    c.addChild(new Text("", 0, 0));
-    c.addChild(
-      new Text(theme.fg("text", "  Select model for compaction:"), 1, 0),
-    );
-    c.addChild(new Text("", 0, 0));
-    const sel = new SelectList(items, Math.min(items.length, 12), {
-      selectedPrefix: (t) => theme.fg("accent", t),
-      selectedText: (t) => theme.fg("accent", t),
-      description: (t) => theme.fg("muted", t),
-      scrollInfo: (t) => theme.fg("dim", t),
-      noMatch: (t) => theme.fg("warning", t),
-    });
-    sel.setSelectedIndex(opts.defaultModelIndex);
-    sel.onSelect = (item) => done(item.value);
-    sel.onCancel = () => done(null);
-    c.addChild(sel);
-    c.addChild(new Text("", 0, 0));
-    c.addChild(
-      new Text(
-        theme.fg(
-          "dim",
-          "  \u2191\u2193 navigate \u2022 enter select \u2022 esc cancel",
-        ),
-        0,
-        0,
-      ),
-    );
-    c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    return {
-      render: (w: number) => c.render(w),
-      invalidate: () => c.invalidate(),
-      handleInput: (d: string) => {
-        sel.handleInput(d);
-        tui.requestRender();
-      },
-    };
-  });
-  if (!result?.startsWith("model:")) return null;
-  return options[parseInt(result.slice(6), 10)] ?? null;
+  // Narrow terminals hide SelectList descriptions, so the highlighted
+  // model's status and full ineligibility reason always get their own line.
+  const detail = new Text("", 1, 0);
+  const describe = (index: number, rejected = false) => {
+   const option = options[index];
+   if (!option) return detail.setText("");
+   const reason = blocked(option.model);
+   detail.setText(
+    reason
+     ? theme.fg(
+      "warning",
+      (rejected ? "Choose another model. " : "") +
+      "Can't use" +
+      (modeName ? " for " + modeName : "") +
+      ": " +
+      reason,
+     )
+     : theme.fg(
+      "dim",
+      option.value +
+      " · " +
+      compactTokenCount(option.model.contextWindow) +
+      " window" +
+      (opts.feasibility && modeName ? " · fits the " + modeName + " plan" : ""),
+     ),
+   );
+  };
+  const indexOf = (item: SelectItem) => parseInt(item.value.slice(6), 10);
+  sel.setSelectedIndex(opts.defaultModelIndex);
+  describe(opts.defaultModelIndex);
+  sel.onSelectionChange = (item) => describe(indexOf(item));
+  // Ineligible models stay visible with their reason but cannot be chosen.
+  sel.onSelect = (item) => {
+   const option = options[indexOf(item)];
+   if (option && !blocked(option.model)) return done(item.value);
+   describe(indexOf(item), true);
+   tui.requestRender();
+  };
+  sel.onCancel = () => done(null);
+  c.addChild(sel);
+  c.addChild(detail);
+  c.addChild(new Text("", 0, 0));
+  c.addChild(
+   new Text(theme.fg("dim", "↑↓ choose · Enter use model · Esc back"), 1, 0),
+  );
+  c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+  return {
+   render: (w: number) => c.render(w),
+   invalidate: () => c.invalidate(),
+   handleInput: (d: string) => {
+    sel.handleInput(d);
+    tui.requestRender();
+   },
+  };
+ });
+ if (!result?.startsWith("model:")) return null;
+ return options[parseInt(result.slice(6), 10)] ?? null;
 }
 
 const PRIMARY_MODES: EffectiveCompactionMode[] = [
-  "fast",
-  "balanced",
-  "thorough",
+ "fast",
+ "balanced",
+ "thorough",
 ];
 const MODE_LABELS: Record<EffectiveCompactionMode, string> = {
-  fast: "Fast",
-  balanced: "Balanced",
-  thorough: "Thorough",
+ fast: "Fast",
+ balanced: "Balanced",
+ thorough: "Thorough",
 };
-const MODE_COPY: Record<EffectiveCompactionMode, string> = {
-  fast: "quickest · compact 10K recent tail · 3K summary",
-  balanced: "default quality/speed · 20K recent tail · 6K summary",
-  thorough: "deepest analysis · rich 30K recent tail · 10K summary",
+/** Row-sized trait; the full tradeoff sentence shows for the highlighted mode. */
+const MODE_TRAITS: Record<EffectiveCompactionMode, string> = {
+ fast: "quickest",
+ balanced: "default",
+ thorough: "deepest",
+};
+const MODE_TRADEOFFS: Record<EffectiveCompactionMode, string> = {
+ fast: "Less recent detail and a shorter summary.",
+ balanced: "Balances speed and retained detail.",
+ thorough: "Most recent detail and the longest summary; slowest.",
 };
 
 function explainPreflightReason(reason: ManualPreflight["reason"]): string {
-  return reason === "not-enough-messages"
-    ? "fewer than 3 active messages"
-    : compactionPlanReasonText(reason);
+ if (reason === "not-enough-messages" || reason === "no-eligible-prefix")
+  return "not enough older history yet; continue chatting";
+ return compactionPlanReasonText(reason);
 }
 
 function recommendationEvidence(preflight: ManualPreflight): string {
-  const yieldPercent = Math.round((preflight.plan?.projectedYield ?? 0) * 100);
-  const tail = preflight.plan?.retainedTokens ?? 0;
-  return (
-    "~" +
-    Math.round(preflight.contextPercent) +
-    "% window pressure, ~" +
-    yieldPercent +
-    "% projected saving, ~" +
-    tokenCount(tail) +
-    " recent tail" +
-    (preflight.toolPercent >= 70
-      ? "; tool-heavy shape (~" + preflight.toolPercent + "% tool-result text)"
-      : "")
-  );
+ const yieldPercent = Math.round((preflight.plan?.projectedYield ?? 0) * 100);
+ const tail = preflight.plan?.retainedTokens ?? 0;
+ return (
+  "~" +
+  Math.round(preflight.contextPercent) +
+  "% window pressure, ~" +
+  yieldPercent +
+  "% projected saving, ~" +
+  tokenCount(tail) +
+  " recent tail" +
+  (preflight.toolPercent >= 70
+   ? "; tool-heavy shape (~" + preflight.toolPercent + "% tool-result text)"
+   : "")
+ );
 }
 
 export function recommendPreflight(
-  plans: ReadonlyMap<EffectiveCompactionMode, ManualPreflight>,
+ plans: ReadonlyMap<EffectiveCompactionMode, ManualPreflight>,
 ): {
-  mode: EffectiveCompactionMode;
-  reason: string;
+ mode: EffectiveCompactionMode;
+ reason: string;
 } {
-  const thorough = plans.get("thorough");
-  const balanced = plans.get("balanced");
-  const fast = plans.get("fast");
-  if (thorough?.adapted && thorough.plan?.viable) {
-    return {
-      mode: "thorough",
-      reason:
-        "recent damage feedback favors richer retention; " +
-        recommendationEvidence(thorough),
-    };
-  }
-  if (
-    (fast?.overflowedContext || (fast?.contextPercent ?? 0) >= 90) &&
-    fast?.plan?.viable
-  ) {
-    return {
-      mode: "fast",
-      reason:
-        "severe context pressure favors faster recovery; " +
-        recommendationEvidence(fast),
-    };
-  }
-  if (balanced?.plan?.viable) {
-    return {
-      mode: "balanced",
-      reason:
-        "normal pressure favors the default balance; " +
-        recommendationEvidence(balanced),
-    };
-  }
-  const fallback = (["fast", "thorough"] as const).find(
-    (mode) => plans.get(mode)?.plan?.viable,
-  );
-  if (fallback) {
-    const chosen = plans.get(fallback)!;
-    return {
-      mode: fallback,
-      reason:
-        "Balanced is unavailable because " +
-        explainPreflightReason(balanced?.reason ?? "not-enough-messages") +
-        "; " +
-        recommendationEvidence(chosen),
-    };
-  }
+ const thorough = plans.get("thorough");
+ const balanced = plans.get("balanced");
+ const fast = plans.get("fast");
+ if (thorough?.adapted && thorough.plan?.viable) {
   return {
-    mode: "balanced",
-    reason: "no preset currently has a safe, useful window",
+   mode: "thorough",
+   reason:
+    "recent damage feedback favors richer retention; " +
+    recommendationEvidence(thorough),
   };
+ }
+ if (
+  (fast?.overflowedContext || (fast?.contextPercent ?? 0) >= 90) &&
+  fast?.plan?.viable
+ ) {
+  return {
+   mode: "fast",
+   reason:
+    "severe context pressure favors faster recovery; " +
+    recommendationEvidence(fast),
+  };
+ }
+ if (balanced?.plan?.viable) {
+  return {
+   mode: "balanced",
+   reason:
+    "normal pressure favors the default balance; " +
+    recommendationEvidence(balanced),
+  };
+ }
+ const fallback = (["fast", "thorough"] as const).find(
+  (mode) => plans.get(mode)?.plan?.viable,
+ );
+ if (fallback) {
+  const chosen = plans.get(fallback)!;
+  return {
+   mode: fallback,
+   reason:
+    "Balanced is unavailable because " +
+    explainPreflightReason(balanced?.reason ?? "not-enough-messages") +
+    "; " +
+    recommendationEvidence(chosen),
+  };
+ }
+ return {
+  mode: "balanced",
+  reason: "no preset currently has a safe, useful window",
+ };
 }
 
 function tokenCount(value: number): string {
-  return Math.round(value).toLocaleString() + "t";
+ return Math.round(value).toLocaleString() + "t";
 }
 function compactTokenCount(value: number): string {
-  if (Math.abs(value) < 1_000) return Math.round(value) + "t";
-  const scaled = value / 1_000;
-  return (
-    scaled
-      .toFixed(scaled >= 10 ? 1 : 2)
-      .replace(/\.0+$|(\.\d*[1-9])0+$/, "$1") + "K"
-  );
+ if (Math.abs(value) < 1_000) return Math.round(value) + "t";
+ const scaled = value / 1_000;
+ return (
+  scaled
+   .toFixed(scaled >= 10 ? 1 : 2)
+   .replace(/\.0+$|(\.\d*[1-9])0+$/, "$1") + "K"
+ );
 }
 function percent(value: number): string {
-  return Math.round(value).toLocaleString() + "%";
+ return Math.round(value).toLocaleString() + "%";
 }
 
 const SOFT_BOUNDARY_COPY: Record<string, string> = {
-  "recent-user-turn": "older user turn",
-  anchor: "latest checkpoint",
-  topical: "adjacent topic",
-  "context-anchor": "latest checkpoint",
-  "topical-group": "adjacent topic",
+ "recent-user-turn": "older user turn",
+ anchor: "latest checkpoint",
+ topical: "adjacent topic",
+ "context-anchor": "latest checkpoint",
+ "topical-group": "adjacent topic",
 };
 
 /** Compact decision copy; technical planner data stays behind D. */
 export function formatPreflightSummary(
-  preflight: ManualPreflight,
-  modelLabel: string,
-  details = false,
+ preflight: ManualPreflight,
+ modelLabel: string,
+ details = false,
+ engines: readonly CompactionEngine[] = ["eesv"],
 ): string[] {
-  const plan = preflight.plan;
-  if (!plan) {
-    const lines = [
-      "Plan unavailable · " + explainPreflightReason(preflight.reason),
-      "✓ Complete tool pairs · ✓ zero-gap verification before apply",
-    ];
-    if (details)
-      lines.push(
-        "Estimator  messages ~" +
-          tokenCount(preflight.rawEstimatedMessageTokens) +
-          " · normalization unavailable",
-        "Route  " + modelLabel + " · viability " + preflight.reason,
-      );
-    return lines;
-  }
-  const stateReserve = Math.max(0,
-    (plan.finalSummaryAllowanceTokens ?? plan.summaryBudgetTokens + Math.ceil(plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO)) - plan.summaryBudgetTokens,
+ const plan = preflight.plan;
+ const safety = engines[0] === "native"
+  ? "Provider compaction is not verified." + (engines.includes("eesv") ? " Fallback text is checked." : "")
+  : "Summary is checked before it replaces history." + (engines.includes("native") ? " Provider fallback is not verified." : "");
+ const lines = plan?.viable
+  ? ["Estimated context after: ~" + compactTokenCount(plan.projectedAfterTokens) + " tokens.", safety]
+  : ["Unavailable: " + explainPreflightReason(plan?.reason ?? preflight.reason) + ".", safety];
+ if (!details) return lines;
+ if (!plan) {
+  lines.push(
+   "Estimator  messages ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " · normalization unavailable",
+   "Route  " + modelLabel + " · viability " + preflight.reason,
   );
-  const lines = [
-    "Plan  " +
-      compactTokenCount(preflight.totalTokens) +
-      " → ~" +
-      compactTokenCount(plan.projectedAfterTokens) +
-      " · ~" +
-      compactTokenCount(plan.projectedSavedTokens) +
-      " saved (" +
-      percent(plan.projectedYield * 100) +
-      ")",
-    "Keep  ~" +
-      compactTokenCount(plan.retainedTokens) +
-      " recent · summary up to " +
-      compactTokenCount(plan.summaryBudgetTokens) +
-      " + ~" +
-      compactTokenCount(stateReserve) +
-      " verified-state reserve",
-    "✓ Complete tool pairs · ✓ zero-gap verification before apply",
-  ];
-  if (!plan.viable)
-    lines.unshift("Unavailable · " + explainPreflightReason(plan.reason));
-  if (details)
-    lines.push(
-      "Target  ≤" +
-        tokenCount(plan.targetAfterTokens) +
-        " · tail ≤" +
-        tokenCount(plan.retentionTargetTokens) +
-        " · fixed ~" +
-        tokenCount(plan.fixedContextTokens),
-      "Estimator  ~" +
-        tokenCount(preflight.rawEstimatedMessageTokens) +
-        " messages · normalized ×" +
-        preflight.estimatorScale.toFixed(2),
-      "Boundary  " +
-        (plan.hardBoundaryAdjusted
-          ? "tool pair kept intact"
-          : "no hard adjustment") +
-        " · soft summarized: " +
-        (plan.relaxedSoftBoundaries
-          .map((kind) => SOFT_BOUNDARY_COPY[kind] ?? kind)
-          .join(", ") || "none"),
-      "Route  " +
-        modelLabel +
-        (preflight.adapted
-          ? " · damage feedback " + preflight.damageMedian + "/100"
-          : ""),
-    );
   return lines;
+ }
+ const stateReserve = Math.max(0,
+  (plan.finalSummaryAllowanceTokens ?? plan.summaryBudgetTokens + Math.ceil(plan.summaryBudgetTokens * POST_SUMMARY_RESERVE_RATIO)) - plan.summaryBudgetTokens,
+ );
+ lines.push(
+  "Plan  " + compactTokenCount(preflight.totalTokens) + " → ~" + compactTokenCount(plan.projectedAfterTokens) +
+  " · ~" + compactTokenCount(plan.projectedSavedTokens) + " saved (" + percent(plan.projectedYield * 100) + ")",
+  "Keep  ~" + compactTokenCount(plan.retainedTokens) + " recent · summary up to " +
+  compactTokenCount(plan.summaryBudgetTokens) + " + ~" + compactTokenCount(stateReserve) + " verified-state reserve",
+  "Target  ≤" + tokenCount(plan.targetAfterTokens) + " · tail ≤" + tokenCount(plan.retentionTargetTokens) + " · fixed ~" + tokenCount(plan.fixedContextTokens),
+  "Estimator  ~" + tokenCount(preflight.rawEstimatedMessageTokens) + " messages · normalized ×" + preflight.estimatorScale.toFixed(2),
+  "Boundary  " + (plan.hardBoundaryAdjusted ? "tool pair kept intact" : "no hard adjustment") +
+  " · soft summarized: " + (plan.relaxedSoftBoundaries.map((kind) => SOFT_BOUNDARY_COPY[kind] ?? kind).join(", ") || "none"),
+  "Route  " + modelLabel + (preflight.adapted ? " · damage feedback " + preflight.damageMedian + "/100" : ""),
+ );
+ return lines;
 }
 
 const PROGRESS_KEY = "smart-compact-progress";
 const PROGRESS_PHASES = ["Extract", "Explore", "Synthesize", "Verify", "Apply"];
 
 export function showProgressOverlay(
-  ctx: ExtensionContext,
-  state: ProgressState,
+ ctx: ExtensionContext,
+ state: ProgressState,
 ): void {
-  if (!ctx || ctx.hasUI === false) return;
-  const name = PROGRESS_PHASES[state.phase - 1] ?? state.phaseName;
-  try {
-    ctx.ui.setStatus?.(
-      PROGRESS_KEY,
-      "Smart Compact " + state.phase + "/5 · " + name,
-    );
-    ctx.ui.setWidget?.(
-      PROGRESS_KEY,
-      (_tui, theme) => ({
-        render: (width: number) => {
-          const story = PROGRESS_PHASES.map((phase, index) => {
-            if (index === 1 && state.phase > 2 && !state.explorationRounds)
-              return theme.fg("dim", "– Explore");
-            if (index < state.phase - 1)
-              return theme.fg("success", "✓ " + phase);
-            if (index === state.phase - 1)
-              return theme.fg("accent", theme.bold("● " + phase));
-            return theme.fg("dim", "○ " + phase);
-          }).join(theme.fg("dim", "  "));
-          const safety = state.phase < 5 ? " · conversation unchanged" : "";
-          return [
-            truncateToWidth(story, width),
-            truncateToWidth(
-              theme.fg("muted", "↳ " + state.detail + safety),
-              width,
-            ),
-          ];
-        },
-        invalidate: () => {},
-      }),
-      { placement: "belowEditor" },
-    );
-  } catch {
-    /* non-interactive UI adapters may not implement persistent UI */
-  }
+ if (!ctx || ctx.hasUI === false) return;
+ try {
+  // Progress lives in a transient widget below the editor, never the footer.
+  ctx.ui.setWidget?.(
+   PROGRESS_KEY,
+   (_tui, theme) => ({
+    render: (width: number) => {
+     const story = PROGRESS_PHASES.map((phase, index) => {
+      if (index === 1 && state.phase > 2 && !state.explorationRounds)
+       return theme.fg("dim", "– Explore");
+      if (index < state.phase - 1)
+       return theme.fg("success", "✓ " + phase);
+      if (index === state.phase - 1)
+       return theme.fg("accent", theme.bold("● " + phase));
+      return theme.fg("dim", "○ " + phase);
+     }).join(theme.fg("dim", "  "));
+     const safety = state.phase < 5 ? " · conversation unchanged" : "";
+     return [
+      truncateToWidth(story, width),
+      truncateToWidth(
+       theme.fg("muted", "↳ " + state.detail + safety),
+       width,
+      ),
+     ];
+    },
+    invalidate: () => { },
+   }),
+   { placement: "belowEditor" },
+  );
+ } catch {
+  /* non-interactive UI adapters may not implement persistent UI */
+ }
 }
 
 export function clearCompactProgress(ctx: ExtensionContext): void {
-  try {
-    ctx.ui.setStatus?.(PROGRESS_KEY, undefined);
-    ctx.ui.setWidget?.(PROGRESS_KEY, undefined);
-  } catch {
-    /* non-interactive UI adapter */
-  }
+ try {
+  ctx.ui.setWidget?.(PROGRESS_KEY, undefined);
+ } catch {
+  /* non-interactive UI adapter */
+ }
+}
+
+/** Native routes whose compaction window is opaque (readable only by that model). */
+const OPAQUE_NATIVE_APIS = new Set(["openai-codex-responses", "openai-responses"]);
+
+export function notifyNativeText(details: SmartCompactDetails): string {
+ const before = details.tokensBefore ?? 0;
+ const after =
+  details.estimatedAfterTokens ?? Math.max(0, before - details.tokensSaved);
+ return (
+  "Compaction applied · native (" +
+  details.model +
+  ") · " +
+  before.toLocaleString() +
+  "t → ~" +
+  after.toLocaleString() +
+  "t estimate · provider state, not EESV-verified" +
+  (OPAQUE_NATIVE_APIS.has(details.nativeApi ?? "")
+   ? ". Other models see only the retained user messages; switch back to " +
+   details.model +
+   " to use the summary."
+   : "")
+ );
 }
 
 export function notifyAppliedCompaction(
-  ctx: ExtensionContext,
-  details: SmartCompactDetails,
-  concise: boolean,
+ ctx: ExtensionContext,
+ details: SmartCompactDetails,
+ concise: boolean,
 ): void {
-  const before = details.tokensBefore ?? 0;
-  const after =
-    details.estimatedAfterTokens ?? Math.max(0, before - details.tokensSaved);
-  const saving = Math.round(
-    (details.estimatedYield ?? (before ? details.tokensSaved / before : 0)) *
-      100,
-  );
-  const quality = details.qualityScore ?? 0;
-  const initial = details.provenance?.initialScore ?? quality;
-  const repaired =
-    details.provenance &&
-    (details.provenance.deterministicPatched.length > 0 ||
-      details.provenance.llmPatched ||
-      details.provenance.qualityFloorUsed);
-  const remainingGapCount = details.gaps?.length ?? 0;
-  const verification =
-    "verified " +
-    quality +
-    "/100 coverage" +
-    (repaired
-      ? " (source " +
-        initial +
-        "/100" +
-        (details.provenance?.qualityFloorUsed ? ", safety fallback" : "") +
-        ")"
-      : "") +
-    " · " +
-    remainingGapCount +
-    (remainingGapCount === 1 ? " remaining gap" : " remaining gaps");
-  const fallback = details.generationFallbacks?.length
-    ? " · fallback: " + details.generationFallbacks.join(", ")
-    : details.method
-      ? " · generation: " + details.method
-      : "";
-  const planned = details.plannedAfterTokens ?? after;
-  ctx.ui.notify(
-    concise
-      ? "Smart compact applied · " +
-          before.toLocaleString() +
-          "t → ~" +
-          after.toLocaleString() +
-          "t estimate (plan ~" +
-          planned.toLocaleString() +
-          "t) · " +
-          saving +
-          "% saved · " +
-          verification +
-          fallback
-      : "Smart compact applied — " +
-          before.toLocaleString() +
-          "t → planned ~" +
-          planned.toLocaleString() +
-          "t / ~" +
-          after.toLocaleString() +
-          "t applied estimate · saved " +
-          saving +
-          "% · " +
-          verification +
-          fallback,
-    "info",
-  );
+ if (details.method === "native") {
+  notifyUser(ctx, notifyNativeText(details), "info");
+  return;
+ }
+ const before = details.tokensBefore ?? 0;
+ const after =
+  details.estimatedAfterTokens ?? Math.max(0, before - details.tokensSaved);
+ const saving = Math.round(
+  (details.estimatedYield ?? (before ? details.tokensSaved / before : 0)) *
+  100,
+ );
+ const quality = details.qualityScore ?? 0;
+ const initial = details.provenance?.initialScore ?? quality;
+ const repaired =
+  details.provenance &&
+  (details.provenance.deterministicPatched.length > 0 ||
+   details.provenance.llmPatched ||
+   details.provenance.qualityFloorUsed);
+ const remainingGapCount = details.gaps?.length ?? 0;
+ const verification =
+  "verified " +
+  quality +
+  "/100 coverage" +
+  (repaired
+   ? " (source " +
+   initial +
+   "/100" +
+   (details.provenance?.qualityFloorUsed ? ", safety fallback" : "") +
+   ")"
+   : "") +
+  " · " +
+  remainingGapCount +
+  (remainingGapCount === 1 ? " remaining gap" : " remaining gaps");
+ const fallback = details.generationFallbacks?.length
+  ? " · fallback: " + details.generationFallbacks.join(", ")
+  : details.method
+   ? " · generation: " + details.method
+   : "";
+ const planned = details.plannedAfterTokens ?? after;
+ notifyUser(ctx,
+  concise
+   ? "Smart compact applied · " +
+   before.toLocaleString() +
+   "t → ~" +
+   after.toLocaleString() +
+   "t estimate (plan ~" +
+   planned.toLocaleString() +
+   "t) · " +
+   saving +
+   "% saved · " +
+   verification +
+   fallback
+   : "Smart compact applied — " +
+   before.toLocaleString() +
+   "t → planned ~" +
+   planned.toLocaleString() +
+   "t / ~" +
+   after.toLocaleString() +
+   "t applied estimate · saved " +
+   saving +
+   "% · " +
+   verification +
+   fallback,
+  "info",
+ );
 }
 
-// touched, which belongs to ExtensionContext.
+/**
+ * Review (approval) or completion screen. Outcome, warnings and the full summary
+ * are always visible; engine, extraction and pipeline diagnostics sit behind D.
+ */
 export async function showResultScreen(
-  ctx: ExtensionContext,
-  details: SmartCompactDetails,
-  extraction: StructuredExtraction,
-  services: SmartCompactServices,
-  opts: { approval?: boolean; summary?: string } = {},
+ ctx: ExtensionContext,
+ details: SmartCompactDetails,
+ extraction: StructuredExtraction,
+ services: SmartCompactServices,
+ opts: { approval?: boolean; summary?: string } = {},
 ): Promise<"apply" | "cancel" | "closed"> {
-  const decision = await ctx.ui.custom<"apply" | "cancel" | "closed">(
-    (tui, theme, keybindings, done) => {
-      const c = new Container();
-      c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-      c.addChild(
-        new Text(
-          theme.fg(
-            "accent",
-            theme.bold(
-              opts.approval
-                ? "  \uD83D\uDD0E Smart Compact Review"
-                : "  \u2705 Smart Compact Complete",
-            ),
-          ),
-          1,
-          0,
-        ),
-      );
-      c.addChild(new Text("", 0, 0));
+ const before = details.tokensBefore ?? 0;
+ const after =
+  details.estimatedAfterTokens ??
+  Math.max(0, before - (details.tokensSaved ?? 0));
+ const savedPercent = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+ const gaps = details.gaps;
+ const provenance = details.provenance;
+ const metrics = getMetricsSummary(services);
+ const extractionCache = getExtractionCacheStats(services);
+ return ctx.ui.custom<"apply" | "cancel" | "closed">(
+  (tui, theme, keybindings, done) => {
+   let showDetails = false;
+   const body = new Container();
+   const line = (text: string, color: ThemeColor = "dim") =>
+    body.addChild(new Text(theme.fg(color, text), 2, 0));
+   const heading = (text: string) =>
+    body.addChild(new Text(theme.fg("accent", theme.bold(text)), 1, 0));
+   const blank = () => body.addChild(new Text("", 0, 0));
 
-      const estimatedAfter =
-        details.estimatedAfterTokens ??
-        (details.tokensBefore ?? 0) - (details.tokensSaved ?? 0);
-      c.addChild(
-        new Text(
-          renderTokenBar(
-            theme,
-            details.tokensBefore,
-            estimatedAfter,
-            "Result  ",
-          ),
-          0,
-          0,
-        ),
+   const addDetails = () => {
+    blank();
+    heading("Details");
+    line(
+     "Tokens  before " +
+     tokenCount(before) +
+     (details.plannedAfterTokens !== undefined
+      ? " · planned after ~" + tokenCount(details.plannedAfterTokens)
+      : "") +
+     " · estimated after ~" +
+     tokenCount(after) +
+     " · saved " +
+     tokenCount(details.tokensSaved ?? 0),
+    );
+    line(
+     "Engine  " +
+     details.method.toUpperCase() +
+     " · " +
+     details.llmCalls +
+     " LLM call(s)",
+    );
+    if (details.providerRoutes)
+     line(
+      "Routes  explore " +
+      details.providerRoutes.explore +
+      " · synthesize " +
+      details.providerRoutes.synthesize +
+      " · verify " +
+      details.providerRoutes.verify,
+     );
+    if (provenance)
+     line(
+      "Provenance  source " +
+      provenance.initialScore +
+      " → deterministic " +
+      provenance.deterministicPatched.length +
+      (provenance.llmPatched ? " → LLM patch" : "") +
+      " → verified " +
+      provenance.finalScore +
+      " (" +
+      provenance.remainingGaps.length +
+      " remaining)",
+     );
+    if (metrics.totalCalls > 0) {
+     const promptInput = effectivePromptInputTokens(
+      metrics.totalInput,
+      metrics.totalCacheHit,
+      metrics.totalCacheWrite,
+     );
+     line(
+      "LLM  " +
+      metrics.totalCalls +
+      " calls · " +
+      (metrics.totalCacheHit > 0
+       ? tokenCount(promptInput) +
+       " prompt (" +
+       tokenCount(metrics.totalInput) +
+       " new, " +
+       tokenCount(metrics.totalCacheHit) +
+       " cached)"
+       : tokenCount(metrics.totalInput) + " in") +
+      " · " +
+      Math.round(metrics.cacheHitRate * 100) +
+      "% provider cache · " +
+      Math.round(extractionCache.hitRate * 100) +
+      "% extraction cache · " +
+      metrics.avgLatency +
+      "ms avg",
+     );
+    }
+    line(
+     "Files  " +
+     details.modifiedFiles.length +
+     " modified · " +
+     details.readFiles.length +
+     " read · " +
+     details.totalMessages +
+     " messages",
+    );
+    const resolvedErrors = extraction.errors.filter((e) => e.resolved).length;
+    if (extraction.errors.length > 0)
+     line(
+      "Errors  " +
+      extraction.errors.length +
+      " total · " +
+      resolvedErrors +
+      " resolved · " +
+      (extraction.errors.length - resolvedErrors) +
+      " unresolved",
+      extraction.errors.length > resolvedErrors ? "warning" : "dim",
+     );
+    if (extraction.decisions.length > 0) {
+     const explicit = extraction.decisions.filter((d) => d.type === "explicit").length;
+     line(
+      "Decisions  " +
+      extraction.decisions.length +
+      " (" +
+      explicit +
+      " explicit, " +
+      (extraction.decisions.length - explicit) +
+      " implicit)",
+     );
+    }
+    if (extraction.constraints.length > 0) {
+     const count = (category: string) =>
+      extraction.constraints.filter((cc) => cc.category === category).length;
+     line(
+      "Constraints  " +
+      extraction.constraints.length +
+      " (" +
+      count("requirement") +
+      " req, " +
+      count("prohibition") +
+      " prohibit, " +
+      count("preference") +
+      " pref)",
+     );
+    }
+    if (details.modifiedFiles.length > 0) {
+     blank();
+     heading("Modified files");
+     for (const file of details.modifiedFiles) {
+      const tracked = extraction.modifiedFiles.find((e) => e.path === file);
+      line(
+       "✎ " +
+       path.basename(file) +
+       (tracked ? " (" + tracked.toolCalls + "x)" : "") +
+       " → " +
+       file,
       );
-      c.addChild(
-        new Text(
-          theme.fg(
-            "dim",
-            "  Before: " +
-              (details.tokensBefore ?? 0).toLocaleString() +
-              "t \u2192 After: ~" +
-              estimatedAfter.toLocaleString() +
-              "t \u2192 Saved: " +
-              (details.tokensSaved ?? 0).toLocaleString() +
-              "t",
-          ),
-          0,
-          0,
-        ),
-      );
-      c.addChild(new Text("", 0, 0));
+     }
+    }
+    if (details.topics.length > 0) {
+     blank();
+     heading("Topics");
+     details.topics.forEach((topic, index) => line(index + 1 + ". " + topic));
+    }
+    blank();
+    heading("Pipeline");
+    line("Extract     ✓");
+    line(
+     "Explore     " +
+     (details.explorationRounds > 0
+      ? "✓ " + details.explorationRounds + " rounds"
+      : "not required") +
+     (details.explorationBoundaries > 0
+      ? " (" + details.explorationBoundaries + " boundaries)"
+      : " (no model boundaries)"),
+    );
+    line(
+     "Synthesize  " +
+     (details.generationFallbacks?.length ? "fallback · " : "✓ ") +
+     details.chunkCount +
+     " chunks",
+     details.generationFallbacks?.length ? "warning" : "dim",
+    );
+    line(
+     "Verify      " +
+     (details.verified
+      ? "✓ passed"
+      : gaps.length > 0
+       ? gaps.length + (gaps.length === 1 ? " gap remains" : " gaps remain")
+       : "—"),
+     details.verified ? "dim" : "warning",
+    );
+   };
 
-      const methodColors: Record<
-        string,
-        import("@earendil-works/pi-coding-agent").ThemeColor
-      > = { eesv: "accent", "single-pass": "success", heuristic: "warning" };
-      const methodColor = methodColors[details.method] ?? "text";
-      // Do NOT destructure theme.fg — it loses `this` binding (see renderContextBar).
-      c.addChild(
-        new Text(
-          theme.fg("text", "  Method: ") +
-            theme.fg(methodColor, details.method.toUpperCase()) +
-            theme.fg(
-              "dim",
-              " \u2022 " +
-                details.llmCalls +
-                " LLM call(s) \u2022 Mode: " +
-                (details.mode ?? details.profile),
-            ),
-          0,
-          0,
-        ),
-      );
-      if (details.model) {
-        c.addChild(
-          new Text(theme.fg("dim", "  Model: " + details.model), 0, 0),
-        );
-      }
-      if (details.providerRoutes) {
-        c.addChild(
-          new Text(
-            theme.fg(
-              "dim",
-              "  Routes: Explore " +
-                details.providerRoutes.explore +
-                " • Synthesize " +
-                details.providerRoutes.synthesize +
-                " • Verify " +
-                details.providerRoutes.verify,
-            ),
-            0,
-            0,
-          ),
-        );
-      }
+   const build = () => {
+    body.clear();
+    heading(opts.approval ? "Review compaction" : "Compaction complete");
+    if (opts.approval)
+     line("Nothing changes until you press A. C or Esc keeps the conversation as it is.");
+    blank();
+    line(
+     "Context  " +
+     tokenCount(before) +
+     " → ~" +
+     tokenCount(after) +
+     " · saves ~" +
+     savedPercent +
+     "% (estimate)",
+     savedPercent >= 50 ? "success" : savedPercent >= 25 ? "warning" : "error",
+    );
+    // details.gaps are the gaps left after repair, not gaps that were patched.
+    line(
+     "Checks   " +
+     (details.verified
+      ? "✓ passed"
+      : gaps.length > 0
+       ? "⚠ " + gaps.length + (gaps.length === 1 ? " gap remains" : " gaps remain")
+       : "not verified") +
+     " · " +
+     details.qualityScore +
+     "/100 coverage",
+     !details.verified
+      ? "warning"
+      : details.qualityScore >= 80
+       ? "success"
+       : details.qualityScore >= 50
+        ? "warning"
+        : "error",
+    );
+    const shownGaps = showDetails ? gaps.length : TRUNC.RESULT_GAPS;
+    for (const gap of gaps.slice(0, shownGaps)) line("  • " + gap);
+    if (gaps.length > shownGaps)
+     line("  + " + (gaps.length - shownGaps) + " more (D details)");
+    if (provenance?.qualityFloorUsed)
+     line("⚠ Safety fallback used · coverage is not raw synthesis quality", "warning");
+    if (details.generationFallbacks?.length)
+     line("⚠ Generation fallback: " + details.generationFallbacks.join(", "), "warning");
+    if ((details.redactions ?? 0) > 0)
+     line("⚠ " + details.redactions + " sensitive value(s) redacted", "warning");
+    line(
+     "Model    " +
+     [
+      details.model,
+      (details.mode ? MODE_LABELS[details.mode] : details.profile) + " mode",
+      details.method,
+     ]
+      .filter(Boolean)
+      .join(" · "),
+    );
+    if (details.backupPath) line("Backup after apply: " + details.backupPath);
+    if (showDetails) addDetails();
+    if (opts.summary) {
+     blank();
+     heading(opts.approval ? "Summary to apply" : "Summary");
+     body.addChild(new Text(theme.fg("text", opts.summary), 2, 0));
+    }
+   };
+   build();
 
-      const scoreColor =
-        details.qualityScore >= 80
-          ? "success"
-          : details.qualityScore >= 50
-            ? "warning"
-            : "error";
-      c.addChild(
-        new Text(
-          theme.fg("text", "  Verification coverage: ") +
-            theme.fg(scoreColor, details.qualityScore + "/100"),
-          0,
-          0,
-        ),
-      );
-      if (details.provenance) {
-        const provenance = details.provenance;
-        c.addChild(
-          new Text(
-            theme.fg(
-              "dim",
-              "  Provenance: source " +
-                provenance.initialScore +
-                " → deterministic " +
-                provenance.deterministicPatched.length +
-                (provenance.llmPatched ? " → LLM patch" : "") +
-                " → verified " +
-                provenance.finalScore +
-                " (" +
-                provenance.remainingGaps.length +
-                " remaining)",
-            ),
-            0,
-            0,
-          ),
-        );
-        if (provenance.qualityFloorUsed) {
-          c.addChild(
-            new Text(
-              theme.fg(
-                "warning",
-                "  Safety fallback used · verified coverage is not raw synthesis quality",
-              ),
-              0,
-              0,
-            ),
-          );
-        }
-      }
-      if (details.generationFallbacks?.length) {
-        c.addChild(
-          new Text(
-            theme.fg(
-              "warning",
-              "  Generation fallback: " +
-                details.generationFallbacks.join(", "),
-            ),
-            0,
-            0,
-          ),
-        );
-      }
-      if ((details.redactions ?? 0) > 0) {
-        c.addChild(
-          new Text(
-            theme.fg(
-              "warning",
-              "  Security: " +
-                details.redactions +
-                " sensitive value(s) redacted",
-            ),
-            0,
-            0,
-          ),
-        );
-      }
-      c.addChild(new Text("", 0, 0));
-
-      c.addChild(
-        new Text(
-          theme.fg("text", theme.bold("  \uD83D\uDCCB Extraction")),
-          0,
-          0,
-        ),
-      );
-      const ms = getMetricsSummary(services);
-      const ecs = getExtractionCacheStats(services);
-      if (ms.totalCalls > 0) {
-        const providerCachePct = Math.round(ms.cacheHitRate * 100);
-        const extractionCachePct = Math.round(ecs.hitRate * 100);
-        const promptInput = effectivePromptInputTokens(
-          ms.totalInput,
-          ms.totalCacheHit,
-          ms.totalCacheWrite,
-        );
-        const inputLabel =
-          ms.totalCacheHit > 0
-            ? promptInput.toLocaleString() +
-              "t prompt (" +
-              ms.totalInput.toLocaleString() +
-              "t new, " +
-              ms.totalCacheHit.toLocaleString() +
-              "t cached)"
-            : ms.totalInput.toLocaleString() + "t in";
-        const cacheColor =
-          extractionCachePct >= 50
-            ? "success"
-            : extractionCachePct >= 20
-              ? "warning"
-              : "dim";
-        c.addChild(
-          new Text(
-            theme.fg("dim", "  LLM: ") +
-              theme.fg("text", ms.totalCalls + " calls") +
-              theme.fg("dim", " \u2022 ") +
-              theme.fg("text", inputLabel) +
-              theme.fg("dim", " \u2022 ") +
-              theme.fg("dim", providerCachePct + "% provider cache") +
-              theme.fg("dim", " \u2022 ") +
-              theme.fg(cacheColor, extractionCachePct + "% extraction cache") +
-              theme.fg("dim", " \u2022 ") +
-              theme.fg("dim", ms.avgLatency + "ms avg"),
-            0,
-            0,
-          ),
-        );
-      }
-      const modFiles = details.modifiedFiles;
-      const errCount = extraction.errors.length;
-      const resolvedErr = extraction.errors.filter((e) => e.resolved).length;
-      const unresolvedErr = errCount - resolvedErr;
-      c.addChild(
-        new Text(
-          theme.fg("dim", "  Files: ") +
-            theme.fg("success", modFiles.length + " modified") +
-            theme.fg("dim", " \u2022 ") +
-            theme.fg("text", details.readFiles.length + " read") +
-            theme.fg("dim", " \u2022 ") +
-            theme.fg("text", details.totalMessages + " messages"),
-          0,
-          0,
-        ),
-      );
-      if (errCount > 0) {
-        c.addChild(
-          new Text(
-            theme.fg("dim", "  Errors: ") +
-              theme.fg("warning", errCount + " total") +
-              theme.fg("dim", " \u2022 ") +
-              theme.fg("success", resolvedErr + " resolved") +
-              theme.fg("dim", " \u2022 ") +
-              theme.fg("error", unresolvedErr + " unresolved"),
-            0,
-            0,
-          ),
-        );
-      }
-      if (extraction.decisions.length > 0) {
-        const expD = extraction.decisions.filter(
-          (d) => d.type === "explicit",
-        ).length;
-        const impD = extraction.decisions.filter(
-          (d) => d.type === "implicit",
-        ).length;
-        c.addChild(
-          new Text(
-            theme.fg(
-              "dim",
-              "  Decisions: " +
-                extraction.decisions.length +
-                " (" +
-                expD +
-                " explicit, " +
-                impD +
-                " implicit)",
-            ),
-            0,
-            0,
-          ),
-        );
-      }
-      if (extraction.constraints.length > 0) {
-        const reqC = extraction.constraints.filter(
-          (cc) => cc.category === "requirement",
-        ).length;
-        const proC = extraction.constraints.filter(
-          (cc) => cc.category === "prohibition",
-        ).length;
-        const preC = extraction.constraints.filter(
-          (cc) => cc.category === "preference",
-        ).length;
-        c.addChild(
-          new Text(
-            theme.fg(
-              "dim",
-              "  Constraints: " +
-                extraction.constraints.length +
-                " (" +
-                reqC +
-                " req, " +
-                proC +
-                " prohibit, " +
-                preC +
-                " pref)",
-            ),
-            0,
-            0,
-          ),
-        );
-      }
-      c.addChild(new Text("", 0, 0));
-
-      if (modFiles.length > 0) {
-        c.addChild(
-          new Text(
-            theme.fg("text", theme.bold("  \uD83D\uDCC1 Modified Files")),
-            0,
-            0,
-          ),
-        );
-        const maxShow = 8;
-        for (let i = 0; i < Math.min(modFiles.length, maxShow); i++) {
-          const f = modFiles[i];
-          const fc = extraction.modifiedFiles.find((e) => e.path === f);
-          const count = fc ? " (" + fc.toolCalls + "x)" : "";
-          c.addChild(
-            new Text(
-              theme.fg("success", "    \u270E ") +
-                theme.fg("text", path.basename(f)) +
-                theme.fg("dim", count + " \u2192 " + f),
-              0,
-              0,
-            ),
-          );
-        }
-        if (modFiles.length > maxShow) {
-          c.addChild(
-            new Text(
-              theme.fg("dim", "    + " + (modFiles.length - maxShow) + " more"),
-              0,
-              0,
-            ),
-          );
-        }
-        c.addChild(new Text("", 0, 0));
-      }
-
-      if (details.topics.length > 0) {
-        c.addChild(
-          new Text(theme.fg("text", theme.bold("  \uD83D\uDCE6 Topics")), 0, 0),
-        );
-        const maxTopics = 10;
-        for (let i = 0; i < Math.min(details.topics.length, maxTopics); i++) {
-          c.addChild(
-            new Text(
-              theme.fg("dim", "    " + (i + 1) + ". " + details.topics[i]),
-              0,
-              0,
-            ),
-          );
-        }
-        if (details.topics.length > maxTopics) {
-          c.addChild(
-            new Text(
-              theme.fg(
-                "dim",
-                "    + " + (details.topics.length - maxTopics) + " more",
-              ),
-              0,
-              0,
-            ),
-          );
-        }
-        c.addChild(new Text("", 0, 0));
-      }
-
-      c.addChild(
-        new Text(
-          theme.fg("text", theme.bold("  \uD83D\uDD0D Verification")),
-          0,
-          0,
-        ),
-      );
-      if (details.verified) {
-        c.addChild(
-          new Text(
-            theme.fg(
-              "success",
-              "    All configured deterministic checks passed",
-            ),
-            0,
-            0,
-          ),
-        );
-      } else if (details.gaps.length > 0) {
-        c.addChild(
-          new Text(
-            theme.fg(
-              "warning",
-              "    \u26A0\uFE0F  " +
-                details.gaps.length +
-                (details.gaps.length === 1
-                  ? " gap patched:"
-                  : " gaps patched:"),
-            ),
-            0,
-            0,
-          ),
-        );
-        for (const g of details.gaps.slice(0, TRUNC.RESULT_GAPS)) {
-          c.addChild(new Text(theme.fg("dim", "      \u2022 " + g), 0, 0));
-        }
-      }
-      c.addChild(new Text("", 0, 0));
-
-      c.addChild(
-        new Text(theme.fg("text", theme.bold("  \uD83D\uDD04 Pipeline")), 0, 0),
-      );
-      const phase1Status = theme.fg("success", "\u2713");
-      const phase2Status =
-        details.explorationRounds > 0
-          ? theme.fg("success", "✓ " + details.explorationRounds + " rounds")
-          : theme.fg("dim", "not required");
-      const phase2Bounds =
-        details.explorationBoundaries > 0
-          ? theme.fg(
-              "text",
-              " (" + details.explorationBoundaries + " boundaries)",
-            )
-          : theme.fg("dim", " (no model boundaries)");
-      const phase4Status = details.verified
-        ? theme.fg("success", "\u2713 verified")
-        : details.gaps.length > 0
-          ? theme.fg(
-              "warning",
-              "\u2713 patched (" + details.gaps.length + " gaps)",
-            )
-          : theme.fg("dim", "\u2014");
-      c.addChild(
-        new Text(theme.fg("dim", "    Phase 1 Extract: ") + phase1Status, 0, 0),
-      );
-      c.addChild(
-        new Text(
-          theme.fg("dim", "    Phase 2 Explore: ") +
-            phase2Status +
-            phase2Bounds,
-          0,
-          0,
-        ),
-      );
-      c.addChild(
-        new Text(
-          theme.fg("dim", "    Phase 3 Synthesize: ") +
-            theme.fg(
-              details.generationFallbacks?.length ? "warning" : "success",
-              (details.generationFallbacks?.length ? "fallback · " : "✓ ") +
-                details.chunkCount +
-                " chunks",
-            ),
-          0,
-          0,
-        ),
-      );
-      c.addChild(
-        new Text(theme.fg("dim", "    Phase 4 Verify: ") + phase4Status, 0, 0),
-      );
-      c.addChild(new Text("", 0, 0));
-
-      if (details.backupPath) {
-        c.addChild(
-          new Text(
-            theme.fg(
-              "dim",
-              "  \uD83D\uDCBE Backup after apply: " + details.backupPath,
-            ),
-            0,
-            0,
-          ),
-        );
-        c.addChild(new Text("", 0, 0));
-      }
-
-      if (opts.summary) {
-        c.addChild(
-          new Text(theme.fg("text", theme.bold("  Summary to apply")), 0, 0),
-        );
-        c.addChild(new Text(theme.fg("text", opts.summary), 2, 0));
-        c.addChild(new Text("", 0, 0));
-      }
-
-      // Tested 0.84.3 (scrollbarStyle only); 0.85 splits into track/thumb.
-      // Keep triple-prop until min pi >= 0.85, then drop scrollbarStyle.
-      const scrollbarStyle = (text: string) => theme.fg("borderMuted", text);
-      const scroll = new ScrollView(
-        c,
-        {
-          follow: "none",
-          primary: true,
-          overscroll: "contain",
-          scrollbar: "auto",
-          scrollbarStyle,
-          scrollbarTrackStyle: scrollbarStyle,
-          scrollbarThumbStyle: scrollbarStyle,
-        } as ScrollViewOptions & {
-          scrollbarTrackStyle?: (text: string) => string;
-          scrollbarThumbStyle?: (text: string) => string;
-        },
-      );
-      const footer = new Container();
-      footer.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-      footer.addChild(
-        new Text(
-          theme.fg(
-            "dim",
-            opts.approval
-              ? "  ↑↓/PgUp/PgDn scroll · [A] Apply · [C/Esc] Cancel"
-              : "  ↑↓/PgUp/PgDn scroll · [Q/Esc] Close",
-          ),
-          0,
-          0,
-        ),
-      );
-      const root = new VStack([
-        { component: scroll, basis: 0, grow: 1, minSize: 5 },
-        { component: footer, basis: "auto", shrink: 0, minSize: 2 },
-      ]);
-      return Object.assign(root, {
-        handleInput: (data: string) => {
-          const page = Math.max(1, scroll.viewportHeight - 2);
-          if (keybindings.matches(data, "tui.select.up")) scroll.scrollBy(-1);
-          else if (keybindings.matches(data, "tui.select.down"))
-            scroll.scrollBy(1);
-          else if (keybindings.matches(data, "tui.select.pageUp"))
-            scroll.scrollBy(-page);
-          else if (keybindings.matches(data, "tui.select.pageDown"))
-            scroll.scrollBy(page);
-          else if (matchesKey(data, Key.home)) scroll.scrollToStart();
-          else if (matchesKey(data, Key.end)) scroll.scrollToEnd();
-          else if (opts.approval && matchesKey(data, "a")) return done("apply");
-          else if (
-            opts.approval &&
-            (matchesKey(data, "c") ||
-              keybindings.matches(data, "tui.select.cancel"))
-          )
-            return done("cancel");
-          else if (
-            !opts.approval &&
-            (matchesKey(data, "q") ||
-              keybindings.matches(data, "tui.select.cancel") ||
-              matchesKey(data, Key.enter))
-          )
-            return done("closed");
-          tui.requestRender();
-        },
-      });
+   let offset = 0;
+   let viewport = Number.MAX_SAFE_INTEGER;
+   const rule = (width: number) => theme.fg("accent", "─".repeat(Math.max(1, width)));
+   return {
+    // Pi renders overlays without a height, so this screen sizes and scrolls
+    // its own viewport against the same 85% cap as its overlay options.
+    render: (width: number) => {
+     const content = body.render(width);
+     const keys =
+      (opts.approval
+       ? theme.fg("accent", theme.bold("A apply")) + theme.fg("dim", " · C/Esc cancel")
+       : theme.fg("accent", theme.bold("Enter/Q/Esc close"))) +
+      theme.fg("dim", " · D " + (showDetails ? "hide details" : "details"));
+     const scrollKeys = theme.fg("dim", " · ↑↓ PgUp/PgDn scroll");
+     const rows = tui.terminal?.rows;
+     // Size with the longest footer so the viewport never outgrows the cap.
+     const tallFooter = new Text(keys + scrollKeys, 1, 0).render(width);
+     viewport = rows
+      ? Math.max(3, Math.floor(rows * 0.85) - 3 - tallFooter.length)
+      : Number.MAX_SAFE_INTEGER;
+     const scrolls = content.length > viewport;
+     offset = Math.max(0, Math.min(offset, content.length - viewport));
+     const visible = content.slice(offset, offset + viewport);
+     const position = scrolls
+      ? " " + (offset + 1) + "–" + (offset + visible.length) + " of " + content.length + " "
+      : "";
+     const middle = scrolls
+      ? truncateToWidth(
+       rule(2) + theme.fg("dim", position) + rule(width - 2 - visibleWidth(position)),
+       width,
+       "",
+      )
+      : rule(width);
+     return [
+      rule(width),
+      ...visible,
+      middle,
+      ...(scrolls ? tallFooter : new Text(keys, 1, 0).render(width)),
+      rule(width),
+     ];
     },
-    {
-      overlay: true,
-      overlayOptions: { width: "80%", anchor: "center", maxHeight: "85%" },
+    invalidate: () => body.invalidate(),
+    handleInput: (data: string) => {
+     const page = Math.max(1, viewport - 2);
+     if (keybindings.matches(data, "tui.select.up")) offset = Math.max(0, offset - 1);
+     else if (keybindings.matches(data, "tui.select.down")) offset += 1;
+     else if (keybindings.matches(data, "tui.select.pageUp"))
+      offset = Math.max(0, offset - page);
+     else if (keybindings.matches(data, "tui.select.pageDown")) offset += page;
+     else if (matchesKey(data, Key.home)) offset = 0;
+     else if (matchesKey(data, Key.end)) offset = Number.MAX_SAFE_INTEGER;
+     else if (letterKey(data, "d")) {
+      showDetails = !showDetails;
+      build();
+     }
+     // Approval is explicit: only A applies; Enter never does.
+     else if (opts.approval && letterKey(data, "a")) return done("apply");
+     else if (
+      opts.approval &&
+      (letterKey(data, "c") ||
+       keybindings.matches(data, "tui.select.cancel"))
+     )
+      return done("cancel");
+     else if (
+      !opts.approval &&
+      (letterKey(data, "q") ||
+       keybindings.matches(data, "tui.select.cancel") ||
+       matchesKey(data, Key.enter))
+     )
+      return done("closed");
+     tui.requestRender();
     },
-  );
-  return decision;
+   };
+  },
+  {
+   overlay: true,
+   overlayOptions: {
+    width: "80%",
+    minWidth: 60,
+    anchor: "center",
+    maxHeight: "85%",
+   },
+  },
+ );
+}
+
+/** A letter shortcut, with or without Shift (legacy and Kitty keyboard protocols). */
+function letterKey(data: string, letter: string): boolean {
+ return matchesKey(data, letter as KeyId) || matchesKey(data, ("shift+" + letter) as KeyId);
 }
 
 export async function showCompactUI(
-  ctx: ExtensionCommandContext,
-  opts: {
-    contextTokens: number;
-    contextPercent: number;
-    activeModelLabel: string;
-    defaultModelIndex: number;
-    config: CompactConfig;
-  },
+ ctx: ExtensionCommandContext,
+ opts: {
+  contextTokens: number;
+  contextPercent: number;
+  activeModelLabel: string;
+  defaultModelIndex: number;
+  config: CompactConfig;
+  /** Capacity snapshot taken before the picker opens; absent = every model selectable. */
+  feasibility?: ModelFeasibility;
+  /** Shows local effective state; the picker reopens afterwards. */
+  showEffectiveState?: () => Promise<void>;
+ },
 ): Promise<{ model: ModelOption; mode: CompactionMode } | null> {
-  const available = ctx.modelRegistry.getAvailable();
-  const asOption = (model: Model<Api>): ModelOption => ({
-    value: model.provider + "/" + model.id,
-    label: model.provider + "/" + model.id,
-    model,
-    supportsTools: getProviderCaps(model.provider).supportsTools,
-  });
-  const initialModel = available[opts.defaultModelIndex] ?? available[0];
-  if (!initialModel) return null;
-  let selectedModel = asOption(initialModel);
-  const calibration = createProductionServices().tokenCalibration;
-  const damageMedian = preflightDamageMedian(ctx.cwd, opts.config);
+ const available = ctx.modelRegistry.getAvailable();
+ const asOption = (model: Model<Api>): ModelOption => ({
+  value: model.provider + "/" + model.id,
+  label: model.provider + "/" + model.id,
+  model,
+  supportsTools: getProviderCaps(model.provider).supportsTools,
+ });
+ // Capacity depends on the planned requests, so it is judged per mode.
+ const capacity = (model: Model<Api>, mode?: CompactionMode) =>
+  opts.feasibility?.(model, "summary", mode) ?? { selectable: true };
+ const usable = (model: Model<Api>) => PRIMARY_MODES.some((mode) => capacity(model, mode).selectable);
+ let highlighted: EffectiveCompactionMode | undefined;
+ // Start on the configured route when it is eligible, otherwise the first eligible model.
+ const configured = available[opts.defaultModelIndex] ?? available[0];
+ const initialModel = configured && usable(configured) ? configured : available.find(usable);
+ if (!initialModel) return null;
+ let selectedModel = asOption(initialModel);
+ const calibration = createProductionServices().tokenCalibration;
+ const damageMedian = preflightDamageMedian(ctx.cwd, opts.config);
 
-  while (true) {
-    const shared = prepareManualPreflightContext(
-      ctx,
-      selectedModel.model,
-      calibration,
-    );
-    const plans = new Map(
-      PRIMARY_MODES.map((mode) => [
-        mode,
-        planManualPreflight(
-          ctx,
-          selectedModel.model,
-          mode,
-          calibration,
-          opts.config,
-          damageMedian,
-          shared,
-        ),
-      ]),
-    );
-    const recommended = recommendPreflight(plans);
-    const action = await ctx.ui.custom<
-      EffectiveCompactionMode | "model" | null
-    >(
-      (tui, theme, keybindings, done) => {
-        let selected = Math.max(0, PRIMARY_MODES.indexOf(recommended.mode));
-        let details = false;
-        let feedback = "";
-        return {
-          render: (width: number) => {
-            const inner = Math.max(1, width - 2);
-            const border = (text: string) => theme.fg("borderMuted", text);
-            const fit = (text: string, max = inner) =>
-              truncateToWidth(text, Math.max(0, max), "");
-            const fill = (text: string) => {
-              const clipped = fit(text);
-              return (
-                clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped)))
-              );
-            };
-            const cell = (text = "") => border("│") + fill(text) + border("│");
-            const divider = border("├" + "─".repeat(inner) + "┤");
-            const title = fit(" Smart Compact ", Math.max(0, inner - 1));
-            const top =
-              border("╭─") +
-              theme.fg("accent", theme.bold(title)) +
-              border(
-                "─".repeat(Math.max(0, inner - 1 - visibleWidth(title))) + "╮",
-              );
-            const bottom = border("╰" + "─".repeat(inner) + "╯");
-            const selectedMode = PRIMARY_MODES[selected];
-            const current = plans.get(selectedMode)!;
-            const contextWindow = current.contextWindowTokens;
-            const contextPct = Math.round(current.contextPercent);
-            const barLength = width >= 72 ? 14 : 8;
-            const barFilled = Math.min(
-              barLength,
-              Math.round((Math.min(100, contextPct) / 100) * barLength),
-            );
-            const contextBar =
-              theme.fg(
-                contextPct >= 90
-                  ? "error"
-                  : contextPct >= 70
-                    ? "warning"
-                    : "success",
-                "█".repeat(barFilled),
-              ) + theme.fg("dim", "░".repeat(barLength - barFilled));
-            const modelPrefix = "  Summary model  ";
-            const modelAction = theme.fg("accent", "  [M] Change");
-            const modelWidth = Math.max(
-              1,
-              inner - visibleWidth(modelPrefix) - visibleWidth(modelAction),
-            );
-            const lines = [
-              top,
-              cell(
-                "  Context  " +
-                  compactTokenCount(opts.contextTokens) +
-                  " / " +
-                  compactTokenCount(contextWindow) +
-                  "  " +
-                  contextBar +
-                  "  " +
-                  contextPct +
-                  "%",
-              ),
-              cell(
-                theme.fg("dim", modelPrefix) +
-                  fit(selectedModel.label, modelWidth) +
-                  modelAction,
-              ),
-              divider,
-            ];
-
-            for (let index = 0; index < PRIMARY_MODES.length; index++) {
-              const mode = PRIMARY_MODES[index];
-              const preview = plans.get(mode)!;
-              const plan = preview.plan;
-              const viable = plan?.viable ?? false;
-              const marker = index === selected ? "› " : "  ";
-              const recommendedMark =
-                mode === recommended.mode ? "  recommended" : "             ";
-              const trait =
-                mode === "fast"
-                  ? "quickest"
-                  : mode === "balanced"
-                    ? "default"
-                    : "deepest";
-              const stats =
-                (viable && plan
-                  ? "~" +
-                    compactTokenCount(plan.projectedAfterTokens) +
-                    " after · " +
-                    percent(plan.projectedYield * 100) +
-                    " saved"
-                  : "unavailable · " + explainPreflightReason(preview.reason)) +
-                " · " +
-                trait;
-              const line =
-                " " +
-                marker +
-                MODE_LABELS[mode].padEnd(9) +
-                recommendedMark +
-                "  " +
-                stats;
-              lines.push(
-                cell(
-                  index === selected
-                    ? theme.fg("accent", theme.bold(line))
-                    : theme.fg(
-                        viable
-                          ? mode === recommended.mode
-                            ? "success"
-                            : "text"
-                          : "muted",
-                        line,
-                      ),
-                ),
-              );
-            }
-
-            lines.push(divider);
-            for (const line of formatPreflightSummary(
-              current,
-              selectedModel.value,
-              details,
-            )) {
-              const color =
-                line.startsWith("Unavailable") ||
-                line.startsWith("Plan unavailable")
-                  ? "warning"
-                  : line.startsWith("✓")
-                    ? "success"
-                    : "text";
-              lines.push(cell("  " + theme.fg(color, line)));
-            }
-            if (details)
-              lines.push(
-                cell(
-                  "  " +
-                    theme.fg(
-                      "dim",
-                      MODE_LABELS[selectedMode] +
-                        " · " +
-                        MODE_COPY[selectedMode],
-                    ),
-                ),
-              );
-            if (feedback)
-              lines.push(cell("  " + theme.fg("warning", feedback)));
-            lines.push(
-              divider,
-              cell(
-                theme.fg(
-                  "dim",
-                  "  ↑↓ choose · Enter run · D details · M model · Esc cancel",
-                ),
-              ),
-              bottom,
-            );
-            return lines;
-          },
-          invalidate: () => {},
-          handleInput: (data: string) => {
-            if (keybindings.matches(data, "tui.select.cancel")) {
-              done(null);
-              return;
-            }
-            if (keybindings.matches(data, "tui.select.up")) {
-              selected =
-                (selected + PRIMARY_MODES.length - 1) % PRIMARY_MODES.length;
-              feedback = "";
-            } else if (keybindings.matches(data, "tui.select.down")) {
-              selected = (selected + 1) % PRIMARY_MODES.length;
-              feedback = "";
-            } else if (keybindings.matches(data, "tui.select.confirm")) {
-              const mode = PRIMARY_MODES[selected];
-              const preview = plans.get(mode)!;
-              if (preview.plan?.viable) {
-                done(mode);
-                return;
-              }
-              feedback =
-                "Unavailable: " +
-                explainPreflightReason(preview.reason) +
-                ". Choose another mode or model.";
-            } else if (data.toLowerCase() === "d")
-              (feedback = ""), (details = !details);
-            else if (data.toLowerCase() === "m") {
-              done("model");
-              return;
-            }
-            tui.requestRender();
-          },
-        };
-      },
-      {
-        overlay: true,
-        overlayOptions: {
-          width: "68%",
-          minWidth: 52,
-          anchor: "center",
-          maxHeight: "85%",
-        },
-      },
-    );
-
-    if (!action) return null;
-    if (action === "model") {
-      const modelIndex = available.findIndex(
-        (model) =>
-          model.provider === selectedModel.model.provider &&
-          model.id === selectedModel.model.id,
+ while (true) {
+  const shared = prepareManualPreflightContext(
+   ctx,
+   selectedModel.model,
+   calibration,
+  );
+  const plans = new Map(
+   PRIMARY_MODES.map((mode) => [
+    mode,
+    planManualPreflight(
+     ctx,
+     selectedModel.model,
+     mode,
+     calibration,
+     opts.config,
+     damageMedian,
+     shared,
+    ),
+   ]),
+  );
+  const recommended = recommendPreflight(plans);
+  const engines = loadConfig().compactionEngines;
+  const action = await ctx.ui.custom<
+   EffectiveCompactionMode | "model" | "state" | null
+  >(
+   (tui, theme, keybindings, done) => {
+    const fits = (mode: EffectiveCompactionMode) => capacity(selectedModel.model, mode).selectable;
+    const preferred = highlighted ?? recommended.mode;
+    let selected = Math.max(0, PRIMARY_MODES.indexOf(
+     fits(preferred) ? preferred : PRIMARY_MODES.find(fits) ?? preferred,
+    ));
+    let details = false;
+    let blockedEnter = false;
+    // Plan-section paging for terminals too short to show it whole.
+    let sectionOffset = 0;
+    let sectionPage = 1;
+    return {
+     render: (width: number) => {
+      const inner = Math.max(1, width - 2);
+      const border = (text: string) => theme.fg("borderMuted", text);
+      const cell = (text = "") => {
+       const clipped = truncateToWidth(text, inner, "");
+       return (
+        border("│") +
+        clipped +
+        " ".repeat(Math.max(0, inner - visibleWidth(clipped))) +
+        border("│")
+       );
+      };
+      // Copy wraps inside the frame instead of clipping at narrow widths.
+      const para = (text: string, color: ThemeColor, indent = 2) =>
+       wrapTextWithAnsi(text, Math.max(1, inner - indent)).map((part) =>
+        cell(" ".repeat(indent) + theme.fg(color, part)),
+       );
+      const divider = border("├" + "─".repeat(inner) + "┤");
+      const title = truncateToWidth(" Smart Compact ", Math.max(0, inner - 1), "");
+      const top =
+       border("╭─") +
+       theme.fg("accent", theme.bold(title)) +
+       border(
+        "─".repeat(Math.max(0, inner - 1 - visibleWidth(title))) + "╮",
+       );
+      const bottom = border("╰" + "─".repeat(inner) + "╯");
+      const selectedMode = PRIMARY_MODES[selected];
+      const modeName = MODE_LABELS[selectedMode];
+      const current = plans.get(selectedMode)!;
+      const check = capacity(selectedModel.model, selectedMode);
+      const runnable = (current.plan?.viable ?? false) && check.selectable;
+      const contextPct = Math.round(current.contextPercent);
+      const barLength = inner >= 60 ? 14 : inner >= 40 ? 8 : 4;
+      const barFilled = Math.min(
+       barLength,
+       Math.round((Math.min(100, contextPct) / 100) * barLength),
       );
-      const next = await selectModel(ctx, {
-        ...opts,
-        defaultModelIndex: Math.max(0, modelIndex),
+      const contextBar =
+       theme.fg(
+        contextPct >= 90 ? "error" : contextPct >= 70 ? "warning" : "success",
+        "█".repeat(barFilled),
+       ) + theme.fg("dim", "░".repeat(barLength - barFilled));
+      const modelText = "Summary model  " + selectedModel.label;
+      const changeModel = "[M] Change";
+      // Narrow frames move the model shortcut into the key line.
+      const modelFits = visibleWidth(modelText + changeModel) + 4 <= inner;
+      const head = [
+       top,
+       cell(
+        "  Context  " +
+        compactTokenCount(opts.contextTokens) +
+        " / " +
+        compactTokenCount(current.contextWindowTokens) +
+        "  " +
+        contextBar +
+        " " +
+        contextPct +
+        "%",
+       ),
+       ...(modelFits
+        ? [cell("  " + theme.fg("text", modelText) + "  " + theme.fg("accent", changeModel))]
+        : para(modelText, "text")),
+       divider,
+      ];
+
+      const modeRows = PRIMARY_MODES.flatMap((mode, index) => {
+       const plan = plans.get(mode)!.plan;
+       const fitsModel = fits(mode);
+       const viable = (plan?.viable ?? false) && fitsModel;
+       const outcome =
+        (mode === recommended.mode ? "recommended · " : "") +
+        (viable && plan
+         ? percent(plan.projectedYield * 100) + " saved"
+         : fitsModel
+          ? "unavailable"
+          : "too large for model");
+       const color: ThemeColor =
+        index === selected ? "accent" : !viable ? "muted" : mode === recommended.mode ? "success" : "text";
+       const paint = (text: string) =>
+        index === selected ? theme.fg(color, theme.bold(text)) : theme.fg(color, text);
+       const bare = " " + (index === selected ? "› " : "  ") + MODE_LABELS[mode];
+       // Prefer one aligned row; drop the trait, then wrap, as width shrinks.
+       for (const left of [bare.padEnd(13) + MODE_TRAITS[mode], bare]) {
+        const gap = inner - visibleWidth(left) - visibleWidth(outcome) - 1;
+        if (gap >= 2) return [cell(paint(left + " ".repeat(gap) + outcome))];
+       }
+       return [cell(paint(bare)), ...para(outcome, color, 5)];
       });
-      if (next) selectedModel = next;
-      continue;
-    }
-    return { model: selectedModel, mode: action };
+
+      const tradeoff = para(
+       modeName + " (" + MODE_TRAITS[selectedMode] + "): " + MODE_TRADEOFFS[selectedMode],
+       "muted",
+      );
+      const essentials: string[] = [];
+      if (!check.selectable)
+       essentials.push(
+        ...para(
+         "Too large for this model: " +
+         (check.reason ?? "the planned requests do not fit"),
+         "warning",
+        ),
+       );
+      if (blockedEnter)
+       essentials.push(...para("Choose another mode or model.", "warning"));
+      const brief = formatPreflightSummary(current, selectedModel.value, false, engines);
+      const planLines = details
+       ? formatPreflightSummary(current, selectedModel.value, true, engines)
+       : brief;
+      const summaryColor = (line: string): ThemeColor =>
+       line.startsWith("Unavailable") || line.startsWith("Plan unavailable")
+        ? "warning"
+        : line.startsWith("✓")
+         ? "success"
+         : "text";
+      for (const line of brief) essentials.push(...para(line, summaryColor(line)));
+      essentials.push(...para("Estimates, not guarantees.", "dim"));
+      for (const line of planLines.slice(brief.length))
+       essentials.push(...para(line, "dim"));
+      if (details)
+       essentials.push(
+        ...para(
+         "Recommendation: " + MODE_LABELS[recommended.mode] + " — " + recommended.reason,
+         "dim",
+        ),
+       );
+
+      const foot = [
+       divider,
+       ...para(
+        runnable
+         ? "Enter  Compact with " + modeName
+         : "Enter  Compact — unavailable for " + modeName,
+        runnable ? "accent" : "muted",
+        1,
+       ),
+       ...para(
+        "↑↓ mode · " +
+        (modelFits ? "" : "M model · ") +
+        "D " +
+        (details ? "hide details" : "details") +
+        (opts.showEffectiveState ? " · S state" : "") +
+        " · Esc back",
+        "dim",
+        1,
+       ),
+       bottom,
+      ];
+      // The overlay clips from the bottom: on short terminals drop the
+      // tradeoff sentence first, then page the plan section — never the actions.
+      const rows = tui.terminal?.rows;
+      const room = rows
+       ? Math.floor(rows * 0.85) - head.length - modeRows.length - foot.length - 1
+       : Infinity;
+      let section =
+       tradeoff.length + essentials.length <= room ? [...tradeoff, ...essentials] : essentials;
+      if (section.length > room) {
+       sectionPage = Math.max(1, room - 1);
+       sectionOffset = Math.max(0, Math.min(sectionOffset, section.length - sectionPage));
+       const end = Math.min(section.length, sectionOffset + sectionPage);
+       section = [
+        ...section.slice(sectionOffset, end),
+        cell(
+         "  " +
+         theme.fg(
+          "dim",
+          "… " + (sectionOffset + 1) + "–" + end + " of " + section.length + " · PgUp/PgDn",
+         ),
+        ),
+       ];
+      } else sectionOffset = 0;
+      return [...head, ...modeRows, divider, ...section, ...foot];
+     },
+     invalidate: () => { },
+     handleInput: (data: string) => {
+      if (keybindings.matches(data, "tui.select.cancel")) {
+       done(null);
+       return;
+      }
+      if (keybindings.matches(data, "tui.select.up")) {
+       selected =
+        (selected + PRIMARY_MODES.length - 1) % PRIMARY_MODES.length;
+       blockedEnter = false;
+       sectionOffset = 0;
+      } else if (keybindings.matches(data, "tui.select.down")) {
+       selected = (selected + 1) % PRIMARY_MODES.length;
+       blockedEnter = false;
+       sectionOffset = 0;
+      } else if (keybindings.matches(data, "tui.select.confirm")) {
+       const mode = PRIMARY_MODES[selected];
+       if (plans.get(mode)!.plan?.viable && fits(mode)) {
+        done(mode);
+        return;
+       }
+       blockedEnter = true;
+       sectionOffset = 0;
+      } else if (keybindings.matches(data, "tui.select.pageDown")) {
+       sectionOffset += sectionPage;
+      } else if (keybindings.matches(data, "tui.select.pageUp")) {
+       sectionOffset = Math.max(0, sectionOffset - sectionPage);
+      } else if (letterKey(data, "d")) {
+       details = !details;
+      } else if (letterKey(data, "m")) {
+       highlighted = PRIMARY_MODES[selected];
+       done("model");
+       return;
+      } else if (opts.showEffectiveState && letterKey(data, "s")) {
+       done("state");
+       return;
+      }
+      tui.requestRender();
+     },
+    };
+   },
+   {
+    overlay: true,
+    overlayOptions: {
+     width: "70%",
+     minWidth: 56,
+     anchor: "center",
+     maxHeight: "85%",
+    },
+   },
+  );
+
+  if (!action) return null;
+  if (action === "state") {
+   await opts.showEffectiveState?.();
+   continue;
   }
+  if (action === "model") {
+   const modelIndex = available.findIndex(
+    (model) =>
+     model.provider === selectedModel.model.provider &&
+     model.id === selectedModel.model.id,
+   );
+   const next = await selectModel(ctx, {
+    ...opts,
+    defaultModelIndex: Math.max(0, modelIndex),
+    ...(highlighted ? { mode: highlighted } : {}),
+   });
+   if (next) selectedModel = next;
+   continue;
+  }
+  return { model: selectedModel, mode: action };
+ }
 }
 
 export {
-  showBackupViewer,
-  showRestoreAction,
-  showRestorePicker,
+ showBackupViewer,
+ showRestoreAction,
+ showRestorePicker,
 } from "./backup-overlays.ts";
 export { showOpenLoopsUI } from "./open-loops-overlay.ts";

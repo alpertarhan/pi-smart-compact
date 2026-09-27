@@ -103,6 +103,6 @@ describe("dashboard trust insights", () => {
     expect(formatDashboardProviders(insights).join("\n")).toContain("openai/gpt");
     const canaryText = formatDashboardCanary(insights).join("\n");
     expect(canaryText).toContain("PROMOTE");
-    expect(canaryText).toContain("Runs (total/applied): stable 22/22 | canary 20/20");
+    expect(canaryText).toContain("Runs (total/attempted/applied): stable 22/22/20 | canary 20/20/20");
   });
 });

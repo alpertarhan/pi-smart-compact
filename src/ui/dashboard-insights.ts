@@ -1,5 +1,8 @@
 import { VERSION } from "../constants.ts";
-import { assessCanary, isTelemetryFailureKind, type CanaryAssessment, type DamageTelemetryEntry } from "../domain/telemetry.ts";
+import {
+  assessCanary, buildPreparationStats, buildQualityProvenanceStats, isTelemetryFailureKind,
+  type CanaryAssessment, type DamageTelemetryEntry, type PreparationPolicyStats, type QualityProvenanceStats,
+} from "../domain/telemetry.ts";
 import type { CompactMetricsEntry, ProviderRouteMetric, ProviderRouteStage, TelemetryFailureKind } from "../types.ts";
 import { metricDuration } from "./dashboard-format.ts";
 
@@ -46,7 +49,12 @@ export interface DashboardProviderInsight {
   avgQuality: number | null;
   qualityCoverage: number;
   avgLatencyMs: number;
+  /** Quota-inclusive: input + cache read + cache write + output per call. */
   avgTokensPerCall: number;
+  avgCacheReadTokensPerCall: number;
+  avgCacheWriteTokensPerCall: number;
+  usageBasis?: "reported" | "estimated";
+  billing?: "api" | "subscription";
 }
 
 export interface DashboardInsights {
@@ -55,6 +63,8 @@ export interface DashboardInsights {
   providers: DashboardProviderInsight[];
   canary: CanaryAssessment;
   failures: Partial<Record<TelemetryFailureKind, number>>;
+  preparation: PreparationPolicyStats;
+  qualityProvenance: QualityProvenanceStats;
 }
 
 function safeLabel(value: unknown): string | null {
@@ -161,6 +171,8 @@ function legacyRoute(entry: CompactMetricsEntry): ProviderRouteMetric[] {
     stage: "synthesize", provider: entry.provider, model,
     calls: entry.totalCalls, successes: entry.status === "success" || entry.status === "dry-run" ? entry.totalCalls : 0,
     avgLatencyMs: entry.avgLatency, inputTokens: entry.totalInput, outputTokens: entry.totalOutput,
+    ...(entry.totalCacheHit > 0 ? { cacheReadTokens: entry.totalCacheHit } : {}),
+    ...((entry.totalCacheWrite ?? 0) > 0 ? { cacheWriteTokens: entry.totalCacheWrite } : {}),
   }];
 }
 
@@ -168,6 +180,7 @@ function providerInsights(entries: readonly CompactMetricsEntry[]): DashboardPro
   const groups = new Map<string, {
     stage: ProviderRouteStage; provider: string; model: string; runs: number; calls: number;
     successes: number; latency: number; tokens: number; quality: number; qualityRuns: number;
+    cacheRead: number; cacheWrite: number; estimatedRuns: number; subscriptionRuns: number;
   }>();
   for (const entry of entries) {
     const routes = Array.isArray(entry.providerRoutes) && entry.providerRoutes.length ? entry.providerRoutes : legacyRoute(entry);
@@ -180,12 +193,20 @@ function providerInsights(entries: readonly CompactMetricsEntry[]): DashboardPro
       const group = groups.get(key) ?? {
         stage: route.stage, provider: route.provider, model: route.model,
         runs: 0, calls: 0, successes: 0, latency: 0, tokens: 0, quality: 0, qualityRuns: 0,
+        cacheRead: 0, cacheWrite: 0, estimatedRuns: 0, subscriptionRuns: 0,
       };
       group.runs++;
       group.calls += route.calls;
       group.successes += Math.max(0, Math.min(route.calls, route.successes));
       group.latency += Math.max(0, route.avgLatencyMs) * route.calls;
-      group.tokens += Math.max(0, route.inputTokens) + Math.max(0, route.outputTokens);
+      // Cached tokens remain quota; the split stays visible so subscription
+      // routes are never mistaken for API-billable ones.
+      group.tokens += Math.max(0, route.inputTokens) + Math.max(0, route.outputTokens)
+        + Math.max(0, route.cacheReadTokens ?? 0) + Math.max(0, route.cacheWriteTokens ?? 0);
+      group.cacheRead += Math.max(0, route.cacheReadTokens ?? 0);
+      group.cacheWrite += Math.max(0, route.cacheWriteTokens ?? 0);
+      if (route.usageBasis === "estimated") group.estimatedRuns++;
+      if (route.billing === "subscription") group.subscriptionRuns++;
       if (entry.metricsSchemaVersion === 2
         && route.qualityBasis === "pre-repair-verification" && finite(route.qualityScore)
         && route.qualityScore >= 0 && route.qualityScore <= 100) {
@@ -206,6 +227,10 @@ function providerInsights(entries: readonly CompactMetricsEntry[]): DashboardPro
     qualityCoverage: group.runs ? group.qualityRuns / group.runs : 0,
     avgLatencyMs: group.calls ? Math.round(group.latency / group.calls) : 0,
     avgTokensPerCall: group.calls ? Math.round(group.tokens / group.calls) : 0,
+    avgCacheReadTokensPerCall: group.calls ? Math.round(group.cacheRead / group.calls) : 0,
+    avgCacheWriteTokensPerCall: group.calls ? Math.round(group.cacheWrite / group.calls) : 0,
+    ...(group.estimatedRuns > 0 ? { usageBasis: "estimated" as const } : {}),
+    ...(group.subscriptionRuns > 0 ? { billing: "subscription" as const } : {}),
   })).sort((a, b) => a.stage.localeCompare(b.stage) || b.runs - a.runs || a.provider.localeCompare(b.provider));
 }
 
@@ -231,9 +256,30 @@ export function formatDashboardProviders(insights: DashboardInsights): string[] 
   return [
     "Provider routes",
     "",
+    "Tokens/call are quota-inclusive (input + cache read + cache write + output); the cache split is shown per call. Never price subscription (sub) routes at API rates.",
+    "",
     ...(insights.providers.length ? insights.providers.map(item =>
-      "- " + item.stage + " | " + item.provider + "/" + item.model + " | n=" + item.runs + " | reliable " + Math.round(item.reliability * 100) + "% | quality " + (item.avgQuality?.toFixed(1) ?? "—") + " (" + Math.round(item.qualityCoverage * 100) + "% coverage) | " + item.avgLatencyMs + "ms | " + item.avgTokensPerCall + "t/call",
+      "- " + item.stage + " | " + item.provider + "/" + item.model + " | n=" + item.runs + " | reliable " + Math.round(item.reliability * 100) + "% | quality " + (item.avgQuality?.toFixed(1) ?? "—") + " (" + Math.round(item.qualityCoverage * 100) + "% coverage) | " + item.avgLatencyMs + "ms | " + item.avgTokensPerCall + "t/call (cache " + item.avgCacheReadTokensPerCall + "r/" + item.avgCacheWriteTokensPerCall + "w)" + (item.usageBasis === "estimated" ? " | ~estimated" : "") + (item.billing === "subscription" ? " | sub" : ""),
     ) : ["No stage-route evidence yet."]),
+  ];
+}
+
+export function formatDashboardPreparation(insights: DashboardInsights): string[] {
+  const prep = insights.preparation;
+  const reasons = Object.entries(prep.discardReasons).map(([kind, count]) => kind + "=" + count).join(", ");
+  return [
+    "Preparation policy",
+    "",
+    "Prepared: " + prep.preparedRuns + " | used: " + prep.usedRuns + " | discarded: " + prep.discardedRuns
+      + (prep.otherOutcomes ? " | failed: " + prep.otherOutcomes : ""),
+    "Reuse rate: " + (prep.reuseRate == null ? "n/a" : Math.round(prep.reuseRate * 100) + "%")
+      + " | median ready " + (prep.medianReadyMs ?? "n/a") + "ms | median wait " + (prep.medianWaitMs ?? "n/a") + "ms",
+    "Discard reasons: " + (reasons || "none"),
+    "Discarded spend (counted once, never applied evidence): " + prep.discardedCost.calls + " calls | "
+      + prep.discardedCost.inputTokens + "t in | " + prep.discardedCost.cacheReadTokens + "t cache r | "
+      + prep.discardedCost.cacheWriteTokens + "t cache w | " + prep.discardedCost.outputTokens + "t out",
+    "",
+    "Measurements only — thresholds, TTLs, and cooldowns are policy, never auto-tuned from these numbers.",
   ];
 }
 
@@ -243,7 +289,7 @@ export function formatDashboardCanary(insights: DashboardInsights): string[] {
     "Canary / stable control",
     "",
     "Decision: " + c.decision.toUpperCase() + " | data confidence " + c.dataConfidence + "%",
-    "Runs (total/applied): stable " + c.baseline.runs + "/" + c.baseline.appliedRuns + " | canary " + c.canary.runs + "/" + c.canary.appliedRuns,
+    "Runs (total/attempted/applied): stable " + c.baseline.runs + "/" + c.baseline.attemptedRuns + "/" + c.baseline.appliedRuns + " | canary " + c.canary.runs + "/" + c.canary.attemptedRuns + "/" + c.canary.appliedRuns,
     "Success: stable " + Math.round(c.baseline.successRate * 100) + "% | canary " + Math.round(c.canary.successRate * 100) + "%",
     "Quality: stable " + (c.baseline.avgQuality?.toFixed(1) ?? "—") + " | canary " + (c.canary.avgQuality?.toFixed(1) ?? "—"),
     "p95: stable " + c.baseline.p95LatencyMs + "ms | canary " + c.canary.p95LatencyMs + "ms",
@@ -277,5 +323,7 @@ export function buildDashboardInsights(
       minCanaryRuns: options.minCanaryRuns,
     }),
     failures,
+    preparation: buildPreparationStats(entries),
+    qualityProvenance: buildQualityProvenanceStats(entries),
   };
 }
