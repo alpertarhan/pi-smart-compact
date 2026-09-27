@@ -107,6 +107,13 @@
 
 ### Fixed
 
+- Sessions with automatic compaction on `background` and `contextHygieneEnabled`
+  off trimmed at break-even or on a cold cache since the timing rule landed;
+  the background strategy again trims only under pressure, as before.
+  Break-even and cold-cache cleanup need `contextHygieneEnabled`. This also
+  restored the offline evaluator's `no-compaction` baseline under
+  `--background-prep` (it had started trimming, and Pi's idle cache warming
+  stopped at every rebuilt boundary).
 - A held automatic trim is applied through Pi's `context_with_system` event,
   not `context`: a changed `context` result makes Pi collapse
   mid-conversation system messages into one head, so the cold request and

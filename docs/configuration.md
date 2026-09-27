@@ -191,7 +191,7 @@ hides latency, not cost: an unused summary still spends its model budget.
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
 | Ready result lifetime | 5 minutes |
-| Context hygiene | Enabled by this strategy even if `contextHygieneEnabled` is off (needs active `smart_context`) |
+| Context hygiene | Pressure-gated trims run under this strategy even if `contextHygieneEnabled` is off (needs active `smart_context`); break-even and cold-cache trims need `contextHygieneEnabled` |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
 window, preparation starts at 120k and applies at 140k. With Auto and an 80%
