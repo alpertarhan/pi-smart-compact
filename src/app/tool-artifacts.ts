@@ -20,7 +20,7 @@ export const ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 export const ARTIFACT_SESSION_BYTES = 32 * 1024 * 1024;
 export const ARTIFACT_SESSION_FILES = 256;
 const HEX = /^[a-f0-9]{64}$/;
-const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+export const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 
 export interface ToolArtifact {
   version: 1;

@@ -17,6 +17,8 @@ interface EvidenceSource {
   tool: string;
   source: string;
   chars: number;
+  /** Session outputs only: whether a SHA-256 was recorded at archive time (checked on read/search). */
+  hashed?: boolean;
 }
 
 export function contextEvidence(branch: SessionEntry[], sessionId: string, scrubber: SecretScrubber) {
@@ -40,7 +42,8 @@ export function contextEvidence(branch: SessionEntry[], sessionId: string, scrub
     const entry = entries.get(id);
     if (entry?.type !== "message" || entry.message.role !== "toolResult") continue;
     records.set(id, { id, kind: "session-output", tool: entry.message.toolName,
-      source: calls.get(entry.message.toolCallId) ?? entry.message.toolName, chars: extractText(entry.message.content).length });
+      source: calls.get(entry.message.toolCallId) ?? entry.message.toolName, chars: extractText(entry.message.content).length,
+      hashed: state.archives.has(id) });
   }
   for (const source of visual?.archive.sources ?? []) {
     records.set(source.id, { id: source.id, kind: "visual-excerpt", tool: "historical-read", source: "Bounded visual excerpt", chars: source.text.length });

@@ -13,6 +13,7 @@ import type { LlmMessage } from "../types.ts";
 import { makeTokenEstimator } from "../utils/tokens.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { anchorFromEntry } from "./navigation-data.ts";
+import { digest } from "./tool-artifacts.ts";
 
 export const CONTEXT_CONTROL_TYPE = "smart-compact-context";
 export const CONTEXT_REPORT_TYPE = "smart-compact-rewind";
@@ -48,10 +49,13 @@ export interface ContextCheckpoint {
 export type TrimCause = "pressure" | "break-even" | "cold" | "manual" | "agent";
 const TRIM_CAUSES: readonly unknown[] = ["pressure", "break-even", "cold", "manual", "agent"] satisfies TrimCause[];
 
+/** Content evidence for an archived output at commit time; `references` stays the authorization list. */
+export interface ArchiveRecord { id: string; sha256: string; chars: number }
+
 type ControlData =
   | { version: 1; action: "checkpoint"; checkpoint: ContextCheckpoint }
-  | { version: 1; action: "trim"; references: string[]; cause?: TrimCause }
-  | { version: 1; action: "rewind"; references: string[] };
+  | { version: 1; action: "trim"; references: string[]; archives?: ArchiveRecord[]; cause?: TrimCause }
+  | { version: 1; action: "rewind"; references: string[]; archives?: ArchiveRecord[] };
 
 function controlData(entry: SessionEntry): ControlData | null {
   if (entry.type !== "custom" || entry.customType !== CONTEXT_CONTROL_TYPE) return null;
@@ -65,6 +69,9 @@ function controlData(entry: SessionEntry): ControlData | null {
       && typeof cp.snapshot.hash === "string" && /^[a-f0-9]{64}$/.test(cp.snapshot.hash)) return data as ControlData;
   } else if ((data.action === "trim" || data.action === "rewind") && Array.isArray(data.references)
     && data.references.length <= MAX_CONTEXT_EDITS && data.references.every(id => typeof id === "string" && id.length <= 128)
+    && (!("archives" in data) || (Array.isArray(data.archives) && data.archives.length <= MAX_CONTEXT_EDITS
+      && data.archives.every((item: Partial<ArchiveRecord> | null) => item && typeof item.id === "string" && item.id.length <= 128
+        && typeof item.sha256 === "string" && /^[a-f0-9]{64}$/.test(item.sha256) && Number.isSafeInteger(item.chars) && item.chars! >= 0)))
     && (data.action !== "trim" || !("cause" in data) || TRIM_CAUSES.includes(data.cause))) {
     return data as ControlData;
   }
@@ -80,6 +87,7 @@ export function inspectContext(branch: SessionEntry[], sessionId: string) {
   let checkpointIndex = -1;
   let invalidReason: string | undefined;
   const references = new Set<string>();
+  const archives = new Map<string, Omit<ArchiveRecord, "id">>();
   for (let index = 0; index < branch.length; index++) {
     const entry = branch[index];
     const data = controlData(entry);
@@ -90,7 +98,13 @@ export function inspectContext(branch: SessionEntry[], sessionId: string) {
       checkpointIndex = index;
       invalidReason = undefined;
     } else if (data) {
-      for (const id of data.references) references.add(id);
+      const recorded = new Map(data.archives?.map(({ id, sha256, chars }) => [id, { sha256, chars }]));
+      // The newest owned record listing an id decides its hash; a record without one (legacy) clears it.
+      for (const id of data.references) {
+        references.add(id);
+        const archive = recorded.get(id);
+        if (archive) archives.set(id, archive); else archives.delete(id);
+      }
       if (data.action === "rewind") { checkpoint = null; checkpointIndex = -1; invalidReason = undefined; }
     } else if (entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE) {
       checkpoint = null;
@@ -114,7 +128,7 @@ export function inspectContext(branch: SessionEntry[], sessionId: string) {
       }
     }
   }
-  return { checkpoint: invalidReason ? null : checkpoint, checkpointIndex, invalidReason, references };
+  return { checkpoint: invalidReason ? null : checkpoint, checkpointIndex, invalidReason, references, archives };
 }
 
 /**
@@ -267,6 +281,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
   const entries: SessionBoundaryDraft[] = [];
   const references: string[] = [];
+  const archives: ArchiveRecord[] = [];
   let savedChars = 0;
   for (const { id, toolName, call, text } of eligible) {
     const flat = flattenToolCallBlock(call);
@@ -276,10 +291,11 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
     });
     entries.push({ type: "context_edit", targetId: id, replacement: { content: marker } });
     references.push(id);
+    archives.push({ id, sha256: digest(text), chars: text.length });
     savedChars += text.length - marker.length;
   }
   const supersededCount = eligible.filter(item => superseded.has(item.id)).length;
-  if (entries.length) entries.push(contextControlEntry({ version: 1, action: "trim", references }));
+  if (entries.length) entries.push(contextControlEntry({ version: 1, action: "trim", references, archives }));
   // Branch-persisted cooldown survives reload/fork; never rewrite a cached prefix every turn.
   const lastChange = branch.findLastIndex(entry => {
     const data = controlData(entry);
@@ -288,13 +304,13 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   const turnsSinceChange = branch.slice(lastChange + 1).filter(entry => entry.type === "message" && entry.message.role === "assistant").length;
   const cooldownTurns = lastChange < 0 ? 0 : Math.max(0, AUTO_TRIM_COOLDOWN_TURNS - turnsSinceChange);
   const automatic = savedChars < MIN_AUTO_TRIM_SAVING_CHARS ? "insufficient-savings" : cooldownTurns > 0 ? "cooldown" : "ready";
-  return { entries, references, savedChars, automatic, cooldownTurns, superseded: supersededCount };
+  return { entries, references, archives, savedChars, automatic, cooldownTurns, superseded: supersededCount };
 }
 
 /** The plan's context edits followed by a trim control entry recording `cause`. */
-export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references: string[] }, cause: TrimCause): SessionBoundaryDraft[] {
+export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references: string[]; archives: ArchiveRecord[] }, cause: TrimCause): SessionBoundaryDraft[] {
   const edits = plan.entries.filter(entry => entry.type === "context_edit");
-  return edits.length ? [...edits, contextControlEntry({ version: 1, action: "trim", references: plan.references, cause })] : [];
+  return edits.length ? [...edits, contextControlEntry({ version: 1, action: "trim", references: plan.references, archives: plan.archives, cause })] : [];
 }
 
 /**
@@ -347,20 +363,38 @@ export function planContextRewind(branch: SessionEntry[], sessionId: string, che
   if (targets.length > MAX_CONTEXT_EDITS) throw new Error("Research exceeds the rewind edit limit; compact instead.");
   const targetSet = new Set(targets);
   const edited = new Set(branch.flatMap(entry => entry.type === "context_edit" ? [entry.targetId] : []));
-  const references = branch.flatMap(entry => targetSet.has(entry.id) && entry.type === "message"
-    && entry.message.role === "toolResult" && (!edited.has(entry.id) || state.references.has(entry.id)) ? [entry.id] : []);
+  const references: string[] = [];
+  const archives: ArchiveRecord[] = [];
+  let mismatched = 0;
+  for (const entry of branch) {
+    if (!targetSet.has(entry.id) || entry.type !== "message" || entry.message.role !== "toolResult"
+      || (edited.has(entry.id) && !state.references.has(entry.id))) continue;
+    const text = extractText(entry.message.content);
+    const sha256 = digest(text);
+    const recorded = state.archives.get(entry.id);
+    // Removing content is still safe; only recovery of text that no longer matches its record is withheld.
+    if (recorded && recorded.sha256 !== sha256) { mismatched++; continue; }
+    references.push(entry.id);
+    archives.push({ id: entry.id, sha256, chars: text.length });
+  }
   const entries: SessionBoundaryDraft[] = targets.map(targetId => ({ type: "context_edit", targetId, replacement: null }));
-  const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed; errors and potentially side-effecting tool batches kept. Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.`;
+  const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed; errors and potentially side-effecting tool batches kept. Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.${mismatched ? ` ${mismatched} archived outputs no longer match their records and are not offered for recovery.` : ""}`;
   entries.push({ type: "custom_message", customType: CONTEXT_REPORT_TYPE, content, display: true });
-  entries.push(contextControlEntry({ version: 1, action: "rewind", references }));
+  entries.push(contextControlEntry({ version: 1, action: "rewind", references, archives }));
   return { entries, removed: targets.length };
 }
 
 /** Explicit, branch-local recovery only; never reveal assistant reasoning or arbitrary session entries. */
 export function readContextReference(branch: SessionEntry[], sessionId: string, id: string): string {
-  if (!inspectContext(branch, sessionId).references.has(id)) throw new Error("No archived reference with that ID on the active branch.");
+  const state = inspectContext(branch, sessionId);
+  if (!state.references.has(id)) throw new Error("No archived reference with that ID on the active branch.");
   const entry = branch.find(item => item.id === id);
   if (entry?.type !== "message" || entry.message.role !== "toolResult"
     || entry.message.content.some(block => block.type !== "text")) throw new Error("Archived text is unavailable.");
-  return extractText(entry.message.content);
+  const text = extractText(entry.message.content);
+  const recorded = state.archives.get(id);
+  if (recorded && digest(text) !== recorded.sha256) {
+    throw new Error(`Archived text for ${id} no longer matches the record made when it was archived (${recorded.chars} chars then, ${text.length} chars now); the session file may have been edited. Nothing was changed.`);
+  }
+  return text;
 }

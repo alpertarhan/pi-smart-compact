@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "bun:test";
 import { SessionManager, buildSessionProjection, type ExtensionContext, type SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -11,6 +12,8 @@ import {
   CONTEXT_CONTROL_TYPE, inspectContext, planContextTrim, planContextRewind, readContextReference,
   lastAnchorBoundary, MAX_CONTEXT_EDITS, buildTrimMarker,
 } from "../src/app/context-operations.ts";
+import { contextEvidence } from "../src/app/context-evidence.ts";
+import { SecretScrubber } from "../src/domain/scrub.ts";
 function assistant(content: AssistantMessage["content"] = [], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
     role: "assistant", content, api: "openai-completions", provider: "test", model: "test", stopReason, timestamp: 1,
@@ -55,6 +58,8 @@ function tail(session: SessionManager, count = 4) {
   for (let i = 0; i < count; i++) session.appendMessage(assistant([{ type: "text", text: "Recent protected turn " + i }]));
 }
 function ids(session: SessionManager) { return buildSessionProjection(session.getBranch()).entries.filter(entry => entry.messages.length).map(entry => entry.sourceEntry.id); }
+/** Independent expectation for a recorded archive: SHA-256 hex and length of the archived text. */
+function archiveOf(id: string, text: string) { return { id, sha256: createHash("sha256").update(text).digest("hex"), chars: text.length }; }
 
 function harness(options: { background?: boolean; canTrim?: boolean; session?: SessionManager; canMutate?: boolean; model?: object } = {}) {
   const session = options.session ?? manager();
@@ -393,6 +398,91 @@ describe("recoverable context edits", () => {
   });
 });
 
+/** Simulates a hand-edited session file: the same branch reloaded with one toolResult's text replaced. */
+function tampered(session: SessionManager, id: string, text: string) {
+  return SessionManager.inMemory(process.cwd(), undefined, [session.getHeader()!, ...session.getBranch().map(entry =>
+    entry.id === id && entry.type === "message" && entry.message.role === "toolResult"
+      ? { ...entry, message: { ...entry.message, content: [{ type: "text" as const, text }] } } : entry)]);
+}
+
+describe("archive integrity", () => {
+  it("records a deterministic SHA-256 and length for every trimmed output", () => {
+    const session = manager();
+    const first = toolBatch(session, "read", "alpha evidence".repeat(400));
+    const second = toolBatch(session, "read", "beta evidence".repeat(500));
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    const control = plan.entries.at(-1);
+    expect(control?.type === "custom" ? control.data : undefined).toEqual({
+      version: 1, action: "trim", references: [first.result, second.result],
+      archives: [archiveOf(first.result, "alpha evidence".repeat(400)), archiveOf(second.result, "beta evidence".repeat(500))],
+    });
+    expect(JSON.stringify(planContextTrim(session.getBranch()).entries)).toBe(JSON.stringify(plan.entries));
+  });
+
+  it("refuses archived text that no longer matches its record, including in search", async () => {
+    const session = manager();
+    const original = "archived detail".repeat(400);
+    const read = toolBatch(session, "read", original);
+    tail(session);
+    apply(session, planContextTrim(session.getBranch()).entries);
+    expect(readContextReference(session.getBranch(), session.getSessionId(), read.result)).toBe(original);
+    const edited = tampered(session, read.result, original + " injected");
+    expect(() => readContextReference(edited.getBranch(), edited.getSessionId(), read.result))
+      .toThrow(`Archived text for ${read.result} no longer matches the record made when it was archived (6000 chars then, 6009 chars now); the session file may have been edited. Nothing was changed.`);
+    const evidence = contextEvidence(edited.getBranch(), edited.getSessionId(), new SecretScrubber());
+    expect(evidence.list).toEqual([expect.objectContaining({ id: read.result, hashed: true })]);
+    const result = await evidence.search("archived", 0, 5);
+    expect(result.matches).toEqual([]);
+    expect(result.unavailable).toEqual([read.result]);
+  });
+
+  it("reads legacy records without a hash exactly as before", () => {
+    const session = manager();
+    const read = toolBatch(session, "read", "legacy output".repeat(400));
+    session.appendCustomEntry(CONTEXT_CONTROL_TYPE, { version: 1, action: "trim", references: [read.result] });
+    const edited = tampered(session, read.result, "changed later");
+    expect(readContextReference(edited.getBranch(), edited.getSessionId(), read.result)).toBe("changed later");
+    expect(contextEvidence(edited.getBranch(), edited.getSessionId(), new SecretScrubber()).list)
+      .toEqual([expect.objectContaining({ id: read.result, hashed: false })]);
+  });
+
+  it.each([
+    ["short hash", { sha256: "abc", chars: 1 }],
+    ["negative length", { sha256: "a".repeat(64), chars: -1 }],
+    ["missing id", { id: undefined, sha256: "a".repeat(64), chars: 1 }],
+  ])("treats a control entry with a malformed archive (%s) as corrupt", (_kind, archive) => {
+    const session = manager();
+    const read = toolBatch(session, "read", "guarded output".repeat(400));
+    session.appendCustomEntry(CONTEXT_CONTROL_TYPE, { version: 1, action: "trim", references: [read.result], archives: [{ id: read.result, ...archive }] });
+    expect(inspectContext(session.getBranch(), session.getSessionId()).references.has(read.result)).toBe(false);
+    expect(() => readContextReference(session.getBranch(), session.getSessionId(), read.result)).toThrow("No archived reference");
+  });
+
+  it("rewinds past a mismatched archive but withholds it from recovery", () => {
+    const session = manager();
+    const cp = checkpoint(session);
+    const changed = toolBatch(session, "read", "first finding".repeat(400));
+    const intact = toolBatch(session, "read", "second finding".repeat(400));
+    tail(session);
+    apply(session, planContextTrim(session.getBranch()).entries);
+    const edited = tampered(session, changed.result, "rewritten");
+    const plan = planContextRewind(edited.getBranch(), edited.getSessionId(), cp, "Findings recorded.");
+    const report = plan.entries.find(entry => entry.type === "custom_message");
+    expect(report?.type === "custom_message" ? report.content : "").toContain(
+      "Original outputs remain available via smart_context status/read. 1 archived outputs no longer match their records and are not offered for recovery.");
+    const control = plan.entries.at(-1);
+    expect(control?.type === "custom" ? control.data : undefined).toEqual({
+      version: 1, action: "rewind", references: [intact.result], archives: [archiveOf(intact.result, "second finding".repeat(400))],
+    });
+    apply(edited, plan.entries);
+    expect(ids(edited)).not.toContain(changed.result);
+    expect(readContextReference(edited.getBranch(), edited.getSessionId(), intact.result)).toBe("second finding".repeat(400));
+    // The rewind's own removal edit revokes the old authorization; only its references re-authorize.
+    expect(() => readContextReference(edited.getBranch(), edited.getSessionId(), changed.result)).toThrow("No archived reference");
+  });
+});
+
 describe("smart_context boundary lifecycle", () => {
   it("keeps reads/plans available but blocks manual and automatic context changes during a pivot", async () => {
     const h = harness({ background: true });
@@ -573,7 +663,7 @@ describe("smart_context boundary lifecycle", () => {
     expect(h.changes()).toBe(shouldTrim ? 1 : 0);
     const control = h.session.getBranch().find(entry => entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE);
     expect(control?.type === "custom" ? control.data : undefined).toEqual(shouldTrim
-      ? { version: 1, action: "trim", references: [old.result], cause: "pressure" } : undefined);
+      ? { version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "pressure" } : undefined);
   });
 });
 
@@ -899,7 +989,7 @@ describe("automatic trim timing", () => {
     const committed = h.turn();
     expect(committed!.entries.filter((entry: SessionBoundaryDraft) => entry.type === "context_edit")).toEqual(
       expected.plan.entries.filter(entry => entry.type === "context_edit"));
-    expect(controlOf(committed!.entries)).toEqual({ version: 1, action: "trim", references: [old.result], cause: "cold" });
+    expect(controlOf(committed!.entries)).toEqual({ version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "cold" });
     expect(h.edits()).toEqual([]);
     h.nextRequest();
     expect(h.edits()).toEqual(["trim"]);
@@ -909,7 +999,7 @@ describe("automatic trim timing", () => {
   it("commits immediately when the tail is small enough to pay back within the horizon", () => {
     const { h, old } = deferredFixture(ANTHROPIC, false);
     expect(expectedTrim(h.session, ANTHROPIC).breakEvenRequests).toBeLessThanOrEqual(AUTO_TRIM_BREAK_EVEN_REQUESTS);
-    expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], cause: "break-even" });
+    expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "break-even" });
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
   });
 
@@ -956,7 +1046,7 @@ describe("automatic trim timing", () => {
     expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
     h.session.appendMessage({ ...assistant([{ type: "text", text: "after the queued input" }]), timestamp: 1 + FIVE_MINUTES_MS + 2 });
     expect(h.request().result!.messages.find((message: { role: string }) => message.role === "toolResult")).toEqual(expected.marker(old.result));
-    expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], cause: "cold" });
+    expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "cold" });
   });
 
   it("prices OpenAI-style caches without a write surcharge and honors 1h retention", () => {

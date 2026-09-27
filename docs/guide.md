@@ -291,7 +291,11 @@ The agent retrieves trimmed, rewound, offloaded or image-archived output with
 Retrieval only returns output this extension archived on the active branch.
 Text is scrubbed again with the current privacy settings before search or
 paging. You get the originally recorded tool output, not bytes the tool had
-already truncated before Pi recorded it.
+already truncated before Pi recorded it. Each archive records a SHA-256 of the
+archived text; `read` and `search` refuse text that no longer matches (for
+example after a hand-edited session file), and a rewind leaves such outputs
+out of recovery. Archives from earlier versions have no hash and are read as
+before.
 
 ### Automatic offload of large outputs
 

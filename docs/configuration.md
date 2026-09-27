@@ -377,7 +377,10 @@ first, then those read again in full later (a plain `read` without
 `(superseded: edited later)` or `(superseded: read again in full later)`.
 Paths compare after `path.normalize` only
 (relative never matches absolute). This changes order and the note, not
-eligibility. Artifacts at most
+eligibility. Trim and rewind records store a SHA-256 and length of each
+archived output; `smart_context` `read`/`search` refuse text that no longer
+matches, and records from earlier versions have no hash and are read as
+before. Artifacts at most
 2 MiB each and 256 files or 32 MiB per origin session; retrieval at most 4,096
 characters per read. There is no artifact expiry or garbage collection; see
 [storage](./guide.md#storage-and-privacy).

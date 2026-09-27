@@ -61,6 +61,11 @@
   marker points at the original source ID so the agent re-reads the source.
   Other `smart_context` results (`status`, `search`, `plan`, `trim`, `rewind`)
   are never trimmed.
+- Trim and rewind records store a SHA-256 and length per archived output
+  (`archives: [{ id, sha256, chars }]`). `smart_context` `read`/`search`
+  refuse text that no longer matches its record, `status` sources show
+  `hashed`, and a rewind withholds mismatched outputs from recovery and says
+  how many. Records from earlier versions have no hash and read as before.
 
 ### Changed
 
