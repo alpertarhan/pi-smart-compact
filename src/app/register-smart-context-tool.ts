@@ -7,9 +7,11 @@ import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
+import { effectiveContextWindow } from "../utils/tokens.ts";
 import { preparationWindow } from "./background-preparation.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { contextEvidence, evidencePage, MAX_READ_CHARS } from "./context-evidence.ts";
+import type { ContextEditKind } from "./host-cache-ledger.ts";
 import {
   CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, planContextRewind, planContextTrim,
 } from "./context-operations.ts";
@@ -47,10 +49,26 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   canAutoTrim?: (ctx: ExtensionContext) => boolean;
   canAgentMutate?: (ctx: ExtensionContext) => boolean;
   isPaused?: (ctx: ExtensionContext) => boolean;
+  /** Staging-time signal: fires when turn_end returns context_edit drafts, before the host commits them. */
   onContextChange?: (ctx: ExtensionContext) => void;
+  /** Commit-time signal: fires once the staged context_edit entries are confirmed on the branch. */
+  onContextEdit?: (ctx: ExtensionContext, kind: ContextEditKind) => void;
 } = {}): SmartContextController {
   const config = options.config ?? loadConfig;
   let queued: QueuedChange | null = null;
+  // The host commits turn_end drafts only after every handler ran (a later
+  // handler may replace them), so confirmation waits for the next branch read.
+  let staged: { sessionId: string; leafId: string; targets: Set<string> } | null = null;
+  const confirmStaged = (ctx: ExtensionContext) => {
+    const edit = staged;
+    staged = null;
+    if (!edit || edit.sessionId !== resolveSessionId(ctx)) return;
+    const branch = ctx.sessionManager.getBranch();
+    const leaf = branch.findIndex(entry => entry.id === edit.leafId);
+    if (leaf >= 0 && branch.slice(leaf + 1).some(entry => entry.type === "context_edit" && edit.targets.has(entry.targetId))) {
+      options.onContextEdit?.(ctx, "trim");
+    }
+  };
   const active = () => pi.getActiveTools().includes(TOOL_NAME);
   const scrub = (text: string) => {
     const current = config();
@@ -143,12 +161,13 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     },
   });
 
-  const clear = () => { queued = null; };
+  const clear = () => { queued = null; staged = null; };
   pi.on("session_start", clear);
   pi.on("session_before_switch", clear);
   pi.on("session_before_fork", clear);
   pi.on("session_tree", clear);
-  pi.on("session_before_compact", clear);
+  pi.on("session_before_compact", (_event, ctx) => { confirmStaged(ctx); clear(); });
+  pi.on("context", (_event, ctx) => { confirmStaged(ctx); });
   pi.on("session_shutdown", clear);
 
   pi.on("turn_end", (event, ctx) => {
@@ -167,7 +186,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const enabled = configNow.contextHygieneEnabled || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
       if (!enabled || options.canAutoTrim?.(ctx) === false) return;
       const usage = ctx.getContextUsage()?.tokens;
-      const window = ctx.model?.contextWindow;
+      const window = effectiveContextWindow(ctx.model, configNow);
       if (typeof usage !== "number" || !Number.isFinite(usage) || typeof window !== "number" || !Number.isFinite(window) || window <= 0
         || usage < preparationWindow(configNow, window).startTokens) return;
     }
@@ -210,7 +229,13 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       return request ? cancelled(event, error instanceof Error ? error.message : "Context change rejected.") : undefined;
     }
     if (!entries.length) return request ? cancelled(event, "No eligible archived output to trim.") : undefined;
-    if (entries.some(entry => entry.type === "context_edit")) options.onContextChange?.(ctx);
+    if (entries.some(entry => entry.type === "context_edit")) {
+      options.onContextChange?.(ctx);
+      staged = {
+        sessionId, leafId: branch.at(-1)!.id,
+        targets: new Set(entries.flatMap(entry => entry.type === "context_edit" ? [entry.targetId] : [])),
+      };
+    }
     return { entries: [...event.entries, ...entries] };
   });
   const controller: SmartContextController = {

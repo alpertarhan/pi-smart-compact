@@ -10,6 +10,7 @@ import { loadProjectFingerprint } from "../src/utils/fingerprint.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 import { loadScopedCompactionState } from "../src/utils/state.ts";
 import { readMetricsLog } from "../src/utils/cache.ts";
+import { resetIssuesForTests } from "../src/utils/issues.ts";
 import {
   makeTokenEstimator,
   TokenCalibrationStore,
@@ -50,6 +51,7 @@ beforeEach(() => {
   process.env.HOME = home;
   resetConfigCache();
   resetLlmClient();
+  resetIssuesForTests();
 });
 
 afterEach(() => {
@@ -129,8 +131,10 @@ describe("extension lifecycle end to end", () => {
     const branch: any[] = activeBranch();
     if (visual) {
       branch[2].message = { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "visual-read", name: "read", arguments: { path: "auth.ts" } }] };
-      branch[3].message = { role: "toolResult", toolCallId: "visual-read", toolName: "read", isError: false,
-        content: [{ type: "text", text: "ARCHIVE_ONLY_LITERAL Türkçe auth evidence and exact source locations.\n".repeat(40) }] };
+      branch[3].message = {
+        role: "toolResult", toolCallId: "visual-read", toolName: "read", isError: false,
+        content: [{ type: "text", text: "ARCHIVE_ONLY_LITERAL Türkçe auth evidence and exact source locations.\n".repeat(40) }]
+      };
     }
     const estimator = makeTokenEstimator(
       "openai",
@@ -354,6 +358,41 @@ describe("extension lifecycle end to end", () => {
       ),
     ).toHaveLength(1);
 
+    // A foreign compaction (another extension's, or Pi's own) displaces a
+    // staged candidate: the candidate is recorded as discarded (neutral, not
+    // a failure) and the user learns the applied summary is not Continuity's.
+    const displacedResponse = (await before(
+      { reason: "threshold", signal: new AbortController().signal },
+      ctx,
+    )) as any;
+    const displacedRunId = displacedResponse.compaction.details.runId as string;
+    const notificationsBefore = notifications.length;
+    await applied(
+      { fromExtension: true, compactionEntry: { id: "foreign-extension-entry", details: { summary: "theirs" } } },
+      ctx,
+    );
+    expect(readMetricsLog().filter((entry) => entry.runId === displacedRunId)).toEqual([
+      expect.objectContaining({ status: "discarded", fallbackReason: "native-apply:foreign" }),
+    ]);
+    expect(notifications.slice(notificationsBefore).join("\n")).toMatch(
+      /Another extension's compaction was applied instead of Continuity's prepared summary; that summary \(\d+ model calls?\) was discarded/,
+    );
+    // A late apply of the displaced run cannot commit it any more.
+    await applied(
+      { fromExtension: true, compactionEntry: { id: "late-entry", details: displacedResponse.compaction.details } },
+      ctx,
+    );
+    expect(loadProjectFingerprint(projectId)?.sessionCount).toBe(1);
+    expect(readMetricsLog().filter((entry) => entry.runId === displacedRunId)).toHaveLength(1);
+
+    // Pi's built-in compaction with nothing staged while automatic compaction
+    // is on: one notice per session, no metrics entry.
+    const metricsBefore = readMetricsLog().length;
+    await applied({ fromExtension: false, compactionEntry: { id: "native-entry" } }, ctx);
+    await applied({ fromExtension: false, compactionEntry: { id: "native-entry-2" } }, ctx);
+    expect(readMetricsLog()).toHaveLength(metricsBefore);
+    expect(notifications.filter((message) => message.includes("Pi's built-in compaction was applied without a Continuity summary"))).toHaveLength(1);
+
     await dispatch(handlers, "session_shutdown", {}, ctx);
   }, 20_000);
 
@@ -471,6 +510,7 @@ describe("extension lifecycle end to end", () => {
       id: "lifecycle-settled",
       contextWindow: strategy === "background" ? totalTokens / 0.75 : 300_000,
       maxTokens: 16_384,
+      cost: { input: 1, output: 10, cacheRead: 0.1, cacheWrite: 0 },
     };
     const appliedRunIds: string[] = [];
     let compactRequests = 0;
@@ -531,6 +571,22 @@ describe("extension lifecycle end to end", () => {
             if (!response?.compaction)
               throw new Error("settled host request returned no compaction");
             appliedRunIds.push(response.compaction.details.runId);
+            // Provider-reported usage of the extension's own calls rides the
+            // result into Pi's session totals, priced at the run model's rates.
+            // The settled strategy's first run owns every call so far; later
+            // runs (and the background fixture's stale-discard + cached fresh
+            // run) may reuse caches and report only their own calls, or none.
+            const usage = response.compaction.usage;
+            if (strategy === "settled" && appliedRunIds.length === 1) {
+              const { cost, ...tokens } = usage;
+              expect(tokens).toEqual({ input: reportedInput, output: 100 * llmCalls, cacheRead: 0, cacheWrite: 0, totalTokens: reportedInput + 100 * llmCalls });
+              expect(cost.input).toBeCloseTo(reportedInput / 1_000_000, 12);
+              expect(cost.output).toBeCloseTo(1_000 * llmCalls / 1_000_000, 12);
+              expect(cost.total).toBeCloseTo((reportedInput + 1_000 * llmCalls) / 1_000_000, 12);
+            } else if (usage) {
+              expect(usage.output % 100).toBe(0);
+              expect(usage.cost.total).toBeCloseTo((usage.input + 10 * usage.output) / 1_000_000, 12);
+            }
             if (strategy === "background" && appliedRunIds.length === 1) {
               const projected = buildSessionProjection([...session.getBranch(), {
                 type: "compaction", id: "projected-apply", parentId: session.getLeafId(),
@@ -564,9 +620,13 @@ describe("extension lifecycle end to end", () => {
         custom: async () => null,
       },
     };
+    let reportedInput = 0;
     setLlmClient({
-      complete: async () => {
+      complete: async (_target: unknown, body: unknown) => {
         llmCalls++;
+        // Realistic reported input keeps token calibration honest; output is fixed.
+        const input = Math.ceil(JSON.stringify(body).length / 4);
+        reportedInput += input;
         return {
           role: "assistant",
           content: [
@@ -579,7 +639,7 @@ describe("extension lifecycle end to end", () => {
                 "## Critical Context\n- Lifecycle evidence remains active",
             },
           ],
-          usage: { inputTokens: 100, outputTokens: 100, totalTokens: 200 },
+          usage: { input, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: input + 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
           stopReason: "endTurn",
         } as any;
       },

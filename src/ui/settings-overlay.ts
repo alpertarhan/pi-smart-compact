@@ -26,6 +26,7 @@ import {
   inputSettingsList,
   LIMIT_SETTINGS,
   MIN_CONTEXT_SETTING,
+  MAX_CONTEXT_SETTING,
   PREPARE_CONTEXT_SETTING,
   MNEMOPI_DATA_DIR_SETTING,
   MODEL_SETTINGS,
@@ -262,6 +263,7 @@ const CATEGORIES: ReadonlyArray<{
           },
         },
         { kind: "input", setting: MIN_CONTEXT_SETTING, inactive: needsAutoTrigger },
+        { kind: "input", setting: MAX_CONTEXT_SETTING, inactive: needsAutoTrigger },
         { kind: "input", setting: PREPARE_CONTEXT_SETTING, inactive: needsBackgroundTiming },
         {
           kind: "choice",

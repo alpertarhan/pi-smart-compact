@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactConfig } from "../types.ts";
 import { MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
-import { safeContextPercent } from "../utils/tokens.ts";
+import { effectiveContextWindow, safeContextPercent } from "../utils/tokens.ts";
 import { errorDetail, reportIssue } from "../utils/issues.ts";
 
 export interface SettledAutoTrigger {
@@ -52,7 +52,7 @@ export function createSettledAutoTrigger(
     if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens)
       || totalTokens < MIN_TOKEN_THRESHOLD || !ctx.model) return;
 
-    const contextPercent = safeContextPercent(totalTokens, ctx.model.contextWindow);
+    const contextPercent = safeContextPercent(totalTokens, effectiveContextWindow(ctx.model, config));
     if (contextPercent < config.minContextPercent) return;
 
     const lastCompaction = lastCompactionAt.get(sessionId);

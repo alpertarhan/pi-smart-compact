@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+
+- The compaction result returned to Pi carries the provider-reported usage of
+  the applied run (EESV stage calls or the provider-native compaction
+  request), priced at each route model's catalog rates, so Pi's session
+  totals and cost include the extension's own work. Cached or estimated runs
+  contribute nothing rather than a guess.
+- A foreign compaction (another extension's, or Pi's built-in one) no longer
+  passes silently: a prepared Continuity summary it displaces is recorded as
+  `discarded` (`native-apply:foreign`) in the metrics log and a once-per-
+  session notice names the winner; Pi's built-in compaction is reported only
+  while automatic compaction is on.
+- `maxContextTokens` (default `0`, off) makes automatic trigger percentages
+  (`minContextPercent`, the background preparation window and the automatic
+  admission gate) count against `min(model window, maxContextTokens)`. Model
+  requests, summary sizing and hard headroom checks keep the real window.
+  Settings › Compaction has a row for it, and Home warns when a model window
+  above 400k tokens is uncapped while automatic compaction is on.
+- A session-local host prompt-cache ledger records the provider-reported
+  input, cache-read and cache-write tokens of Pi's own requests and classifies
+  cache rebuilds (uncached ≥ 16,384 tokens and ≥ half the prompt) as following
+  a committed Continuity edit (trim/rewind, pivot, compaction), idle expiry of
+  the cache lifetime, or foreign. Home › Readiness & details shows the tallies;
+  the third foreign rebuild in a session shows one notice. `smart_context` and
+  navigation gain an `onContextEdit` hook that fires only once an edit is on
+  the branch.
+
+### Fixed
+
+- The offline task evaluator (`release:audit`) no longer reaches the network
+  when `rg` is missing: offline arms set `PI_OFFLINE=1` and fail before the
+  first round without ripgrep; CI installs it. The offline guard now names the
+  first blocked request and its caller.
+
 ## [9.8.0-canary.7] - 2026-09-27
 
 Local-only integration candidate; not published or installed in daily Pi.

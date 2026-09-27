@@ -206,6 +206,22 @@ waits for a later boundary. Preparation is silent while healthy; its state
 appears in the effective-state view (`Readiness & details`, preflight `S`,
 `metrics`).
 
+### Context cap for automatic percentages
+
+`maxContextTokens` (default `0`, off) caps the window that automatic trigger
+percentages are measured against: `min(model window, maxContextTokens)`. It
+applies to the `native-hook` replacement gate, the `settled` trigger, the
+`background` preparation window and the automatic run's admission gate. With
+`maxContextTokens: 200000` and `minContextPercent: 60`, a 1M-window model
+compacts from 120k tokens instead of 600k.
+
+It does not change model requests, the model window Pi reports, Pi's own
+compaction threshold, summary and retention sizing, or the hard response
+headroom checked before a summary is applied; those keep the real window. A
+cap at or above the model window has no effect. When a model window exceeds
+400k tokens and no smaller cap is set, Home shows a warning while automatic
+compaction is on.
+
 ### Automatic runs cap
 
 Automatic runs (native-hook, settled and background) are capped at **60
@@ -426,6 +442,7 @@ Hindsight details: [Hindsight memory backend](./hindsight-memory.md).
 | `autoTriggerStrategy` | `native-hook` \| `settled` \| `background` | `native-hook` | `Start when` |
 | `minContextPercent` | 0–100 | `60` | `Start at context %` |
 | `prepareContextPercent` | `null` or 0–100, below `minContextPercent` | `null` | `Prepare at context %` |
+| `maxContextTokens` | `0` (off) or integer 16,384–2,000,000 | `0` | `Context cap for start % (tokens)` |
 | `autoTriggerTimeoutMs` | integer 1,000–300,000 | `120000` | `Automatic run time limit (ms)`; capped at 60 s |
 | `compactionEngines` | ordered list of `eesv`, `native` | `["eesv"]` | `Engine` |
 | `requireApproval` | boolean | `true` | `Ask before applying` |
@@ -465,7 +482,8 @@ Hindsight details: [Hindsight memory backend](./hindsight-memory.md).
 
 Notes on specific keys:
 
-- `minContextPercent` is relative to the **active model's** window. It is the
+- `minContextPercent` is relative to the **active model's** window, or to
+  `maxContextTokens` for automatic runs when that is smaller. It is the
   apply gate for automatic and agent runs and the replacement gate for
   `native-hook`. Manual `/smart-compact` shows a warning and ignores it. A
   5,000-token floor always applies.

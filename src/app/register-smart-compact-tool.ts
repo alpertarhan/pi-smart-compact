@@ -12,7 +12,7 @@ import {
 import { formatCompactErrorForUi } from "../ui/error-format.ts";
 import { loadConfig } from "../utils/config.ts";
 import { errorDetail, recordIssue } from "../utils/issues.ts";
-import { safeContextPercent } from "../utils/tokens.ts";
+import { effectiveContextWindow, safeContextPercent } from "../utils/tokens.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import { resolveModels } from "./model-routing.ts";
 import type { PendingSlot } from "./pending-slot.ts";
@@ -138,10 +138,8 @@ export function registerSmartCompactTool(
 
       const usage = ctx.getContextUsage?.();
       const totalTokens = usage?.tokens ?? 0;
-      const contextPercent = safeContextPercent(
-        totalTokens,
-        ctx.model?.contextWindow,
-      );
+      const window = effectiveContextWindow(ctx.model, config);
+      const contextPercent = safeContextPercent(totalTokens, window);
       const percent = Math.round(contextPercent);
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
         return textResult(
@@ -155,7 +153,7 @@ export function registerSmartCompactTool(
       if (contextPercent < config.minContextPercent) {
         return textResult(
           "Compaction skipped: context " + percent + "% (" + totalTokens.toLocaleString() +
-          " / " + (ctx.model?.contextWindow ?? 0).toLocaleString() + " tokens), below the " +
+          " / " + (window ?? 0).toLocaleString() + " tokens), below the " +
           config.minContextPercent + "% agent-tool threshold. tool=XX% measures tool-output ratio, not context usage. " +
           "For deliberate early compaction, the user can run /smart-compact; preview and safety checks still apply.",
         );

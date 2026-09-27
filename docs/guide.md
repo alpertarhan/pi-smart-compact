@@ -209,6 +209,11 @@ Two points matter most:
   compact at the next idle, queue-empty boundary once context reaches
   `Start at context %`, with a 10-minute cooldown after a compaction.
 
+`Start at context %` counts against the model's full window. On a large-window
+model (Home warns above 400k tokens), set `Context cap for start % (tokens)`
+(`maxContextTokens`) to measure it against a smaller window instead; requests
+and safety headroom still use the real window.
+
 Turning `Automatic compaction` off disables both Smart Compact strategies. It
 does not turn off Pi's own compactor. Automatic runs are capped at 60 seconds
 and four model calls, whatever the configured limits are. When they fail, Pi
@@ -442,6 +447,61 @@ Do not load pi-toolkit's context-management extension together with Pi
 Continuity: two extensions recording anchors and pruning the same branch are
 not safe in any load order. The `piToolkit.context.thinningEnabled` key is not
 read by Pi Continuity. Anchors recorded earlier by pi-toolkit stay readable.
+
+### Other compaction extensions and Pi's built-in compaction
+
+Pi applies one compaction per request: the last extension to answer
+`session_before_compact` wins, and with no answer Pi's built-in summarizer
+runs. When something other than Pi Continuity applies the compaction:
+
+- A summary Pi Continuity had already prepared for that session is discarded
+  and recorded in `/smart-compact metrics` as `discarded` with reason
+  `native-apply:foreign`; its continuity state is not saved. A notice names
+  the winner and the model calls that were wasted.
+- Another extension's compaction shows a once-per-session notice even when
+  nothing was prepared, because Pi Continuity recorded no state or metrics
+  for it. Keep only one compaction extension loaded.
+- Pi's built-in compaction shows a notice only while automatic compaction is
+  on (nothing was ready when Pi asked); earlier continuity state still carries
+  over through the capsule.
+
+Provider usage of the summary Pi Continuity applies (its own explore,
+synthesize and verify calls, or the provider-native compaction request) is
+returned to Pi with the compaction, so Pi's session totals and cost include
+that work at the route model's catalog rates. Runs that reused a cached
+summary report no usage; work whose usage a provider did not report is left
+out rather than estimated. Discarded preparations are only in
+`/smart-compact metrics`, never in Pi's totals.
+
+### Host prompt-cache ledger
+
+For each assistant response in the current session, Pi Continuity records the
+prompt usage the provider reported for Pi's own request: uncached input, cache
+reads and cache writes. Nothing is estimated; responses without reported
+usage, or with zero prompt tokens (aborted or failed requests), are skipped.
+
+A request counts as a cache rebuild when it is not the session's first and
+its uncached tokens (input + cache writes) are at least 16,384 and at least
+half of its prompt tokens. Each rebuild gets one cause, checked in this order:
+
+- **continuity**: a Continuity edit reached the branch since the previous
+  request (an output trim or checkpoint rewind, a navigation pivot, or a Pi
+  Continuity compaction). Edits that were queued but not committed do not
+  count.
+- **idle-expiry**: the gap since the previous request exceeded the cache
+  lifetime, 5 minutes, or 1 hour while the cached prefix was written with
+  1-hour retention (only Anthropic reports that split).
+- **foreign**: neither. Something else changed the prompt prefix, for
+  example another extension, a model or tool change, Pi's built-in
+  compaction, or eviction by the provider.
+
+Home › Readiness & details lists the request count, the share of prompt
+tokens read from cache, rebuilds by cause with their uncached tokens, and the
+cost Pi priced from that usage when the model has catalog prices. The third
+foreign rebuild in a session shows one notice with the count and uncached
+tokens. The ledger is session-local: it resets on a new or switched session,
+is not persisted, and covers only Pi's own requests; Pi Continuity's summary
+calls are in `/smart-compact metrics` instead.
 
 ### RTK companion (optional, experimental)
 

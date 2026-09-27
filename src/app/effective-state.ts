@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { AUTO_TRIGGER_TIMEOUT_CAP_MS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS, FIVE_MINUTES_MS } from "../constants.ts";
+import { AUTO_TRIGGER_TIMEOUT_CAP_MS, LARGE_CONTEXT_WINDOW_TOKENS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS, FIVE_MINUTES_MS } from "../constants.ts";
 import { isChatGptCodex } from "../infra/llm-client.ts";
 import { isNativeApi } from "../infra/native-protocol.ts";
 import { contextGraphFile, home } from "../infra/paths.ts";
@@ -9,6 +9,7 @@ import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identi
 import type { CompactConfig } from "../types.ts";
 import { readMetricsLog } from "../utils/cache.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
+import { effectiveContextWindow } from "../utils/tokens.ts";
 import { preparationWindow } from "./background-preparation.ts";
 import { resolveHindsightTarget } from "./hindsight-memory.ts";
 import { mnemopiTarget } from "./mnemopi-memory.ts";
@@ -21,6 +22,8 @@ export interface EffectiveRuntimeState {
   running: boolean;
   preparation: "idle" | "preparing" | "ready";
   paused: boolean;
+  /** Host prompt-cache ledger lines for the current session, when attached. */
+  cacheLedger?: string[];
 }
 export interface EffectiveReadiness {
   canCompact: boolean;
@@ -60,6 +63,12 @@ export async function describeReadiness(
   if (eesvReady) warnings.push("Request sizes are locally estimated; generated follow-up requests are checked again before dispatch.");
   if (config.autoTrigger && config.autoTriggerStrategy === "native-hook") {
     warnings.push("Automatic compaction runs only when Pi starts it; PSC cannot check whether Pi automatic compaction is on. In Settings, choose Start when \"When idle\" to run independently.");
+  }
+  const window = ctx.model?.contextWindow;
+  if (config.autoTrigger && typeof window === "number" && Number.isFinite(window) && window > LARGE_CONTEXT_WINDOW_TOKENS
+    && effectiveContextWindow(ctx.model, config) === window) {
+    warnings.push("Model window " + window.toLocaleString("en-US") + " tokens; maxContextTokens is off, so automatic compaction waits for "
+      + config.minContextPercent + "% of the full window. Set maxContextTokens to trigger earlier.");
   }
   const memory = await describeMemoryBackendReadiness(config);
   if (!memory.ready) warnings.push("Memory: " + memory.reason + " Compaction can still run.");
@@ -129,11 +138,13 @@ export async function describeEffectiveState(
   lines.push("Agent tool: " + (policy.agentToolEnabled ? "exposed" : "not exposed") + " (policy " + policy.agentToolAccess + ")");
   if (ctx.model && !ctx.model.promptCache) lines.push("Reader prompt-cache lifetime: not declared; host cache warming cannot schedule from this metadata. No cache savings are assumed.");
   const window = ctx.model?.contextWindow;
+  const gateWindow = effectiveContextWindow(ctx.model, config);
   const tokens = ctx.getContextUsage()?.tokens;
-  if (typeof window === "number" && Number.isFinite(window) && window > 0) {
-    const gates = preparationWindow(config, window);
+  if (typeof window === "number" && Number.isFinite(window) && window > 0 && typeof gateWindow === "number") {
+    const gates = preparationWindow(config, gateWindow);
     const apply = Math.ceil(Math.max(MIN_TOKEN_THRESHOLD, gates.applyTokens)).toLocaleString("en-US");
-    const gate = " (" + config.minContextPercent + "%, floor " + MIN_TOKEN_THRESHOLD.toLocaleString("en-US") + ")";
+    const gate = " (" + config.minContextPercent + "% of " + (gateWindow < window ? "maxContextTokens " : "window ")
+      + gateWindow.toLocaleString("en-US") + ", floor " + MIN_TOKEN_THRESHOLD.toLocaleString("en-US") + ")";
     lines.push("Context: " + (typeof tokens === "number" && Number.isFinite(tokens) ? Math.ceil(tokens).toLocaleString("en-US") : "unknown")
       + "/" + window.toLocaleString("en-US") + " tokens; " + (!policy.autoTrigger ? "automatic compaction off"
         : hostDriven ? "Pi decides when; PSC replaces Pi's threshold summary only ≥" + apply + gate + ", overflow skips the % gate"
@@ -146,6 +157,7 @@ export async function describeEffectiveState(
   } else lines.push("Context/apply gates: unavailable without a valid reader window");
   lines.push("Runtime: " + (runtime ? (runtime.running ? "running" : "idle") + "; preparation " + runtime.preparation : "not attached")
     + "; candidate reuse is revalidated at apply");
+  if (runtime?.cacheLedger?.length) lines.push(...runtime.cacheLedger);
   lines.push("Auto limits: " + Math.min(config.autoTriggerTimeoutMs, AUTO_TRIGGER_TIMEOUT_CAP_MS) / 1_000
     + " s timeout; " + SETTLED_TRIGGER_COOLDOWN_MS / 60_000 + " min cooldown; " + FIVE_MINUTES_MS / 60_000 + " min preparation TTL");
   const backgroundHygiene = policy.autoTrigger && config.autoTriggerStrategy === "background";

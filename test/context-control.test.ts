@@ -61,6 +61,7 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
   let active = true;
   let tokens = 140_000;
   let changed = 0;
+  const edits: string[] = [];
   let paused = false;
   let canMutate = options.canMutate !== false;
   const cfg = { ...DEFAULT_CONFIG, autoTrigger: true, autoTriggerStrategy: options.background ? "background" as const : "native-hook" as const, minContextPercent: 80 };
@@ -72,7 +73,7 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
     registerTool: (definition: any) => { tool = definition; },
     getActiveTools: () => active ? ["smart_context"] : [],
     on: (name: string, fn: any) => handlers.set(name, [...handlers.get(name) ?? [], fn]),
-  } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => options.canTrim !== false, canAgentMutate: () => canMutate, onContextChange: () => { changed++; } });
+  } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => options.canTrim !== false, canAgentMutate: () => canMutate, onContextChange: () => { changed++; }, onContextEdit: (_ctx, kind) => { edits.push(kind); } });
 
   const execute = async (params: ToolCall["arguments"], signal?: AbortSignal) => {
     const callId = "control-" + sequence++;
@@ -86,18 +87,19 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
     const resultId = session.appendMessage(result);
     return { response, message, messageEntryId, toolResults: [result], toolResultEntryIds: [resultId] };
   };
-  const boundary = (batch: Awaited<ReturnType<typeof execute>>, overrides: Record<string, unknown> = {}) => {
+  const boundary = (batch: Awaited<ReturnType<typeof execute>>, overrides: Record<string, unknown> = {}, commit = true) => {
     const event = {
       type: "turn_end", outcome: "completed", turnIndex: 0, entries: [], continue: false,
       context: { pendingMessages: [], contextEntries: buildSessionProjection(session.getBranch()).entries },
       ...batch, ...overrides
     };
     const result = handlers.get("turn_end")![0](event, ctx);
-    if (result?.entries) apply(session, result.entries);
+    if (result?.entries && commit) apply(session, result.entries);
     return result;
   };
   return {
-    session, ctx, handlers, execute, boundary, tool, controller, cfg, changes: () => changed, setPaused: (value: boolean) => { paused = value; },
+    session, ctx, handlers, execute, boundary, tool, controller, cfg, changes: () => changed, edits: () => edits, setPaused: (value: boolean) => { paused = value; },
+    nextRequest: () => handlers.get("context")![0]({ type: "context", messages: [] }, ctx),
     setCanMutate: (value: boolean) => { canMutate = value; },
     setActive: (value: boolean) => { active = value; }, setTokens: (value: number) => { tokens = value; }
   };
@@ -420,6 +422,20 @@ describe("smart_context boundary lifecycle", () => {
     expect(reload.session.getBranch().filter(entry => entry.type === "custom_message")).toHaveLength(0);
   });
 
+  it("gates automatic hygiene by the maxContextTokens-capped window", async () => {
+    const h = harness();
+    h.cfg.autoTrigger = false;
+    h.cfg.contextHygieneEnabled = true;
+    h.ctx.model = { contextWindow: 1_000_000 } as ExtensionContext["model"]; // 140k tokens: below the uncapped 1M start gate
+    toolBatch(h.session, "read", "evidence".repeat(3_000));
+    tail(h.session);
+    h.boundary(await h.execute({ action: "status" }));
+    expect(h.changes()).toBe(0);
+    h.cfg.maxContextTokens = 200_000; // start gate 140k of the 200k cap
+    h.boundary(await h.execute({ action: "status" }));
+    expect(h.changes()).toBe(1);
+  });
+
   it("defers small automatic batches but still honors an explicit trim", async () => {
     const h = harness({ background: true });
     const old = toolBatch(h.session, "read", "small evidence".repeat(500));
@@ -430,6 +446,22 @@ describe("smart_context boundary lifecycle", () => {
     h.boundary(await h.execute({ action: "trim" }));
     expect(h.changes()).toBe(1);
     expect(readContextReference(h.session.getBranch(), h.session.getSessionId(), old.result)).toContain("small evidence");
+  });
+
+  it("reports a trim as a committed context edit only once the host appended it", async () => {
+    const h = harness();
+    toolBatch(h.session, "read", "old evidence".repeat(3000));
+    tail(h.session);
+    // A later turn_end handler replaced the drafts: staged, never committed.
+    h.boundary(await h.execute({ action: "trim" }), {}, false);
+    expect(h.changes()).toBe(1);
+    h.nextRequest();
+    expect(h.edits()).toEqual([]);
+    h.boundary(await h.execute({ action: "trim" }));
+    expect(h.edits()).toEqual([]);
+    h.nextRequest();
+    h.nextRequest();
+    expect(h.edits()).toEqual(["trim"]);
   });
 
   it.each([
