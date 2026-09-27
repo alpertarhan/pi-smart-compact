@@ -37,6 +37,11 @@ export const REBUILD_MIN_TOKENS = 16_384;
  * prefix rewrite; sessions rarely run that many requests without another prefix change.
  */
 export const AUTO_TRIM_BREAK_EVEN_REQUESTS = 24;
+/**
+ * Expected savings (USD) a prompt-cache refresh must reach to be worth sending;
+ * Pi warms when `continuationProbability * missCost - warmCost >= 0.05` (Pi docs/settings.md).
+ */
+export const CACHE_WARMING_MIN_SAVINGS_USD = 0.05;
 
 /** Positive per-run bounds shared by CLI and tool arguments; config separately allows 0 as a mode-derived sentinel. */
 export const BUDGET_LIMITS = {

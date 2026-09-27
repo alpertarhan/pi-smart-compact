@@ -183,8 +183,17 @@ causes, recorded on the trim entry:
   [configuration](./configuration.md#context-hygiene-and-archives)).
 - `cold`: otherwise the batch is held back until the cache has expired (5
   minutes after the last response, 1 hour when that response wrote 1h
-  cache). The first request after that already sends the trimmed context, and
-  the edits commit when that turn completes.
+  cache). A refresh from Pi's cache warming keeps the entry alive, so the
+  batch also waits one lifetime past the latest refresh. The first request
+  after that already sends the trimmed context, and the edits commit when that
+  turn completes.
+
+While a batch is held, Pi Continuity stops Pi's cache warming once a refresh
+no longer pays: Pi warms when `continuationProbability × missCost − warmCost`
+is at least $0.05, and Pi Continuity counts the miss net of the removed
+output's cache write, which the held batch avoids. Home notes the stop on
+**Clean up tool output**, and Pi's `/session` shows it as stopped by an
+extension.
 
 The rule uses the model's catalog price ratios and estimated token counts, not
 measured cache behavior.
@@ -586,9 +595,10 @@ half of its prompt tokens. Each rebuild gets one cause, checked in this order:
   request (an output trim or checkpoint rewind, a navigation pivot, or a Pi
   Continuity compaction). Edits that were queued but not committed do not
   count.
-- **idle-expiry**: the gap since the previous request exceeded the cache
-  lifetime, 5 minutes, or 1 hour while the cached prefix was written with
-  1-hour retention (only Anthropic reports that split).
+- **idle-expiry**: the gap since the previous request, or since Pi's latest
+  cache-warming refresh after it, exceeded the cache lifetime, 5 minutes, or
+  1 hour while the cached prefix was written with 1-hour retention (only
+  Anthropic reports that split).
 - **foreign**: neither. Something else changed the prompt prefix, for
   example another extension, a model or tool change, Pi's built-in
   compaction, or eviction by the provider.

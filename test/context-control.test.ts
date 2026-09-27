@@ -7,7 +7,7 @@ import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { LlmMessage } from "../src/types.ts";
 import { fingerprintContext } from "../src/app/pending-slot.ts";
-import { registerSmartContextTool } from "../src/app/register-smart-context-tool.ts";
+import { formatDeferredTrim, registerSmartContextTool } from "../src/app/register-smart-context-tool.ts";
 import {
   CONTEXT_CONTROL_TYPE, inspectContext, planContextTrim, planContextRewind, readContextReference,
   lastAnchorBoundary, MAX_CONTEXT_EDITS, buildTrimMarker,
@@ -1061,5 +1061,52 @@ describe("automatic trim timing", () => {
     expect(h.request().result).toBeUndefined();
     h.setNow(1 + ONE_HOUR_MS + 1);
     expect(h.request().result).toBeDefined();
+  });
+
+  const decide = (h: { handlers: Map<string, any[]>; ctx: ExtensionContext }, event: { warmCost: number; missCost: number; continuationProbability: number; action?: "warm" | "stop" }) =>
+    h.handlers.get("cache_warming_decision")![0]({ type: "cache_warming_decision", action: "warm", ...event }, h.ctx);
+
+  it("waits while Pi's cache warming keeps the entry alive, then applies once the refresh expires", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    h.turn();
+    const warmAt = 1 + 4 * 60_000;
+    h.setNow(warmAt);
+    expect(decide(h, { warmCost: 0.01, missCost: 10, continuationProbability: 1 })).toBeUndefined();
+    h.setNow(1 + FIVE_MINUTES_MS + 1_000); // past the last response's lifetime, inside the refresh's
+    expect(h.request().result).toBeUndefined();
+    h.setNow(warmAt + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeDefined();
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "cold" });
+  });
+
+  it("measures from a real response again once one arrives after the refresh", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    h.turn();
+    h.setNow(1 + 4 * 60_000);
+    decide(h, { warmCost: 0.01, missCost: 10, continuationProbability: 1 });
+    const response = { ...assistant([{ type: "text", text: "real response" }]), timestamp: 1 + 2 * 60_000 };
+    h.session.appendMessage(response);
+    for (const fn of h.handlers.get("message_end")!) fn({ type: "message_end", message: response }, h.ctx);
+    h.setNow(response.timestamp + FIVE_MINUTES_MS + 1); // cold for the response, warm for the stale refresh
+    expect(h.request().result).toBeDefined();
+  });
+
+  it("stops warming when the held cleanup makes a refresh not pay, net of the removed output", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    const economics = (removedUsd: number, margin: number) => ({ warmCost: 0.01, continuationProbability: 1, missCost: 0.06 + removedUsd + margin });
+    expect(decide(h, economics(0, -0.001))).toBeUndefined(); // no held mark: Pi decides
+    h.turn();
+    const sessionId = h.session.getSessionId();
+    const removedUsd = h.controller.deferredTrim(sessionId)!.savedTokens * ANTHROPIC.cost.cacheWrite / 1e6;
+    expect(removedUsd).toBeGreaterThan(0.001);
+    // Pi alone would warm (0.06 + removed − 0.01 − 0.001 ≥ 0.05), but net of the removed rewrite it is < 0.05.
+    expect(decide(h, { ...economics(removedUsd, -0.001), action: "stop" })).toBeUndefined();
+    expect(decide(h, economics(removedUsd, 0.001))).toBeUndefined();
+    expect(h.controller.deferredTrim(sessionId)!.warmingStopped).toBeUndefined();
+    expect(decide(h, economics(removedUsd, -0.001))).toEqual({ action: "stop" });
+    expect(formatDeferredTrim(h.controller.deferredTrim(sessionId)!)).toEndWith(" Prompt-cache warming was stopped so the cache can go cold.");
+    const unpriced = deferredFixture(undefined, true).h;
+    unpriced.turn();
+    expect(decide(unpriced, economics(removedUsd, -0.001))).toBeUndefined();
   });
 });

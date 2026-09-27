@@ -188,6 +188,8 @@ function replayPolicy(
   let applied = null as Mark | null;
   let boundary: AssistantMessage | undefined;
   let previous: { message: AssistantMessage; keys: string[] } | undefined;
+  // Latest `cache_warm` refresh since the previous request: it keeps that request's prefix cached.
+  let warmedAt: number | undefined;
 
   const turnEnd = (message: AssistantMessage) => {
     if (policy.kind === "none") return;
@@ -213,6 +215,10 @@ function replayPolicy(
   };
 
   for (const entry of branch) {
+    if (entry.type === "usage" && entry.kind === "cache_warm") {
+      const at = Date.parse(entry.timestamp);
+      if (Number.isFinite(at)) warmedAt = Math.max(warmedAt ?? at, at);
+    }
     const assistant = assistantOf(entry);
     if (boundary && entry.type === "message" && (assistant || entry.message.role === "user")) {
       turnEnd(boundary);
@@ -221,7 +227,8 @@ function replayPolicy(
     const message = requestOf(entry);
     if (message) {
       result.requests++;
-      const expired = previous !== undefined && message.timestamp - previous.message.timestamp > cacheLifetimeMs(previous.message.usage);
+      const expired = previous !== undefined
+        && message.timestamp - Math.max(previous.message.timestamp, warmedAt ?? 0) > cacheLifetimeMs(previous.message.usage);
       if (mark && !applied && expired && unchangedSince(working, mark.leafId)) {
         applied = mark;
         mark = null;
@@ -245,6 +252,7 @@ function replayPolicy(
         result.cost = (result.cost ?? 0) + (cost.cacheRead * cached + write * uncached) / 1_000_000;
       }
       previous = { message, keys };
+      warmedAt = undefined;
     }
     append([entry]);
     if (assistant && assistant.stopReason !== "error" && assistant.stopReason !== "aborted") boundary = assistant;

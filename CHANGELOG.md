@@ -4,6 +4,11 @@
 
 ### Added
 
+- Automatic cleanup held for a cold prompt cache now waits while Pi's cache
+  warming keeps the entry alive, and stops that warming once a refresh no
+  longer pays by Pi's $0.05 rule, counted net of the cache write the held
+  trim avoids; Home notes the stop. The host cache ledger and
+  `replay-eval` count a `cache_warm` refresh as keeping the prefix alive.
 - `/smart-compact handoff [-- note]` opens a new Pi session seeded with one
   anchor message assembled from recorded state: the note, the latest branch
   anchor, the continuity ledger (last Continuity compaction, else the saved

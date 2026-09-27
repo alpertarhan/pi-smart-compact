@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { StringEnum, type AssistantMessage } from "@earendil-works/pi-ai";
-import type { ContextWithSystemEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEvent, ContextWithSystemEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
-import { AUTO_TRIM_BREAK_EVEN_REQUESTS } from "../constants.ts";
+import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { effectiveContextWindow } from "../utils/tokens.ts";
@@ -47,6 +47,8 @@ export interface DeferredTrim {
   tailTokens: number;
   /** Null when the model's catalog price is unknown. */
   breakEvenRequests: number | null;
+  /** Set once this held trim stopped Pi's prompt-cache warming. */
+  warmingStopped?: true;
 }
 
 /** Why an automatic trim is being held, for Home/status text; token counts are estimates. */
@@ -55,7 +57,8 @@ export function formatDeferredTrim(deferred: DeferredTrim): string {
   const why = deferred.breakEvenRequests === null
     ? "the model's cache price is unknown"
     : `it pays back its cache rewrite only after ${Math.ceil(deferred.breakEvenRequests)} requests (limit ${AUTO_TRIM_BREAK_EVEN_REQUESTS})`;
-  return `Saves ~${tokens(deferred.savedTokens)} tokens, but ${why}, so it waits for a cold prompt cache.`;
+  const warming = deferred.warmingStopped ? " Prompt-cache warming was stopped so the cache can go cold." : "";
+  return `Saves ~${tokens(deferred.savedTokens)} tokens, but ${why}, so it waits for a cold prompt cache.${warming}`;
 }
 
 /** A ready automatic trim held back while the cache is warm; its drafts commit with cause `cold`. */
@@ -91,6 +94,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   onContextChange?: (ctx: ExtensionContext) => void;
   /** Commit-time signal: fires once the staged context_edit entries are confirmed on the branch. */
   onContextEdit?: (ctx: ExtensionContext, kind: ContextEditKind) => void;
+  /** Pi is about to send a `cache_warm` refresh (final action `warm`) at `at`. */
+  onCacheWarm?: (ctx: ExtensionContext, at: number) => void;
   /** Clock for prompt-cache lifetime checks. */
   now?: () => number;
 } = {}): SmartContextController {
@@ -100,8 +105,11 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   // Automatic trim deferred while the cache is warm; `applied` once a cold request carried it.
   let mark: TrimMark | null = null;
   let applied: TrimMark | null = null;
+  // Latest refresh Pi decided to send; it keeps the entry alive past the last response.
+  let warm: { sessionId: string; at: number } | null = null;
   const deferred = (sessionId: string): DeferredTrim | null => mark?.sessionId === sessionId
-    ? { savedTokens: mark.savedTokens, tailTokens: mark.tailTokens, breakEvenRequests: mark.breakEvenRequests } : null;
+    ? { savedTokens: mark.savedTokens, tailTokens: mark.tailTokens, breakEvenRequests: mark.breakEvenRequests,
+      ...(mark.warmingStopped ? { warmingStopped: true as const } : {}) } : null;
   // The host commits turn_end drafts only after every handler ran (a later
   // handler may replace them), so confirmation waits for the next branch read.
   let staged: { sessionId: string; leafId: string; targets: Set<string> } | null = null;
@@ -216,7 +224,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     },
   });
 
-  const clear = () => { queued = null; staged = null; mark = null; applied = null; };
+  const clear = () => { queued = null; staged = null; mark = null; applied = null; warm = null; };
   pi.on("session_start", clear);
   pi.on("session_before_switch", clear);
   pi.on("session_before_fork", clear);
@@ -228,6 +236,20 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   // `context_with_system` output is sent as returned, so only the trimmed
   // results differ from the projection the commit will produce.
   pi.on("context_with_system", (event, ctx) => applyDeferredTrim(event, ctx));
+  // A real response supersedes any earlier refresh; its own timestamp dates the entry again.
+  pi.on("message_end", (event, ctx) => {
+    if (event.message.role === "assistant" && warm?.sessionId === resolveSessionId(ctx)) warm = null;
+  });
+  pi.on("cache_warming_decision", (event, ctx) => {
+    const sessionId = resolveSessionId(ctx);
+    if (event.action !== "warm") return;
+    if (vetoWarming(event, ctx, sessionId)) {
+      mark!.warmingStopped = true;
+      return { action: "stop" as const };
+    }
+    warm = { sessionId, at: now() };
+    options.onCacheWarm?.(ctx, warm.at);
+  });
   pi.on("session_shutdown", clear);
 
   /** Carry a deferred trim once the prompt cache is cold, then keep it until the turn ends. */
@@ -241,7 +263,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (!unchangedSince(branch, mark.leafId)) { mark = null; return; }
       const last = branch.findLast(entry => entry.type === "message" && entry.message.role === "assistant");
       const message = last?.type === "message" ? last.message as AssistantMessage : undefined;
-      if (!message || now() - message.timestamp <= cacheLifetimeMs(message.usage)) return;
+      const since = Math.max(message?.timestamp ?? 0, warm?.sessionId === sessionId ? warm.at : 0);
+      if (!message || now() - since <= cacheLifetimeMs(message.usage)) return;
       current = applied = mark;
     }
     const { targets } = current;
@@ -256,6 +279,23 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       return { ...message, content };
     });
     return changed ? { messages } : undefined;
+  };
+
+  /**
+   * Stop warming when the held trim makes a refresh not pay. After a cold miss
+   * the next request carries the trim and costs `w·(A+T)` instead of
+   * `w·(A+X+T)` (X = removed tokens, w = write price), so the miss Pi prices at
+   * `missCost` really costs `missCost − w·X`. Later per-request savings `r·X`
+   * are ignored (conservative: fewer vetoes).
+   */
+  const vetoWarming = (event: CacheWarmingDecisionEvent, ctx: ExtensionContext, sessionId: string): boolean => {
+    if (mark?.sessionId !== sessionId || !unchangedSince(ctx.sessionManager.getBranch(), mark.leafId)) return false;
+    const cost = ctx.model?.cost;
+    const price = cost ? (cost.cacheWrite > 0 ? cost.cacheWrite : cost.input) : NaN;
+    const { warmCost, missCost, continuationProbability } = event;
+    if (![price, warmCost, missCost, continuationProbability].every(Number.isFinite) || !(price > 0)) return false;
+    const removedWriteUsd = mark.savedTokens * price / 1e6;
+    return continuationProbability * (missCost - removedWriteUsd) - warmCost < CACHE_WARMING_MIN_SAVINGS_USD;
   };
 
   pi.on("turn_end", (event, ctx) => {
