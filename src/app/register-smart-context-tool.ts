@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { StringEnum, type AssistantMessage } from "@earendil-works/pi-ai";
-import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import type { ContextWithSystemEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
@@ -205,14 +205,16 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   pi.on("session_before_fork", clear);
   pi.on("session_tree", clear);
   pi.on("session_before_compact", (_event, ctx) => { confirmStaged(ctx); clear(); });
-  pi.on("context", (event, ctx) => {
-    confirmStaged(ctx);
-    return applyDeferredTrim(event, ctx);
-  });
+  pi.on("context", (_event, ctx) => { confirmStaged(ctx); });
+  // A changed `context` result makes Pi collapse mid-conversation system
+  // messages into one head (a different prefix, flipped back at commit);
+  // `context_with_system` output is sent as returned, so only the trimmed
+  // results differ from the projection the commit will produce.
+  pi.on("context_with_system", (event, ctx) => applyDeferredTrim(event, ctx));
   pi.on("session_shutdown", clear);
 
   /** Carry a deferred trim once the prompt cache is cold, then keep it until the turn ends. */
-  const applyDeferredTrim = (event: ContextEvent, ctx: ExtensionContext) => {
+  const applyDeferredTrim = (event: ContextWithSystemEvent, ctx: ExtensionContext) => {
     const sessionId = resolveSessionId(ctx);
     const branch = ctx.sessionManager.getBranch();
     let current = applied?.sessionId === sessionId ? applied : null;

@@ -52,7 +52,7 @@ Pi Continuity acts in four layers, from cheapest to most invasive:
 | --- | --- | --- | --- |
 | 1. Avoid noise | The optional RTK companion shortens a few shell outputs | No | Not loaded |
 | 2. Offload | Very large read-only tool outputs are saved to disk; the model sees a preview and an ID | No | Off |
-| 3. Trim, checkpoint, rewind | Old read-only output is replaced by references; research can be rewound to a report | No | Manual; automatic trimming off |
+| 3. Trim, checkpoint, rewind | Old read-only and shell output is replaced by short digests with references; research can be rewound to a report | No | Manual; automatic trimming off |
 | 4. Compact | Older history becomes a verified summary; recent turns stay raw | Usually (Fast may use none) | Replaces Pi's summary when Pi compacts |
 
 Layers 2 and 3 are recoverable: the original output stays in Pi's session file
@@ -121,17 +121,43 @@ Or Home → **Clean up tool output**. Either one:
 - makes no model call and does not force a new turn;
 - is queued, not applied: **the first next provider request is still sent
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
-- replaces old successful read-only text results of at least 4,096 characters
-  with references, up to 32 outputs per boundary;
+- replaces old successful text results of at least 4,096 characters with a
+  digest marker, up to 32 outputs per boundary: read-only tools, shell
+  (`bash`) output and `smart_context` `read` pages;
 - keeps the latest four assistant turns, an active checkpoint's prefix, errors,
-  shell commands, writes, unknown tools, instruction/skill-file reads and
-  another extension's explicit context edits;
+  every tool call (including shell commands), writes, unknown tools, turns
+  that mix shell or read-only calls with any other tool, instruction/skill-file
+  reads, `smart_context` results other than `read`, and another extension's
+  explicit context edits;
 - is cancelled with a visible notice if a return to an anchor is pending or a
   newer boundary change arrives.
 
 Trimmed output stays retrievable with
 [`smart_context`](#retrieve-archived-output). Trimming is not secure deletion:
 the raw history remains in Pi's session JSONL.
+
+A digest marker has at most 6 lines and 400 characters and is derived only
+from the recorded call and output:
+
+```text
+[Archived bash output, 18088 chars. Retrieve with smart_context action=read id=3f9a1c2e.]
+$ bun test
+> bun test v1.4.2
+! error: expect(received).toBe(expected)
+! warning: snapshot obsolete
+```
+
+Line 1 names the tool, size and retrieval ID. Then, when known: the subject
+(`path:` for reads, `$ ` and the first command line for shell, the pattern or
+path for searches), the first non-empty output line (`> `), and up to three
+lines matching error, failure, warning, exception, traceback, panic, exit-code,
+`command not found`, `permission denied`, `ENOENT` or `EACCES` (`! `). Each
+line is whitespace-normalized and cut to 100 characters; lines past the
+limit are dropped from the end. Shell calls are never removed, only their old
+output; errored shell results stay whole. An archived `smart_context` `read`
+page points back at the source it paged
+(`[Archived smart_context read of id=<source-id>, …]`), so the agent re-reads
+the source instead of the copy.
 
 Automatic trimming is separate and off by default: turn on
 **Automatic cleanup** (`contextHygieneEnabled`). A batch needs at least 16,384

@@ -75,6 +75,41 @@ export function isReadOnlyResearchTool(toolName: string, input: Args): boolean {
   return READ_ONLY_TOOLS.has(name);
 }
 
+/** Shell runs have side effects; only their old text output is archivable, never the call. */
+export function isShellTool(toolName: string): boolean {
+  return normalizeToolName(toolName) === "bash";
+}
+
+/**
+ * Results a context trim may replace with a digest once old: read-only research,
+ * `smart_context read` pages (ephemeral copies of archived text), and shell output.
+ */
+export function isArchivableToolResult(toolName: string, input: Args): boolean {
+  if (isInstructionSource(input)) return false;
+  const name = normalizeToolName(toolName);
+  if (name === "smart_context") return input.action === "read";
+  return isShellTool(name) || isReadOnlyResearchTool(toolName, input);
+}
+
+const SUBJECT_KEYS = ["pattern", "query", "symbol", "url"] as const;
+
+/** The call's subject for a trim digest: file path, first command line, or search pattern. */
+export function toolCallSubject(toolName: string, args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const a = args as Args;
+  const name = normalizeToolName(toolName);
+  if (name === "smart_context") return undefined;
+  if (name === "bash") {
+    const command = COMMAND_KEYS.map(key => a[key]).find((value): value is string => typeof value === "string" && value.trim() !== "");
+    const line = command?.split("\n").find(item => item.trim() !== "");
+    return line ? "$ " + line : undefined;
+  }
+  const path = extractToolPath(a);
+  if (["read", "read_symbol", "read_enclosing"].includes(name)) return path ? "path: " + path : undefined;
+  const key = SUBJECT_KEYS.find(item => typeof a[item] === "string" && a[item] !== "");
+  return key ? `${key}: ${a[key]}` : path ? "path: " + path : undefined;
+}
+
 export interface ShellFileOperations {
   modified: string[];
   deleted: string[];

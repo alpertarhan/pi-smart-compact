@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { SessionManager, buildSessionProjection, type ExtensionContext, type SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import { AUTO_TRIM_BREAK_EVEN_REQUESTS, DEFAULT_CONFIG, FIVE_MINUTES_MS, ONE_HOUR_MS } from "../src/constants.ts";
+import { AUTO_TRIM_BREAK_EVEN_REQUESTS, DEFAULT_CONFIG, FIVE_MINUTES_MS, ONE_HOUR_MS, TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES } from "../src/constants.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { LlmMessage } from "../src/types.ts";
@@ -9,7 +9,7 @@ import { fingerprintContext } from "../src/app/pending-slot.ts";
 import { registerSmartContextTool } from "../src/app/register-smart-context-tool.ts";
 import {
   CONTEXT_CONTROL_TYPE, inspectContext, planContextTrim, planContextRewind, readContextReference,
-  lastAnchorBoundary, MAX_CONTEXT_EDITS,
+  lastAnchorBoundary, MAX_CONTEXT_EDITS, buildTrimMarker,
 } from "../src/app/context-operations.ts";
 function assistant(content: AssistantMessage["content"] = [], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
@@ -102,11 +102,19 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
   };
   return {
     session, ctx, handlers, execute, boundary, tool, controller, cfg, changes: () => changed, edits: () => edits, setPaused: (value: boolean) => { paused = value; },
-    nextRequest: () => handlers.get("context")![0]({ type: "context", messages: [] }, ctx),
-    /** A provider request carrying the host's projected conversation, as Pi clones it. */
+    nextRequest: () => {
+      for (const fn of handlers.get("context")!) fn({ type: "context", messages: [] }, ctx);
+    },
+    /** A provider request as Pi runs it: `context` (conversation only) then `context_with_system` (full transcript, sent as returned). */
     request: () => {
-      const messages = structuredClone(buildSessionProjection(session.getBranch()).messages);
-      return { messages, result: handlers.get("context")![0]({ type: "context", messages }, ctx) };
+      const projected = buildSessionProjection(session.getBranch()).messages;
+      for (const fn of handlers.get("context")!) fn({ type: "context", messages: structuredClone(projected) }, ctx);
+      const system = { role: "system", content: "prompt", timestamp: 0 };
+      const messages = [system, ...structuredClone(projected)];
+      const result = handlers.get("context_with_system")![0]({ type: "context_with_system", messages }, ctx);
+      // The leading system message must survive untouched, by identity.
+      if (result?.messages) expect(result.messages[0]).toBe(system);
+      return { messages, result };
     },
     /** An ordinary completed (or overridden) turn, not a smart_context request. */
     turn: (overrides: Record<string, unknown> = {}) => {
@@ -143,6 +151,80 @@ describe("recoverable context edits", () => {
     expect(planContextTrim(session.getBranch()).entries).toHaveLength(0);
   });
 
+  it("digests archived output into a bounded, deterministic marker", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => i === 12 ? "  Error:\tcannot open\u0007  config  " : `line ${i}`);
+    const input = { toolName: "bash", entryId: "e1", text: lines.join("\n"), call: { name: "bash", arguments: { command: "bun test\n--watch" } } };
+    const marker = buildTrimMarker(input);
+    expect(marker).toBe([
+      `[Archived bash output, ${input.text.length} chars. Retrieve with smart_context action=read id=e1.]`,
+      "$ bun test", "> line 0", "! Error: cannot open config",
+    ].join("\n"));
+    expect(buildTrimMarker(structuredClone(input))).toBe(marker);
+    const long = buildTrimMarker({
+      toolName: "read", entryId: "e2", call: { name: "read", arguments: { path: "src/" + "p".repeat(200) } },
+      text: Array.from({ length: 20 }, (_, i) => `warning ${i} ` + "x".repeat(200)).join("\n"),
+    });
+    expect(long.length).toBeLessThanOrEqual(TRIM_MARKER_MAX_CHARS);
+    expect(long.split("\n").length).toBeLessThanOrEqual(TRIM_MARKER_MAX_LINES);
+    expect(long.split("\n")[1]).toStartWith("path: src/ppp");
+    const many = buildTrimMarker({
+      toolName: "bash", entryId: "e3", call: { name: "bash", arguments: { command: "make" } },
+      text: ["start", ...Array.from({ length: 10 }, (_, i) => `FAILED case ${i}`)].join("\n"),
+    }).split("\n");
+    expect(many).toHaveLength(TRIM_MARKER_MAX_LINES);
+    expect(many.slice(3)).toEqual(["! FAILED case 0", "! FAILED case 1", "! FAILED case 2"]);
+  });
+
+  it("archives old bash output but keeps the call, error results and mixed side-effect turns", () => {
+    const session = manager();
+    const output = "ok\n".repeat(2_000) + "warning: deprecated flag\n";
+    const bash = toolBatch(session, "functions.bash", output, false, { command: "bun run build" });
+    const failed = toolBatch(session, "bash", "boom\n".repeat(1_000), true, { command: "false" });
+    session.appendMessage(assistant([
+      { type: "toolCall", id: "mb", name: "bash", arguments: { command: "ls" } },
+      { type: "toolCall", id: "mw", name: "write", arguments: { path: "a", content: "x" } },
+    ], "toolUse"));
+    const mixed = [["mb", "bash"], ["mw", "write"]].map(([id, name]) => session.appendMessage({
+      role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text: "listing\n".repeat(1_000) }], isError: false, timestamp: 1
+    }));
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([bash.result]);
+    apply(session, plan.entries);
+    const projected = buildSessionProjection(session.getBranch()).entries;
+    const message = (id: string) => projected.find(entry => entry.sourceEntry.id === id)!.messages[0];
+    const stored = (id: string) => { const entry = session.getEntry(id); if (entry?.type !== "message") throw new Error(id); return entry.message; };
+    expect(message(bash.call)).toEqual(stored(bash.call));
+    const archived = (message(bash.result) as ToolResultMessage).content[0] as { text: string };
+    expect(archived.text.split("\n")).toEqual([
+      `[Archived functions.bash output, ${output.length} chars. Retrieve with smart_context action=read id=${bash.result}.]`,
+      "$ bun run build", "> ok", "! warning: deprecated flag",
+    ]);
+    for (const id of [failed.result, ...mixed]) expect(message(id)).toEqual(stored(id));
+    expect(readContextReference(session.getBranch(), session.getSessionId(), bash.result)).toBe(output);
+  });
+
+  it("archives old smart_context read pages against the original id, never other actions", () => {
+    const session = manager();
+    const evidence = "SOURCE_EVIDENCE".repeat(1_000);
+    const source = toolBatch(session, "read", evidence, false, { path: "src/a.ts" });
+    tail(session);
+    apply(session, planContextTrim(session.getBranch()).entries);
+    const page = toolBatch(session, "smart_context", evidence, false, { action: "read", id: source.result });
+    const status = toolBatch(session, "smart_context", "status ".repeat(1_000), false, { action: "status" });
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([page.result]);
+    const edit = plan.entries[0] as Extract<SessionBoundaryDraft, { type: "context_edit" }>;
+    expect(String(edit.replacement!.content).split("\n")[0]).toBe(
+      `[Archived smart_context read of id=${source.result}, ${evidence.length} chars. Retrieve with smart_context action=read id=${source.result}.]`);
+    apply(session, plan.entries);
+    expect(inspectContext(session.getBranch(), session.getSessionId()).references.has(page.result)).toBe(true);
+    expect(readContextReference(session.getBranch(), session.getSessionId(), source.result)).toBe(evidence);
+    expect(JSON.stringify(buildSessionProjection(session.getBranch()).messages)).toContain("status ".repeat(1_000));
+    expect(ids(session)).toContain(status.result);
+  });
+
   it("protects instruction sources through trim and rewind, including aliases and Windows paths", () => {
     const session = manager();
     const cp = checkpoint(session);
@@ -151,9 +233,7 @@ describe("recoverable context edits", () => {
       { file_path: "skills/test/reference.md" }, { absolute_path: ".github/copilot-instructions.md" },
     ];
     const protectedResults = inputs.map(args => toolBatch(session, "functions.read", "REQUIRED_INSTRUCTIONS".repeat(500), false, args));
-    const recovery = toolBatch(session, "smart_context", "historical evidence".repeat(500), false, { action: "read", id: "old" });
     tail(session);
-    expect(planContextTrim(session.getBranch()).references).not.toContain(recovery.result);
     expect(planContextTrim(session.getBranch()).references).toHaveLength(0);
     apply(session, planContextRewind(session.getBranch(), session.getSessionId(), cp, "Keep required instructions.").entries);
     for (const item of protectedResults) {

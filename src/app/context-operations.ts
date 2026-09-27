@@ -1,9 +1,12 @@
 /** Session-local, append-only context edits. Original evidence stays in Pi's JSONL. */
 import { buildSessionProjection, type SessionBoundaryDraft, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { ModelCostRates } from "@earendil-works/pi-ai";
-import { isReadOnlyResearchTool, normalizeToolName } from "../domain/tool-semantics.ts";
+import type { ModelCostRates, ToolCall } from "@earendil-works/pi-ai";
+import { TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
+import {
+  isArchivableToolResult, isReadOnlyResearchTool, isShellTool, normalizeToolName, toolCallSubject,
+} from "../domain/tool-semantics.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
-import { extractText, flattenToolCallBlock } from "../utils/extraction.ts";
+import { extractText, flattenToolCallBlock, type FlatToolCall } from "../utils/extraction.ts";
 import type { LlmMessage } from "../types.ts";
 import { makeTokenEstimator } from "../utils/tokens.ts";
 import { fingerprintContext } from "./pending-slot.ts";
@@ -15,6 +18,9 @@ export const MAX_CONTEXT_EDITS = 512;
 export const MAX_TRIM_EDITS = 32;
 export const MIN_TRIM_CHARS = 4_096;
 const KEEP_RECENT_TURNS = 4;
+/** Per-line digest budget so a long first line cannot crowd out risk lines. */
+const TRIM_DIGEST_LINE_CHARS = 100;
+const TRIM_RISK_LINES = 3;
 export const MIN_AUTO_TRIM_SAVING_CHARS = 16_384;
 export const AUTO_TRIM_COOLDOWN_TURNS = 8;
 
@@ -109,14 +115,12 @@ export function inspectContext(branch: SessionEntry[], sessionId: string) {
   return { checkpoint: invalidReason ? null : checkpoint, checkpointIndex, invalidReason, references };
 }
 
-function readOnlyCall(block: unknown): boolean {
-  const calls = flattenToolCallBlock(block);
-  return calls.length > 0 && calls.every(call => isReadOnlyResearchTool(call.name, call.arguments));
-}
-
-/** Keep complete call/result groups, including all siblings if any tool may have side effects. */
-export function removableResearch(branch: SessionEntry[]): Set<string> {
-  const ids = new Set<string>();
+/**
+ * Complete call/result groups whose every call passes `admit`, mapped to each result's call
+ * block (undefined for the assistant entry). One failing or non-text result keeps the whole group.
+ */
+function toolGroups(branch: SessionEntry[], admit: (call: FlatToolCall) => boolean): Map<string, ToolCall | undefined> {
+  const ids = new Map<string, ToolCall | undefined>();
   const projected = buildSessionProjection(branch).entries;
   for (let index = 0; index < projected.length; index++) {
     const { sourceEntry, messages } = projected[index];
@@ -124,30 +128,89 @@ export function removableResearch(branch: SessionEntry[]): Set<string> {
     if (sourceEntry.type !== "message" || message?.role !== "assistant"
       || !["stop", "toolUse"].includes(message.stopReason)) continue;
     const calls = message.content.filter(block => block.type === "toolCall");
-    if (!calls.every(readOnlyCall)) continue;
-    const callIds = new Set(calls.map(call => call.id));
-    const results: string[] = [];
+    if (!calls.every(block => { const flat = flattenToolCallBlock(block); return flat.length > 0 && flat.every(admit); })) continue;
+    const pending = new Map(calls.map(call => [call.id, call]));
+    const results: [string, ToolCall][] = [];
     let unsafe = false;
     for (let next = index + 1; next < projected.length; next++) {
       const candidate = projected[next];
       const msg = candidate.messages[0];
       if (msg?.role === "assistant" || msg?.role === "user") break;
-      if (msg?.role !== "toolResult" || !callIds.has(msg.toolCallId)) continue;
+      const call = msg?.role === "toolResult" ? pending.get(msg.toolCallId) : undefined;
+      if (msg?.role !== "toolResult" || !call) continue;
       if (msg.isError || msg.content.some(block => block.type !== "text")) unsafe = true;
-      callIds.delete(msg.toolCallId);
-      results.push(candidate.sourceEntry.id);
+      pending.delete(msg.toolCallId);
+      results.push([candidate.sourceEntry.id, call]);
     }
-    if (!unsafe && callIds.size === 0) {
-      ids.add(sourceEntry.id);
-      for (const id of results) ids.add(id);
+    if (!unsafe && pending.size === 0) {
+      ids.set(sourceEntry.id, undefined);
+      for (const [id, call] of results) ids.set(id, call);
     }
   }
   return ids;
 }
 
+/** Keep complete call/result groups, including all siblings if any tool may have side effects. */
+export function removableResearch(branch: SessionEntry[]): Set<string> {
+  return new Set(toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments)).keys());
+}
+
+function digestLine(line: string, max = TRIM_DIGEST_LINE_CHARS): string {
+  const clean = line.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  const cut = /[\ud800-\udbff]/.test(clean[max - 2] ?? "") ? max - 2 : max - 1;
+  return clean.slice(0, cut) + "…";
+}
+
+/**
+ * Deterministic trim marker: a retrieval line, then the call's subject, the first output line
+ * and up to three risk lines, bounded by TRIM_MARKER_MAX_LINES / TRIM_MARKER_MAX_CHARS.
+ */
+export function buildTrimMarker(input: { toolName: string; entryId: string; text: string; call?: { name: string; arguments: unknown } }): string {
+  const { toolName, entryId, text, call } = input;
+  const args = call?.arguments && typeof call.arguments === "object" ? call.arguments as Record<string, unknown> : {};
+  const origin = call && normalizeToolName(call.name) === "smart_context" && args.action === "read" && typeof args.id === "string"
+    ? digestLine(args.id, 64) : "";
+  const head = origin && !origin.endsWith("…")
+    ? `[Archived smart_context read of id=${origin}, ${text.length} chars. Retrieve with smart_context action=read id=${origin}.]`
+    : `[Archived ${digestLine(toolName, 64)} output, ${text.length} chars. Retrieve with smart_context action=read id=${entryId}.]`;
+  const subject = call ? digestLine(toolCallSubject(call.name, args) ?? "") : "";
+  const lines = subject ? [subject] : [];
+  const seen = new Set<string>();
+  let risks = 0;
+  for (const raw of text.split("\n")) {
+    if (lines.length + 1 >= TRIM_MARKER_MAX_LINES || risks >= TRIM_RISK_LINES) break;
+    const first = seen.size === 0;
+    if (!first && !TRIM_RISK_LINE_RE.test(raw)) continue;
+    const line = digestLine(raw);
+    if (!line || seen.has(line)) continue;
+    seen.add(line);
+    if (first) lines.push("> " + line);
+    else { lines.push("! " + line); risks++; }
+  }
+  let marker = head;
+  for (const line of lines) {
+    const room = TRIM_MARKER_MAX_CHARS - marker.length - 1;
+    if (line.length <= room) { marker += "\n" + line; continue; }
+    if (room >= 16) marker += "\n" + digestLine(line, room);
+    break;
+  }
+  return marker;
+}
+
+/** Old results a trim may archive: read-only or shell groups, never side-effecting siblings. */
+function archivableResults(branch: SessionEntry[]): Map<string, ToolCall> {
+  const groups = toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments) || isShellTool(call.name));
+  const results = new Map<string, ToolCall>();
+  for (const [id, call] of groups) {
+    if (call && flattenToolCallBlock(call).every(flat => isArchivableToolResult(flat.name, flat.arguments))) results.set(id, call);
+  }
+  return results;
+}
+
 export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   if (afterId && !branch.some(entry => entry.id === afterId)) throw new Error("Trim boundary is not on the active branch.");
-  const candidates = removableResearch(branch);
+  const candidates = archivableResults(branch);
   const boundaries = [afterId, lastAnchorBoundary(branch)].filter((id): id is string => Boolean(id));
   // Keep an active checkpoint's or foreign anchor's prefix stable, including earlier archived outputs.
   const protectedIds = new Set(boundaries.flatMap(id => branch.slice(0, branch.findIndex(entry => entry.id === id) + 1).map(entry => entry.id)));
@@ -160,12 +223,13 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   let savedChars = 0;
   for (const { sourceEntry, messages } of projection.slice(0, cutoff)) {
     const message = messages[0];
-    if (!candidates.has(sourceEntry.id) || protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id) || message?.role !== "toolResult"
-      || message.isError || normalizeToolName(message.toolName) === "smart_context"
-      || message.content.some(block => block.type !== "text")) continue;
+    const call = candidates.get(sourceEntry.id);
+    if (!call || protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id) || message?.role !== "toolResult"
+      || message.isError || message.content.some(block => block.type !== "text")) continue;
     const text = extractText(message.content);
     if (text.length < MIN_TRIM_CHARS) continue;
-    const marker = `[Archived ${message.toolName} output, ${text.length} chars. Retrieve with smart_context action=read id=${sourceEntry.id}.]`;
+    const flat = flattenToolCallBlock(call);
+    const marker = buildTrimMarker({ toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined });
     entries.push({ type: "context_edit", targetId: sourceEntry.id, replacement: { content: marker } });
     references.push(sourceEntry.id);
     savedChars += text.length - marker.length;

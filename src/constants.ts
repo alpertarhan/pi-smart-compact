@@ -378,6 +378,12 @@ export const MAX_EXPLORER_OUTPUT_CHARS = 12_000;
 /** Shell-output patterns signalling a likely error even in a non-`isError` result. */
 export const LIKELY_ERROR_RE =
  /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i;
+/** Conservative risk lines kept in a trim marker's digest (errors, failures, warnings, exits). */
+export const TRIM_RISK_LINE_RE =
+ /\b(?:error|fail(?:ed|ure)|warn(?:ing)?|exception|traceback|panic|exit code|exited with|command not found|permission denied|ENOENT|EACCES)\b/i;
+/** Trim marker digest bounds: line 1 always kept; later lines dropped from the end to fit. */
+export const TRIM_MARKER_MAX_LINES = 6;
+export const TRIM_MARKER_MAX_CHARS = 400;
 /** How far forward to look for a retry of the same tool after an error. */
 export const ERROR_RETRY_WINDOW = 6;
 /** How far forward to look for that retry's resolving (non-error) result. */

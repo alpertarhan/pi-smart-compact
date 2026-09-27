@@ -364,8 +364,14 @@ stop; existing archives stay on disk.
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
 
 Fixed limits (not configurable): trim at most 32 outputs of 4,096+ characters
-per boundary, keep the latest four assistant turns; artifacts at most 2 MiB
-each and 256 files or 32 MiB per origin session; retrieval at most 4,096
+per boundary, keep the latest four assistant turns; each trimmed output becomes
+a digest marker of at most 6 lines and 400 characters (retrieval line, call
+subject, first output line, up to three error/warning lines; see
+[Clean up tool output](./guide.md#clean-up-tool-output)). Trimming covers
+successful text from read-only tools, shell (`bash`) output whose call stays
+in context, and `smart_context` `read` pages, which point back at their source
+ID; errors, writes, unknown tools and mixed turns stay whole. Artifacts at most
+2 MiB each and 256 files or 32 MiB per origin session; retrieval at most 4,096
 characters per read. There is no artifact expiry or garbage collection; see
 [storage](./guide.md#storage-and-privacy).
 

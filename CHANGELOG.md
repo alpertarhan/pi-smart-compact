@@ -37,9 +37,30 @@
   the third foreign rebuild in a session shows one notice. `smart_context` and
   navigation gain an `onContextEdit` hook that fires only once an edit is on
   the branch.
+- Trimming also archives old, successful shell (`bash`) output of 4,096+
+  characters. The shell call itself stays in context; errored results and
+  turns that mix shell with writes or unknown tools stay whole. Rewind still
+  keeps shell exchanges.
+- Old `smart_context` `read` pages are trimmable like read-only output; the
+  marker points at the original source ID so the agent re-reads the source.
+  Other `smart_context` results (`status`, `search`, `plan`, `trim`, `rewind`)
+  are never trimmed.
+
+### Changed
+
+- Trim markers are now a deterministic digest of at most 6 lines and 400
+  characters: the retrieval line, the call's subject (read path, first shell
+  command line, or search pattern), the first non-empty output line, and up
+  to three error/failure/warning lines, each whitespace-normalized and cut to
+  100 characters.
 
 ### Fixed
 
+- A held automatic trim is applied through Pi's `context_with_system` event,
+  not `context`: a changed `context` result makes Pi collapse
+  mid-conversation system messages into one head, so the cold request and
+  the committed transcript would differ. Verified against the checkout's
+  `ExtensionRunner.emitContext`.
 - The offline task evaluator (`release:audit`) no longer reaches the network
   when `rg` is missing: offline arms set `PI_OFFLINE=1` and fail before the
   first round without ripgrep; CI installs it. The offline guard now names the

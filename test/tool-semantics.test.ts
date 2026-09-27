@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import { classifyTool, classifyToolOperation, extractToolPath, normalizeToolName } from "../src/domain/tool-semantics.ts";
+import {
+  classifyTool, classifyToolOperation, extractToolPath, isArchivableToolResult, isReadOnlyResearchTool, normalizeToolName, toolCallSubject,
+} from "../src/domain/tool-semantics.ts";
 
 describe("classifyTool", () => {
   it("classifies path + content payload as mutates (name-agnostic)", () => {
@@ -85,5 +87,32 @@ describe("extractToolPath", () => {
     expect(extractToolPath({ path: 42 })).toBeUndefined(); // non-string ignored
     expect(extractToolPath(undefined)).toBeUndefined();
     expect(extractToolPath(null)).toBeUndefined();
+  });
+});
+
+describe("isArchivableToolResult", () => {
+  it("admits shell output and smart_context reads without widening read-only research", () => {
+    expect(isArchivableToolResult("functions.bash", { command: "bun test" })).toBe(true);
+    expect(isReadOnlyResearchTool("bash", { command: "bun test" })).toBe(false);
+    expect(isArchivableToolResult("read", { path: "src/a.ts" })).toBe(true);
+    expect(isArchivableToolResult("smart_context", { action: "read", id: "x" })).toBe(true);
+    for (const action of ["status", "search", "plan", "trim", "rewind"]) {
+      expect(isArchivableToolResult("smart_context", { action })).toBe(false);
+      expect(isReadOnlyResearchTool("smart_context", { action })).toBe(true);
+    }
+    expect(isArchivableToolResult("write", { path: "a", content: "x" })).toBe(false);
+    expect(isArchivableToolResult("custom_tool", {})).toBe(false);
+    expect(isArchivableToolResult("read", { path: "/repo/AGENTS.md" })).toBe(false);
+  });
+});
+
+describe("toolCallSubject", () => {
+  it("names the path, first command line, or search pattern", () => {
+    expect(toolCallSubject("read_symbol", { path: "src/a.ts", symbol: "run" })).toBe("path: src/a.ts");
+    expect(toolCallSubject("bash", { command: "\n  bun test\nbun run build" })).toBe("$   bun test");
+    expect(toolCallSubject("grep", { pattern: "TODO", path: "src" })).toBe("pattern: TODO");
+    expect(toolCallSubject("ls", { path: "src" })).toBe("path: src");
+    expect(toolCallSubject("smart_context", { action: "read", id: "x" })).toBeUndefined();
+    expect(toolCallSubject("read", {})).toBeUndefined();
   });
 });
