@@ -367,6 +367,27 @@ change), **Anchor status** (footer, display only) and **Navigation guide**.
 Anchors recorded by pi-toolkit's `context` tool in earlier sessions stay
 readable in browse and search.
 
+### Hand off to a new session
+
+```text
+/smart-compact handoff [-- note]
+```
+
+Opens a new Pi session seeded with one handoff message assembled from what
+this session already recorded, in this order: your note, the latest anchor on
+the branch, the continuity ledger (from the last Continuity compaction, else
+the saved state for this branch), always-kept files (`pinPaths`), a memory
+recall through the selected store (up to 5 results; the query is the note,
+else the anchor, else the ledger goal), and pointers back to this session. No
+model writes it. It is scrubbed and capped at 16,000 characters; recall is cut
+first, then always-kept files, the ledger, the anchor and the note, each marked
+`[truncated]`.
+
+The message is saved as an anchor named `handoff-<first 8 characters of this
+session id>`, so navigation lists it and cleanup keeps it. The new session
+records this one as its parent; this session is not modified. With no anchor,
+ledger or note, nothing opens.
+
 ## Agent tools
 
 Settings → **Agent tools & navigation** → **Agent tools** (`toolLoading`)
@@ -612,6 +633,7 @@ Image snapshots:
 | Get back the conversation from before a compaction | `/smart-compact restore` → pick a backup → `View content` or `Restore into a new session` |
 | Review tasks carried across compactions | `/smart-compact loops`: resolve/reopen, set priority, pin/unpin |
 | See what artifact storage holds | `/smart-compact storage` (read-only) |
+| Continue in a fresh session with the recorded state | `/smart-compact handoff [-- note]` (see [Hand off to a new session](#hand-off-to-a-new-session)) |
 | See what went wrong recently | `/smart-compact metrics`: effective state, then the last 20 issues |
 
 `Restore into a new session` first tries to fork at the exact pre-compaction
@@ -704,6 +726,7 @@ Without a UI, warnings and errors go to stderr.
 /smart-compact restore                 browse and restore backups
 /smart-compact loops                   manage open loops
 /smart-compact forget                  forget local project memory (TUI only)
+/smart-compact handoff [-- note]       new session seeded with anchor, ledger, pinned files, recall
 ```
 
 Direct compaction takes, in any order at the start: a model

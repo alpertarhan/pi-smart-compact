@@ -4,6 +4,13 @@
 
 ### Added
 
+- `/smart-compact handoff [-- note]` opens a new Pi session seeded with one
+  anchor message assembled from recorded state: the note, the latest branch
+  anchor, the continuity ledger (last Continuity compaction, else the saved
+  branch state), `pinPaths`, a memory recall through the selected store, and
+  pointers back to the parent session. No model call writes it; it is
+  scrubbed and capped at 16,000 characters, cutting recall first. Nothing
+  opens when there is no anchor, ledger or note.
 - Automatic cleanup (`contextHygieneEnabled`) no longer waits only for
   context pressure. A ready batch commits at a turn boundary under pressure,
   or when the model's catalog prices say it pays back its prompt-cache rewrite

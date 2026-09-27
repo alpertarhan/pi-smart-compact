@@ -388,6 +388,10 @@ export const TRIM_MARKER_MAX_CHARS = 400;
 export const ERROR_RETRY_WINDOW = 6;
 /** How far forward to look for that retry's resolving (non-error) result. */
 export const ERROR_RESOLVE_WINDOW = 10;
+/** Handoff seed cap (same as a pivot carryover); recall gets a bounded share. */
+export const HANDOFF_MAX_CHARS = 16_000;
+export const HANDOFF_RECALL_MAX_CHARS = 6_000;
+export const HANDOFF_RECALL_LIMIT = 5;
 
 // ── Per-run metrics buffer ──
 //

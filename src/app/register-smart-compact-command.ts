@@ -58,6 +58,7 @@ import { formatCompactErrorForUi } from "../ui/error-format.ts";
 import { findModelById, resolveModels } from "./model-routing.ts";
 import type { PendingSlot } from "./pending-slot.ts";
 import { runSmartCompact } from "./run-smart-compact.ts";
+import { runHandoff } from "./session-handoff.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 import { parseSmartCompactCommand } from "./smart-compact-input.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
@@ -532,7 +533,7 @@ export function registerSmartCompactCommand(
   description:
    "EESV smart compaction v" +
    VERSION +
-   ". Usage: /smart-compact [model|settings] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
+   ". Usage: /smart-compact [model|settings|handoff] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
   getArgumentCompletions(prefix: string) {
    const matches = [
     "verbose",
@@ -546,6 +547,7 @@ export function registerSmartCompactCommand(
     "forget",
     "storage",
     "trim",
+    "handoff",
     "context",
     "fast",
     "balanced",
@@ -612,6 +614,10 @@ export function registerSmartCompactCommand(
     }
     if (input.action === "forget") {
      await forgetProjectMemory(ctx);
+     return;
+    }
+    if (input.action === "handoff") {
+     await runHandoff(ctx, input.note);
      return;
     }
     if (input.action === "settings") {
