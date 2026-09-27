@@ -148,7 +148,8 @@ describe("Mnemopi confirmed project memory", () => {
     harness.ctx.cwd = path.join(home, "project-b");
     expect((await harness.recall({ query: "violet quartz" })).details.mnemopi.facts.map((fact) => fact.id)).toEqual([other.details.mnemopi.id]);
     expect((await harness.recall({ query: "violet quartz", scope: "session" })).details.mnemopi.state).toBe("skipped");
-  });
+  // Ten worker spawns; a CI runner exceeded bun's 5 s default once (run 36352834061).
+  }, 30_000);
 
   it("serializes concurrent normalized duplicate saves from separate workers", async () => {
     const harness = setup();
