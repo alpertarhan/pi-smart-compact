@@ -329,7 +329,10 @@ policy starts from the same history. Policies:
 
 - `none`: no automatic trim.
 - `pressure`: the old rule; a ready batch commits at a turn boundary only when
-  the estimated prompt reaches 0.8 × the catalog context window.
+  the estimated prompt reaches 0.8 × the catalog context window. Live, the gate
+  is the configured start percentage of `min(window, maxContextTokens)` against
+  Pi's reported usage, which includes the system prompt and tool definitions, so
+  pressure fires later in replay than live.
 - `timed-<N>`: the current rule with `N` in place of the break-even limit;
   pressure commits, `N* ≤ N` commits (`break-even`), otherwise the batch is held
   and applied at the first request after the previous request's cache lifetime

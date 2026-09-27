@@ -537,7 +537,7 @@ export function registerSmartCompactCommand(
   description:
    "EESV smart compaction v" +
    VERSION +
-   ". Usage: /smart-compact [model|settings|handoff] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
+   ". Usage: /smart-compact [model|settings|handoff [dry-run] [-- note]] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
   getArgumentCompletions(prefix: string) {
    const matches = [
     "verbose",

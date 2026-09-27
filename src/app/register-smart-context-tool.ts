@@ -125,7 +125,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   pi.registerTool({
     name: TOOL_NAME,
     label: "Session Context",
-    description: "Context hygiene: status/search/read archived output; plan/trim old output; checkpoint, then rewind(report) drops research. Applies after the batch; no file/process rollback.",
+    description: "Context hygiene: status/search/read archived output (scope=lineage adds parent sessions); plan/trim old output; checkpoint, then rewind(report) drops research. Applies after the batch; no file/process rollback.",
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
