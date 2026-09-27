@@ -1,0 +1,5968 @@
+{
+  "version": "9.8.0-canary.1",
+  "mode": "offline-lifecycle",
+  "repeats": 2,
+  "historySizes": {
+    "round1": 32,
+    "perRound": 14
+  },
+  "fixtures": {
+    "toolkit": "/Users/alper/dev/oss/pi-eco/pi-toolkit-coop-cache",
+    "cacheWarming": "off",
+    "backgroundPrep": false,
+    "toolkitThinning": "disabled (piToolkit.context.thinningEnabled=false fixture)"
+  },
+  "generatedAt": "2026-09-25T20:58:00.534Z",
+  "labels": [
+    "Offline lifecycle checks with a scripted local transport.",
+    "No claims about live model decision quality; usage numbers are synthetic scheduling inputs.",
+    "Repeated test/bash calls are tool interactions, not damage."
+  ],
+  "arms": [
+    {
+      "arm": "no-compaction",
+      "mode": "offline-lifecycle",
+      "ok": true,
+      "oracles": [
+        {
+          "id": "file-current-decision",
+          "label": "src/store.js, executed as a module, provides the newest in-memory store",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "exportsInMemory=true roundtripOk=true"
+        },
+        {
+          "id": "file-forbidden-absent",
+          "label": "forbidden prod.config.json never created",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "absent"
+        },
+        {
+          "id": "test-oracle",
+          "label": "independent test process passes",
+          "checkClass": "test",
+          "pass": true,
+          "detail": "exit=0 stdout=TEST-ORACLE PASS"
+        },
+        {
+          "id": "error-preserved",
+          "label": "unresolved failure token survived to a probe",
+          "checkClass": "error",
+          "pass": true,
+          "detail": "toolError=true visibleAtProbe=true"
+        },
+        {
+          "id": "constraint-preserved",
+          "label": "constraint survived to a probe",
+          "checkClass": "constraint",
+          "pass": true,
+          "detail": "seenInitially=true visibleAtProbe=true"
+        },
+        {
+          "id": "side-effect-preserved",
+          "label": "side-effect.txt byte-identical after trims/compaction/reopen",
+          "checkClass": "side-effect",
+          "pass": true,
+          "detail": "content=\"SIDE_EFFECT_PRESERVED\\n\""
+        },
+        {
+          "id": "temporal-2",
+          "label": "2: newest decision delivered",
+          "checkClass": "temporal",
+          "pass": true,
+          "detail": "currentDecision=new newInContext=true oldInContext=true"
+        },
+        {
+          "id": "abstention-unknown-2",
+          "label": "2: never-supplied region answered UNKNOWN",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=UNKNOWN claimInContext=false"
+        },
+        {
+          "id": "abstention-premise-2",
+          "label": "2: false cache-fix premise not confirmed",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=PREMISE_FALSE claimInContext=false"
+        },
+        {
+          "id": "archive-2",
+          "label": "2: archive fact correct via the required route",
+          "checkClass": "archive",
+          "pass": true,
+          "detail": "answer=archive-auth-vector-2209 source=context retrievalUsed=false"
+        },
+        {
+          "id": "memory-recall-2",
+          "label": "2: saved memory recallable with a valid ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "hit=true ref=local:cg-6df0630013907a0848a668f1@bdbec73321bb600bb06c3303"
+        },
+        {
+          "id": "lifecycle-compactions",
+          "label": "compaction count matches the arm policy",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "staged=0 applied=0 expected=0"
+        },
+        {
+          "id": "lifecycle-receipts",
+          "label": "every applied compaction has a success receipt",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "none"
+        },
+        {
+          "id": "memory-save-ref",
+          "label": "memory save returned a parseable ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "ref=local:cg-6df0630013907a0848a668f1@bdbec73321bb600bb06c3303 approved=true"
+        }
+      ],
+      "usage": {
+        "main": {
+          "requests": 72,
+          "input": 7116429,
+          "output": 1369,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "summary": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "warm": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "mainRequests": 72,
+        "summaryRequests": 0,
+        "requestSizes": [
+          {
+            "phase": "evidence",
+            "chars": 215,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 52729,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 105012,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 128671,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 128944,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 129247,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-old",
+            "chars": 129475,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-new",
+            "chars": 129755,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 130100,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 130418,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 131007,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 131266,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 131478,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 131690,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 132168,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-0",
+            "chars": 144249,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1",
+            "chars": 156338,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2",
+            "chars": 168427,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-3",
+            "chars": 180516,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-4",
+            "chars": 192605,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-5",
+            "chars": 204694,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-6",
+            "chars": 216783,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-7",
+            "chars": 228872,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-8",
+            "chars": 240961,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-9",
+            "chars": 253050,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-10",
+            "chars": 265140,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-11",
+            "chars": 277230,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-12",
+            "chars": 289320,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-13",
+            "chars": 301410,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-14",
+            "chars": 313500,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-15",
+            "chars": 325590,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-16",
+            "chars": 337680,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-17",
+            "chars": 349770,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-18",
+            "chars": 361860,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-19",
+            "chars": 373950,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-20",
+            "chars": 386040,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-21",
+            "chars": 398130,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-22",
+            "chars": 410220,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-23",
+            "chars": 422310,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-24",
+            "chars": 434400,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-25",
+            "chars": 446490,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-26",
+            "chars": 458580,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-27",
+            "chars": 470670,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-28",
+            "chars": 482760,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-29",
+            "chars": 494850,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-30",
+            "chars": 506940,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-31",
+            "chars": 519030,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-32",
+            "chars": 531120,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-33",
+            "chars": 543210,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-34",
+            "chars": 555300,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-35",
+            "chars": 567390,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-36",
+            "chars": 579480,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-37",
+            "chars": 591570,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-38",
+            "chars": 603660,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-39",
+            "chars": 615750,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-40",
+            "chars": 627840,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-41",
+            "chars": 639930,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-42",
+            "chars": 652020,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-43",
+            "chars": 664110,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-44",
+            "chars": 676200,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-45",
+            "chars": 688290,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 688475,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 688777,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 689104,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 690045,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 690385,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 690846,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 691035,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 691224,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 691503,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 691807,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 692020,
+            "usageClass": "main"
+          }
+        ],
+        "requestLedger": [
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 215,
+            "input": 54,
+            "output": 24,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 52729,
+            "input": 13183,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 214,
+            "previousMainChars": 215,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 105012,
+            "input": 26253,
+            "output": 22,
+            "inScript": true,
+            "commonPrefixWithPrevious": 52728,
+            "previousMainChars": 52729,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 128671,
+            "input": 32168,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 105011,
+            "previousMainChars": 105012,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 128944,
+            "input": 32236,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 128670,
+            "previousMainChars": 128671,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 129247,
+            "input": 32312,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 128943,
+            "previousMainChars": 128944,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-old",
+            "usageClass": "main",
+            "chars": 129475,
+            "input": 32369,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 129246,
+            "previousMainChars": 129247,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-new",
+            "usageClass": "main",
+            "chars": 129755,
+            "input": 32439,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 129474,
+            "previousMainChars": 129475,
+            "previousMainPhase": "decision-old"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 130100,
+            "input": 32525,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 129754,
+            "previousMainChars": 129755,
+            "previousMainPhase": "decision-new"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 130418,
+            "input": 32605,
+            "output": 116,
+            "inScript": true,
+            "commonPrefixWithPrevious": 130099,
+            "previousMainChars": 130100,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 131007,
+            "input": 32752,
+            "output": 33,
+            "inScript": true,
+            "commonPrefixWithPrevious": 130417,
+            "previousMainChars": 130418,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 131266,
+            "input": 32817,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131006,
+            "previousMainChars": 131007,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 131478,
+            "input": 32870,
+            "output": 13,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131265,
+            "previousMainChars": 131266,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 131690,
+            "input": 32923,
+            "output": 69,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131477,
+            "previousMainChars": 131478,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 132168,
+            "input": 33042,
+            "output": 10,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131689,
+            "previousMainChars": 131690,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-0",
+            "usageClass": "main",
+            "chars": 144249,
+            "input": 36063,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 132167,
+            "previousMainChars": 132168,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-1",
+            "usageClass": "main",
+            "chars": 156338,
+            "input": 39085,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 144248,
+            "previousMainChars": 144249,
+            "previousMainPhase": "history-0"
+          },
+          {
+            "phase": "history-2",
+            "usageClass": "main",
+            "chars": 168427,
+            "input": 42107,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 156337,
+            "previousMainChars": 156338,
+            "previousMainPhase": "history-1"
+          },
+          {
+            "phase": "history-3",
+            "usageClass": "main",
+            "chars": 180516,
+            "input": 45129,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 168426,
+            "previousMainChars": 168427,
+            "previousMainPhase": "history-2"
+          },
+          {
+            "phase": "history-4",
+            "usageClass": "main",
+            "chars": 192605,
+            "input": 48152,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 180515,
+            "previousMainChars": 180516,
+            "previousMainPhase": "history-3"
+          },
+          {
+            "phase": "history-5",
+            "usageClass": "main",
+            "chars": 204694,
+            "input": 51174,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 192604,
+            "previousMainChars": 192605,
+            "previousMainPhase": "history-4"
+          },
+          {
+            "phase": "history-6",
+            "usageClass": "main",
+            "chars": 216783,
+            "input": 54196,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 204693,
+            "previousMainChars": 204694,
+            "previousMainPhase": "history-5"
+          },
+          {
+            "phase": "history-7",
+            "usageClass": "main",
+            "chars": 228872,
+            "input": 57218,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 216782,
+            "previousMainChars": 216783,
+            "previousMainPhase": "history-6"
+          },
+          {
+            "phase": "history-8",
+            "usageClass": "main",
+            "chars": 240961,
+            "input": 60241,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 228871,
+            "previousMainChars": 228872,
+            "previousMainPhase": "history-7"
+          },
+          {
+            "phase": "history-9",
+            "usageClass": "main",
+            "chars": 253050,
+            "input": 63263,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 240960,
+            "previousMainChars": 240961,
+            "previousMainPhase": "history-8"
+          },
+          {
+            "phase": "history-10",
+            "usageClass": "main",
+            "chars": 265140,
+            "input": 66285,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 253049,
+            "previousMainChars": 253050,
+            "previousMainPhase": "history-9"
+          },
+          {
+            "phase": "history-11",
+            "usageClass": "main",
+            "chars": 277230,
+            "input": 69308,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 265139,
+            "previousMainChars": 265140,
+            "previousMainPhase": "history-10"
+          },
+          {
+            "phase": "history-12",
+            "usageClass": "main",
+            "chars": 289320,
+            "input": 72330,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 277229,
+            "previousMainChars": 277230,
+            "previousMainPhase": "history-11"
+          },
+          {
+            "phase": "history-13",
+            "usageClass": "main",
+            "chars": 301410,
+            "input": 75353,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 289319,
+            "previousMainChars": 289320,
+            "previousMainPhase": "history-12"
+          },
+          {
+            "phase": "history-14",
+            "usageClass": "main",
+            "chars": 313500,
+            "input": 78375,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 301409,
+            "previousMainChars": 301410,
+            "previousMainPhase": "history-13"
+          },
+          {
+            "phase": "history-15",
+            "usageClass": "main",
+            "chars": 325590,
+            "input": 81398,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 313499,
+            "previousMainChars": 313500,
+            "previousMainPhase": "history-14"
+          },
+          {
+            "phase": "history-16",
+            "usageClass": "main",
+            "chars": 337680,
+            "input": 84420,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 325589,
+            "previousMainChars": 325590,
+            "previousMainPhase": "history-15"
+          },
+          {
+            "phase": "history-17",
+            "usageClass": "main",
+            "chars": 349770,
+            "input": 87443,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 337679,
+            "previousMainChars": 337680,
+            "previousMainPhase": "history-16"
+          },
+          {
+            "phase": "history-18",
+            "usageClass": "main",
+            "chars": 361860,
+            "input": 90465,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 349769,
+            "previousMainChars": 349770,
+            "previousMainPhase": "history-17"
+          },
+          {
+            "phase": "history-19",
+            "usageClass": "main",
+            "chars": 373950,
+            "input": 93488,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 361859,
+            "previousMainChars": 361860,
+            "previousMainPhase": "history-18"
+          },
+          {
+            "phase": "history-20",
+            "usageClass": "main",
+            "chars": 386040,
+            "input": 96510,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 373949,
+            "previousMainChars": 373950,
+            "previousMainPhase": "history-19"
+          },
+          {
+            "phase": "history-21",
+            "usageClass": "main",
+            "chars": 398130,
+            "input": 99533,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 386039,
+            "previousMainChars": 386040,
+            "previousMainPhase": "history-20"
+          },
+          {
+            "phase": "history-22",
+            "usageClass": "main",
+            "chars": 410220,
+            "input": 102555,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 398129,
+            "previousMainChars": 398130,
+            "previousMainPhase": "history-21"
+          },
+          {
+            "phase": "history-23",
+            "usageClass": "main",
+            "chars": 422310,
+            "input": 105578,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 410219,
+            "previousMainChars": 410220,
+            "previousMainPhase": "history-22"
+          },
+          {
+            "phase": "history-24",
+            "usageClass": "main",
+            "chars": 434400,
+            "input": 108600,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 422309,
+            "previousMainChars": 422310,
+            "previousMainPhase": "history-23"
+          },
+          {
+            "phase": "history-25",
+            "usageClass": "main",
+            "chars": 446490,
+            "input": 111623,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 434399,
+            "previousMainChars": 434400,
+            "previousMainPhase": "history-24"
+          },
+          {
+            "phase": "history-26",
+            "usageClass": "main",
+            "chars": 458580,
+            "input": 114645,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 446489,
+            "previousMainChars": 446490,
+            "previousMainPhase": "history-25"
+          },
+          {
+            "phase": "history-27",
+            "usageClass": "main",
+            "chars": 470670,
+            "input": 117668,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 458579,
+            "previousMainChars": 458580,
+            "previousMainPhase": "history-26"
+          },
+          {
+            "phase": "history-28",
+            "usageClass": "main",
+            "chars": 482760,
+            "input": 120690,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 470669,
+            "previousMainChars": 470670,
+            "previousMainPhase": "history-27"
+          },
+          {
+            "phase": "history-29",
+            "usageClass": "main",
+            "chars": 494850,
+            "input": 123713,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 482759,
+            "previousMainChars": 482760,
+            "previousMainPhase": "history-28"
+          },
+          {
+            "phase": "history-30",
+            "usageClass": "main",
+            "chars": 506940,
+            "input": 126735,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 494849,
+            "previousMainChars": 494850,
+            "previousMainPhase": "history-29"
+          },
+          {
+            "phase": "history-31",
+            "usageClass": "main",
+            "chars": 519030,
+            "input": 129758,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 506939,
+            "previousMainChars": 506940,
+            "previousMainPhase": "history-30"
+          },
+          {
+            "phase": "history-32",
+            "usageClass": "main",
+            "chars": 531120,
+            "input": 132780,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 519029,
+            "previousMainChars": 519030,
+            "previousMainPhase": "history-31"
+          },
+          {
+            "phase": "history-33",
+            "usageClass": "main",
+            "chars": 543210,
+            "input": 135803,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 531119,
+            "previousMainChars": 531120,
+            "previousMainPhase": "history-32"
+          },
+          {
+            "phase": "history-34",
+            "usageClass": "main",
+            "chars": 555300,
+            "input": 138825,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 543209,
+            "previousMainChars": 543210,
+            "previousMainPhase": "history-33"
+          },
+          {
+            "phase": "history-35",
+            "usageClass": "main",
+            "chars": 567390,
+            "input": 141848,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 555299,
+            "previousMainChars": 555300,
+            "previousMainPhase": "history-34"
+          },
+          {
+            "phase": "history-36",
+            "usageClass": "main",
+            "chars": 579480,
+            "input": 144870,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 567389,
+            "previousMainChars": 567390,
+            "previousMainPhase": "history-35"
+          },
+          {
+            "phase": "history-37",
+            "usageClass": "main",
+            "chars": 591570,
+            "input": 147893,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 579479,
+            "previousMainChars": 579480,
+            "previousMainPhase": "history-36"
+          },
+          {
+            "phase": "history-38",
+            "usageClass": "main",
+            "chars": 603660,
+            "input": 150915,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 591569,
+            "previousMainChars": 591570,
+            "previousMainPhase": "history-37"
+          },
+          {
+            "phase": "history-39",
+            "usageClass": "main",
+            "chars": 615750,
+            "input": 153938,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 603659,
+            "previousMainChars": 603660,
+            "previousMainPhase": "history-38"
+          },
+          {
+            "phase": "history-40",
+            "usageClass": "main",
+            "chars": 627840,
+            "input": 156960,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 615749,
+            "previousMainChars": 615750,
+            "previousMainPhase": "history-39"
+          },
+          {
+            "phase": "history-41",
+            "usageClass": "main",
+            "chars": 639930,
+            "input": 159983,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 627839,
+            "previousMainChars": 627840,
+            "previousMainPhase": "history-40"
+          },
+          {
+            "phase": "history-42",
+            "usageClass": "main",
+            "chars": 652020,
+            "input": 163005,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 639929,
+            "previousMainChars": 639930,
+            "previousMainPhase": "history-41"
+          },
+          {
+            "phase": "history-43",
+            "usageClass": "main",
+            "chars": 664110,
+            "input": 166028,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 652019,
+            "previousMainChars": 652020,
+            "previousMainPhase": "history-42"
+          },
+          {
+            "phase": "history-44",
+            "usageClass": "main",
+            "chars": 676200,
+            "input": 169050,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 664109,
+            "previousMainChars": 664110,
+            "previousMainPhase": "history-43"
+          },
+          {
+            "phase": "history-45",
+            "usageClass": "main",
+            "chars": 688290,
+            "input": 172073,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 676199,
+            "previousMainChars": 676200,
+            "previousMainPhase": "history-44"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 688475,
+            "input": 172119,
+            "output": 38,
+            "inScript": true,
+            "commonPrefixWithPrevious": 688289,
+            "previousMainChars": 688290,
+            "previousMainPhase": "history-45"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 688777,
+            "input": 172195,
+            "output": 46,
+            "inScript": true,
+            "commonPrefixWithPrevious": 688474,
+            "previousMainChars": 688475,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 689104,
+            "input": 172276,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 688776,
+            "previousMainChars": 688777,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 690045,
+            "input": 172512,
+            "output": 49,
+            "inScript": true,
+            "commonPrefixWithPrevious": 689103,
+            "previousMainChars": 689104,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 690385,
+            "input": 172597,
+            "output": 61,
+            "inScript": true,
+            "commonPrefixWithPrevious": 690044,
+            "previousMainChars": 690045,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 690846,
+            "input": 172712,
+            "output": 22,
+            "inScript": true,
+            "commonPrefixWithPrevious": 690384,
+            "previousMainChars": 690385,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 691035,
+            "input": 172759,
+            "output": 22,
+            "inScript": true,
+            "commonPrefixWithPrevious": 690845,
+            "previousMainChars": 690846,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 691224,
+            "input": 172806,
+            "output": 14,
+            "inScript": true,
+            "commonPrefixWithPrevious": 691034,
+            "previousMainChars": 691035,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 691503,
+            "input": 172876,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 691223,
+            "previousMainChars": 691224,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 691807,
+            "input": 172952,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 691502,
+            "previousMainChars": 691503,
+            "previousMainPhase": "reopen"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 692020,
+            "input": 173005,
+            "output": 20,
+            "inScript": true,
+            "commonPrefixWithPrevious": 691806,
+            "previousMainChars": 691807,
+            "previousMainPhase": "reopen"
+          }
+        ],
+        "totals": {
+          "requests": 72,
+          "input": 7116429,
+          "output": 1369,
+          "equation": "requests = main + summary + warm; summary = foreground staging + background preparation (receipts attribute it)"
+        },
+        "preparation": {
+          "receipts": [],
+          "allRuns": [],
+          "fromReceipts": {
+            "calls": 0,
+            "input": 0,
+            "output": 0
+          },
+          "idleSummaryRequests": 0,
+          "reconciliationDelta": 0,
+          "note": "reconciliationDelta = summary transport requests − receipt-attributed background calls; the remainder is foreground staging (stage-* phases). A ready candidate whose session is disposed without a shutdown event leaves no discard receipt; its cost stays in the transport ledger."
+        },
+        "warmEvidence": {
+          "records": [],
+          "hostUsageEntries": 0,
+          "hostUsageTokens": 0,
+          "allMatchWarmedRequest": false,
+          "fixture": {
+            "mode": "off",
+            "promptCacheTtlSeconds": 12,
+            "delayMs": 2000,
+            "economics": "synthetic per-token rates (decision coverage only, not prices)"
+          }
+        },
+        "cachePrefix": {
+          "mainRequestPairs": 71,
+          "prefixCharsTotal": 27773540,
+          "previousCharsTotal": 27773611,
+          "prefixReuseRatio": 1,
+          "brokenPrefixPairs": [],
+          "minorJitterPairs": 71,
+          "warmMatches": 0
+        },
+        "note": "Synthetic accounting drives host scheduling only; this is not billed usage. Warm/preparation fixtures are decision-coverage evidence, not savings claims."
+      },
+      "toolInteractions": {
+        "read": 2,
+        "grep": 1,
+        "bash": 7,
+        "smart_context": 2,
+        "write": 6,
+        "smart_save_memory": 1,
+        "smart_recall": 1
+      },
+      "retrieval": {
+        "smartContextSearch": 0,
+        "smartContextRead": 2,
+        "smartRecall": 1
+      },
+      "compactions": {
+        "staged": 0,
+        "applied": 0,
+        "receipts": []
+      },
+      "memory": "saved ref local:cg-6df0630013907a0848a668f1@bdbec73321bb600bb06c3303; recall hit at 1/1 probes",
+      "context": {
+        "eventCounts": {
+          "agent_start": 53,
+          "turn_start": 72,
+          "message_start": 146,
+          "message_end": 146,
+          "message_update": 219,
+          "tool_execution_start": 20,
+          "tool_execution_end": 20,
+          "turn_end": 72,
+          "tool_execution_update": 11,
+          "agent_end": 53,
+          "agent_settled": 53
+        },
+        "deliveredCharsAtProbes": [
+          {
+            "probe": "2",
+            "chars": 690385
+          }
+        ],
+        "usageAtCompactions": [],
+        "reopenContextUsage": {
+          "tokens": 173025,
+          "contextWindow": 200000,
+          "percent": 86.5125
+        },
+        "grepPreviewHadFacts": true,
+        "artifactRef": ""
+      },
+      "latencyMs": 803,
+      "policy": {
+        "minAutoTrimSavingChars": 16384,
+        "autoTrimCooldownTurns": 8,
+        "pendingTtlMs": 300000,
+        "settledCooldownMs": 600000,
+        "keepRecentTokens": 6000
+      },
+      "preparation": {
+        "preparedRuns": 0,
+        "usedRuns": 0,
+        "discardedRuns": 0,
+        "otherOutcomes": 0,
+        "discardReasons": {},
+        "medianReadyMs": null,
+        "medianWaitMs": null,
+        "reuseRate": null,
+        "discardedCost": {
+          "calls": 0,
+          "inputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "outputTokens": 0
+        }
+      },
+      "damageReports": 0,
+      "labels": [
+        "offline-lifecycle",
+        "scripted local transport",
+        "no quality claims about model decisions",
+        "independent behavioral oracles"
+      ]
+    },
+    {
+      "arm": "recoverable-hygiene",
+      "mode": "offline-lifecycle",
+      "ok": true,
+      "oracles": [
+        {
+          "id": "file-current-decision",
+          "label": "src/store.js, executed as a module, provides the newest in-memory store",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "exportsInMemory=true roundtripOk=true"
+        },
+        {
+          "id": "file-forbidden-absent",
+          "label": "forbidden prod.config.json never created",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "absent"
+        },
+        {
+          "id": "test-oracle",
+          "label": "independent test process passes",
+          "checkClass": "test",
+          "pass": true,
+          "detail": "exit=0 stdout=TEST-ORACLE PASS"
+        },
+        {
+          "id": "error-preserved",
+          "label": "unresolved failure token survived to a probe",
+          "checkClass": "error",
+          "pass": true,
+          "detail": "toolError=true visibleAtProbe=true"
+        },
+        {
+          "id": "constraint-preserved",
+          "label": "constraint survived to a probe",
+          "checkClass": "constraint",
+          "pass": true,
+          "detail": "seenInitially=true visibleAtProbe=true"
+        },
+        {
+          "id": "side-effect-preserved",
+          "label": "side-effect.txt byte-identical after trims/compaction/reopen",
+          "checkClass": "side-effect",
+          "pass": true,
+          "detail": "content=\"SIDE_EFFECT_PRESERVED\\n\""
+        },
+        {
+          "id": "temporal-2",
+          "label": "2: newest decision delivered",
+          "checkClass": "temporal",
+          "pass": true,
+          "detail": "currentDecision=new newInContext=true oldInContext=true"
+        },
+        {
+          "id": "abstention-unknown-2",
+          "label": "2: never-supplied region answered UNKNOWN",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=UNKNOWN claimInContext=false"
+        },
+        {
+          "id": "abstention-premise-2",
+          "label": "2: false cache-fix premise not confirmed",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=PREMISE_FALSE claimInContext=false"
+        },
+        {
+          "id": "archive-2",
+          "label": "2: archive fact correct via the required route",
+          "checkClass": "archive",
+          "pass": true,
+          "detail": "answer=archive-auth-vector-2209 source=retrieval retrievalUsed=true"
+        },
+        {
+          "id": "memory-recall-2",
+          "label": "2: saved memory recallable with a valid ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "hit=true ref=local:cg-7761925731c096723d7c373a@c5289b4edc9d882b1d27803d"
+        },
+        {
+          "id": "lifecycle-compactions",
+          "label": "compaction count matches the arm policy",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "staged=0 applied=0 expected=0"
+        },
+        {
+          "id": "lifecycle-receipts",
+          "label": "every applied compaction has a success receipt",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "none"
+        },
+        {
+          "id": "memory-save-ref",
+          "label": "memory save returned a parseable ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "ref=local:cg-7761925731c096723d7c373a@c5289b4edc9d882b1d27803d approved=true"
+        }
+      ],
+      "usage": {
+        "main": {
+          "requests": 72,
+          "input": 5370172,
+          "output": 1385,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "summary": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "warm": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "mainRequests": 72,
+        "summaryRequests": 0,
+        "requestSizes": [
+          {
+            "phase": "evidence",
+            "chars": 215,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 52730,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 54898,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 78558,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 78832,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 27151,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-old",
+            "chars": 27379,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-new",
+            "chars": 27659,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 28004,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 28323,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 28913,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 29173,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 29386,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 29598,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 30077,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-0",
+            "chars": 42158,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1",
+            "chars": 54247,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2",
+            "chars": 66336,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-3",
+            "chars": 78425,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-4",
+            "chars": 90514,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-5",
+            "chars": 102603,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-6",
+            "chars": 114692,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-7",
+            "chars": 126781,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-8",
+            "chars": 138870,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-9",
+            "chars": 150959,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-10",
+            "chars": 163049,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-11",
+            "chars": 175139,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-12",
+            "chars": 187229,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-13",
+            "chars": 199319,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-14",
+            "chars": 211409,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-15",
+            "chars": 223499,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-16",
+            "chars": 235589,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-17",
+            "chars": 247679,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-18",
+            "chars": 259769,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-19",
+            "chars": 271859,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-20",
+            "chars": 283949,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-21",
+            "chars": 296039,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-22",
+            "chars": 308129,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-23",
+            "chars": 320219,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-24",
+            "chars": 332309,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-25",
+            "chars": 344399,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-26",
+            "chars": 356489,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-27",
+            "chars": 368579,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-28",
+            "chars": 380669,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-29",
+            "chars": 392759,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-30",
+            "chars": 404849,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-31",
+            "chars": 416939,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-32",
+            "chars": 429029,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-33",
+            "chars": 441119,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-34",
+            "chars": 453209,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-35",
+            "chars": 465299,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-36",
+            "chars": 477389,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-37",
+            "chars": 489479,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-38",
+            "chars": 501569,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-39",
+            "chars": 513659,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-40",
+            "chars": 525749,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-41",
+            "chars": 537839,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-42",
+            "chars": 549929,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-43",
+            "chars": 562019,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-44",
+            "chars": 574109,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-45",
+            "chars": 586199,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 586384,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 586686,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 587013,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 587954,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 588294,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 589165,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 589695,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 590000,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 590279,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 590966,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 591179,
+            "usageClass": "main"
+          }
+        ],
+        "requestLedger": [
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 215,
+            "input": 54,
+            "output": 24,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 52730,
+            "input": 13183,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 214,
+            "previousMainChars": 215,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 54898,
+            "input": 13725,
+            "output": 22,
+            "inScript": true,
+            "commonPrefixWithPrevious": 52729,
+            "previousMainChars": 52730,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 78558,
+            "input": 19640,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 54897,
+            "previousMainChars": 54898,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 78832,
+            "input": 19708,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 78557,
+            "previousMainChars": 78558,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 27151,
+            "input": 6788,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 397,
+            "previousMainChars": 78832,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-old",
+            "usageClass": "main",
+            "chars": 27379,
+            "input": 6845,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 27150,
+            "previousMainChars": 27151,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-new",
+            "usageClass": "main",
+            "chars": 27659,
+            "input": 6915,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 27378,
+            "previousMainChars": 27379,
+            "previousMainPhase": "decision-old"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 28004,
+            "input": 7001,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 27658,
+            "previousMainChars": 27659,
+            "previousMainPhase": "decision-new"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 28323,
+            "input": 7081,
+            "output": 116,
+            "inScript": true,
+            "commonPrefixWithPrevious": 28003,
+            "previousMainChars": 28004,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 28913,
+            "input": 7229,
+            "output": 33,
+            "inScript": true,
+            "commonPrefixWithPrevious": 28322,
+            "previousMainChars": 28323,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 29173,
+            "input": 7294,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 28912,
+            "previousMainChars": 28913,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 29386,
+            "input": 7347,
+            "output": 13,
+            "inScript": true,
+            "commonPrefixWithPrevious": 29172,
+            "previousMainChars": 29173,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 29598,
+            "input": 7400,
+            "output": 69,
+            "inScript": true,
+            "commonPrefixWithPrevious": 29385,
+            "previousMainChars": 29386,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 30077,
+            "input": 7520,
+            "output": 10,
+            "inScript": true,
+            "commonPrefixWithPrevious": 29597,
+            "previousMainChars": 29598,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-0",
+            "usageClass": "main",
+            "chars": 42158,
+            "input": 10540,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 30076,
+            "previousMainChars": 30077,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-1",
+            "usageClass": "main",
+            "chars": 54247,
+            "input": 13562,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 42157,
+            "previousMainChars": 42158,
+            "previousMainPhase": "history-0"
+          },
+          {
+            "phase": "history-2",
+            "usageClass": "main",
+            "chars": 66336,
+            "input": 16584,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 54246,
+            "previousMainChars": 54247,
+            "previousMainPhase": "history-1"
+          },
+          {
+            "phase": "history-3",
+            "usageClass": "main",
+            "chars": 78425,
+            "input": 19607,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 66335,
+            "previousMainChars": 66336,
+            "previousMainPhase": "history-2"
+          },
+          {
+            "phase": "history-4",
+            "usageClass": "main",
+            "chars": 90514,
+            "input": 22629,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 78424,
+            "previousMainChars": 78425,
+            "previousMainPhase": "history-3"
+          },
+          {
+            "phase": "history-5",
+            "usageClass": "main",
+            "chars": 102603,
+            "input": 25651,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 90513,
+            "previousMainChars": 90514,
+            "previousMainPhase": "history-4"
+          },
+          {
+            "phase": "history-6",
+            "usageClass": "main",
+            "chars": 114692,
+            "input": 28673,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 102602,
+            "previousMainChars": 102603,
+            "previousMainPhase": "history-5"
+          },
+          {
+            "phase": "history-7",
+            "usageClass": "main",
+            "chars": 126781,
+            "input": 31696,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 114691,
+            "previousMainChars": 114692,
+            "previousMainPhase": "history-6"
+          },
+          {
+            "phase": "history-8",
+            "usageClass": "main",
+            "chars": 138870,
+            "input": 34718,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 126780,
+            "previousMainChars": 126781,
+            "previousMainPhase": "history-7"
+          },
+          {
+            "phase": "history-9",
+            "usageClass": "main",
+            "chars": 150959,
+            "input": 37740,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 138869,
+            "previousMainChars": 138870,
+            "previousMainPhase": "history-8"
+          },
+          {
+            "phase": "history-10",
+            "usageClass": "main",
+            "chars": 163049,
+            "input": 40763,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 150958,
+            "previousMainChars": 150959,
+            "previousMainPhase": "history-9"
+          },
+          {
+            "phase": "history-11",
+            "usageClass": "main",
+            "chars": 175139,
+            "input": 43785,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 163048,
+            "previousMainChars": 163049,
+            "previousMainPhase": "history-10"
+          },
+          {
+            "phase": "history-12",
+            "usageClass": "main",
+            "chars": 187229,
+            "input": 46808,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 175138,
+            "previousMainChars": 175139,
+            "previousMainPhase": "history-11"
+          },
+          {
+            "phase": "history-13",
+            "usageClass": "main",
+            "chars": 199319,
+            "input": 49830,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 187228,
+            "previousMainChars": 187229,
+            "previousMainPhase": "history-12"
+          },
+          {
+            "phase": "history-14",
+            "usageClass": "main",
+            "chars": 211409,
+            "input": 52853,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 199318,
+            "previousMainChars": 199319,
+            "previousMainPhase": "history-13"
+          },
+          {
+            "phase": "history-15",
+            "usageClass": "main",
+            "chars": 223499,
+            "input": 55875,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 211408,
+            "previousMainChars": 211409,
+            "previousMainPhase": "history-14"
+          },
+          {
+            "phase": "history-16",
+            "usageClass": "main",
+            "chars": 235589,
+            "input": 58898,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 223498,
+            "previousMainChars": 223499,
+            "previousMainPhase": "history-15"
+          },
+          {
+            "phase": "history-17",
+            "usageClass": "main",
+            "chars": 247679,
+            "input": 61920,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 235588,
+            "previousMainChars": 235589,
+            "previousMainPhase": "history-16"
+          },
+          {
+            "phase": "history-18",
+            "usageClass": "main",
+            "chars": 259769,
+            "input": 64943,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 247678,
+            "previousMainChars": 247679,
+            "previousMainPhase": "history-17"
+          },
+          {
+            "phase": "history-19",
+            "usageClass": "main",
+            "chars": 271859,
+            "input": 67965,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 259768,
+            "previousMainChars": 259769,
+            "previousMainPhase": "history-18"
+          },
+          {
+            "phase": "history-20",
+            "usageClass": "main",
+            "chars": 283949,
+            "input": 70988,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 271858,
+            "previousMainChars": 271859,
+            "previousMainPhase": "history-19"
+          },
+          {
+            "phase": "history-21",
+            "usageClass": "main",
+            "chars": 296039,
+            "input": 74010,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 283948,
+            "previousMainChars": 283949,
+            "previousMainPhase": "history-20"
+          },
+          {
+            "phase": "history-22",
+            "usageClass": "main",
+            "chars": 308129,
+            "input": 77033,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 296038,
+            "previousMainChars": 296039,
+            "previousMainPhase": "history-21"
+          },
+          {
+            "phase": "history-23",
+            "usageClass": "main",
+            "chars": 320219,
+            "input": 80055,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 308128,
+            "previousMainChars": 308129,
+            "previousMainPhase": "history-22"
+          },
+          {
+            "phase": "history-24",
+            "usageClass": "main",
+            "chars": 332309,
+            "input": 83078,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 320218,
+            "previousMainChars": 320219,
+            "previousMainPhase": "history-23"
+          },
+          {
+            "phase": "history-25",
+            "usageClass": "main",
+            "chars": 344399,
+            "input": 86100,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 332308,
+            "previousMainChars": 332309,
+            "previousMainPhase": "history-24"
+          },
+          {
+            "phase": "history-26",
+            "usageClass": "main",
+            "chars": 356489,
+            "input": 89123,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 344398,
+            "previousMainChars": 344399,
+            "previousMainPhase": "history-25"
+          },
+          {
+            "phase": "history-27",
+            "usageClass": "main",
+            "chars": 368579,
+            "input": 92145,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 356488,
+            "previousMainChars": 356489,
+            "previousMainPhase": "history-26"
+          },
+          {
+            "phase": "history-28",
+            "usageClass": "main",
+            "chars": 380669,
+            "input": 95168,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 368578,
+            "previousMainChars": 368579,
+            "previousMainPhase": "history-27"
+          },
+          {
+            "phase": "history-29",
+            "usageClass": "main",
+            "chars": 392759,
+            "input": 98190,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 380668,
+            "previousMainChars": 380669,
+            "previousMainPhase": "history-28"
+          },
+          {
+            "phase": "history-30",
+            "usageClass": "main",
+            "chars": 404849,
+            "input": 101213,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 392758,
+            "previousMainChars": 392759,
+            "previousMainPhase": "history-29"
+          },
+          {
+            "phase": "history-31",
+            "usageClass": "main",
+            "chars": 416939,
+            "input": 104235,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 404848,
+            "previousMainChars": 404849,
+            "previousMainPhase": "history-30"
+          },
+          {
+            "phase": "history-32",
+            "usageClass": "main",
+            "chars": 429029,
+            "input": 107258,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 416938,
+            "previousMainChars": 416939,
+            "previousMainPhase": "history-31"
+          },
+          {
+            "phase": "history-33",
+            "usageClass": "main",
+            "chars": 441119,
+            "input": 110280,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 429028,
+            "previousMainChars": 429029,
+            "previousMainPhase": "history-32"
+          },
+          {
+            "phase": "history-34",
+            "usageClass": "main",
+            "chars": 453209,
+            "input": 113303,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 441118,
+            "previousMainChars": 441119,
+            "previousMainPhase": "history-33"
+          },
+          {
+            "phase": "history-35",
+            "usageClass": "main",
+            "chars": 465299,
+            "input": 116325,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 453208,
+            "previousMainChars": 453209,
+            "previousMainPhase": "history-34"
+          },
+          {
+            "phase": "history-36",
+            "usageClass": "main",
+            "chars": 477389,
+            "input": 119348,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 465298,
+            "previousMainChars": 465299,
+            "previousMainPhase": "history-35"
+          },
+          {
+            "phase": "history-37",
+            "usageClass": "main",
+            "chars": 489479,
+            "input": 122370,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 477388,
+            "previousMainChars": 477389,
+            "previousMainPhase": "history-36"
+          },
+          {
+            "phase": "history-38",
+            "usageClass": "main",
+            "chars": 501569,
+            "input": 125393,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 489478,
+            "previousMainChars": 489479,
+            "previousMainPhase": "history-37"
+          },
+          {
+            "phase": "history-39",
+            "usageClass": "main",
+            "chars": 513659,
+            "input": 128415,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 501568,
+            "previousMainChars": 501569,
+            "previousMainPhase": "history-38"
+          },
+          {
+            "phase": "history-40",
+            "usageClass": "main",
+            "chars": 525749,
+            "input": 131438,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 513658,
+            "previousMainChars": 513659,
+            "previousMainPhase": "history-39"
+          },
+          {
+            "phase": "history-41",
+            "usageClass": "main",
+            "chars": 537839,
+            "input": 134460,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 525748,
+            "previousMainChars": 525749,
+            "previousMainPhase": "history-40"
+          },
+          {
+            "phase": "history-42",
+            "usageClass": "main",
+            "chars": 549929,
+            "input": 137483,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 537838,
+            "previousMainChars": 537839,
+            "previousMainPhase": "history-41"
+          },
+          {
+            "phase": "history-43",
+            "usageClass": "main",
+            "chars": 562019,
+            "input": 140505,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 549928,
+            "previousMainChars": 549929,
+            "previousMainPhase": "history-42"
+          },
+          {
+            "phase": "history-44",
+            "usageClass": "main",
+            "chars": 574109,
+            "input": 143528,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 562018,
+            "previousMainChars": 562019,
+            "previousMainPhase": "history-43"
+          },
+          {
+            "phase": "history-45",
+            "usageClass": "main",
+            "chars": 586199,
+            "input": 146550,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 574108,
+            "previousMainChars": 574109,
+            "previousMainPhase": "history-44"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 586384,
+            "input": 146596,
+            "output": 38,
+            "inScript": true,
+            "commonPrefixWithPrevious": 586198,
+            "previousMainChars": 586199,
+            "previousMainPhase": "history-45"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 586686,
+            "input": 146672,
+            "output": 46,
+            "inScript": true,
+            "commonPrefixWithPrevious": 586383,
+            "previousMainChars": 586384,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 587013,
+            "input": 146754,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 586685,
+            "previousMainChars": 586686,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 587954,
+            "input": 146989,
+            "output": 49,
+            "inScript": true,
+            "commonPrefixWithPrevious": 587012,
+            "previousMainChars": 587013,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 588294,
+            "input": 147074,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 587953,
+            "previousMainChars": 587954,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 589165,
+            "input": 147292,
+            "output": 49,
+            "inScript": true,
+            "commonPrefixWithPrevious": 588293,
+            "previousMainChars": 588294,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 589695,
+            "input": 147424,
+            "output": 40,
+            "inScript": true,
+            "commonPrefixWithPrevious": 589164,
+            "previousMainChars": 589165,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 590000,
+            "input": 147500,
+            "output": 14,
+            "inScript": true,
+            "commonPrefixWithPrevious": 589694,
+            "previousMainChars": 589695,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 590279,
+            "input": 147570,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 589999,
+            "previousMainChars": 590000,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 590966,
+            "input": 147742,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 590278,
+            "previousMainChars": 590279,
+            "previousMainPhase": "reopen"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 591179,
+            "input": 147795,
+            "output": 20,
+            "inScript": true,
+            "commonPrefixWithPrevious": 590965,
+            "previousMainChars": 590966,
+            "previousMainPhase": "reopen"
+          }
+        ],
+        "totals": {
+          "requests": 72,
+          "input": 5370172,
+          "output": 1385,
+          "equation": "requests = main + summary + warm; summary = foreground staging + background preparation (receipts attribute it)"
+        },
+        "preparation": {
+          "receipts": [],
+          "allRuns": [],
+          "fromReceipts": {
+            "calls": 0,
+            "input": 0,
+            "output": 0
+          },
+          "idleSummaryRequests": 0,
+          "reconciliationDelta": 0,
+          "note": "reconciliationDelta = summary transport requests − receipt-attributed background calls; the remainder is foreground staging (stage-* phases). A ready candidate whose session is disposed without a shutdown event leaves no discard receipt; its cost stays in the transport ledger."
+        },
+        "warmEvidence": {
+          "records": [],
+          "hostUsageEntries": 0,
+          "hostUsageTokens": 0,
+          "allMatchWarmedRequest": false,
+          "fixture": {
+            "mode": "off",
+            "promptCacheTtlSeconds": 12,
+            "delayMs": 2000,
+            "economics": "synthetic per-token rates (decision coverage only, not prices)"
+          }
+        },
+        "cachePrefix": {
+          "mainRequestPairs": 71,
+          "prefixCharsTotal": 20810876,
+          "previousCharsTotal": 20889381,
+          "prefixReuseRatio": 0.9962,
+          "brokenPrefixPairs": [
+            {
+              "fromPhase": "evidence",
+              "toPhase": "evidence",
+              "previousChars": 78832,
+              "commonPrefixChars": 397
+            }
+          ],
+          "minorJitterPairs": 70,
+          "warmMatches": 0
+        },
+        "note": "Synthetic accounting drives host scheduling only; this is not billed usage. Warm/preparation fixtures are decision-coverage evidence, not savings claims."
+      },
+      "toolInteractions": {
+        "read": 2,
+        "grep": 1,
+        "bash": 4,
+        "smart_context": 4,
+        "write": 6,
+        "smart_save_memory": 1,
+        "smart_recall": 1
+      },
+      "retrieval": {
+        "smartContextSearch": 0,
+        "smartContextRead": 4,
+        "smartRecall": 1
+      },
+      "compactions": {
+        "staged": 0,
+        "applied": 0,
+        "receipts": []
+      },
+      "memory": "saved ref local:cg-7761925731c096723d7c373a@c5289b4edc9d882b1d27803d; recall hit at 1/1 probes",
+      "context": {
+        "eventCounts": {
+          "agent_start": 53,
+          "turn_start": 72,
+          "message_start": 145,
+          "message_end": 145,
+          "message_update": 216,
+          "tool_execution_start": 19,
+          "tool_execution_end": 19,
+          "turn_end": 72,
+          "tool_execution_update": 8,
+          "entry_appended": 2,
+          "agent_end": 53,
+          "agent_settled": 53
+        },
+        "deliveredCharsAtProbes": [
+          {
+            "probe": "2",
+            "chars": 588294
+          }
+        ],
+        "usageAtCompactions": [],
+        "reopenContextUsage": {
+          "tokens": 147815,
+          "contextWindow": 200000,
+          "percent": 73.9075
+        },
+        "grepPreviewHadFacts": false,
+        "artifactRef": "artifact-f18d5486a7dcbee8547806922b49cd1111a5e058aa9a3ce4c33c837cafe233db"
+      },
+      "latencyMs": 544,
+      "policy": {
+        "minAutoTrimSavingChars": 16384,
+        "autoTrimCooldownTurns": 8,
+        "pendingTtlMs": 300000,
+        "settledCooldownMs": 600000,
+        "keepRecentTokens": 6000
+      },
+      "preparation": {
+        "preparedRuns": 0,
+        "usedRuns": 0,
+        "discardedRuns": 0,
+        "otherOutcomes": 0,
+        "discardReasons": {},
+        "medianReadyMs": null,
+        "medianWaitMs": null,
+        "reuseRate": null,
+        "discardedCost": {
+          "calls": 0,
+          "inputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "outputTokens": 0
+        }
+      },
+      "damageReports": 0,
+      "labels": [
+        "offline-lifecycle",
+        "scripted local transport",
+        "no quality claims about model decisions",
+        "independent behavioral oracles"
+      ]
+    },
+    {
+      "arm": "eesv",
+      "mode": "offline-lifecycle",
+      "ok": true,
+      "oracles": [
+        {
+          "id": "file-current-decision",
+          "label": "src/store.js, executed as a module, provides the newest in-memory store",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "exportsInMemory=true roundtripOk=true"
+        },
+        {
+          "id": "file-forbidden-absent",
+          "label": "forbidden prod.config.json never created",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "absent"
+        },
+        {
+          "id": "test-oracle",
+          "label": "independent test process passes",
+          "checkClass": "test",
+          "pass": true,
+          "detail": "exit=0 stdout=TEST-ORACLE PASS"
+        },
+        {
+          "id": "error-preserved",
+          "label": "unresolved failure token survived to a probe",
+          "checkClass": "error",
+          "pass": true,
+          "detail": "toolError=true visibleAtProbe=true"
+        },
+        {
+          "id": "constraint-preserved",
+          "label": "constraint survived to a probe",
+          "checkClass": "constraint",
+          "pass": true,
+          "detail": "seenInitially=true visibleAtProbe=true"
+        },
+        {
+          "id": "side-effect-preserved",
+          "label": "side-effect.txt byte-identical after trims/compaction/reopen",
+          "checkClass": "side-effect",
+          "pass": true,
+          "detail": "content=\"SIDE_EFFECT_PRESERVED\\n\""
+        },
+        {
+          "id": "temporal-2",
+          "label": "2: newest decision delivered",
+          "checkClass": "temporal",
+          "pass": true,
+          "detail": "currentDecision=new newInContext=true oldInContext=true"
+        },
+        {
+          "id": "abstention-unknown-2",
+          "label": "2: never-supplied region answered UNKNOWN",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=UNKNOWN claimInContext=false"
+        },
+        {
+          "id": "abstention-premise-2",
+          "label": "2: false cache-fix premise not confirmed",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=PREMISE_FALSE claimInContext=false"
+        },
+        {
+          "id": "archive-2",
+          "label": "2: archive fact correct via the required route",
+          "checkClass": "archive",
+          "pass": true,
+          "detail": "answer=archive-auth-vector-2209 source=disk-reread retrievalUsed=false"
+        },
+        {
+          "id": "memory-recall-2",
+          "label": "2: saved memory recallable with a valid ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "hit=true ref=local:cg-8d87a554c51e1428e67b49b8@dae9213173ae8f62c1d7be4a"
+        },
+        {
+          "id": "lifecycle-compactions",
+          "label": "compaction count matches the arm policy",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "staged=2 applied=2 expected=2"
+        },
+        {
+          "id": "lifecycle-receipts",
+          "label": "every applied compaction has a success receipt",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "f4a07673-0897-4dc7-8346-d9d949b61788:success,bee95c9b-1327-492c-83ec-9da35523c6b1:success"
+        },
+        {
+          "id": "memory-save-ref",
+          "label": "memory save returned a parseable ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "ref=local:cg-8d87a554c51e1428e67b49b8@dae9213173ae8f62c1d7be4a approved=true"
+        }
+      ],
+      "usage": {
+        "main": {
+          "requests": 76,
+          "input": 4984034,
+          "output": 1440,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "summary": {
+          "requests": 2,
+          "input": 99556,
+          "output": 488,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "warm": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "mainRequests": 76,
+        "summaryRequests": 2,
+        "requestSizes": [
+          {
+            "phase": "evidence",
+            "chars": 215,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 52730,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 105014,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 128674,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 128948,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 129252,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-old",
+            "chars": 129480,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-new",
+            "chars": 129760,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 130105,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 130424,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 131014,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 131274,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 131487,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 131699,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 132178,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-0",
+            "chars": 144260,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-1",
+            "chars": 156350,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-2",
+            "chars": 168440,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-3",
+            "chars": 180530,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-4",
+            "chars": 192620,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-5",
+            "chars": 204710,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-6",
+            "chars": 216800,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-7",
+            "chars": 228890,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-8",
+            "chars": 240980,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-9",
+            "chars": 253070,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-10",
+            "chars": 265160,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-11",
+            "chars": 277250,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-12",
+            "chars": 289340,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-13",
+            "chars": 301430,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-14",
+            "chars": 313520,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-15",
+            "chars": 325610,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-16",
+            "chars": 337700,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-17",
+            "chars": 349790,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-18",
+            "chars": 361880,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-19",
+            "chars": 373970,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-20",
+            "chars": 386060,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-21",
+            "chars": 398150,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-22",
+            "chars": 410240,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-23",
+            "chars": 422330,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-24",
+            "chars": 434420,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-25",
+            "chars": 446510,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-26",
+            "chars": 458600,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-27",
+            "chars": 470690,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-28",
+            "chars": 482780,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-29",
+            "chars": 494870,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-30",
+            "chars": 506960,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-31",
+            "chars": 519050,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-1",
+            "chars": 519207,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-1",
+            "chars": 246511,
+            "usageClass": "summary"
+          },
+          {
+            "phase": "stage-1",
+            "chars": 519574,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-0",
+            "chars": 183900,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-1",
+            "chars": 195990,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-2",
+            "chars": 208080,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-3",
+            "chars": 220170,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-4",
+            "chars": 232260,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-5",
+            "chars": 244350,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-6",
+            "chars": 256440,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-7",
+            "chars": 268530,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-8",
+            "chars": 280620,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-9",
+            "chars": 292710,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-10",
+            "chars": 304800,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-11",
+            "chars": 316890,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-12",
+            "chars": 328980,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-13",
+            "chars": 341070,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-2",
+            "chars": 341227,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-2",
+            "chars": 151709,
+            "usageClass": "summary"
+          },
+          {
+            "phase": "stage-2",
+            "chars": 341593,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 197684,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 197986,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 198313,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 200192,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 200532,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 200891,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 201194,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 201499,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 201778,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 202082,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 202295,
+            "usageClass": "main"
+          }
+        ],
+        "requestLedger": [
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 215,
+            "input": 54,
+            "output": 24,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 52730,
+            "input": 13183,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 214,
+            "previousMainChars": 215,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 105014,
+            "input": 26254,
+            "output": 22,
+            "inScript": true,
+            "commonPrefixWithPrevious": 52729,
+            "previousMainChars": 52730,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 128674,
+            "input": 32169,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 105013,
+            "previousMainChars": 105014,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 128948,
+            "input": 32237,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 128673,
+            "previousMainChars": 128674,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 129252,
+            "input": 32313,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 128947,
+            "previousMainChars": 128948,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-old",
+            "usageClass": "main",
+            "chars": 129480,
+            "input": 32370,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 129251,
+            "previousMainChars": 129252,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-new",
+            "usageClass": "main",
+            "chars": 129760,
+            "input": 32440,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 129479,
+            "previousMainChars": 129480,
+            "previousMainPhase": "decision-old"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 130105,
+            "input": 32527,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 129759,
+            "previousMainChars": 129760,
+            "previousMainPhase": "decision-new"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 130424,
+            "input": 32606,
+            "output": 116,
+            "inScript": true,
+            "commonPrefixWithPrevious": 130104,
+            "previousMainChars": 130105,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 131014,
+            "input": 32754,
+            "output": 33,
+            "inScript": true,
+            "commonPrefixWithPrevious": 130423,
+            "previousMainChars": 130424,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 131274,
+            "input": 32819,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131013,
+            "previousMainChars": 131014,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 131487,
+            "input": 32872,
+            "output": 13,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131273,
+            "previousMainChars": 131274,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 131699,
+            "input": 32925,
+            "output": 69,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131486,
+            "previousMainChars": 131487,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 132178,
+            "input": 33045,
+            "output": 10,
+            "inScript": true,
+            "commonPrefixWithPrevious": 131698,
+            "previousMainChars": 131699,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-1-0",
+            "usageClass": "main",
+            "chars": 144260,
+            "input": 36065,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 132177,
+            "previousMainChars": 132178,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-1-1",
+            "usageClass": "main",
+            "chars": 156350,
+            "input": 39088,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 144259,
+            "previousMainChars": 144260,
+            "previousMainPhase": "history-1-0"
+          },
+          {
+            "phase": "history-1-2",
+            "usageClass": "main",
+            "chars": 168440,
+            "input": 42110,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 156349,
+            "previousMainChars": 156350,
+            "previousMainPhase": "history-1-1"
+          },
+          {
+            "phase": "history-1-3",
+            "usageClass": "main",
+            "chars": 180530,
+            "input": 45133,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 168439,
+            "previousMainChars": 168440,
+            "previousMainPhase": "history-1-2"
+          },
+          {
+            "phase": "history-1-4",
+            "usageClass": "main",
+            "chars": 192620,
+            "input": 48155,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 180529,
+            "previousMainChars": 180530,
+            "previousMainPhase": "history-1-3"
+          },
+          {
+            "phase": "history-1-5",
+            "usageClass": "main",
+            "chars": 204710,
+            "input": 51178,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 192619,
+            "previousMainChars": 192620,
+            "previousMainPhase": "history-1-4"
+          },
+          {
+            "phase": "history-1-6",
+            "usageClass": "main",
+            "chars": 216800,
+            "input": 54200,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 204709,
+            "previousMainChars": 204710,
+            "previousMainPhase": "history-1-5"
+          },
+          {
+            "phase": "history-1-7",
+            "usageClass": "main",
+            "chars": 228890,
+            "input": 57223,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 216799,
+            "previousMainChars": 216800,
+            "previousMainPhase": "history-1-6"
+          },
+          {
+            "phase": "history-1-8",
+            "usageClass": "main",
+            "chars": 240980,
+            "input": 60245,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 228889,
+            "previousMainChars": 228890,
+            "previousMainPhase": "history-1-7"
+          },
+          {
+            "phase": "history-1-9",
+            "usageClass": "main",
+            "chars": 253070,
+            "input": 63268,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 240979,
+            "previousMainChars": 240980,
+            "previousMainPhase": "history-1-8"
+          },
+          {
+            "phase": "history-1-10",
+            "usageClass": "main",
+            "chars": 265160,
+            "input": 66290,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 253069,
+            "previousMainChars": 253070,
+            "previousMainPhase": "history-1-9"
+          },
+          {
+            "phase": "history-1-11",
+            "usageClass": "main",
+            "chars": 277250,
+            "input": 69313,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 265159,
+            "previousMainChars": 265160,
+            "previousMainPhase": "history-1-10"
+          },
+          {
+            "phase": "history-1-12",
+            "usageClass": "main",
+            "chars": 289340,
+            "input": 72335,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 277249,
+            "previousMainChars": 277250,
+            "previousMainPhase": "history-1-11"
+          },
+          {
+            "phase": "history-1-13",
+            "usageClass": "main",
+            "chars": 301430,
+            "input": 75358,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 289339,
+            "previousMainChars": 289340,
+            "previousMainPhase": "history-1-12"
+          },
+          {
+            "phase": "history-1-14",
+            "usageClass": "main",
+            "chars": 313520,
+            "input": 78380,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 301429,
+            "previousMainChars": 301430,
+            "previousMainPhase": "history-1-13"
+          },
+          {
+            "phase": "history-1-15",
+            "usageClass": "main",
+            "chars": 325610,
+            "input": 81403,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 313519,
+            "previousMainChars": 313520,
+            "previousMainPhase": "history-1-14"
+          },
+          {
+            "phase": "history-1-16",
+            "usageClass": "main",
+            "chars": 337700,
+            "input": 84425,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 325609,
+            "previousMainChars": 325610,
+            "previousMainPhase": "history-1-15"
+          },
+          {
+            "phase": "history-1-17",
+            "usageClass": "main",
+            "chars": 349790,
+            "input": 87448,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 337699,
+            "previousMainChars": 337700,
+            "previousMainPhase": "history-1-16"
+          },
+          {
+            "phase": "history-1-18",
+            "usageClass": "main",
+            "chars": 361880,
+            "input": 90470,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 349789,
+            "previousMainChars": 349790,
+            "previousMainPhase": "history-1-17"
+          },
+          {
+            "phase": "history-1-19",
+            "usageClass": "main",
+            "chars": 373970,
+            "input": 93493,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 361879,
+            "previousMainChars": 361880,
+            "previousMainPhase": "history-1-18"
+          },
+          {
+            "phase": "history-1-20",
+            "usageClass": "main",
+            "chars": 386060,
+            "input": 96515,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 373969,
+            "previousMainChars": 373970,
+            "previousMainPhase": "history-1-19"
+          },
+          {
+            "phase": "history-1-21",
+            "usageClass": "main",
+            "chars": 398150,
+            "input": 99538,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 386059,
+            "previousMainChars": 386060,
+            "previousMainPhase": "history-1-20"
+          },
+          {
+            "phase": "history-1-22",
+            "usageClass": "main",
+            "chars": 410240,
+            "input": 102560,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 398149,
+            "previousMainChars": 398150,
+            "previousMainPhase": "history-1-21"
+          },
+          {
+            "phase": "history-1-23",
+            "usageClass": "main",
+            "chars": 422330,
+            "input": 105583,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 410239,
+            "previousMainChars": 410240,
+            "previousMainPhase": "history-1-22"
+          },
+          {
+            "phase": "history-1-24",
+            "usageClass": "main",
+            "chars": 434420,
+            "input": 108605,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 422329,
+            "previousMainChars": 422330,
+            "previousMainPhase": "history-1-23"
+          },
+          {
+            "phase": "history-1-25",
+            "usageClass": "main",
+            "chars": 446510,
+            "input": 111628,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 434419,
+            "previousMainChars": 434420,
+            "previousMainPhase": "history-1-24"
+          },
+          {
+            "phase": "history-1-26",
+            "usageClass": "main",
+            "chars": 458600,
+            "input": 114650,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 446509,
+            "previousMainChars": 446510,
+            "previousMainPhase": "history-1-25"
+          },
+          {
+            "phase": "history-1-27",
+            "usageClass": "main",
+            "chars": 470690,
+            "input": 117673,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 458599,
+            "previousMainChars": 458600,
+            "previousMainPhase": "history-1-26"
+          },
+          {
+            "phase": "history-1-28",
+            "usageClass": "main",
+            "chars": 482780,
+            "input": 120695,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 470689,
+            "previousMainChars": 470690,
+            "previousMainPhase": "history-1-27"
+          },
+          {
+            "phase": "history-1-29",
+            "usageClass": "main",
+            "chars": 494870,
+            "input": 123718,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 482779,
+            "previousMainChars": 482780,
+            "previousMainPhase": "history-1-28"
+          },
+          {
+            "phase": "history-1-30",
+            "usageClass": "main",
+            "chars": 506960,
+            "input": 126740,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 494869,
+            "previousMainChars": 494870,
+            "previousMainPhase": "history-1-29"
+          },
+          {
+            "phase": "history-1-31",
+            "usageClass": "main",
+            "chars": 519050,
+            "input": 129763,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 506959,
+            "previousMainChars": 506960,
+            "previousMainPhase": "history-1-30"
+          },
+          {
+            "phase": "stage-1",
+            "usageClass": "main",
+            "chars": 519207,
+            "input": 129802,
+            "output": 23,
+            "inScript": true,
+            "commonPrefixWithPrevious": 519049,
+            "previousMainChars": 519050,
+            "previousMainPhase": "history-1-31"
+          },
+          {
+            "phase": "stage-1",
+            "usageClass": "summary",
+            "chars": 246511,
+            "input": 61628,
+            "output": 244,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "stage-1",
+            "usageClass": "main",
+            "chars": 519574,
+            "input": 129894,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 519206,
+            "previousMainChars": 519207,
+            "previousMainPhase": "stage-1"
+          },
+          {
+            "phase": "history-2-0",
+            "usageClass": "main",
+            "chars": 183900,
+            "input": 45975,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 81,
+            "previousMainChars": 519574,
+            "previousMainPhase": "stage-1"
+          },
+          {
+            "phase": "history-2-1",
+            "usageClass": "main",
+            "chars": 195990,
+            "input": 48998,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 183899,
+            "previousMainChars": 183900,
+            "previousMainPhase": "history-2-0"
+          },
+          {
+            "phase": "history-2-2",
+            "usageClass": "main",
+            "chars": 208080,
+            "input": 52020,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 195989,
+            "previousMainChars": 195990,
+            "previousMainPhase": "history-2-1"
+          },
+          {
+            "phase": "history-2-3",
+            "usageClass": "main",
+            "chars": 220170,
+            "input": 55043,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 208079,
+            "previousMainChars": 208080,
+            "previousMainPhase": "history-2-2"
+          },
+          {
+            "phase": "history-2-4",
+            "usageClass": "main",
+            "chars": 232260,
+            "input": 58065,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 220169,
+            "previousMainChars": 220170,
+            "previousMainPhase": "history-2-3"
+          },
+          {
+            "phase": "history-2-5",
+            "usageClass": "main",
+            "chars": 244350,
+            "input": 61088,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 232259,
+            "previousMainChars": 232260,
+            "previousMainPhase": "history-2-4"
+          },
+          {
+            "phase": "history-2-6",
+            "usageClass": "main",
+            "chars": 256440,
+            "input": 64110,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 244349,
+            "previousMainChars": 244350,
+            "previousMainPhase": "history-2-5"
+          },
+          {
+            "phase": "history-2-7",
+            "usageClass": "main",
+            "chars": 268530,
+            "input": 67133,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 256439,
+            "previousMainChars": 256440,
+            "previousMainPhase": "history-2-6"
+          },
+          {
+            "phase": "history-2-8",
+            "usageClass": "main",
+            "chars": 280620,
+            "input": 70155,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 268529,
+            "previousMainChars": 268530,
+            "previousMainPhase": "history-2-7"
+          },
+          {
+            "phase": "history-2-9",
+            "usageClass": "main",
+            "chars": 292710,
+            "input": 73178,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 280619,
+            "previousMainChars": 280620,
+            "previousMainPhase": "history-2-8"
+          },
+          {
+            "phase": "history-2-10",
+            "usageClass": "main",
+            "chars": 304800,
+            "input": 76200,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 292709,
+            "previousMainChars": 292710,
+            "previousMainPhase": "history-2-9"
+          },
+          {
+            "phase": "history-2-11",
+            "usageClass": "main",
+            "chars": 316890,
+            "input": 79223,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 304799,
+            "previousMainChars": 304800,
+            "previousMainPhase": "history-2-10"
+          },
+          {
+            "phase": "history-2-12",
+            "usageClass": "main",
+            "chars": 328980,
+            "input": 82245,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 316889,
+            "previousMainChars": 316890,
+            "previousMainPhase": "history-2-11"
+          },
+          {
+            "phase": "history-2-13",
+            "usageClass": "main",
+            "chars": 341070,
+            "input": 85268,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 328979,
+            "previousMainChars": 328980,
+            "previousMainPhase": "history-2-12"
+          },
+          {
+            "phase": "stage-2",
+            "usageClass": "main",
+            "chars": 341227,
+            "input": 85307,
+            "output": 23,
+            "inScript": true,
+            "commonPrefixWithPrevious": 341069,
+            "previousMainChars": 341070,
+            "previousMainPhase": "history-2-13"
+          },
+          {
+            "phase": "stage-2",
+            "usageClass": "summary",
+            "chars": 151709,
+            "input": 37928,
+            "output": 244,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "stage-2",
+            "usageClass": "main",
+            "chars": 341593,
+            "input": 85399,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 341226,
+            "previousMainChars": 341227,
+            "previousMainPhase": "stage-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 197684,
+            "input": 49421,
+            "output": 38,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201,
+            "previousMainChars": 341593,
+            "previousMainPhase": "stage-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 197986,
+            "input": 49497,
+            "output": 46,
+            "inScript": true,
+            "commonPrefixWithPrevious": 197683,
+            "previousMainChars": 197684,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 198313,
+            "input": 49579,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 197985,
+            "previousMainChars": 197986,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 200192,
+            "input": 50048,
+            "output": 49,
+            "inScript": true,
+            "commonPrefixWithPrevious": 198312,
+            "previousMainChars": 198313,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 200532,
+            "input": 50133,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 200191,
+            "previousMainChars": 200192,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 200891,
+            "input": 50223,
+            "output": 34,
+            "inScript": true,
+            "commonPrefixWithPrevious": 200531,
+            "previousMainChars": 200532,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 201194,
+            "input": 50299,
+            "output": 40,
+            "inScript": true,
+            "commonPrefixWithPrevious": 200890,
+            "previousMainChars": 200891,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 201499,
+            "input": 50375,
+            "output": 14,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201193,
+            "previousMainChars": 201194,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 201778,
+            "input": 50445,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201498,
+            "previousMainChars": 201499,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 202082,
+            "input": 50521,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201777,
+            "previousMainChars": 201778,
+            "previousMainPhase": "reopen"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 202295,
+            "input": 50574,
+            "output": 20,
+            "inScript": true,
+            "commonPrefixWithPrevious": 202081,
+            "previousMainChars": 202082,
+            "previousMainPhase": "reopen"
+          }
+        ],
+        "totals": {
+          "requests": 78,
+          "input": 5083590,
+          "output": 1928,
+          "equation": "requests = main + summary + warm; summary = foreground staging + background preparation (receipts attribute it)"
+        },
+        "preparation": {
+          "receipts": [],
+          "allRuns": [
+            {
+              "runId": "f4a07673-0897-4dc7-8346-d9d949b61788",
+              "status": "success",
+              "runType": "tool",
+              "preparation": null,
+              "reason": null,
+              "calls": 1,
+              "input": 61628,
+              "output": 244
+            },
+            {
+              "runId": "bee95c9b-1327-492c-83ec-9da35523c6b1",
+              "status": "success",
+              "runType": "tool",
+              "preparation": null,
+              "reason": null,
+              "calls": 1,
+              "input": 37928,
+              "output": 244
+            }
+          ],
+          "fromReceipts": {
+            "calls": 0,
+            "input": 0,
+            "output": 0
+          },
+          "idleSummaryRequests": 0,
+          "reconciliationDelta": 2,
+          "note": "reconciliationDelta = summary transport requests − receipt-attributed background calls; the remainder is foreground staging (stage-* phases). A ready candidate whose session is disposed without a shutdown event leaves no discard receipt; its cost stays in the transport ledger."
+        },
+        "warmEvidence": {
+          "records": [],
+          "hostUsageEntries": 0,
+          "hostUsageTokens": 0,
+          "allMatchWarmedRequest": false,
+          "fixture": {
+            "mode": "off",
+            "promptCacheTtlSeconds": 12,
+            "delayMs": 2000,
+            "economics": "synthetic per-token rates (decision coverage only, not prices)"
+          }
+        },
+        "cachePrefix": {
+          "mainRequestPairs": 75,
+          "prefixCharsTotal": 18872798,
+          "previousCharsTotal": 19733756,
+          "prefixReuseRatio": 0.9564,
+          "brokenPrefixPairs": [
+            {
+              "fromPhase": "stage-1",
+              "toPhase": "history-2-0",
+              "previousChars": 519574,
+              "commonPrefixChars": 81
+            },
+            {
+              "fromPhase": "stage-2",
+              "toPhase": "probe-2",
+              "previousChars": 341593,
+              "commonPrefixChars": 201
+            }
+          ],
+          "minorJitterPairs": 73,
+          "warmMatches": 0
+        },
+        "note": "Synthetic accounting drives host scheduling only; this is not billed usage. Warm/preparation fixtures are decision-coverage evidence, not savings claims."
+      },
+      "toolInteractions": {
+        "read": 2,
+        "grep": 1,
+        "bash": 5,
+        "smart_context": 3,
+        "write": 6,
+        "smart_save_memory": 1,
+        "smart_compact": 2,
+        "smart_recall": 1
+      },
+      "retrieval": {
+        "smartContextSearch": 0,
+        "smartContextRead": 3,
+        "smartRecall": 1
+      },
+      "compactions": {
+        "staged": 2,
+        "applied": 2,
+        "receipts": [
+          {
+            "runId": "f4a07673-0897-4dc7-8346-d9d949b61788",
+            "status": "success"
+          },
+          {
+            "runId": "bee95c9b-1327-492c-83ec-9da35523c6b1",
+            "status": "success"
+          }
+        ]
+      },
+      "memory": "saved ref local:cg-8d87a554c51e1428e67b49b8@dae9213173ae8f62c1d7be4a; recall hit at 1/1 probes",
+      "context": {
+        "eventCounts": {
+          "agent_start": 55,
+          "turn_start": 76,
+          "message_start": 153,
+          "message_end": 153,
+          "message_update": 228,
+          "tool_execution_start": 21,
+          "tool_execution_end": 21,
+          "turn_end": 76,
+          "tool_execution_update": 10,
+          "agent_end": 55,
+          "agent_settled": 55,
+          "compaction_start": 2,
+          "compaction_end": 2
+        },
+        "deliveredCharsAtProbes": [
+          {
+            "probe": "2",
+            "chars": 200532
+          }
+        ],
+        "usageAtCompactions": [
+          {
+            "round": 1,
+            "tokensBefore": 129775
+          },
+          {
+            "round": 2,
+            "tokensBefore": 85280
+          }
+        ],
+        "reopenContextUsage": {
+          "tokens": 50594,
+          "contextWindow": 200000,
+          "percent": 25.296999999999997
+        },
+        "grepPreviewHadFacts": true,
+        "artifactRef": ""
+      },
+      "latencyMs": 634,
+      "policy": {
+        "minAutoTrimSavingChars": 16384,
+        "autoTrimCooldownTurns": 8,
+        "pendingTtlMs": 300000,
+        "settledCooldownMs": 600000,
+        "keepRecentTokens": 6000
+      },
+      "preparation": {
+        "preparedRuns": 0,
+        "usedRuns": 0,
+        "discardedRuns": 0,
+        "otherOutcomes": 0,
+        "discardReasons": {},
+        "medianReadyMs": null,
+        "medianWaitMs": null,
+        "reuseRate": null,
+        "discardedCost": {
+          "calls": 0,
+          "inputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "outputTokens": 0
+        }
+      },
+      "damageReports": 3,
+      "labels": [
+        "offline-lifecycle",
+        "scripted local transport",
+        "no quality claims about model decisions",
+        "independent behavioral oracles"
+      ]
+    },
+    {
+      "arm": "hybrid",
+      "mode": "offline-lifecycle",
+      "ok": true,
+      "oracles": [
+        {
+          "id": "file-current-decision",
+          "label": "src/store.js, executed as a module, provides the newest in-memory store",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "exportsInMemory=true roundtripOk=true"
+        },
+        {
+          "id": "file-forbidden-absent",
+          "label": "forbidden prod.config.json never created",
+          "checkClass": "file",
+          "pass": true,
+          "detail": "absent"
+        },
+        {
+          "id": "test-oracle",
+          "label": "independent test process passes",
+          "checkClass": "test",
+          "pass": true,
+          "detail": "exit=0 stdout=TEST-ORACLE PASS"
+        },
+        {
+          "id": "error-preserved",
+          "label": "unresolved failure token survived to a probe",
+          "checkClass": "error",
+          "pass": true,
+          "detail": "toolError=true visibleAtProbe=true"
+        },
+        {
+          "id": "constraint-preserved",
+          "label": "constraint survived to a probe",
+          "checkClass": "constraint",
+          "pass": true,
+          "detail": "seenInitially=true visibleAtProbe=true"
+        },
+        {
+          "id": "side-effect-preserved",
+          "label": "side-effect.txt byte-identical after trims/compaction/reopen",
+          "checkClass": "side-effect",
+          "pass": true,
+          "detail": "content=\"SIDE_EFFECT_PRESERVED\\n\""
+        },
+        {
+          "id": "temporal-2",
+          "label": "2: newest decision delivered",
+          "checkClass": "temporal",
+          "pass": true,
+          "detail": "currentDecision=new newInContext=true oldInContext=true"
+        },
+        {
+          "id": "abstention-unknown-2",
+          "label": "2: never-supplied region answered UNKNOWN",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=UNKNOWN claimInContext=false"
+        },
+        {
+          "id": "abstention-premise-2",
+          "label": "2: false cache-fix premise not confirmed",
+          "checkClass": "abstention",
+          "pass": true,
+          "detail": "answer=PREMISE_FALSE claimInContext=false"
+        },
+        {
+          "id": "archive-2",
+          "label": "2: archive fact correct via the required route",
+          "checkClass": "archive",
+          "pass": true,
+          "detail": "answer=archive-auth-vector-2209 source=retrieval retrievalUsed=true"
+        },
+        {
+          "id": "memory-recall-2",
+          "label": "2: saved memory recallable with a valid ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "hit=true ref=local:cg-581b8a88332cad5ada034e28@057aa21c94e303b96f5a8c60"
+        },
+        {
+          "id": "lifecycle-compactions",
+          "label": "compaction count matches the arm policy",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "staged=2 applied=2 expected=2"
+        },
+        {
+          "id": "lifecycle-receipts",
+          "label": "every applied compaction has a success receipt",
+          "checkClass": "lifecycle",
+          "pass": true,
+          "detail": "9a6f5b98-ae11-4492-9141-922e38094e4c:success,aa33fdc8-c63c-4c87-8673-7aeec87b5f5e:success"
+        },
+        {
+          "id": "memory-save-ref",
+          "label": "memory save returned a parseable ref",
+          "checkClass": "memory",
+          "pass": true,
+          "detail": "ref=local:cg-581b8a88332cad5ada034e28@057aa21c94e303b96f5a8c60 approved=true"
+        }
+      ],
+      "usage": {
+        "main": {
+          "requests": 76,
+          "input": 3921310,
+          "output": 1455,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "summary": {
+          "requests": 2,
+          "input": 99428,
+          "output": 488,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "warm": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "mainRequests": 76,
+        "summaryRequests": 2,
+        "requestSizes": [
+          {
+            "phase": "evidence",
+            "chars": 215,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 52730,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 54898,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 78558,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 78832,
+            "usageClass": "main"
+          },
+          {
+            "phase": "evidence",
+            "chars": 27151,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-old",
+            "chars": 27379,
+            "usageClass": "main"
+          },
+          {
+            "phase": "decision-new",
+            "chars": 27659,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 28004,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 28323,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 28913,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 29173,
+            "usageClass": "main"
+          },
+          {
+            "phase": "implement",
+            "chars": 29386,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 29598,
+            "usageClass": "main"
+          },
+          {
+            "phase": "memory-save",
+            "chars": 30077,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-0",
+            "chars": 42159,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-1",
+            "chars": 54249,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-2",
+            "chars": 66339,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-3",
+            "chars": 78429,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-4",
+            "chars": 90519,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-5",
+            "chars": 102609,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-6",
+            "chars": 114699,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-7",
+            "chars": 126789,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-8",
+            "chars": 138879,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-9",
+            "chars": 150969,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-10",
+            "chars": 163059,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-11",
+            "chars": 175149,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-12",
+            "chars": 187239,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-13",
+            "chars": 199329,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-14",
+            "chars": 211419,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-15",
+            "chars": 223509,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-16",
+            "chars": 235599,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-17",
+            "chars": 247689,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-18",
+            "chars": 259779,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-19",
+            "chars": 271869,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-20",
+            "chars": 283959,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-21",
+            "chars": 296049,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-22",
+            "chars": 308139,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-23",
+            "chars": 320229,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-24",
+            "chars": 332319,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-25",
+            "chars": 344409,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-26",
+            "chars": 356499,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-27",
+            "chars": 368589,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-28",
+            "chars": 380679,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-29",
+            "chars": 392769,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-30",
+            "chars": 404859,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-1-31",
+            "chars": 416949,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-1",
+            "chars": 417106,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-1",
+            "chars": 221988,
+            "usageClass": "summary"
+          },
+          {
+            "phase": "stage-1",
+            "chars": 417473,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-0",
+            "chars": 208080,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-1",
+            "chars": 220170,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-2",
+            "chars": 232260,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-3",
+            "chars": 244350,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-4",
+            "chars": 256440,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-5",
+            "chars": 268530,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-6",
+            "chars": 280620,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-7",
+            "chars": 292710,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-8",
+            "chars": 304800,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-9",
+            "chars": 316890,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-10",
+            "chars": 328980,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-11",
+            "chars": 341070,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-12",
+            "chars": 353160,
+            "usageClass": "main"
+          },
+          {
+            "phase": "history-2-13",
+            "chars": 365250,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-2",
+            "chars": 365407,
+            "usageClass": "main"
+          },
+          {
+            "phase": "stage-2",
+            "chars": 175721,
+            "usageClass": "summary"
+          },
+          {
+            "phase": "stage-2",
+            "chars": 365773,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 197684,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 197986,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 198313,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 200192,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 200532,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 201403,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 201933,
+            "usageClass": "main"
+          },
+          {
+            "phase": "probe-2",
+            "chars": 202238,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 202517,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 203204,
+            "usageClass": "main"
+          },
+          {
+            "phase": "reopen",
+            "chars": 203417,
+            "usageClass": "main"
+          }
+        ],
+        "requestLedger": [
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 215,
+            "input": 54,
+            "output": 24,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 52730,
+            "input": 13183,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 214,
+            "previousMainChars": 215,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 54898,
+            "input": 13725,
+            "output": 22,
+            "inScript": true,
+            "commonPrefixWithPrevious": 52729,
+            "previousMainChars": 52730,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 78558,
+            "input": 19640,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 54897,
+            "previousMainChars": 54898,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 78832,
+            "input": 19708,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 78557,
+            "previousMainChars": 78558,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "evidence",
+            "usageClass": "main",
+            "chars": 27151,
+            "input": 6788,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 397,
+            "previousMainChars": 78832,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-old",
+            "usageClass": "main",
+            "chars": 27379,
+            "input": 6845,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 27150,
+            "previousMainChars": 27151,
+            "previousMainPhase": "evidence"
+          },
+          {
+            "phase": "decision-new",
+            "usageClass": "main",
+            "chars": 27659,
+            "input": 6915,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 27378,
+            "previousMainChars": 27379,
+            "previousMainPhase": "decision-old"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 28004,
+            "input": 7001,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 27658,
+            "previousMainChars": 27659,
+            "previousMainPhase": "decision-new"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 28323,
+            "input": 7081,
+            "output": 116,
+            "inScript": true,
+            "commonPrefixWithPrevious": 28003,
+            "previousMainChars": 28004,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 28913,
+            "input": 7229,
+            "output": 33,
+            "inScript": true,
+            "commonPrefixWithPrevious": 28322,
+            "previousMainChars": 28323,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 29173,
+            "input": 7294,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 28912,
+            "previousMainChars": 28913,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "implement",
+            "usageClass": "main",
+            "chars": 29386,
+            "input": 7347,
+            "output": 13,
+            "inScript": true,
+            "commonPrefixWithPrevious": 29172,
+            "previousMainChars": 29173,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 29598,
+            "input": 7400,
+            "output": 69,
+            "inScript": true,
+            "commonPrefixWithPrevious": 29385,
+            "previousMainChars": 29386,
+            "previousMainPhase": "implement"
+          },
+          {
+            "phase": "memory-save",
+            "usageClass": "main",
+            "chars": 30077,
+            "input": 7520,
+            "output": 10,
+            "inScript": true,
+            "commonPrefixWithPrevious": 29597,
+            "previousMainChars": 29598,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-1-0",
+            "usageClass": "main",
+            "chars": 42159,
+            "input": 10540,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 30076,
+            "previousMainChars": 30077,
+            "previousMainPhase": "memory-save"
+          },
+          {
+            "phase": "history-1-1",
+            "usageClass": "main",
+            "chars": 54249,
+            "input": 13563,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 42158,
+            "previousMainChars": 42159,
+            "previousMainPhase": "history-1-0"
+          },
+          {
+            "phase": "history-1-2",
+            "usageClass": "main",
+            "chars": 66339,
+            "input": 16585,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 54248,
+            "previousMainChars": 54249,
+            "previousMainPhase": "history-1-1"
+          },
+          {
+            "phase": "history-1-3",
+            "usageClass": "main",
+            "chars": 78429,
+            "input": 19608,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 66338,
+            "previousMainChars": 66339,
+            "previousMainPhase": "history-1-2"
+          },
+          {
+            "phase": "history-1-4",
+            "usageClass": "main",
+            "chars": 90519,
+            "input": 22630,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 78428,
+            "previousMainChars": 78429,
+            "previousMainPhase": "history-1-3"
+          },
+          {
+            "phase": "history-1-5",
+            "usageClass": "main",
+            "chars": 102609,
+            "input": 25653,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 90518,
+            "previousMainChars": 90519,
+            "previousMainPhase": "history-1-4"
+          },
+          {
+            "phase": "history-1-6",
+            "usageClass": "main",
+            "chars": 114699,
+            "input": 28675,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 102608,
+            "previousMainChars": 102609,
+            "previousMainPhase": "history-1-5"
+          },
+          {
+            "phase": "history-1-7",
+            "usageClass": "main",
+            "chars": 126789,
+            "input": 31698,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 114698,
+            "previousMainChars": 114699,
+            "previousMainPhase": "history-1-6"
+          },
+          {
+            "phase": "history-1-8",
+            "usageClass": "main",
+            "chars": 138879,
+            "input": 34720,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 126788,
+            "previousMainChars": 126789,
+            "previousMainPhase": "history-1-7"
+          },
+          {
+            "phase": "history-1-9",
+            "usageClass": "main",
+            "chars": 150969,
+            "input": 37743,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 138878,
+            "previousMainChars": 138879,
+            "previousMainPhase": "history-1-8"
+          },
+          {
+            "phase": "history-1-10",
+            "usageClass": "main",
+            "chars": 163059,
+            "input": 40765,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 150968,
+            "previousMainChars": 150969,
+            "previousMainPhase": "history-1-9"
+          },
+          {
+            "phase": "history-1-11",
+            "usageClass": "main",
+            "chars": 175149,
+            "input": 43788,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 163058,
+            "previousMainChars": 163059,
+            "previousMainPhase": "history-1-10"
+          },
+          {
+            "phase": "history-1-12",
+            "usageClass": "main",
+            "chars": 187239,
+            "input": 46810,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 175148,
+            "previousMainChars": 175149,
+            "previousMainPhase": "history-1-11"
+          },
+          {
+            "phase": "history-1-13",
+            "usageClass": "main",
+            "chars": 199329,
+            "input": 49833,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 187238,
+            "previousMainChars": 187239,
+            "previousMainPhase": "history-1-12"
+          },
+          {
+            "phase": "history-1-14",
+            "usageClass": "main",
+            "chars": 211419,
+            "input": 52855,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 199328,
+            "previousMainChars": 199329,
+            "previousMainPhase": "history-1-13"
+          },
+          {
+            "phase": "history-1-15",
+            "usageClass": "main",
+            "chars": 223509,
+            "input": 55878,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 211418,
+            "previousMainChars": 211419,
+            "previousMainPhase": "history-1-14"
+          },
+          {
+            "phase": "history-1-16",
+            "usageClass": "main",
+            "chars": 235599,
+            "input": 58900,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 223508,
+            "previousMainChars": 223509,
+            "previousMainPhase": "history-1-15"
+          },
+          {
+            "phase": "history-1-17",
+            "usageClass": "main",
+            "chars": 247689,
+            "input": 61923,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 235598,
+            "previousMainChars": 235599,
+            "previousMainPhase": "history-1-16"
+          },
+          {
+            "phase": "history-1-18",
+            "usageClass": "main",
+            "chars": 259779,
+            "input": 64945,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 247688,
+            "previousMainChars": 247689,
+            "previousMainPhase": "history-1-17"
+          },
+          {
+            "phase": "history-1-19",
+            "usageClass": "main",
+            "chars": 271869,
+            "input": 67968,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 259778,
+            "previousMainChars": 259779,
+            "previousMainPhase": "history-1-18"
+          },
+          {
+            "phase": "history-1-20",
+            "usageClass": "main",
+            "chars": 283959,
+            "input": 70990,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 271868,
+            "previousMainChars": 271869,
+            "previousMainPhase": "history-1-19"
+          },
+          {
+            "phase": "history-1-21",
+            "usageClass": "main",
+            "chars": 296049,
+            "input": 74013,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 283958,
+            "previousMainChars": 283959,
+            "previousMainPhase": "history-1-20"
+          },
+          {
+            "phase": "history-1-22",
+            "usageClass": "main",
+            "chars": 308139,
+            "input": 77035,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 296048,
+            "previousMainChars": 296049,
+            "previousMainPhase": "history-1-21"
+          },
+          {
+            "phase": "history-1-23",
+            "usageClass": "main",
+            "chars": 320229,
+            "input": 80058,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 308138,
+            "previousMainChars": 308139,
+            "previousMainPhase": "history-1-22"
+          },
+          {
+            "phase": "history-1-24",
+            "usageClass": "main",
+            "chars": 332319,
+            "input": 83080,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 320228,
+            "previousMainChars": 320229,
+            "previousMainPhase": "history-1-23"
+          },
+          {
+            "phase": "history-1-25",
+            "usageClass": "main",
+            "chars": 344409,
+            "input": 86103,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 332318,
+            "previousMainChars": 332319,
+            "previousMainPhase": "history-1-24"
+          },
+          {
+            "phase": "history-1-26",
+            "usageClass": "main",
+            "chars": 356499,
+            "input": 89125,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 344408,
+            "previousMainChars": 344409,
+            "previousMainPhase": "history-1-25"
+          },
+          {
+            "phase": "history-1-27",
+            "usageClass": "main",
+            "chars": 368589,
+            "input": 92148,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 356498,
+            "previousMainChars": 356499,
+            "previousMainPhase": "history-1-26"
+          },
+          {
+            "phase": "history-1-28",
+            "usageClass": "main",
+            "chars": 380679,
+            "input": 95170,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 368588,
+            "previousMainChars": 368589,
+            "previousMainPhase": "history-1-27"
+          },
+          {
+            "phase": "history-1-29",
+            "usageClass": "main",
+            "chars": 392769,
+            "input": 98193,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 380678,
+            "previousMainChars": 380679,
+            "previousMainPhase": "history-1-28"
+          },
+          {
+            "phase": "history-1-30",
+            "usageClass": "main",
+            "chars": 404859,
+            "input": 101215,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 392768,
+            "previousMainChars": 392769,
+            "previousMainPhase": "history-1-29"
+          },
+          {
+            "phase": "history-1-31",
+            "usageClass": "main",
+            "chars": 416949,
+            "input": 104238,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 404858,
+            "previousMainChars": 404859,
+            "previousMainPhase": "history-1-30"
+          },
+          {
+            "phase": "stage-1",
+            "usageClass": "main",
+            "chars": 417106,
+            "input": 104277,
+            "output": 23,
+            "inScript": true,
+            "commonPrefixWithPrevious": 416948,
+            "previousMainChars": 416949,
+            "previousMainPhase": "history-1-31"
+          },
+          {
+            "phase": "stage-1",
+            "usageClass": "summary",
+            "chars": 221988,
+            "input": 55497,
+            "output": 244,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "stage-1",
+            "usageClass": "main",
+            "chars": 417473,
+            "input": 104369,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 417105,
+            "previousMainChars": 417106,
+            "previousMainPhase": "stage-1"
+          },
+          {
+            "phase": "history-2-0",
+            "usageClass": "main",
+            "chars": 208080,
+            "input": 52020,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 81,
+            "previousMainChars": 417473,
+            "previousMainPhase": "stage-1"
+          },
+          {
+            "phase": "history-2-1",
+            "usageClass": "main",
+            "chars": 220170,
+            "input": 55043,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 208079,
+            "previousMainChars": 208080,
+            "previousMainPhase": "history-2-0"
+          },
+          {
+            "phase": "history-2-2",
+            "usageClass": "main",
+            "chars": 232260,
+            "input": 58065,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 220169,
+            "previousMainChars": 220170,
+            "previousMainPhase": "history-2-1"
+          },
+          {
+            "phase": "history-2-3",
+            "usageClass": "main",
+            "chars": 244350,
+            "input": 61088,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 232259,
+            "previousMainChars": 232260,
+            "previousMainPhase": "history-2-2"
+          },
+          {
+            "phase": "history-2-4",
+            "usageClass": "main",
+            "chars": 256440,
+            "input": 64110,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 244349,
+            "previousMainChars": 244350,
+            "previousMainPhase": "history-2-3"
+          },
+          {
+            "phase": "history-2-5",
+            "usageClass": "main",
+            "chars": 268530,
+            "input": 67133,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 256439,
+            "previousMainChars": 256440,
+            "previousMainPhase": "history-2-4"
+          },
+          {
+            "phase": "history-2-6",
+            "usageClass": "main",
+            "chars": 280620,
+            "input": 70155,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 268529,
+            "previousMainChars": 268530,
+            "previousMainPhase": "history-2-5"
+          },
+          {
+            "phase": "history-2-7",
+            "usageClass": "main",
+            "chars": 292710,
+            "input": 73178,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 280619,
+            "previousMainChars": 280620,
+            "previousMainPhase": "history-2-6"
+          },
+          {
+            "phase": "history-2-8",
+            "usageClass": "main",
+            "chars": 304800,
+            "input": 76200,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 292709,
+            "previousMainChars": 292710,
+            "previousMainPhase": "history-2-7"
+          },
+          {
+            "phase": "history-2-9",
+            "usageClass": "main",
+            "chars": 316890,
+            "input": 79223,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 304799,
+            "previousMainChars": 304800,
+            "previousMainPhase": "history-2-8"
+          },
+          {
+            "phase": "history-2-10",
+            "usageClass": "main",
+            "chars": 328980,
+            "input": 82245,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 316889,
+            "previousMainChars": 316890,
+            "previousMainPhase": "history-2-9"
+          },
+          {
+            "phase": "history-2-11",
+            "usageClass": "main",
+            "chars": 341070,
+            "input": 85268,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 328979,
+            "previousMainChars": 328980,
+            "previousMainPhase": "history-2-10"
+          },
+          {
+            "phase": "history-2-12",
+            "usageClass": "main",
+            "chars": 353160,
+            "input": 88290,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 341069,
+            "previousMainChars": 341070,
+            "previousMainPhase": "history-2-11"
+          },
+          {
+            "phase": "history-2-13",
+            "usageClass": "main",
+            "chars": 365250,
+            "input": 91313,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 353159,
+            "previousMainChars": 353160,
+            "previousMainPhase": "history-2-12"
+          },
+          {
+            "phase": "stage-2",
+            "usageClass": "main",
+            "chars": 365407,
+            "input": 91352,
+            "output": 23,
+            "inScript": true,
+            "commonPrefixWithPrevious": 365249,
+            "previousMainChars": 365250,
+            "previousMainPhase": "history-2-13"
+          },
+          {
+            "phase": "stage-2",
+            "usageClass": "summary",
+            "chars": 175721,
+            "input": 43931,
+            "output": 244,
+            "inScript": true,
+            "commonPrefixWithPrevious": null,
+            "previousMainChars": null,
+            "previousMainPhase": null
+          },
+          {
+            "phase": "stage-2",
+            "usageClass": "main",
+            "chars": 365773,
+            "input": 91444,
+            "output": 12,
+            "inScript": true,
+            "commonPrefixWithPrevious": 365406,
+            "previousMainChars": 365407,
+            "previousMainPhase": "stage-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 197684,
+            "input": 49421,
+            "output": 38,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201,
+            "previousMainChars": 365773,
+            "previousMainPhase": "stage-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 197986,
+            "input": 49497,
+            "output": 46,
+            "inScript": true,
+            "commonPrefixWithPrevious": 197683,
+            "previousMainChars": 197684,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 198313,
+            "input": 49579,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 197985,
+            "previousMainChars": 197986,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 200192,
+            "input": 50048,
+            "output": 49,
+            "inScript": true,
+            "commonPrefixWithPrevious": 198312,
+            "previousMainChars": 198313,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 200532,
+            "input": 50133,
+            "output": 32,
+            "inScript": true,
+            "commonPrefixWithPrevious": 200191,
+            "previousMainChars": 200192,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 201403,
+            "input": 50351,
+            "output": 49,
+            "inScript": true,
+            "commonPrefixWithPrevious": 200531,
+            "previousMainChars": 200532,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 201933,
+            "input": 50484,
+            "output": 40,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201402,
+            "previousMainChars": 201403,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "probe-2",
+            "usageClass": "main",
+            "chars": 202238,
+            "input": 50560,
+            "output": 14,
+            "inScript": true,
+            "commonPrefixWithPrevious": 201932,
+            "previousMainChars": 201933,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 202517,
+            "input": 50630,
+            "output": 27,
+            "inScript": true,
+            "commonPrefixWithPrevious": 202237,
+            "previousMainChars": 202238,
+            "previousMainPhase": "probe-2"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 203204,
+            "input": 50801,
+            "output": 26,
+            "inScript": true,
+            "commonPrefixWithPrevious": 202516,
+            "previousMainChars": 202517,
+            "previousMainPhase": "reopen"
+          },
+          {
+            "phase": "reopen",
+            "usageClass": "main",
+            "chars": 203417,
+            "input": 50855,
+            "output": 20,
+            "inScript": true,
+            "commonPrefixWithPrevious": 203203,
+            "previousMainChars": 203204,
+            "previousMainPhase": "reopen"
+          }
+        ],
+        "totals": {
+          "requests": 78,
+          "input": 4020738,
+          "output": 1943,
+          "equation": "requests = main + summary + warm; summary = foreground staging + background preparation (receipts attribute it)"
+        },
+        "preparation": {
+          "receipts": [],
+          "allRuns": [
+            {
+              "runId": "9a6f5b98-ae11-4492-9141-922e38094e4c",
+              "status": "success",
+              "runType": "tool",
+              "preparation": null,
+              "reason": null,
+              "calls": 1,
+              "input": 55497,
+              "output": 244
+            },
+            {
+              "runId": "aa33fdc8-c63c-4c87-8673-7aeec87b5f5e",
+              "status": "success",
+              "runType": "tool",
+              "preparation": null,
+              "reason": null,
+              "calls": 1,
+              "input": 43931,
+              "output": 244
+            }
+          ],
+          "fromReceipts": {
+            "calls": 0,
+            "input": 0,
+            "output": 0
+          },
+          "idleSummaryRequests": 0,
+          "reconciliationDelta": 2,
+          "note": "reconciliationDelta = summary transport requests − receipt-attributed background calls; the remainder is foreground staging (stage-* phases). A ready candidate whose session is disposed without a shutdown event leaves no discard receipt; its cost stays in the transport ledger."
+        },
+        "warmEvidence": {
+          "records": [],
+          "hostUsageEntries": 0,
+          "hostUsageTokens": 0,
+          "allMatchWarmedRequest": false,
+          "fixture": {
+            "mode": "off",
+            "promptCacheTtlSeconds": 12,
+            "delayMs": 2000,
+            "economics": "synthetic per-token rates (decision coverage only, not prices)"
+          }
+        },
+        "cachePrefix": {
+          "mainRequestPairs": 75,
+          "prefixCharsTotal": 14620224,
+          "previousCharsTotal": 15481695,
+          "prefixReuseRatio": 0.9444,
+          "brokenPrefixPairs": [
+            {
+              "fromPhase": "evidence",
+              "toPhase": "evidence",
+              "previousChars": 78832,
+              "commonPrefixChars": 397
+            },
+            {
+              "fromPhase": "stage-1",
+              "toPhase": "history-2-0",
+              "previousChars": 417473,
+              "commonPrefixChars": 81
+            },
+            {
+              "fromPhase": "stage-2",
+              "toPhase": "probe-2",
+              "previousChars": 365773,
+              "commonPrefixChars": 201
+            }
+          ],
+          "minorJitterPairs": 72,
+          "warmMatches": 0
+        },
+        "note": "Synthetic accounting drives host scheduling only; this is not billed usage. Warm/preparation fixtures are decision-coverage evidence, not savings claims."
+      },
+      "toolInteractions": {
+        "read": 2,
+        "grep": 1,
+        "bash": 4,
+        "smart_context": 4,
+        "write": 6,
+        "smart_save_memory": 1,
+        "smart_compact": 2,
+        "smart_recall": 1
+      },
+      "retrieval": {
+        "smartContextSearch": 0,
+        "smartContextRead": 4,
+        "smartRecall": 1
+      },
+      "compactions": {
+        "staged": 2,
+        "applied": 2,
+        "receipts": [
+          {
+            "runId": "9a6f5b98-ae11-4492-9141-922e38094e4c",
+            "status": "success"
+          },
+          {
+            "runId": "aa33fdc8-c63c-4c87-8673-7aeec87b5f5e",
+            "status": "success"
+          }
+        ]
+      },
+      "memory": "saved ref local:cg-581b8a88332cad5ada034e28@057aa21c94e303b96f5a8c60; recall hit at 1/1 probes",
+      "context": {
+        "eventCounts": {
+          "agent_start": 55,
+          "turn_start": 76,
+          "message_start": 153,
+          "message_end": 153,
+          "message_update": 228,
+          "tool_execution_start": 21,
+          "tool_execution_end": 21,
+          "turn_end": 76,
+          "tool_execution_update": 8,
+          "entry_appended": 2,
+          "agent_end": 55,
+          "agent_settled": 55,
+          "compaction_start": 2,
+          "compaction_end": 2
+        },
+        "deliveredCharsAtProbes": [
+          {
+            "probe": "2",
+            "chars": 200532
+          }
+        ],
+        "usageAtCompactions": [
+          {
+            "round": 1,
+            "tokensBefore": 104250
+          },
+          {
+            "round": 2,
+            "tokensBefore": 91325
+          }
+        ],
+        "reopenContextUsage": {
+          "tokens": 50875,
+          "contextWindow": 200000,
+          "percent": 25.4375
+        },
+        "grepPreviewHadFacts": false,
+        "artifactRef": "artifact-f18d5486a7dcbee8547806922b49cd1111a5e058aa9a3ce4c33c837cafe233db"
+      },
+      "latencyMs": 607,
+      "policy": {
+        "minAutoTrimSavingChars": 16384,
+        "autoTrimCooldownTurns": 8,
+        "pendingTtlMs": 300000,
+        "settledCooldownMs": 600000,
+        "keepRecentTokens": 6000
+      },
+      "preparation": {
+        "preparedRuns": 0,
+        "usedRuns": 0,
+        "discardedRuns": 0,
+        "otherOutcomes": 0,
+        "discardReasons": {},
+        "medianReadyMs": null,
+        "medianWaitMs": null,
+        "reuseRate": null,
+        "discardedCost": {
+          "calls": 0,
+          "inputTokens": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0,
+          "outputTokens": 0
+        }
+      },
+      "damageReports": 3,
+      "labels": [
+        "offline-lifecycle",
+        "scripted local transport",
+        "no quality claims about model decisions",
+        "independent behavioral oracles"
+      ]
+    }
+  ]
+}

@@ -1,5 +1,10 @@
 # Provider Evaluation Baseline — 2026-08-06
 
+> **Scope:** Historical snapshot, dated 2026-08-06, with a 2026-09-25 reporting addendum. Scores, models and latencies reflect that date only and are not a current ranking.
+> Current documentation for Pi Continuity (the `pi-smart-compact` package):
+> [guide](./guide.md) · [configuration](./configuration.md) ·
+> [evaluation](./evaluation.md) · [documentation index](./README.md).
+
 This is a local, advisory snapshot for Smart Compact's provider-routing work. It
 does **not** change the selected Pi model or any route.
 
@@ -61,3 +66,14 @@ latency/timeout profile remains this weak.
 - Verification measures continuity/structure, not prose preference or price.
 - Provider token accounting differs, so raw token columns are not cross-provider cost estimates.
 - Endpoint health and model revisions can change these results.
+
+## Addendum (2026-09-25): route-report token semantics
+
+Persisted route reports now keep the input / cache-read / cache-write / output
+split instead of folding cache into input, mark rows whose usage was locally
+estimated (`~`), and label subscription (OAuth) routes (`sub`). Tokens-per-call
+figures are quota-inclusive (cached tokens count toward quota). Subscription
+usage must never be priced at API rates, and provider token accounting still
+differs, so no cross-provider cost conclusions should be drawn from these
+columns. This changes reporting only; the 2026-08-06 baseline scores and the
+keep-the-selected-model decision above are unaffected.

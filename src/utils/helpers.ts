@@ -14,7 +14,7 @@ import { TRUNC } from "../constants.ts";
 import { flattenToolCallBlock } from "./extraction.ts";
 import { extractToolPath } from "../domain/tool-semantics.ts";
 import { isRecord } from "./type-guards.ts";
-import * as log from "./logger.ts";
+import { reportIssue } from "./issues.ts";
 
 export {
   loadConfig,
@@ -226,12 +226,14 @@ export function guardToolCallBoundary(
     if (++iter > MAX_ITER) {
       // Should be unreachable; log loudly so a real upstream regression
       // surfaces in the metrics rather than as a silent hang.
-      log.warn(
-        "guardToolCallBoundary hit MAX_ITER=" +
+      reportIssue({
+        key: "bug.tool-boundary",
+        severity: "error",
+        message:
+          "Internal error: tool-call boundary search did not converge (limit " +
           MAX_ITER +
-          " at adjusted=" +
-          adjusted,
-      );
+          "). The compaction cut may split a tool pair. Please report this with /smart-compact metrics output.",
+      });
       break;
     }
     changed = false;

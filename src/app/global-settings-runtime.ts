@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ContextToolAvailability } from "./register-context-tools.ts";
+import type { ContextToolExposure } from "./lazy-tools.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
 import type { GlobalConfigPath } from "../utils/config.ts";
 
@@ -7,15 +7,16 @@ const POLICY_PATHS = new Set<GlobalConfigPath>([
   "agentToolAccess",
   "autoTrigger",
   "showStatus",
+  "toolLoading",
 ]);
 
-/** Apply the small subset of global settings that own live host state. */
-export function applyGlobalSettingRuntime(
-  path: GlobalConfigPath,
+/** Refresh each owner at most once after one atomic global-settings patch. */
+export function applyGlobalSettingsRuntime(
+  paths: readonly GlobalConfigPath[],
   ctx: ExtensionContext,
   policy: SmartCompactPolicy,
-  contextTools: ContextToolAvailability,
+  contextTools: Pick<ContextToolExposure, "apply">,
 ): void {
-  if (POLICY_PATHS.has(path)) policy.restore(ctx);
-  if (path === "contextGraphEnabled") contextTools.apply();
+  if (paths.some(path => POLICY_PATHS.has(path))) policy.restore(ctx);
+  else contextTools.apply();
 }

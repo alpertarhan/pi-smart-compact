@@ -1,6 +1,6 @@
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, Model, TextContent } from "@earendil-works/pi-ai";
-import { rawLlmClient } from "../src/infra/llm-client.ts";
+import { createModelRuntimeLlmClient } from "../src/infra/llm-client.ts";
 import { verifySummary } from "../src/phases/verify.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
@@ -240,7 +240,7 @@ for (const model of models) {
     );
     const start = Date.now();
     try {
-      const response = await rawLlmClient.complete(
+      const response = await createModelRuntimeLlmClient(registry).complete(
         model as Model<Api>,
         {
           systemPrompt,

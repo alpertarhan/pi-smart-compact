@@ -14,16 +14,17 @@ import {
 } from "../src/app/steps/persist.ts";
 import { createCompactionCommitStore } from "../src/app/compaction-commit-store.ts";
 import { loadProjectFingerprint } from "../src/utils/fingerprint.ts";
-import { loadCompactionState } from "../src/utils/state.ts";
+import { loadCompactionState, loadScopedCompactionState } from "../src/utils/state.ts";
 import { readMetricsLog } from "../src/utils/cache.ts";
 import {
   flushCompactionStateIndexes,
   recallContext,
 } from "../src/infra/context-graph.ts";
 import { VERSION } from "../src/constants.ts";
+import { resetConfigCache } from "../src/utils/config.ts";
 import { contextGraphFile } from "../src/infra/paths.ts";
-
 const originalHome = process.env.HOME;
+
 let home: string;
 beforeAll(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-consumed-"));
@@ -138,6 +139,65 @@ describe("persistAppliedState", () => {
         "FTS5",
       )[0].content,
     ).toContain("FTS5");
+  });
+
+  it("does not index the local graph when another backend is selected, even with contextGraphEnabled=true", async () => {
+    const isolatedHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "psc-exclusive-backend-"),
+    );
+    process.env.HOME = isolatedHome;
+    try {
+      const agentDir = path.join(isolatedHome, ".pi", "agent");
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({
+        smartCompact: { memoryBackend: "hindsight", contextGraphEnabled: true },
+      }));
+      resetConfigCache();
+      const projectId = "test-project-exclusive";
+      const failures = await persistAppliedState({
+        runId: "run-applied-exclusive",
+        summary: "## Goal\nno local indexing",
+        firstKeptEntryId: "e1",
+        originBranchHeadId: "e1",
+        tokensBefore: 100,
+        details: {} as never,
+        sessionId: "s-exclusive",
+        projectId,
+        compactionState: {
+          goal: "No local indexing under an exclusive remote backend",
+          decisions: [{ id: "decision-x", summary: "Never indexed locally", type: "explicit" }],
+          constraints: [],
+          modifiedFiles: [],
+          readFiles: [],
+          deletedFiles: [],
+          unresolvedErrors: [],
+          resolvedErrors: [],
+          openLoops: [],
+          topics: [],
+          nextActions: [],
+          criticalContext: [],
+          sessionType: "implementation",
+          compactionVersion: VERSION,
+          updatedAt: Date.now(),
+          scope: {
+            schemaVersion: 2,
+            projectId,
+            sessionId: "s-exclusive",
+            branchHeadId: "b1",
+          },
+        } as never,
+      });
+      flushCompactionStateIndexes();
+      expect(failures).toEqual([]);
+      // The continuity state store is not a memory backend and still persists.
+      expect(loadScopedCompactionState({ projectId, sessionId: "s-exclusive", branchHeadId: "b1" })?.goal)
+        .toBe("No local indexing under an exclusive remote backend");
+      expect(fs.existsSync(contextGraphFile())).toBe(false);
+    } finally {
+      process.env.HOME = home;
+      fs.rmSync(isolatedHome, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 
   it("reports a context graph transaction failure as partial persistence", async () => {

@@ -74,7 +74,7 @@ describe("smart_compact tool cancellation", () => {
       BUDGET_LIMITS.CALLS.min + "-" + BUDGET_LIMITS.CALLS.max,
     );
     expect(tool.parameters.properties.max_latency_ms.description).toBe(
-      "Optional pipeline cancellation budget in milliseconds (" +
+      "Latency cap ms (" +
         BUDGET_LIMITS.LATENCY_MS.min +
         "-" +
         BUDGET_LIMITS.LATENCY_MS.max +
@@ -151,7 +151,8 @@ describe("smart_compact tool cancellation", () => {
     }
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toContain("internal");
-    expect((failure as Error).message).not.toContain("synthetic pipeline failure");
+    // Literal first error line is shown (scrubbed, bounded) so failures are diagnosable.
+    expect((failure as Error).message).toContain("(synthetic pipeline failure)");
   });
 
   it("does not start the pipeline when the host signal is already aborted", async () => {

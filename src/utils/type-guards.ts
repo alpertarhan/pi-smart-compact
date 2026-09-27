@@ -52,7 +52,7 @@ import type { SmartCompactDetails } from "../types.ts";
  * `detectDamage` and the dashboard", not "perfectly matches the current
  * TypeScript interface".
  */
-const KNOWN_METHODS = new Set(["eesv", "single-pass", "heuristic"]);
+const KNOWN_METHODS = new Set(["eesv", "single-pass", "heuristic", "native"]);
 const KNOWN_PROFILES = new Set(["light", "balanced", "aggressive"]);
 const KNOWN_MODES = new Set(["balanced", "aggressive", "fast", "thorough"]);
 const NON_NEGATIVE_DETAIL_FIELDS = [

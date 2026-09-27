@@ -1,0 +1,882 @@
+{
+  "schema": 1,
+  "at": "2026-09-24T14:02:24.359Z",
+  "model": "anthropic/claude-sonnet-5",
+  "api": "anthropic-messages",
+  "live": true,
+  "oauth": true,
+  "limits": {
+    "calls": 9,
+    "outputTokens": 1024,
+    "timeoutMs": 60000
+  },
+  "method": "Synthetic representation/reading pilot with hand-authored fixed summaries; NOT an end-to-end EESV or agent-autonomy evaluation. One sample per scenario/variant. Costs are catalog estimates, not invoices.",
+  "fixtures": [
+    {
+      "scenario": "turkish-code",
+      "variant": "summary",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 49
+    },
+    {
+      "scenario": "turkish-code",
+      "variant": "text-evidence",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 49
+    },
+    {
+      "scenario": "turkish-code",
+      "variant": "bitmap-evidence",
+      "frames": 1,
+      "pngBytes": 104652,
+      "imageTokenEstimate": 2296,
+      "renderMs": 49
+    },
+    {
+      "scenario": "logs-and-constraints",
+      "variant": "text-evidence",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 59
+    },
+    {
+      "scenario": "logs-and-constraints",
+      "variant": "bitmap-evidence",
+      "frames": 1,
+      "pngBytes": 124417,
+      "imageTokenEstimate": 2656,
+      "renderMs": 59
+    },
+    {
+      "scenario": "logs-and-constraints",
+      "variant": "summary",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 59
+    },
+    {
+      "scenario": "two-page-reading",
+      "variant": "bitmap-evidence",
+      "frames": 2,
+      "pngBytes": 352367,
+      "imageTokenEstimate": 6992,
+      "renderMs": 159
+    },
+    {
+      "scenario": "two-page-reading",
+      "variant": "summary",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 159
+    },
+    {
+      "scenario": "two-page-reading",
+      "variant": "text-evidence",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 159
+    }
+  ],
+  "results": [
+    {
+      "scenario": "turkish-code",
+      "variant": "summary",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 49,
+      "latencyMs": 3496,
+      "usage": {
+        "input": 366,
+        "output": 151,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 517,
+        "cost": {
+          "input": 0.000732,
+          "output": 0.00151,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.002242
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 41
+      },
+      "responseText": "{\"publish\": \"no\", \"dependencies\": \"no\", \"guard\": \"UNKNOWN\", \"owner\": \"UNKNOWN\", \"file\": \"UNKNOWN\", \"code\": \"UNKNOWN\", \"skew\": \"UNKNOWN\", \"fixture\": \"UNKNOWN\", \"port\": \"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 3,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "dependencies",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "guard",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "owner",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "file",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "code",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "skew",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "fixture",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "port",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "turkish-code",
+      "variant": "text-evidence",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 49,
+      "latencyMs": 1908,
+      "usage": {
+        "input": 847,
+        "output": 113,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 960,
+        "cost": {
+          "input": 0.001694,
+          "output": 0.0011300000000000001,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.002824
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "{\"publish\":\"no\",\"dependencies\":\"no\",\"guard\":\"now >= expiresAt\",\"owner\":\"Çağrı Işık\",\"file\":\"src/auth/çözüm.ts:137\",\"code\":\"AUTH_EXPIRED_041\",\"skew\":\"750\",\"fixture\":\"oturum_İzmir_03\",\"port\":\"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 9,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "dependencies",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "guard",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "owner",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "file",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "code",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "skew",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "fixture",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "port",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "turkish-code",
+      "variant": "bitmap-evidence",
+      "frames": 1,
+      "pngBytes": 104652,
+      "imageTokenEstimate": 2296,
+      "renderMs": 49,
+      "latencyMs": 3003,
+      "usage": {
+        "input": 1327,
+        "output": 113,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 1440,
+        "cost": {
+          "input": 0.0026539999999999997,
+          "output": 0.0011300000000000001,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.003784
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "{\"publish\":\"no\",\"dependencies\":\"no\",\"guard\":\"now >= expiresAt\",\"owner\":\"Çağrı Işık\",\"file\":\"src/auth/çözüm.ts:137\",\"code\":\"AUTH_EXPIRED_041\",\"skew\":\"750\",\"fixture\":\"oturum_İzmir_03\",\"port\":\"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 9,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "dependencies",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "guard",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "owner",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "file",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "code",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "skew",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "fixture",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "port",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "logs-and-constraints",
+      "variant": "text-evidence",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 59,
+      "latencyMs": 1601,
+      "usage": {
+        "input": 955,
+        "output": 106,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 1061,
+        "cost": {
+          "input": 0.0019099999999999998,
+          "output": 0.0010600000000000002,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00297
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "{\"concurrency\":\"2\",\"publish\":\"no\",\"trace\":\"req_07aB-19_Z\",\"error\":\"E_LOCK_BUSY\",\"delay\":\"1750\",\"queue\":\"iş-kuyruğu-özel\",\"test\":\"session_dupe_17\",\"key\":\"retry:job-0081\",\"version\":\"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 9,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "concurrency",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "trace",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "error",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "delay",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "queue",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "test",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "key",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "version",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "logs-and-constraints",
+      "variant": "bitmap-evidence",
+      "frames": 1,
+      "pngBytes": 124417,
+      "imageTokenEstimate": 2656,
+      "renderMs": 59,
+      "latencyMs": 1845,
+      "usage": {
+        "input": 1450,
+        "output": 106,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 1556,
+        "cost": {
+          "input": 0.0029,
+          "output": 0.0010600000000000002,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.00396
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "{\"concurrency\":\"2\",\"publish\":\"no\",\"trace\":\"req_07aB-19_Z\",\"error\":\"E_LOCK_BUSY\",\"delay\":\"1750\",\"queue\":\"iş-kuyruğu-özel\",\"test\":\"session_dupe_17\",\"key\":\"retry:job-0081\",\"version\":\"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 9,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "concurrency",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "trace",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "error",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "delay",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "queue",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "test",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "key",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "version",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "logs-and-constraints",
+      "variant": "summary",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 59,
+      "latencyMs": 1446,
+      "usage": {
+        "input": 351,
+        "output": 99,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 450,
+        "cost": {
+          "input": 0.0007019999999999999,
+          "output": 0.00099,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.001692
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "{\"concurrency\":\"2\",\"publish\":\"no\",\"trace\":\"UNKNOWN\",\"error\":\"UNKNOWN\",\"delay\":\"UNKNOWN\",\"queue\":\"UNKNOWN\",\"test\":\"UNKNOWN\",\"key\":\"UNKNOWN\",\"version\":\"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 3,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "concurrency",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "trace",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "error",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "delay",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "queue",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "test",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "key",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "version",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "two-page-reading",
+      "variant": "bitmap-evidence",
+      "frames": 2,
+      "pngBytes": 352367,
+      "imageTokenEstimate": 6992,
+      "renderMs": 159,
+      "latencyMs": 1797,
+      "usage": {
+        "input": 3244,
+        "output": 92,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 3336,
+        "cost": {
+          "input": 0.006488,
+          "output": 0.00092,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.007408
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "{\"publish\":\"no\",\"schema\":\"no\",\"first\":\"audit_A17\",\"last\":\"audit_A91\",\"owner\":\"Özgür Şen\",\"path\":\"src/store/b_002.ts\",\"checksum\":\"f3a09d7e\",\"duration\":\"4821\",\"region\":\"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 9,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "schema",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "first",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "last",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "owner",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "path",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "checksum",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "duration",
+          "location": "evidence",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "region",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "two-page-reading",
+      "variant": "summary",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 159,
+      "latencyMs": 2219,
+      "usage": {
+        "input": 348,
+        "output": 130,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 478,
+        "cost": {
+          "input": 0.000696,
+          "output": 0.0013000000000000002,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.0019960000000000004
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 23
+      },
+      "responseText": "{\"publish\": \"no\", \"schema\": \"no\", \"first\": \"UNKNOWN\", \"last\": \"UNKNOWN\", \"owner\": \"UNKNOWN\", \"path\": \"UNKNOWN\", \"checksum\": \"UNKNOWN\", \"duration\": \"UNKNOWN\", \"region\": \"UNKNOWN\"}",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": true,
+      "correct": 3,
+      "grounded": 9,
+      "total": 9,
+      "fields": [
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "schema",
+          "location": "summary",
+          "correct": true,
+          "grounded": true
+        },
+        {
+          "key": "first",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "last",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "owner",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "path",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "checksum",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "duration",
+          "location": "evidence",
+          "correct": false,
+          "grounded": true
+        },
+        {
+          "key": "region",
+          "location": "absent",
+          "correct": true,
+          "grounded": true
+        }
+      ]
+    },
+    {
+      "scenario": "two-page-reading",
+      "variant": "text-evidence",
+      "frames": 0,
+      "pngBytes": 0,
+      "imageTokenEstimate": 0,
+      "renderMs": 159,
+      "latencyMs": 1564,
+      "usage": {
+        "input": 1832,
+        "output": 124,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 1956,
+        "cost": {
+          "input": 0.0036639999999999997,
+          "output": 0.00124,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0.0049039999999999995
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "responseText": "```json\n{\n  \"publish\": \"no\",\n  \"schema\": \"no\",\n  \"first\": \"audit_A17\",\n  \"last\": \"audit_A91\",\n  \"owner\": \"Özgür Şen\",\n  \"path\": \"src/store/b_002.ts\",\n  \"checksum\": \"f3a09d7e\",\n  \"duration\": \"4821\",\n  \"region\": \"UNKNOWN\"\n}\n```",
+      "stopReason": "stop",
+      "httpStatus": 200,
+      "validJson": false,
+      "correct": 0,
+      "grounded": 0,
+      "total": 9,
+      "fields": [
+        {
+          "key": "publish",
+          "location": "summary",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "schema",
+          "location": "summary",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "first",
+          "location": "evidence",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "last",
+          "location": "evidence",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "owner",
+          "location": "evidence",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "path",
+          "location": "evidence",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "checksum",
+          "location": "evidence",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "duration",
+          "location": "evidence",
+          "correct": false,
+          "grounded": false
+        },
+        {
+          "key": "region",
+          "location": "absent",
+          "correct": false,
+          "grounded": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,540 +1,726 @@
 import fs from "node:fs";
+import path from "node:path";
 import {
-  CONFIG_NUMERIC_LIMITS,
-  CONFIG_KEY,
-  CONFIG_KEY_ALT,
-  DEFAULT_CONFIG,
-  PROFILE_NUMERIC_BOUNDS,
-  PROFILES,
+ CONFIG_NUMERIC_LIMITS,
+ CONFIG_KEY,
+ CONFIG_KEY_ALT,
+ DEFAULT_CONFIG,
+ PROFILE_NUMERIC_BOUNDS,
+ PROFILES,
 } from "../constants.ts";
 import { acquireLock, atomicWriteFile } from "../infra/fs.ts";
 import { defaultBackupDir, settingsFile } from "../infra/paths.ts";
 import type {
-  CompactConfig,
-  CompressionProfile,
-  ProfileConfig,
+ CompactConfig,
+ CompressionProfile,
+ ProfileConfig,
 } from "../types.ts";
 import * as log from "./logger.ts";
+import { errorDetail, reportIssue } from "./issues.ts";
 
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const VALID_MODES = ["auto", "fast", "balanced", "thorough"] as const;
-const VALID_AUTO_TRIGGER_STRATEGIES = ["native-hook", "settled"] as const;
+const VALID_AUTO_TRIGGER_STRATEGIES = ["native-hook", "settled", "background"] as const;
 const VALID_AGENT_TOOL_ACCESS = ["inherit", "enabled", "disabled"] as const;
+const VALID_TOOL_LOADING = ["lazy", "eager", "off"] as const;
 const VALID_THINKING_LEVELS = [
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
+ "minimal",
+ "low",
+ "medium",
+ "high",
+ "xhigh",
+ "max",
 ] as const;
 const BOOLEAN_KEYS = [
-  "autoTrigger",
-  "showStatus",
-  "backupEnabled",
-  "requireApproval",
-  "scrubSecrets",
-  "scrubPii",
-  "focusWeighting",
-  "zeroCallEnabled",
-  "contextGraphEnabled",
-  "adaptiveDamageFeedback",
-  "onlineDamageMonitor",
+ "autoTrigger",
+ "showStatus",
+ "backupEnabled",
+ "requireApproval",
+ "scrubSecrets",
+ "scrubPii",
+ "focusWeighting",
+ "zeroCallEnabled",
+ "contextGraphEnabled",
+ "visualArchiveEnabled",
+ "artifactOffloadEnabled",
+ "contextHygieneEnabled",
+ "contextNavigationEnabled",
+ "contextRecallEnabled",
+ "contextPivotEnabled",
+ "contextAnchorCacheEnabled",
+ "contextAnchorStatusEnabled",
+ "contextGuidanceEnabled",
+ "adaptiveDamageFeedback",
+ "onlineDamageMonitor",
 ] as const;
 const NULLABLE_MODEL_KEYS = [
-  "summaryModel",
-  "segmentationModel",
-  "verificationModel",
+ "summaryModel",
+ "segmentationModel",
+ "verificationModel",
 ] as const;
 const THINKING_KEYS = [
-  "summaryThinkingLevel",
-  "segmentationThinkingLevel",
+ "summaryThinkingLevel",
+ "segmentationThinkingLevel",
 ] as const;
 const PROFILE_NUMERIC_KEYS = [
-  "summaryBudgetTokens",
-  "keepRecentTokens",
-  "minChunkTokens",
-  "maxChunkTokens",
-  "singlePassMaxTokens",
-  "batchMaxTokens",
+ "summaryBudgetTokens",
+ "keepRecentTokens",
+ "minChunkTokens",
+ "maxChunkTokens",
+ "singlePassMaxTokens",
+ "batchMaxTokens",
 ] as const;
 type TopLevelConfigKey = Exclude<keyof CompactConfig, "profiles">;
 type ProfileNumericKey = (typeof PROFILE_NUMERIC_KEYS)[number];
 export type GlobalConfigPath =
-  | TopLevelConfigKey
-  | `profiles.${CompressionProfile}.${ProfileNumericKey}`;
+ | TopLevelConfigKey
+ | `profiles.${CompressionProfile}.${ProfileNumericKey}`;
 export type GlobalConfigValue =
-  | CompactConfig[TopLevelConfigKey]
-  | ProfileConfig[ProfileNumericKey]
-  | undefined;
+ | CompactConfig[TopLevelConfigKey]
+ | ProfileConfig[ProfileNumericKey]
+ | undefined;
 
 export function readGlobalConfigValue(
-  configPath: GlobalConfigPath,
+ configPath: GlobalConfigPath,
 ): GlobalConfigValue {
-  assertGlobalConfigPath(configPath);
-  try {
-    const section = configuredSection(readSettingsRoot(settingsFile()));
-    validateSmartCompactConfig(section);
-    return cloneGlobalConfigValue(configPathValue(section, configPath));
-  } catch {
-    return undefined;
-  }
+ assertGlobalConfigPath(configPath);
+ try {
+  const section = configuredSection(readSettingsRoot(settingsFile()));
+  validateSmartCompactConfig(section);
+  return cloneGlobalConfigValue(configPathValue(section, configPath));
+ } catch {
+  return undefined;
+ }
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+ return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function cloneProfiles(
-  profiles: Record<CompressionProfile, ProfileConfig>,
+ profiles: Record<CompressionProfile, ProfileConfig>,
 ): Record<CompressionProfile, ProfileConfig> {
-  return Object.fromEntries(
-    VALID_PROFILES.map((name) => [name, { ...profiles[name] }]),
-  ) as Record<CompressionProfile, ProfileConfig>;
+ return Object.fromEntries(
+  VALID_PROFILES.map((name) => [name, { ...profiles[name] }]),
+ ) as Record<CompressionProfile, ProfileConfig>;
 }
 
 function cloneConfig(config: CompactConfig): CompactConfig {
-  return {
-    ...config,
-    profiles: cloneProfiles(config.profiles),
-    pinPaths: [...config.pinPaths],
-  };
+ return {
+  ...config,
+  profiles: cloneProfiles(config.profiles),
+  pinPaths: [...config.pinPaths],
+ };
 }
 
 function defaultConfig(): CompactConfig {
-  return cloneConfig({
-    ...DEFAULT_CONFIG,
-    backupDir: defaultBackupDir(),
-  } as CompactConfig);
+ return cloneConfig({
+  ...DEFAULT_CONFIG,
+  backupDir: defaultBackupDir(),
+ } as CompactConfig);
 }
 
 function cloneGlobalConfigValue(value: GlobalConfigValue): GlobalConfigValue {
-  return Array.isArray(value) ? [...value] : value;
+ return Array.isArray(value) ? [...value] : value;
 }
 
 function readSettingsRoot(file: string): Record<string, unknown> {
-  if (!fs.existsSync(file)) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    throw new Error("settings.json must contain valid JSON");
-  }
-  if (!isRecord(parsed)) {
-    throw new Error("settings.json root must be an object");
-  }
-  return parsed;
+ if (!fs.existsSync(file)) return {};
+ let parsed: unknown;
+ try {
+  parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+ } catch {
+  throw new Error("settings.json must contain valid JSON");
+ }
+ if (!isRecord(parsed)) {
+  throw new Error("settings.json root must be an object");
+ }
+ return parsed;
 }
 
 function configuredSection(root: Record<string, unknown>): Record<string, unknown> {
-  const selected = Object.hasOwn(root, CONFIG_KEY)
-    ? root[CONFIG_KEY]
-    : (root[CONFIG_KEY_ALT] ?? {});
-  if (!isRecord(selected)) {
-    throw new Error("smartCompact must be an object");
-  }
-  return structuredClone(selected);
+ const selected = Object.hasOwn(root, CONFIG_KEY)
+  ? root[CONFIG_KEY]
+  : (root[CONFIG_KEY_ALT] ?? {});
+ if (!isRecord(selected)) {
+  throw new Error("smartCompact must be an object");
+ }
+ return structuredClone(selected);
 }
 
 function deleteEmptyProfileContainers(
-  section: Record<string, unknown>,
-  profile: CompressionProfile,
+ section: Record<string, unknown>,
+ profile: CompressionProfile,
 ): void {
-  if (!isRecord(section.profiles)) return;
-  if (isRecord(section.profiles[profile])) {
-    const values = section.profiles[profile] as Record<string, unknown>;
-    if (Object.keys(values).length === 0) delete section.profiles[profile];
-  }
-  if (Object.keys(section.profiles).length === 0) delete section.profiles;
+ if (!isRecord(section.profiles)) return;
+ if (isRecord(section.profiles[profile])) {
+  const values = section.profiles[profile] as Record<string, unknown>;
+  if (Object.keys(values).length === 0) delete section.profiles[profile];
+ }
+ if (Object.keys(section.profiles).length === 0) delete section.profiles;
 }
 
 function setConfigPath(
-  section: Record<string, unknown>,
-  configPath: GlobalConfigPath,
-  value: GlobalConfigValue,
+ section: Record<string, unknown>,
+ configPath: GlobalConfigPath,
+ value: GlobalConfigValue,
 ): void {
-  const parts = configPath.split(".");
-  if (parts[0] !== "profiles") {
-    if (value === undefined) delete section[configPath];
-    else section[configPath] = value;
-    return;
-  }
+ const parts = configPath.split(".");
+ if (parts[0] !== "profiles") {
+  if (value === undefined) delete section[configPath];
+  else section[configPath] = value;
+  return;
+ }
 
-  const [, profile, key] = parts as [
-    "profiles",
-    CompressionProfile,
-    ProfileNumericKey,
-  ];
-  if (!isRecord(section.profiles)) section.profiles = {};
-  const profiles = section.profiles as Record<string, unknown>;
-  if (!isRecord(profiles[profile])) profiles[profile] = {};
-  const values = profiles[profile] as Record<string, unknown>;
-  if (value === undefined) delete values[key];
-  else values[key] = value;
-  deleteEmptyProfileContainers(section, profile);
+ const [, profile, key] = parts as [
+  "profiles",
+  CompressionProfile,
+  ProfileNumericKey,
+ ];
+ if (!isRecord(section.profiles)) section.profiles = {};
+ const profiles = section.profiles as Record<string, unknown>;
+ if (!isRecord(profiles[profile])) profiles[profile] = {};
+ const values = profiles[profile] as Record<string, unknown>;
+ if (value === undefined) delete values[key];
+ else values[key] = value;
+ deleteEmptyProfileContainers(section, profile);
 }
 
 function assertGlobalConfigPath(configPath: string): asserts configPath is GlobalConfigPath {
-  if (configPath !== "profiles" && Object.hasOwn(DEFAULT_CONFIG, configPath)) {
-    return;
-  }
-  const parts = configPath.split(".");
-  if (
-    parts.length === 3 &&
-    parts[0] === "profiles" &&
-    (VALID_PROFILES as readonly string[]).includes(parts[1]) &&
-    (PROFILE_NUMERIC_KEYS as readonly string[]).includes(parts[2])
-  ) {
-    return;
-  }
-  throw new Error(`Unknown smartCompact setting path: ${configPath}`);
+ if (configPath !== "profiles" && Object.hasOwn(DEFAULT_CONFIG, configPath)) {
+  return;
+ }
+ const parts = configPath.split(".");
+ if (
+  parts.length === 3 &&
+  parts[0] === "profiles" &&
+  (VALID_PROFILES as readonly string[]).includes(parts[1]) &&
+  (PROFILE_NUMERIC_KEYS as readonly string[]).includes(parts[2])
+ ) {
+  return;
+ }
+ throw new Error(`Unknown smartCompact setting path: ${configPath}`);
 }
 
 function configPathValue(
-  section: Record<string, unknown>,
-  configPath: GlobalConfigPath,
+ section: Record<string, unknown>,
+ configPath: GlobalConfigPath,
 ): GlobalConfigValue {
-  const parts = configPath.split(".");
-  if (parts[0] !== "profiles") {
-    return section[configPath] as GlobalConfigValue;
-  }
-  const [, profile, key] = parts;
-  if (!isRecord(section.profiles)) return undefined;
-  const values = section.profiles[profile];
-  return isRecord(values) ? (values[key] as GlobalConfigValue) : undefined;
+ const parts = configPath.split(".");
+ if (parts[0] !== "profiles") {
+  return section[configPath] as GlobalConfigValue;
+ }
+ const [, profile, key] = parts;
+ if (!isRecord(section.profiles)) return undefined;
+ const values = section.profiles[profile];
+ return isRecord(values) ? (values[key] as GlobalConfigValue) : undefined;
 }
 
 function sameJsonValue(
-  left: GlobalConfigValue,
-  right: GlobalConfigValue,
+ left: GlobalConfigValue,
+ right: GlobalConfigValue,
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+ return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** >0 while validating a prospective write: that state is not on disk, so nothing is reported. */
+let prospectiveValidation = 0;
+
+function configIssue(key: string, message: string): void {
+ if (prospectiveValidation > 0) return;
+ reportIssue({
+  key: "config." + key,
+  message:
+   "settings.json: " +
+   message.replace(/^smart-compact config: /, "") +
+   " Fix it in ~/.pi/agent/settings.json or /smart-compact settings.",
+ });
 }
 
 function discard(
-  sc: Record<string, unknown>,
-  key: string,
-  message: string,
+ sc: Record<string, unknown>,
+ key: string,
+ message: string,
 ): void {
-  log.warn(message);
-  delete sc[key];
+ configIssue(key, message);
+ delete sc[key];
 }
 
 function validateBasicFields(sc: Record<string, unknown>): void {
-  if (!("agentToolAccess" in sc) && typeof sc.agentToolEnabled === "boolean") {
-    log.warn(
-      "smart-compact config: agentToolEnabled is deprecated; use agentToolAccess.",
-    );
-    sc.agentToolAccess = sc.agentToolEnabled ? "enabled" : "disabled";
+ if (!("agentToolAccess" in sc) && typeof sc.agentToolEnabled === "boolean") {
+  configIssue(
+   "agentToolEnabled",
+   "agentToolEnabled is deprecated; converted to agentToolAccess for now.",
+  );
+  sc.agentToolAccess = sc.agentToolEnabled ? "enabled" : "disabled";
+ }
+ delete sc.agentToolEnabled;
+ if (
+  "agentToolAccess" in sc &&
+  !VALID_AGENT_TOOL_ACCESS.includes(sc.agentToolAccess as never)
+ ) {
+  discard(
+   sc,
+   "agentToolAccess",
+   "smart-compact config: agentToolAccess must be inherit|enabled|disabled.",
+  );
+ }
+ if ("toolLoading" in sc && !VALID_TOOL_LOADING.includes(sc.toolLoading as never)) {
+  discard(sc, "toolLoading", "smart-compact config: toolLoading must be lazy|eager|off.");
+ }
+ if (sc.mode === "aggressive") {
+  configIssue("mode", "mode 'aggressive' is deprecated; using 'fast'.");
+  sc.mode = "fast";
+ }
+ if ("mode" in sc && !VALID_MODES.includes(sc.mode as never)) {
+  discard(
+   sc,
+   "mode",
+   "smart-compact config: invalid mode '" +
+   sc.mode +
+   "', expected auto|fast|balanced|thorough. Using default 'auto'.",
+  );
+ }
+ if (
+  "telemetryChannel" in sc &&
+  sc.telemetryChannel !== "stable" &&
+  sc.telemetryChannel !== "canary"
+ ) {
+  discard(
+   sc,
+   "telemetryChannel",
+   "smart-compact config: telemetryChannel must be stable|canary, got " +
+   String(sc.telemetryChannel),
+  );
+ }
+ if ("profile" in sc && !VALID_PROFILES.includes(sc.profile as never)) {
+  discard(
+   sc,
+   "profile",
+   "smart-compact config: invalid profile '" +
+   sc.profile +
+   "', expected light|balanced|aggressive. Using default 'balanced'.",
+  );
+ }
+ if (
+  "autoTriggerStrategy" in sc &&
+  !VALID_AUTO_TRIGGER_STRATEGIES.includes(sc.autoTriggerStrategy as never)
+ ) {
+  discard(
+   sc,
+   "autoTriggerStrategy",
+   "smart-compact config: autoTriggerStrategy must be native-hook|settled|background, got " +
+   String(sc.autoTriggerStrategy) +
+   ". Using default '" +
+   DEFAULT_CONFIG.autoTriggerStrategy +
+   "'.",
+  );
+ }
+ for (const key of BOOLEAN_KEYS) {
+  if (key in sc && typeof sc[key] !== "boolean") {
+   discard(
+    sc,
+    key,
+    "smart-compact config: " +
+    key +
+    " must be boolean, got " +
+    typeof sc[key],
+   );
   }
-  delete sc.agentToolEnabled;
+ }
+ for (const key of NULLABLE_MODEL_KEYS) {
+  if (key in sc && sc[key] !== null && typeof sc[key] !== "string") {
+   discard(
+    sc,
+    key,
+    "smart-compact config: " +
+    key +
+    " must be string|null, got " +
+    typeof sc[key],
+   );
+  }
+ }
+ for (const key of THINKING_KEYS) {
+  const value = sc[key];
   if (
-    "agentToolAccess" in sc &&
-    !VALID_AGENT_TOOL_ACCESS.includes(sc.agentToolAccess as never)
+   key in sc &&
+   value !== null &&
+   !(
+    typeof value === "string" &&
+    VALID_THINKING_LEVELS.includes(value as never)
+   )
   ) {
-    discard(
-      sc,
-      "agentToolAccess",
-      "smart-compact config: agentToolAccess must be inherit|enabled|disabled.",
-    );
+   discard(
+    sc,
+    key,
+    "smart-compact config: " +
+    key +
+    " must be minimal|low|medium|high|xhigh|max|null.",
+   );
   }
-  if (sc.mode === "aggressive") {
-    log.warn(
-      "smart-compact config: mode 'aggressive' is deprecated; using 'fast'.",
-    );
-    sc.mode = "fast";
-  }
-  if ("mode" in sc && !VALID_MODES.includes(sc.mode as never)) {
-    discard(
-      sc,
-      "mode",
-      "smart-compact config: invalid mode '" +
-        sc.mode +
-        "', expected auto|fast|balanced|thorough. Using default 'auto'.",
-    );
-  }
-  if (
-    "telemetryChannel" in sc &&
-    sc.telemetryChannel !== "stable" &&
-    sc.telemetryChannel !== "canary"
-  ) {
-    discard(
-      sc,
-      "telemetryChannel",
-      "smart-compact config: telemetryChannel must be stable|canary, got " +
-        String(sc.telemetryChannel),
-    );
-  }
-  if ("profile" in sc && !VALID_PROFILES.includes(sc.profile as never)) {
-    discard(
-      sc,
-      "profile",
-      "smart-compact config: invalid profile '" +
-        sc.profile +
-        "', expected light|balanced|aggressive. Using default 'balanced'.",
-    );
-  }
-  if (
-    "autoTriggerStrategy" in sc &&
-    !VALID_AUTO_TRIGGER_STRATEGIES.includes(sc.autoTriggerStrategy as never)
-  ) {
-    discard(
-      sc,
-      "autoTriggerStrategy",
-      "smart-compact config: autoTriggerStrategy must be native-hook|settled, got " +
-        String(sc.autoTriggerStrategy) +
-        ". Using default '" +
-        DEFAULT_CONFIG.autoTriggerStrategy +
-        "'.",
-    );
-  }
-  for (const key of BOOLEAN_KEYS) {
-    if (key in sc && typeof sc[key] !== "boolean") {
-      discard(
-        sc,
-        key,
-        "smart-compact config: " +
-          key +
-          " must be boolean, got " +
-          typeof sc[key],
-      );
-    }
-  }
-  for (const key of NULLABLE_MODEL_KEYS) {
-    if (key in sc && sc[key] !== null && typeof sc[key] !== "string") {
-      discard(
-        sc,
-        key,
-        "smart-compact config: " +
-          key +
-          " must be string|null, got " +
-          typeof sc[key],
-      );
-    }
-  }
-  for (const key of THINKING_KEYS) {
-    const value = sc[key];
-    if (
-      key in sc &&
-      value !== null &&
-      !(
-        typeof value === "string" &&
-        VALID_THINKING_LEVELS.includes(value as never)
-      )
-    ) {
-      discard(
-        sc,
-        key,
-        "smart-compact config: " +
-          key +
-          " must be minimal|low|medium|high|xhigh|max|null.",
-      );
-    }
-  }
+ }
 }
 
 function validateProfiles(sc: Record<string, unknown>): void {
-  if (!("profiles" in sc)) return;
-  if (
-    !isRecord(sc.profiles)
-  ) {
+ if (!("profiles" in sc)) return;
+ if (
+  !isRecord(sc.profiles)
+ ) {
+  discard(
+   sc,
+   "profiles",
+   "smart-compact config: profiles must be an object, got " +
+   typeof sc.profiles,
+  );
+  return;
+ }
+ const profiles = sc.profiles as Record<string, unknown>;
+ for (const [profileName, value] of Object.entries(profiles)) {
+  if (!VALID_PROFILES.includes(profileName as never)) {
+   discard(
+    profiles,
+    profileName,
+    "smart-compact config: ignoring unknown profile override '" +
+    profileName +
+    "'.",
+   );
+   continue;
+  }
+  if (!isRecord(value)) {
+   discard(
+    profiles,
+    profileName,
+    "smart-compact config: profile '" +
+    profileName +
+    "' must be an object.",
+   );
+   continue;
+  }
+  const profileCfg = value;
+  for (const [key, raw] of Object.entries(profileCfg)) {
+   if (!PROFILE_NUMERIC_KEYS.includes(key as never)) {
     discard(
-      sc,
-      "profiles",
-      "smart-compact config: profiles must be an object, got " +
-        typeof sc.profiles,
+     profileCfg,
+     key,
+     "smart-compact config: ignoring unknown profile key '" +
+     profileName +
+     "." +
+     key +
+     "'.",
     );
-    return;
+    continue;
+   }
+   const [min, max] =
+    PROFILE_NUMERIC_BOUNDS[key as keyof typeof PROFILE_NUMERIC_BOUNDS];
+   if (
+    typeof raw !== "number" ||
+    !Number.isSafeInteger(raw) ||
+    raw < min ||
+    raw > max
+   ) {
+    discard(
+     profileCfg,
+     key,
+     "smart-compact config: profile '" +
+     profileName +
+     "." +
+     key +
+     "' must be an integer in " +
+     min +
+     "–" +
+     max +
+     ".",
+    );
+   }
   }
-  const profiles = sc.profiles as Record<string, unknown>;
-  for (const [profileName, value] of Object.entries(profiles)) {
-    if (!VALID_PROFILES.includes(profileName as never)) {
-      discard(
-        profiles,
-        profileName,
-        "smart-compact config: ignoring unknown profile override '" +
-          profileName +
-          "'.",
-      );
-      continue;
-    }
-    if (!isRecord(value)) {
-      discard(
-        profiles,
-        profileName,
-        "smart-compact config: profile '" +
-          profileName +
-          "' must be an object.",
-      );
-      continue;
-    }
-    const profileCfg = value;
-    for (const [key, raw] of Object.entries(profileCfg)) {
-      if (!PROFILE_NUMERIC_KEYS.includes(key as never)) {
-        discard(
-          profileCfg,
-          key,
-          "smart-compact config: ignoring unknown profile key '" +
-            profileName +
-            "." +
-            key +
-            "'.",
-        );
-        continue;
-      }
-      const [min, max] =
-        PROFILE_NUMERIC_BOUNDS[key as keyof typeof PROFILE_NUMERIC_BOUNDS];
-      if (
-        typeof raw !== "number" ||
-        !Number.isSafeInteger(raw) ||
-        raw < min ||
-        raw > max
-      ) {
-        discard(
-          profileCfg,
-          key,
-          "smart-compact config: profile '" +
-            profileName +
-            "." +
-            key +
-            "' must be an integer in " +
-            min +
-            "–" +
-            max +
-            ".",
-        );
-      }
-    }
-    const merged = {
-      ...PROFILES[profileName as CompressionProfile],
-      ...profileCfg,
-    };
-    if (
-      merged.minChunkTokens > merged.maxChunkTokens ||
-      merged.maxChunkTokens > merged.batchMaxTokens
-    ) {
-      discard(
-        profiles,
-        profileName,
-        "smart-compact config: profile '" +
-          profileName +
-          "' requires minChunkTokens <= maxChunkTokens <= batchMaxTokens; ignoring the override.",
-      );
-    }
+  const merged = {
+   ...PROFILES[profileName as CompressionProfile],
+   ...profileCfg,
+  };
+  if (
+   merged.minChunkTokens > merged.maxChunkTokens ||
+   merged.maxChunkTokens > merged.batchMaxTokens
+  ) {
+   discard(
+    profiles,
+    profileName,
+    "smart-compact config: profile '" +
+    profileName +
+    "' requires minChunkTokens <= maxChunkTokens <= batchMaxTokens; ignoring the override.",
+   );
   }
+ }
 }
 
 interface NumericRule {
-  key: string;
-  valid: (value: number) => boolean;
-  message: (value: unknown) => string;
+ key: string;
+ valid: (value: number) => boolean;
+ message: (value: unknown) => string;
 }
 
 function validNumericLimit(
-  key: keyof typeof CONFIG_NUMERIC_LIMITS,
-  value: number,
+ key: keyof typeof CONFIG_NUMERIC_LIMITS,
+ value: number,
 ): boolean {
-  const limit = CONFIG_NUMERIC_LIMITS[key];
-  return (
-    Number.isFinite(value) &&
-    (!limit.integer || Number.isSafeInteger(value)) &&
-    ((value >= limit.min && value <= limit.max) ||
-      ("zeroOrRange" in limit && limit.zeroOrRange && value === 0))
-  );
+ const limit = CONFIG_NUMERIC_LIMITS[key];
+ return (
+  Number.isFinite(value) &&
+  (!limit.integer || Number.isSafeInteger(value)) &&
+  ((value >= limit.min && value <= limit.max) ||
+   ("zeroOrRange" in limit && limit.zeroOrRange && value === 0))
+ );
 }
 
 const NUMERIC_RULES: readonly NumericRule[] = [
-  {
-    key: "autoTriggerTimeoutMs",
-    valid: (value) => validNumericLimit("autoTriggerTimeoutMs", value),
-    message: (value) =>
-      "smart-compact config: autoTriggerTimeoutMs must be 1000–300000, got " +
-      value +
-      ". Using default " +
-      DEFAULT_CONFIG.autoTriggerTimeoutMs +
-      "ms.",
-  },
-  {
-    key: "maxLlmCalls",
-    valid: (value) => validNumericLimit("maxLlmCalls", value),
-    message: () =>
-      "smart-compact config: maxLlmCalls must be 0–100; 0 uses the selected mode cap.",
-  },
-  {
-    key: "maxLlmInputTokens",
-    valid: (value) => validNumericLimit("maxLlmInputTokens", value),
-    message: () =>
-      "smart-compact config: maxLlmInputTokens must be 0–1000000; 0 uses the mode cap.",
-  },
-  {
-    key: "codexMaxCallMs",
-    valid: (value) => validNumericLimit("codexMaxCallMs", value),
-    message: () =>
-      "smart-compact config: codexMaxCallMs must be 0 or 5000–3600000; 0 derives a cap from maxTokens.",
-  },
-  {
-    key: "maxLatencyMs",
-    valid: (value) => validNumericLimit("maxLatencyMs", value),
-    message: () =>
-      "smart-compact config: maxLatencyMs must be 0 or 5000–7200000; 0 means unlimited.",
-  },
-  {
-    key: "pendingTtlMs",
-    valid: (value) => validNumericLimit("pendingTtlMs", value),
-    message: () =>
-      "smart-compact config: pendingTtlMs must be 1000–3600000 (staged summary TTL).",
-  },
-  {
-    key: "minContextPercent",
-    valid: (value) => validNumericLimit("minContextPercent", value),
-    message: (value) =>
-      "smart-compact config: minContextPercent must be 0–100, got " +
-      value +
-      ". Using default " +
-      DEFAULT_CONFIG.minContextPercent +
-      ".",
-  },
+ {
+  key: "autoTriggerTimeoutMs",
+  valid: (value) => validNumericLimit("autoTriggerTimeoutMs", value),
+  message: (value) =>
+   "smart-compact config: autoTriggerTimeoutMs must be 1000–300000, got " +
+   value +
+   ". Using default " +
+   DEFAULT_CONFIG.autoTriggerTimeoutMs +
+   "ms.",
+ },
+ {
+  key: "maxLlmCalls",
+  valid: (value) => validNumericLimit("maxLlmCalls", value),
+  message: () =>
+   "smart-compact config: maxLlmCalls must be 0–100; 0 uses the selected mode cap.",
+ },
+ {
+  key: "maxLlmInputTokens",
+  valid: (value) => validNumericLimit("maxLlmInputTokens", value),
+  message: () =>
+   "smart-compact config: maxLlmInputTokens must be 0–1000000; 0 uses the mode cap.",
+ },
+ {
+  key: "codexMaxCallMs",
+  valid: (value) => validNumericLimit("codexMaxCallMs", value),
+  message: () =>
+   "smart-compact config: codexMaxCallMs must be 0 or 5000–3600000; 0 derives a cap from maxTokens.",
+ },
+ {
+  key: "maxLatencyMs",
+  valid: (value) => validNumericLimit("maxLatencyMs", value),
+  message: () =>
+   "smart-compact config: maxLatencyMs must be 0 or 5000–7200000; 0 means unlimited.",
+ },
+ {
+  key: "pendingTtlMs",
+  valid: (value) => validNumericLimit("pendingTtlMs", value),
+  message: () =>
+   "smart-compact config: pendingTtlMs must be 1000–3600000 (staged summary TTL).",
+ },
+ {
+  key: "hindsightTimeoutMs",
+  valid: (value) => validNumericLimit("hindsightTimeoutMs", value),
+  message: () =>
+   "smart-compact config: hindsightTimeoutMs must be 1000–60000; using default.",
+ },
+ {
+  key: "hindsightRecallMaxTokens",
+  valid: (value) => validNumericLimit("hindsightRecallMaxTokens", value),
+  message: () =>
+   "smart-compact config: hindsightRecallMaxTokens must be 128–4096; using default.",
+ },
+ {
+  key: "minContextPercent",
+  valid: (value) => validNumericLimit("minContextPercent", value),
+  message: (value) =>
+   "smart-compact config: minContextPercent must be 0–100, got " +
+   value +
+   ". Using default " +
+   DEFAULT_CONFIG.minContextPercent +
+   ".",
+ },
 ];
 
 function validateLimits(sc: Record<string, unknown>): void {
-  for (const rule of NUMERIC_RULES) {
-    if (!(rule.key in sc)) continue;
-    const value = sc[rule.key];
-    if (typeof value !== "number" || !rule.valid(value)) {
-      discard(sc, rule.key, rule.message(value));
-    }
+ for (const rule of NUMERIC_RULES) {
+  if (!(rule.key in sc)) continue;
+  const value = sc[rule.key];
+  if (typeof value !== "number" || !rule.valid(value)) {
+   discard(sc, rule.key, rule.message(value));
   }
-  if (
-    "backupDir" in sc &&
-    sc.backupDir !== undefined &&
-    typeof sc.backupDir !== "string"
-  ) {
-    discard(
-      sc,
-      "backupDir",
-      "smart-compact config: backupDir must be a string, got " +
-        typeof sc.backupDir +
-        ". Using default.",
-    );
+ }
+ if (
+  "backupDir" in sc &&
+  sc.backupDir !== undefined &&
+  typeof sc.backupDir !== "string"
+ ) {
+  discard(
+   sc,
+   "backupDir",
+   "smart-compact config: backupDir must be a string, got " +
+   typeof sc.backupDir +
+   ". Using default.",
+  );
+ }
+ if (
+  "pinPaths" in sc &&
+  sc.pinPaths !== undefined &&
+  (!Array.isArray(sc.pinPaths) ||
+   !sc.pinPaths.every((value) => typeof value === "string"))
+ ) {
+  discard(
+   sc,
+   "pinPaths",
+   "smart-compact config: pinPaths must be a string[], ignoring.",
+  );
+ }
+}
+
+const HINDSIGHT_BANK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]{0,127}$/;
+
+function validHindsightBaseUrl(value: string): boolean {
+ try {
+  const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash) return false;
+  if (url.protocol === "https:") return true;
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return (
+   url.protocol === "http:" &&
+   (host === "localhost" || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host))
+  );
+ } catch {
+  return false;
+ }
+}
+
+function validateCompactionEngines(sc: Record<string, unknown>): void {
+ if (!("compactionEngines" in sc)) return;
+ const value = sc.compactionEngines;
+ const valid =
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.every((engine) => engine === "eesv" || engine === "native") &&
+  new Set(value).size === value.length;
+ if (!valid) {
+  discard(
+   sc,
+   "compactionEngines",
+   "smart-compact config: compactionEngines must be a non-empty ordered list of unique engines (eesv, native); using [\"eesv\"].",
+  );
+ }
+}
+
+/**
+ * Mnemopi data directory: absolute, or `~/` followed by a path. Relative paths
+ * are rejected rather than resolved against an arbitrary cwd; so are bare `~`,
+ * `~user` and control characters.
+ */
+export function isValidMnemopiDataDir(value: string): boolean {
+ if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+ if (value.startsWith("~/")) return value.length > 2;
+ return path.isAbsolute(value);
+}
+
+function validateMnemopiDataDir(sc: Record<string, unknown>): void {
+ if (!("mnemopiDataDir" in sc) || sc.mnemopiDataDir === null) return;
+ const value = sc.mnemopiDataDir;
+ if (typeof value === "string" && !value.trim()) {
+  sc.mnemopiDataDir = null; // blank = default directory
+  return;
+ }
+ if (typeof value !== "string" || !isValidMnemopiDataDir(value.trim())) {
+  // Never echo the rejected value.
+  discard(
+   sc,
+   "mnemopiDataDir",
+   "smart-compact config: mnemopiDataDir must be an absolute or ~/ path (relative paths are not allowed); using the default directory.",
+  );
+  return;
+ }
+ sc.mnemopiDataDir = value.trim();
+}
+
+function validateMemoryBackend(sc: Record<string, unknown>): void {
+ if (
+  "memoryBackend" in sc &&
+  sc.memoryBackend !== "local" &&
+  sc.memoryBackend !== "hindsight" &&
+  sc.memoryBackend !== "mnemopi"
+ ) {
+  discard(
+   sc,
+   "memoryBackend",
+   "smart-compact config: memoryBackend must be local|hindsight|mnemopi; using 'local'.",
+  );
+ }
+ if ("hindsightLocalFallback" in sc) {
+  configIssue(
+   "hindsightLocalFallback",
+   "hindsightLocalFallback is removed: the selected memory backend is the only store and no local copy is kept. The stale setting was ignored.",
+  );
+  delete sc.hindsightLocalFallback;
+ }
+ const stringRules: Array<[string, (value: string) => boolean, string]> = [
+  [
+   "hindsightBaseUrl",
+   validHindsightBaseUrl,
+   "an https URL without credentials, query, or fragment (http only for loopback)",
+  ],
+  [
+   "hindsightBankId",
+   (value) => HINDSIGHT_BANK_ID_PATTERN.test(value),
+   "1–128 characters of letters, digits, '.', '_' or '-'",
+  ],
+  [
+   "hindsightApiKeyEnv",
+   (value) => ENV_NAME_PATTERN.test(value),
+   "an environment variable NAME such as HINDSIGHT_API_TOKEN, not the key",
+  ],
+ ];
+ for (const [key, valid, expected] of stringRules) {
+  if (!(key in sc) || sc[key] === null) continue;
+  if (typeof sc[key] !== "string" || !valid(sc[key])) {
+   // Never echo the rejected value: it may be a pasted secret.
+   discard(sc, key, "smart-compact config: " + key + " must be " + expected + ".");
   }
-  if (
-    "pinPaths" in sc &&
-    sc.pinPaths !== undefined &&
-    (!Array.isArray(sc.pinPaths) ||
-      !sc.pinPaths.every((value) => typeof value === "string"))
-  ) {
-    discard(
-      sc,
-      "pinPaths",
-      "smart-compact config: pinPaths must be a string[], ignoring.",
-    );
-  }
+ }
+}
+
+/**
+ * prepareContextPercent: null (Auto) or 0–100 strictly below the effective
+ * apply gate (the user's valid minContextPercent, else the default). Runs after
+ * validateLimits so an invalid minContextPercent has already been discarded.
+ */
+function validatePrepareContextPercent(sc: Record<string, unknown>): void {
+ if (!("prepareContextPercent" in sc) || sc.prepareContextPercent === null) return;
+ const value = sc.prepareContextPercent;
+ if (typeof value !== "number" || !validNumericLimit("prepareContextPercent", value)) {
+  discard(
+   sc,
+   "prepareContextPercent",
+   "smart-compact config: prepareContextPercent must be null (Auto) or 0–100; using Auto.",
+  );
+  return;
+ }
+ const apply = effectiveApplyPercent(sc);
+ if (value >= apply) {
+  discard(
+   sc,
+   "prepareContextPercent",
+   "smart-compact config: prepareContextPercent (" + value +
+   ") must be below minContextPercent (" + apply + "); using Auto.",
+  );
+ }
+}
+
+function effectiveApplyPercent(sc: Record<string, unknown>): number {
+ return typeof sc.minContextPercent === "number" ? sc.minContextPercent : DEFAULT_CONFIG.minContextPercent;
 }
 
 /** Remove invalid user values so the defaults merge remains authoritative. */
 export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
-  validateBasicFields(sc);
-  validateProfiles(sc);
-  validateLimits(sc);
+ validateBasicFields(sc);
+ validateProfiles(sc);
+ validateLimits(sc);
+ validatePrepareContextPercent(sc);
+ validateMemoryBackend(sc);
+ validateMnemopiDataDir(sc);
+ validateCompactionEngines(sc);
 }
 
 /**
@@ -543,33 +729,76 @@ export function validateSmartCompactConfig(sc: Record<string, unknown>): void {
  * default becomes effective again.
  */
 export async function writeGlobalConfigValue(
-  configPath: GlobalConfigPath,
-  value: GlobalConfigValue,
+ configPath: GlobalConfigPath,
+ value: GlobalConfigValue,
 ): Promise<CompactConfig> {
-  assertGlobalConfigPath(configPath);
-  const file = settingsFile();
-  const release = await acquireLock(file);
-  try {
-    const root = readSettingsRoot(file);
-    const section = configuredSection(root);
-    setConfigPath(section, configPath, cloneGlobalConfigValue(value));
-    if (value === undefined && configPath === "agentToolAccess") {
-      delete section.agentToolEnabled;
-    }
-    const validated = structuredClone(section);
-    validateSmartCompactConfig(validated);
+ return writeGlobalConfigValues({ [configPath]: value } as Partial<Record<GlobalConfigPath, GlobalConfigValue>>);
+}
 
-    if (!sameJsonValue(configPathValue(validated, configPath), value)) {
-      throw new Error(`Invalid smartCompact setting: ${configPath}`);
-    }
-
-    root[CONFIG_KEY] = section;
-    await atomicWriteFile(file, JSON.stringify(root, null, 2) + "\n");
-    resetConfigCache();
-    return loadConfig();
-  } finally {
-    release();
+/**
+ * Persist several global settings as one change: a single read-modify-write
+ * under the settings lock, validated as a whole, written only if every value
+ * survives validation (all-or-nothing). `undefined` removes an override.
+ */
+export async function writeGlobalConfigValues(
+ patch: Partial<Record<GlobalConfigPath, GlobalConfigValue>>,
+): Promise<CompactConfig> {
+ const entries = Object.entries(patch) as Array<[GlobalConfigPath, GlobalConfigValue]>;
+ if (!entries.length) throw new Error("No smartCompact settings to write");
+ for (const [configPath] of entries) assertGlobalConfigPath(configPath);
+ const file = settingsFile();
+ const release = await acquireLock(file);
+ try {
+  const root = readSettingsRoot(file);
+  const section = configuredSection(root);
+  for (const [configPath, value] of entries) {
+   setConfigPath(section, configPath, cloneGlobalConfigValue(value));
+   if (value === undefined && configPath === "agentToolAccess") {
+    delete section.agentToolEnabled;
+   }
   }
+  const validated = structuredClone(section);
+  prospectiveValidation++;
+  try {
+   validateSmartCompactConfig(validated);
+  } finally {
+   prospectiveValidation--;
+  }
+  for (const [configPath] of entries) assertPrepareBelowApply(section, validated, configPath);
+  for (const [configPath, value] of entries) {
+   if (!sameJsonValue(configPathValue(validated, configPath), value)) {
+    throw new Error(`Invalid smartCompact setting: ${configPath}`);
+   }
+  }
+
+  root[CONFIG_KEY] = section;
+  await atomicWriteFile(file, JSON.stringify(root, null, 2) + "\n");
+  resetConfigCache();
+  return loadConfig();
+ } finally {
+  release();
+ }
+}
+
+/**
+ * A write must not leave an explicit prepare threshold at or above the apply
+ * gate (validation would silently turn it back into Auto on the next load).
+ */
+function assertPrepareBelowApply(
+ section: Record<string, unknown>,
+ validated: Record<string, unknown>,
+ configPath: GlobalConfigPath,
+): void {
+ if (configPath !== "prepareContextPercent" && configPath !== "minContextPercent") return;
+ const prepare = section.prepareContextPercent;
+ if (typeof prepare !== "number" || !Number.isFinite(prepare) || "prepareContextPercent" in validated) return;
+ if (!validNumericLimit("prepareContextPercent", prepare)) return; // range error: generic path
+ const apply = effectiveApplyPercent(validated);
+ throw new Error(
+  configPath === "prepareContextPercent"
+   ? `Prepare at context % (${prepare}) must be below Start at context % (${apply}). Enter a lower value or auto.`
+   : `Start at context % (${apply}) must stay above Prepare at context % (${prepare}). Lower Prepare at context % or set it to auto first.`,
+ );
 }
 
 let cachedConfig: CompactConfig | null = null;
@@ -578,61 +807,71 @@ let cachedPath: string | null = null;
 
 /** Test helper — forces the next loadConfig() to re-read settings.json. */
 export function resetConfigCache(): void {
-  cachedConfig = null;
-  cachedMtime = 0;
-  cachedPath = null;
+ cachedConfig = null;
+ cachedMtime = 0;
+ cachedPath = null;
 }
 
 export function loadConfig(): CompactConfig {
-  try {
-    const file = settingsFile();
-    const stat = fs.statSync(file);
-    if (cachedConfig && cachedPath === file && stat.mtimeMs === cachedMtime)
-      return cloneConfig(cachedConfig);
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
-    const raw = isRecord(parsed) ? parsed : {};
-    if (raw !== parsed) {
-      log.warn("smart-compact config: settings.json root must be an object.");
-    }
-    const configured = Object.hasOwn(raw, CONFIG_KEY)
-      ? raw[CONFIG_KEY]
-      : (raw[CONFIG_KEY_ALT] ?? {});
-    const sc = isRecord(configured) ? configured : {};
-    if (sc !== configured) {
-      log.warn("smart-compact config: smartCompact must be an object.");
-    }
-    validateSmartCompactConfig(sc);
-    const merged = { ...defaultConfig(), ...sc } as CompactConfig;
-    if (!("mode" in sc) && "profile" in sc) {
-      merged.mode =
-        sc.profile === "light"
-          ? "thorough"
-          : (sc.profile as CompactConfig["mode"]);
-    }
-    if (sc.profiles) {
-      const overrides = sc.profiles as Record<
-        CompressionProfile,
-        Partial<ProfileConfig>
-      >;
-      merged.profiles = Object.fromEntries(
-        VALID_PROFILES.map((name) => [
-          name,
-          { ...PROFILES[name], ...overrides[name] },
-        ]),
-      ) as Record<CompressionProfile, ProfileConfig>;
-    }
-    if (!merged.backupDir) merged.backupDir = defaultBackupDir();
-    cachedConfig = merged;
-    cachedMtime = stat.mtimeMs;
-    cachedPath = file;
-    return cloneConfig(cachedConfig);
-  } catch (error) {
-    log.debug(
-      "loadConfig: settings.json not found or unreadable, using defaults",
-      error,
-    );
-    cachedConfig = defaultConfig();
-    cachedPath = null;
-    return cloneConfig(cachedConfig);
+ try {
+  const file = settingsFile();
+  const stat = fs.statSync(file);
+  if (cachedConfig && cachedPath === file && stat.mtimeMs === cachedMtime)
+   return cloneConfig(cachedConfig);
+  const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf-8"));
+  const raw = isRecord(parsed) ? parsed : {};
+  if (raw !== parsed) {
+   configIssue("root", "the root must be a JSON object; using defaults.");
   }
+  const configured = Object.hasOwn(raw, CONFIG_KEY)
+   ? raw[CONFIG_KEY]
+   : (raw[CONFIG_KEY_ALT] ?? {});
+  const sc = isRecord(configured) ? configured : {};
+  if (sc !== configured) {
+   configIssue("smartCompact", "smartCompact must be an object; using defaults.");
+  }
+  validateSmartCompactConfig(sc);
+  const merged = { ...defaultConfig(), ...sc } as CompactConfig;
+  if (!("mode" in sc) && "profile" in sc) {
+   merged.mode =
+    sc.profile === "light"
+     ? "thorough"
+     : sc.profile === "aggressive"
+      ? "fast"
+      : "balanced";
+  }
+  if (sc.profiles) {
+   const overrides = sc.profiles as Record<
+    CompressionProfile,
+    Partial<ProfileConfig>
+   >;
+   merged.profiles = Object.fromEntries(
+    VALID_PROFILES.map((name) => [
+     name,
+     { ...PROFILES[name], ...overrides[name] },
+    ]),
+   ) as Record<CompressionProfile, ProfileConfig>;
+  }
+  if (!merged.backupDir) merged.backupDir = defaultBackupDir();
+  cachedConfig = merged;
+  cachedMtime = stat.mtimeMs;
+  cachedPath = file;
+  return cloneConfig(cachedConfig);
+ } catch (error) {
+  if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+   log.debug("loadConfig: settings.json not found, using defaults");
+  } else {
+   reportIssue({
+    key: "config.unreadable",
+    message:
+     "settings.json could not be read (" +
+     errorDetail(error) +
+     "). Smart Compact uses defaults. Fix the JSON in ~/.pi/agent/settings.json.",
+    error,
+   });
+  }
+  cachedConfig = defaultConfig();
+  cachedPath = null;
+  return cloneConfig(cachedConfig);
+ }
 }

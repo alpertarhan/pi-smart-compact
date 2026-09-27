@@ -49,10 +49,34 @@ function entryWith(id: string, content: string): SessionMessageEntry {
 }
 
 describe("resolveCompactionMessages with streaming parser", () => {
+  it("recovers only truncated entries, not intentionally changed siblings", async () => {
+    writeLog("projected", [
+      { id: "replaced", role: "user", content: "OBSOLETE_RAW_TEXT" },
+      { id: "cut", role: "user", content: "Full tool evidence" },
+    ]);
+    const recovered = await resolveCompactionMessages("projected", [
+      entryWith("replaced", "Current projected facts"),
+      entryWith("cut", "head…✂900"),
+    ]);
+    expect(recovered?.map(item => item.message.content)).toEqual([
+      "Current projected facts", "Full tool evidence",
+    ]);
+  });
+
+  it("never recovers an intentional context edit even when its text contains a truncation marker", async () => {
+    writeLog("edited-marker", [{ id: "edited", role: "user", content: "PRIVATE_RAW_EVIDENCE" }]);
+    const projected = contextMessageEntries([
+      { ...entryWith("edited", "PRIVATE_RAW_EVIDENCE"), parentId: null },
+      { type: "context_edit", id: "edit", parentId: "edited", targetId: "edited", replacement: { content: "Deliberate excerpt…✂999" } },
+    ]);
+    const recovered = await resolveCompactionMessages("edited-marker", projected);
+    expect(recovered?.[0].message.content).toBe("Deliberate excerpt…✂999");
+  });
+
   it("recovers host-visible custom and branch summaries by original entry ID", async () => {
     const entries = [
-      { type: "custom_message", id: "custom", timestamp: "2026-01-01T00:00:00Z", customType: "restore", content: "RESTORED_FULL_TEXT", display: true },
-      { type: "branch_summary", id: "branch", timestamp: "2026-01-01T00:00:00Z", summary: "BRANCH_FULL_TEXT", fromId: "old" },
+      { type: "custom_message", id: "custom", parentId: null, timestamp: "2026-01-01T00:00:00Z", customType: "restore", content: "RESTORED_FULL_TEXT", display: true },
+      { type: "branch_summary", id: "branch", parentId: "custom", timestamp: "2026-01-01T00:00:00Z", summary: "BRANCH_FULL_TEXT", fromId: "old" },
     ];
     fs.writeFileSync(makeSessionsDir("host-visible"), entries.map(e => JSON.stringify(e)).join("\n"));
     const truncated = contextMessageEntries(entries.map(e => ({ ...e, content: "head…✂900", summary: "head…✂900" })));

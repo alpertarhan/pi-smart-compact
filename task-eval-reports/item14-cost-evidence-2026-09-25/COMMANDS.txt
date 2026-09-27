@@ -1,0 +1,69 @@
+Item 14 offline total-cost and cache-prefix evidence — command receipts
+Generated 2026-09-25 from /Users/alper/dev/oss/pi-eco/pi-smart-compact (source scripts, no dist rebuild).
+All runs: real four-arm AgentSession/tool/storage evaluator, scripted offline transport,
+fresh scratch HOME per arm, network denied at the fetch seam (attemptedFetches asserted 0),
+no provider traffic, no real memory writes. Toolkit = /Users/alper/dev/oss/pi-eco/pi-toolkit-coop-cache
+with piToolkit.context.thinningEnabled=false fixture (PSC owns pruning).
+
+# Run A — baseline four arms + Toolkit (primary lifecycle oracles)
+bun scripts/task-eval.ts --arms=all --repeats=2 --round1-history=32 --history-per-round=14 \
+  --toolkit=/Users/alper/dev/oss/pi-eco/pi-toolkit-coop-cache \
+  --out=$PWD/task-eval-reports/item14-cost-evidence-2026-09-25/run-A-baseline-toolkit
+Result: exit 0; all four arms PASS; totals (requests / synthetic input tokens):
+  no-compaction 72 / 7,116,429   (prefix reuse 1.0000, 0 broken pairs)
+  recoverable-hygiene 72 / 5,370,172 (0.9962, 1 broken pair at the pressure-gated trim)
+  eesv 78 / 5,083,590 (0.9564, 2 broken pairs at compaction applies; staging 2 calls / 99,556 in)
+  hybrid 78 / 4,020,738 (0.9444, 3 broken pairs)
+
+# Run B — background-preparation + idle cache-warming overlays (cost accounting)
+bun scripts/task-eval.ts --arms=all --repeats=2 --round1-history=32 --history-per-round=14 \
+  --toolkit=/Users/alper/dev/oss/pi-eco/pi-toolkit-coop-cache --background-prep --cache-warming=idle \
+  --out=$PWD/task-eval-reports/item14-cost-evidence-2026-09-25/run-B-overlays-idle
+Result: exit 0; all four arms PASS; per arm exactly one background-preparation summarizer call
+(counted in the summary class and attributed by run receipts) plus 2 idle warm replays:
+  no-compaction 75 / 5,960,171 (main 72, summary 1 = dangling prep at reopen, warm 2 / 65,182 in;
+    host cache_warm usage entries 2/2, all warm bodies byte-identical to the warmed request)
+  recoverable-hygiene 75 / 5,775,141 (warm 2 / 40,255 in; entries 2/2)
+  eesv 87 / 4,489,093 (main 82, summary 3 = 1 background prep USED by the settled trigger
+    + 2 foreground staging, warm 2 / 65,185 in; entries 2/2)
+  hybrid 87 / 4,410,576 (same shape; bg prep input 16,478)
+Equation per arm: total = main + summary(foreground staging + background preparation) + warm.
+
+# Run C — streaming cache-warming (long tool run trigger)
+bun scripts/task-eval.ts --arms=no-compaction,eesv --repeats=2 --round1-history=32 --history-per-round=14 \
+  --toolkit=/Users/alper/dev/oss/pi-eco/pi-toolkit-coop-cache --cache-warming=streaming \
+  --out=$PWD/task-eval-reports/item14-cost-evidence-2026-09-25/run-C-warm-streaming
+Result: exit 0; both arms PASS; exactly 1 warm per arm during the real ~3 s bash tool run
+(phase "warm-stream", chars 129,419/129,424, maxTokens=1, matchesWarmedRequest=true, entries 1/1).
+
+Policy constants held at production values in every run (report .policy): minAutoTrimSavingChars
+16384, autoTrimCooldownTurns 8, pendingTtlMs 300000, settledCooldownMs 600000, keepRecentTokens 6000.
+
+Evidenced accounting verdict (corrected by run-D direct trace — see CORRECTED CONCLUSIONS below and the doc section):
+production preparation/compaction accounting is correct as-is; the only notes are the host-lifecycle dispose limit
+and the fixture promptCache requirement.
+
+Typecheck receipt: bunx tsc --noEmit -p scripts/tsconfig.json -> clean (TC-OK).
+
+# Run D — direct causal trace: fresh on-demand vs reused preparation + supported shutdown drain
+bun scripts/task-eval.ts --arms=no-compaction,eesv --repeats=2 --round1-history=32 --history-per-round=14 \
+  --toolkit=/Users/alper/dev/oss/pi-eco/pi-toolkit-coop-cache --background-prep --cache-warming=idle \
+  --out=$PWD/task-eval-reports/item14-cost-evidence-2026-09-25/run-D-trace
+Result: exit 0; both arms PASS; raw traces preserved as run-D-trace/compaction-trace-{eesv,no-compaction}.json.
+eesv (staging arm) verdict — the unlabeled auto/success run is FRESH ON-DEMAND hook work, not reused preparation:
+  trace seq 12: summary_request phase=history-1-19 inFlightCompactions=1 startedCompactions=6 input=16226
+  trace seq 13: compact runId=2bfd8e6a-6969-4616-b81e-6e11c818f325 fromExtension=true (same runId as the auto metrics entry)
+  seq 2-10: five session_compact_failed (settled-trigger requests, no candidate); background preparation never completed
+  a provider call (cancelled in flight by hygiene-trim edits at zero cost; correctly unreceipted).
+no-compaction (non-staging arm) verdict — charged unused preparation IS receipted under the supported shutdown lifecycle:
+  trace seq 1: summary_request phase=reopen inFlightCompactions=0 startedCompactions=0 input=106268 (background origin)
+  session.reload() emits session_shutdown (reason "reload") and drains:
+  metrics receipt {runId 8e1a2525-f1a3-4790-9ac3-7defedbb2e30, status discarded, preparation background, reason session,
+  calls 1, input 106268, output 244} — exact match to the transport request.
+CORRECTED CONCLUSIONS (supersede the earlier "accounting gaps" list):
+  1) The runType:auto/success entry without preparation label is CORRECT (fresh on-demand session_before_compact work,
+     directly traced). No production change. Earlier label-drop claim retracted.
+  2) Null-at-window/tier prepare attempts make zero provider calls; no receipt is by design.
+  3) Bare AgentSession.dispose() skips session_shutdown — host-lifecycle limit; the supported shutdown lifecycle
+     cancels and drains receipts correctly. No new journal warranted.
+  4) Fixture note only: host cache-warmer is inactive without model promptCache metadata ("cache lifetime unavailable").

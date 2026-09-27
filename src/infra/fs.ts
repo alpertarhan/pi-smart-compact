@@ -33,6 +33,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { errorDetail, reportIssue } from "../utils/issues.ts";
 import * as log from "../utils/logger.ts";
 
 const LOCK_RETRY_MS = 25;
@@ -294,7 +295,12 @@ export function readJsonSync<T>(target: string): T | null {
     const raw = fs.readFileSync(target, "utf8");
     return JSON.parse(raw) as T;
   } catch (e) {
-    log.warn("readJsonSync failed for " + target, e);
+    reportIssue({
+      key: "read-json:" + target,
+      message:
+        "Could not read " + target + " (" + errorDetail(e) + "). It was ignored. Repair or delete the file if this repeats.",
+      error: e,
+    });
     return null;
   }
 }

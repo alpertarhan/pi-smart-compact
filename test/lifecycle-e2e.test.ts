@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { buildSessionProjection, collectEntriesForBranchSummary, createEventBus, CURRENT_SESSION_VERSION, SessionManager, type FileEntry } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -81,8 +82,26 @@ function activeBranch() {
   });
 }
 
+/** Native notification/transform dispatch runs every handler, not just the first. */
+async function dispatch(handlers: Map<string, Array<(event: any, ctx: any) => unknown>>, name: string, event: any, ctx: any): Promise<any> {
+  let result: any;
+  for (const handler of handlers.get(name) ?? []) {
+    const next: any = await handler(event, ctx);
+    if (next !== undefined) result = next;
+    if (next?.cancel) break;
+  }
+  return result;
+}
+
 describe("extension lifecycle end to end", () => {
-  it("runs auto compaction through correlated host apply exactly once", async () => {
+  it.each([false, true])("runs correlated host apply once, keeping an unmeasured model text-only (visual requested=%s)", async visual => {
+    if (visual) {
+      const settingsFile = path.join(home, ".pi", "agent", "settings.json");
+      const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+      settings.smartCompact.visualArchiveEnabled = true;
+      fs.writeFileSync(settingsFile, JSON.stringify(settings));
+      resetConfigCache();
+    }
     const handlers = new Map<
       string,
       Array<(event: any, ctx: any) => unknown>
@@ -96,6 +115,8 @@ describe("extension lifecycle end to end", () => {
         },
         registerCommand: () => {},
         registerTool: () => {},
+        getActiveTools: () => [],
+        setActiveTools: () => {},
       },
       {
         get(target, key) {
@@ -105,7 +126,12 @@ describe("extension lifecycle end to end", () => {
     );
     smartCompactExtension(extensionApi as any);
 
-    const branch = activeBranch();
+    const branch: any[] = activeBranch();
+    if (visual) {
+      branch[2].message = { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "visual-read", name: "read", arguments: { path: "auth.ts" } }] };
+      branch[3].message = { role: "toolResult", toolCallId: "visual-read", toolName: "read", isError: false,
+        content: [{ type: "text", text: "ARCHIVE_ONLY_LITERAL Türkçe auth evidence and exact source locations.\n".repeat(40) }] };
+    }
     const estimator = makeTokenEstimator(
       "openai",
       "lifecycle",
@@ -120,6 +146,8 @@ describe("extension lifecycle end to end", () => {
     const model = {
       provider: "openai",
       id: "lifecycle",
+      api: "openai-responses",
+      input: ["text", "image"],
       contextWindow: 300_000,
       maxTokens: 16_384,
     };
@@ -176,7 +204,7 @@ describe("extension lifecycle end to end", () => {
         }) as any,
     });
 
-    const before = handlers.get("session_before_compact")![0];
+    const before = (event: any, ctx: any) => dispatch(handlers, "session_before_compact", event, ctx);
     const response = (await before(
       { reason: "threshold", signal: new AbortController().signal },
       ctx,
@@ -192,12 +220,17 @@ describe("extension lifecycle end to end", () => {
     );
     expect(response?.compaction?.details?.runId).toBeString();
     expect(widgets.some((value) => value != null)).toBe(true);
+    // This synthetic OpenAI model has no validated bitmap cost rule. Opt-in is not
+    // permission to attach unprofitable/unmeasured pixels; native text must still commit.
+    expect(response.compaction.details.visualArchive).toBeUndefined();
+    expect(readMetricsLog().filter(entry => entry.status === "success")).toHaveLength(0);
 
     const projectId = response.compaction.details.compactionState.scope
       .projectId as string;
     expect(loadProjectFingerprint(projectId)).toBeNull();
-    const applied = handlers.get("session_compact")![0];
+    const applied = (event: unknown, ctx: unknown) => dispatch(handlers, "session_compact", event, ctx);
     const event = {
+      type: "session_compact",
       fromExtension: true,
       compactionEntry: {
         id: "compaction-entry",
@@ -218,6 +251,12 @@ describe("extension lifecycle end to end", () => {
       );
     }
     expect(fingerprint.sessionCount).toBe(1);
+    if (visual) {
+      const metrics = readMetricsLog().find(entry => entry.runId === response.compaction.details.runId)!;
+      expect(metrics.visualTokens ?? 0).toBe(0);
+      expect(metrics.visualFrames ?? 0).toBe(0);
+      expect(JSON.stringify(metrics)).not.toContain("ARCHIVE_ONLY_LITERAL");
+    }
     expect(
       loadScopedCompactionState(
         { projectId, sessionId: "lifecycle-session" },
@@ -230,11 +269,6 @@ describe("extension lifecycle end to end", () => {
           entry.sessionId === "lifecycle-session" && entry.status === "success",
       ),
     ).toHaveLength(1);
-    expect(
-      notifications.some((message) =>
-        message.toLowerCase().includes("applied"),
-      ),
-    ).toBe(true);
 
     await applied(event, ctx);
     expect(loadProjectFingerprint(projectId)?.sessionCount).toBe(1);
@@ -250,7 +284,7 @@ describe("extension lifecycle end to end", () => {
       ctx,
     )) as any;
     const failedRunId = failedResponse.compaction.details.runId as string;
-    const failed = handlers.get("session_compact_failed")![0];
+    const failed = (event: unknown, ctx: unknown) => dispatch(handlers, "session_compact_failed", event, ctx);
     const failedEvent = {
       type: "session_compact_failed",
       reason: "threshold",
@@ -320,14 +354,58 @@ describe("extension lifecycle end to end", () => {
       ),
     ).toHaveLength(1);
 
-    const shutdown = handlers.get("session_shutdown")![0];
-    await shutdown({}, ctx);
+    await dispatch(handlers, "session_shutdown", {}, ctx);
   }, 20_000);
 
-  it("requests proactive compaction through the existing correlated host lifecycle", async () => {
+  it("commits local trimming before background preparation can snapshot stale context", async () => {
     const settingsFile = path.join(home, ".pi", "agent", "settings.json");
     const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
-    settings.smartCompact.autoTriggerStrategy = "settled";
+    settings.smartCompact.autoTriggerStrategy = "background";
+    settings.smartCompact.minContextPercent = 80;
+    fs.writeFileSync(settingsFile, JSON.stringify(settings));
+    resetConfigCache();
+    const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+    smartCompactExtension({
+      registerCommand() {}, registerTool() {}, getActiveTools: () => ["smart_context"],
+      on(name: string, handler: (event: any, ctx: any) => unknown) {
+        handlers.set(name, [...handlers.get(name) ?? [], handler]);
+      },
+    } as any);
+    const branch: any[] = [
+      { type: "message", id: "goal", message: { role: "user", content: "Implement auth" } },
+      { type: "message", id: "call", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", name: "read", id: "read-id", arguments: { path: "auth.ts" } }] } },
+      { type: "message", id: "result", message: { role: "toolResult", toolName: "read", toolCallId: "read-id", isError: false, content: [{ type: "text", text: "source evidence".repeat(2_000) }] } },
+      ...Array.from({ length: 4 }, (_, i) => ({ type: "message", id: "tail-" + i, message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "recent" }] } })),
+    ].map((entry, index, entries) => ({ ...entry, parentId: entries[index - 1]?.id ?? null, timestamp: new Date().toISOString() }));
+    let routeLookups = 0;
+    const ctx: any = {
+      sessionManager: { getBranch: () => branch, getSessionId: () => "trim-before-background", getSessionFile: () => undefined },
+      model: { provider: "test", id: "test", contextWindow: 200_000 }, cwd,
+      modelRegistry: { getAvailable: () => { routeLookups++; return []; } },
+      getContextUsage: () => ({ tokens: 140_000 }),
+      ui: { setStatus() {}, notify() {}, setWidget() {} },
+    };
+    const event: any = { type: "turn_end", outcome: "completed", entries: [], context: { pendingMessages: [] }, toolResults: [] };
+    for (const handler of handlers.get("turn_end") ?? []) {
+      const result: any = await handler(event, ctx);
+      if (result?.entries) event.entries = result.entries;
+    }
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(event.entries.some((entry: any) => entry.type === "context_edit" && entry.targetId === "result")).toBe(true);
+    expect(routeLookups).toBe(0);
+    expect(branch.some(entry => entry.type === "context_edit")).toBe(false); // host has not committed yet
+    await dispatch(handlers, "session_shutdown", {}, ctx);
+  });
+
+  it.each([
+    ["settled", "unchanged"], ["background", "unchanged"],
+    ["settled", "instructions"], ["settled", "model-event"], ["settled", "model-silent"], ["settled", "grown-tail"],
+    ["settled", "pivot-cancelled"], ["settled", "pivot-finished"], ["settled", "native-reserve"],
+  ])("requests %s compaction through the correlated host lifecycle (%s)", async (strategy, change) => {
+    const settingsFile = path.join(home, ".pi", "agent", "settings.json");
+    const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+    settings.smartCompact.autoTriggerStrategy = strategy;
+    if (strategy === "background") settings.smartCompact.minContextPercent = 80;
     fs.writeFileSync(settingsFile, JSON.stringify(settings));
     resetConfigCache();
 
@@ -336,7 +414,10 @@ describe("extension lifecycle end to end", () => {
       Array<(event: any, ctx: any) => unknown>
     >();
     const tools = new Map<string, any>();
-    let activeTools = ["smart_compact"];
+    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+    const hostPrompts: Array<Promise<void>> = [];
+    const events = createEventBus();
+    let activeTools: string[] = [];
     const extensionApi = new Proxy(
       {
         on: (name: string, handler: (event: any, ctx: any) => unknown) => {
@@ -344,15 +425,25 @@ describe("extension lifecycle end to end", () => {
           list.push(handler);
           handlers.set(name, list);
         },
-        registerCommand: () => {},
+        registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+          commands.set(name, command);
+        },
         registerTool: (tool: any) => {
           tools.set(tool.name, tool);
         },
         getActiveTools: () => [...activeTools],
         setActiveTools: (names: string[]) => {
-          activeTools = [...names];
+          activeTools = names.filter(name => tools.has(name));
+        },
+        // Host prompt(): an extension command runs directly, without an input event.
+        sendUserMessage: (text: string) => {
+          const [name, ...args] = text.slice(1).split(" ");
+          const command = text.startsWith("/") ? commands.get(name!) : undefined;
+          if (!command) throw new Error("unexpected user message: " + text);
+          hostPrompts.push(command.handler(args.join(" "), ctx));
         },
         appendEntry: () => {},
+        events,
       },
       {
         get(target, key) {
@@ -361,8 +452,11 @@ describe("extension lifecycle end to end", () => {
       },
     );
     smartCompactExtension(extensionApi as any);
+    activeTools = [...tools.keys()]; // Pi activates every registered tool until an owner narrows it.
 
+    const header = (id: string) => ({ type: "session", version: CURRENT_SESSION_VERSION, id, timestamp: "2026-08-09T00:00:00.000Z", cwd });
     const branch = activeBranch();
+    let session = SessionManager.inMemory(cwd, undefined, [header("settled-lifecycle-session"), ...branch] as FileEntry[]);
     const estimator = makeTokenEstimator(
       "openai",
       "lifecycle-settled",
@@ -375,17 +469,18 @@ describe("extension lifecycle end to end", () => {
     const model = {
       provider: "openai",
       id: "lifecycle-settled",
-      contextWindow: 300_000,
+      contextWindow: strategy === "background" ? totalTokens / 0.75 : 300_000,
       maxTokens: 16_384,
     };
     const appliedRunIds: string[] = [];
-    const notifications: string[] = [];
     let compactRequests = 0;
     let llmCalls = 0;
-    let sessionId = "settled-lifecycle-session";
+    let usageTokens = totalTokens;
+    const statusWrites: Array<string | undefined> = [];
     let ctx: any;
 
     ctx = {
+      cwd,
       hasUI: true,
       model,
       modelRegistry: {
@@ -397,41 +492,61 @@ describe("extension lifecycle end to end", () => {
           headers: {},
         }),
       },
-      sessionManager: {
-        getBranch: () => branch,
-        buildContextEntries: () => branch,
-        getSessionId: () => sessionId,
+      get sessionManager() {
+        return session;
       },
       getContextUsage: () => ({
-        tokens: totalTokens,
+        tokens: usageTokens,
         contextWindow: model.contextWindow,
-        percent: (totalTokens / model.contextWindow) * 100,
+        percent: (usageTokens / model.contextWindow) * 100,
       }),
       isIdle: () => true,
       hasPendingMessages: () => false,
+      waitForIdle: async () => {},
+      // Host navigateTree(): session_before_tree may supply the summary; the
+      // summary branches at an assistant target, then session_tree is emitted.
+      navigateTree: async (targetId: string, options: { summarize?: boolean }) => {
+        const oldLeafId = session.getLeafId();
+        const { entries, commonAncestorId } = collectEntriesForBranchSummary(session, oldLeafId, targetId);
+        const result = await dispatch(handlers, "session_before_tree", {
+          type: "session_before_tree", signal: new AbortController().signal,
+          preparation: { targetId, oldLeafId, commonAncestorId, entriesToSummarize: entries, userWantsSummary: options.summarize ?? false },
+        }, ctx);
+        if (result?.cancel) return { cancelled: true };
+        if (!result?.summary) throw new Error("offline host has no default branch summarizer");
+        const summaryId = session.branchWithSummary(targetId, result.summary.summary, result.summary.details, true);
+        await dispatch(handlers, "session_tree", {
+          type: "session_tree", newLeafId: session.getLeafId(), oldLeafId, summaryEntry: session.getEntry(summaryId), fromExtension: true,
+        }, ctx);
+        return { cancelled: false };
+      },
       compact: (options: any) => {
         compactRequests++;
         void (async () => {
           try {
-            const before = handlers.get("session_before_compact")![0];
-            const response = (await before(
+            const response = (await dispatch(handlers, "session_before_compact",
               { reason: "manual", signal: new AbortController().signal },
               ctx,
             )) as any;
             if (!response?.compaction)
               throw new Error("settled host request returned no compaction");
             appliedRunIds.push(response.compaction.details.runId);
-            const applied = handlers.get("session_compact")![0];
-            await applied(
-              {
-                fromExtension: true,
-                compactionEntry: {
-                  id: "settled-compaction-entry",
-                  details: response.compaction.details,
-                },
+            if (strategy === "background" && appliedRunIds.length === 1) {
+              const projected = buildSessionProjection([...session.getBranch(), {
+                type: "compaction", id: "projected-apply", parentId: session.getLeafId(),
+                timestamp: new Date().toISOString(), ...response.compaction,
+              }]);
+              expect(JSON.stringify(projected.messages)).toContain("TAIL_AFTER_BACKGROUND_SNAPSHOT");
+              expect(response.compaction.tokensBefore).toBe(usageTokens);
+            }
+            await dispatch(handlers, "session_compact", {
+              type: "session_compact",
+              fromExtension: true,
+              compactionEntry: {
+                id: "settled-compaction-entry",
+                details: response.compaction.details,
               },
-              ctx,
-            );
+            }, ctx);
             options?.onComplete?.(response.compaction);
           } catch (error) {
             options?.onError?.(
@@ -441,9 +556,11 @@ describe("extension lifecycle end to end", () => {
         })();
       },
       ui: {
-        notify: (message: string) => notifications.push(message),
+        notify: () => {},
         setWidget: () => {},
-        setStatus: () => {},
+        setStatus: (_key: string, text?: string) => { statusWrites.push(text); },
+        getEditorText: () => "",
+        setEditorText: () => {},
         custom: async () => null,
       },
     };
@@ -468,8 +585,29 @@ describe("extension lifecycle end to end", () => {
       },
     });
 
-    const settled = handlers.get("agent_settled")![0];
-    await settled({ type: "agent_settled" }, ctx);
+    await dispatch(handlers, "session_start", { type: "session_start", reason: "startup" }, ctx);
+    const toolSignal = new AbortController().signal;
+    const loadTools = (group: string) => tools.get("smart_tools").execute("load-" + group, { action: "load", group }, toolSignal, () => {}, ctx);
+
+    if (strategy === "background") {
+      const turnEnd = { type: "turn_end", outcome: "completed", entries: [], context: { pendingMessages: [] }, toolResults: [] };
+      expect(await dispatch(handlers, "turn_end", turnEnd, ctx)).toBeUndefined();
+      const backgroundStatusFrom = statusWrites.length;
+      // Background preparation is silent (no footer status): wait for its one
+      // model call, then let the pipeline finish staging.
+      for (let waited = 0; llmCalls < 1 && waited < 5_000; waited += 10) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(llmCalls).toBe(1);
+      expect(statusWrites.slice(backgroundStatusFrom).filter(Boolean)).toEqual([]);
+      expect(compactRequests).toBe(0);
+      expect(readMetricsLog().filter(entry => entry.status === "success")).toHaveLength(0);
+      session.appendMessage({ role: "user", content: [{ type: "text", text: "TAIL_AFTER_BACKGROUND_SNAPSHOT" }], timestamp: Date.now() });
+      usageTokens = model.contextWindow * 0.85;
+    }
+    const settled = () => dispatch(handlers, "agent_settled", { type: "agent_settled" }, ctx);
+    await settled();
 
     expect(compactRequests).toBe(1);
     expect(llmCalls).toBe(1);
@@ -482,17 +620,14 @@ describe("extension lifecycle end to end", () => {
           entry.runId === appliedRunIds[0],
       ),
     ).toHaveLength(1);
-    expect(
-      notifications.some((message) =>
-        message.toLowerCase().includes("applied"),
-      ),
-    ).toBe(true);
 
-    await settled({ type: "agent_settled" }, ctx);
+    await settled();
     expect(compactRequests).toBe(1);
     expect(llmCalls).toBe(1);
 
-    sessionId = "settled-tool-session";
+    session = SessionManager.inMemory(cwd, undefined, [header("settled-tool-session"), ...session.getBranch()] as FileEntry[]);
+    await dispatch(handlers, "session_start", { type: "session_start", reason: "resume" }, ctx);
+    await loadTools("compaction"); // lazy: the agent loads smart_compact before calling it
     const callsBeforeTool = llmCalls;
     const toolResult = await tools
       .get("smart_compact")
@@ -505,11 +640,76 @@ describe("extension lifecycle end to end", () => {
       );
     const stagedRunId = toolResult.details?.runId;
     expect(stagedRunId).toBeString();
-    expect(llmCalls).toBe(callsBeforeTool + 1);
+    expect([callsBeforeTool, callsBeforeTool + 1]).toContain(llmCalls); // identical prefixes may hit synthesis cache
+    const callsAfterTool = llmCalls;
 
-    await settled({ type: "agent_settled" }, ctx);
+    if (change !== "unchanged") {
+      // Isolate staged reuse: rejected candidates must fall through to the native
+      // host, not silently apply an old plan or make another nested model call.
+      settings.smartCompact.autoTrigger = false;
+      fs.writeFileSync(settingsFile, JSON.stringify(settings));
+      resetConfigCache();
+      if (change.startsWith("model")) {
+        model.id = "changed-reader";
+        model.contextWindow = 16_384;
+        model.maxTokens = 2_048;
+        if (change === "model-event") await dispatch(handlers, "model_select", {}, ctx);
+      }
+      if (change === "grown-tail") usageTokens += model.contextWindow;
+      if (change.startsWith("pivot")) {
+        await loadTools("navigation");
+        const pivotArgs = { action: "pivot", target: "entry-11", carryover: "PIVOT_CARRYOVER keep the SQLite decision." };
+        const pivot = await tools.get("smart_navigation").execute("pivot-call", pivotArgs, toolSignal, () => {}, ctx);
+        expect(pivot.terminate).toBe(true);
+        // The host records the terminating tool batch, then closes the turn.
+        session.appendMessage({
+          role: "assistant", content: [{ type: "toolCall", id: "pivot-call", name: "smart_navigation", arguments: pivotArgs }],
+          api: "openai-responses", provider: model.provider, model: model.id, stopReason: "toolUse", timestamp: Date.now(),
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        });
+        const pivotResult = { role: "toolResult" as const, toolCallId: "pivot-call", toolName: "smart_navigation", content: pivot.content, isError: false, timestamp: Date.now() };
+        session.appendMessage(pivotResult);
+        const originLeaf = session.getLeafId();
+        await dispatch(handlers, "turn_end", { type: "turn_end", outcome: "completed", entries: [], context: { pendingMessages: [] }, toolResults: [pivotResult] }, ctx);
+        // A stale apply command must not release the queued pivot.
+        await commands.get("smart-compact")!.handler("context --apply=stale-nonce", ctx);
+        // Pi checks threshold compaction at agent_end, before agent_settled: our own queued pivot pauses it.
+        const paused = await dispatch(handlers, "session_before_compact", { type: "session_before_compact", reason: "threshold", signal: new AbortController().signal }, ctx);
+        expect(paused?.cancel).toBe(true);
+        expect(paused?.compaction).toBeUndefined();
+        if (change === "pivot-cancelled") {
+          await dispatch(handlers, "input", { type: "input", text: "Take a different direction", source: "interactive" }, ctx);
+        }
+        await settled();
+        // The navigation apply is a zero-delay host prompt; FIFO timers run it before this one.
+        await new Promise(resolve => setTimeout(resolve, 0));
+        await Promise.all(hostPrompts);
+        const leaf = session.getLeafEntry();
+        if (change === "pivot-cancelled") {
+          expect(hostPrompts).toHaveLength(0);
+          expect(session.getLeafId()).toBe(originLeaf);
+        } else {
+          expect(leaf?.type === "branch_summary" && leaf.parentId === "entry-11" && leaf.summary.includes("PIVOT_CARRYOVER")).toBe(true);
+        }
+      }
+      // Rejected candidates fall through to Pi's native compaction: no staged
+      // apply, no nested model call, and a finished or cancelled pivot no longer pauses it.
+      const response = await dispatch(handlers, "session_before_compact", {
+        type: "session_before_compact",
+        reason: "manual", signal: new AbortController().signal,
+        customInstructions: change === "instructions" ? "Preserve rollback steps in exact order" : undefined,
+        preparation: change === "native-reserve" ? { settings: { reserveTokens: model.contextWindow - 1 } } : undefined,
+      }, ctx);
+      expect(response).toBeUndefined();
+      expect(llmCalls).toBe(callsAfterTool);
+      expect(readMetricsLog().some(entry => entry.runId === stagedRunId && entry.status === "success")).toBe(false);
+      await dispatch(handlers, "session_shutdown", {}, ctx);
+      return;
+    }
+
+    await settled();
     expect(compactRequests).toBe(2);
-    expect(llmCalls).toBe(callsBeforeTool + 1);
+    expect(llmCalls).toBe(callsAfterTool);
     expect(appliedRunIds.at(-1)).toBe(stagedRunId);
     expect(
       readMetricsLog().filter(
@@ -520,7 +720,6 @@ describe("extension lifecycle end to end", () => {
       ),
     ).toHaveLength(1);
 
-    const shutdown = handlers.get("session_shutdown")![0];
-    await shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
+    await dispatch(handlers, "session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
   }, 15_000);
 });

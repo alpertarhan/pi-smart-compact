@@ -28,6 +28,15 @@ function writeContextGraphSetting(enabled: boolean): void {
   resetConfigCache();
 }
 
+function writeSmartCompactSettings(settings: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, ".pi", "agent", "settings.json"),
+    JSON.stringify({ smartCompact: settings }),
+  );
+  resetConfigCache();
+}
+
 function registeredTools(options?: {
   contextGraphEnabled?: boolean;
   activeTools?: string[];
@@ -37,11 +46,11 @@ function registeredTools(options?: {
   }
   const tools = new Map<string, any>();
   const active = new Set<string>(
-    options?.activeTools ?? ["read", "smart_recall", "smart_save_memory"],
+    options?.activeTools ?? ["read", "smart_tools", "smart_recall", "smart_save_memory"],
   );
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   smartCompactExtension({
-    registerCommand: () => {},
+    registerCommand: () => { },
     registerTool: (definition: any) => tools.set(definition.name, definition),
     on: (event: string, handler: (...args: any[]) => unknown) => {
       const registered = handlers.get(event) ?? [];
@@ -57,6 +66,7 @@ function registeredTools(options?: {
   return { tools, active, handlers };
 }
 
+
 /** Mirrors the real lifecycle: register finishes, then session_start fires. */
 function started(tools: ReturnType<typeof registeredTools>) {
   for (const handler of tools.handlers.get("session_start") ?? []) {
@@ -69,9 +79,10 @@ function context(approved = true, cwd = process.cwd()) {
   return {
     cwd,
     hasUI: true,
+    getContextUsage: () => undefined,
     ui: {
       confirm: async (_title: string, _message: string) => approved,
-      setStatus: () => {},
+      setStatus: () => { },
     },
     sessionManager: {
       getSessionId: () => "session-a",
@@ -81,50 +92,29 @@ function context(approved = true, cwd = process.cwd()) {
 }
 
 describe("context memory tools", () => {
-  it("registers bounded recall and explicit save contracts", () => {
-    const { tools } = registeredTools();
-    const recall = tools.get("smart_recall");
-    const save = tools.get("smart_save_memory");
+  it("loads memory on demand without creating a store and refuses disabled local memory", async () => {
+    const disabled = started(registeredTools({ contextGraphEnabled: false }));
+    await expect(disabled.tools.get("smart_tools").execute("load-disabled", { action: "load", group: "memory" }, undefined, undefined, context())).rejects.toThrow();
+    expect([...disabled.active]).toEqual(["read", "smart_tools"]);
+    expect(fs.existsSync(contextGraphFile())).toBe(false);
 
-    expect(recall).toBeDefined();
-    expect(recall.parameters.properties.limit.maximum).toBe(10);
-    expect(save).toBeDefined();
-    expect(save.parameters.properties.content.maxLength).toBe(2_000);
-    expect(save.parameters.properties.confirmed_by_user).toBeUndefined();
-    expect(save.promptGuidelines.join(" ")).toContain(
-      "host will independently ask",
-    );
+    const empty = started(registeredTools({ contextGraphEnabled: true }));
+    expect([...empty.active]).toEqual(["read", "smart_tools"]);
+    await empty.tools.get("smart_tools").execute("load-memory", { action: "load", group: "memory" }, undefined, undefined, context());
+    expect([...empty.active]).toEqual(["read", "smart_tools", "smart_recall", "smart_save_memory"]);
+    expect(fs.existsSync(contextGraphFile())).toBe(false);
   });
 
-  it("hides both context tools when contextGraphEnabled=false and keeps them otherwise", () => {
-    const disabled = started(
-      registeredTools({ contextGraphEnabled: false }),
-    );
-    expect([...disabled.active]).toEqual(["read"]);
-
-    const enabled = started(registeredTools({ contextGraphEnabled: true }));
-    expect([...enabled.active]).toEqual([
-      "read",
-      "smart_recall",
-      "smart_save_memory",
-    ]);
-  });
-
-  it("restores only tools hidden by config after a same-process re-enable", () => {
-    const extension = started(
-      registeredTools({
-        contextGraphEnabled: false,
-        activeTools: ["read", "smart_save_memory"],
-      }),
-    );
-    expect([...extension.active]).toEqual(["read"]);
-
+  it("keeps the host allowlist when loading memory after permission is enabled", async () => {
+    const extension = started(registeredTools({
+      contextGraphEnabled: false,
+      activeTools: ["read", "smart_tools", "smart_save_memory"],
+    }));
+    expect([...extension.active]).toEqual(["read", "smart_tools"]);
     writeContextGraphSetting(true);
-    for (const handler of extension.handlers.get("session_start") ?? []) {
-      handler({}, context());
-    }
-
-    expect([...extension.active]).toEqual(["read", "smart_save_memory"]);
+    for (const handler of extension.handlers.get("session_start") ?? []) handler({}, context());
+    await extension.tools.get("smart_tools").execute("load", { action: "load", group: "memory" }, undefined, undefined, context());
+    expect([...extension.active]).toEqual(["read", "smart_tools", "smart_save_memory"]);
   });
 
   it("saves scrubbed memory and recalls it from the current project", async () => {
@@ -140,7 +130,7 @@ describe("context memory tools", () => {
         related_paths: ["@package.json"],
       },
       new AbortController().signal,
-      () => {},
+      () => { },
       ctx,
     );
 
@@ -156,7 +146,7 @@ describe("context memory tools", () => {
         limit: 5,
       },
       new AbortController().signal,
-      () => {},
+      () => { },
       ctx,
     );
     expect(recalled.content[0].text).toContain("Release process");
@@ -168,25 +158,183 @@ describe("context memory tools", () => {
     const resolved = await tools.get("smart_save_memory").execute(
       "save-resolve",
       {
-        kind: "procedure",
         status: "resolved",
-        content: "Run frozen install before release; never persist " + token,
+        ref: saved.details.ref,
       },
       new AbortController().signal,
-      () => {},
+      () => { },
       ctx,
     );
-    expect(resolved.content[0].text).toContain("Resolved 1");
+    expect(resolved.content[0].text).toContain("Resolved local project memory");
     const after = await tools
       .get("smart_recall")
       .execute(
         "recall-2",
         { query: "frozen install release" },
         new AbortController().signal,
-        () => {},
+        () => { },
         ctx,
       );
-    expect(after.content[0].text).toContain("No matching");
+    expect(after.details.results).toEqual([]);
+  });
+  it("resolves a saved fact by its stable ref, not the truncated recall preview", async () => {
+    const { tools } = registeredTools();
+    const ctx = context();
+    const content = "r".repeat(1_307) + " repro-endpoint";
+    const saved = await tools.get("smart_save_memory").execute(
+      "save-long",
+      { kind: "decision", title: "Long fact", content },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+
+    const recalled = await tools.get("smart_recall").execute(
+      "recall-long",
+      { query: "repro endpoint" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    expect(recalled.details.results.map((item: { id: string }) => item.id)).toEqual([saved.details.memory.id]);
+    const text = recalled.content[0].text;
+    // A 1322-character fact renders as an 800-character preview: reconstructing
+    // the exact stored text from the tool result is impossible.
+    expect(text).not.toContain(content);
+    const ref = /^Ref: (\S+)$/m.exec(text)?.[1];
+
+    const resolved = await tools.get("smart_save_memory").execute(
+      "resolve-long",
+      { status: "resolved", ref },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    expect(resolved.details.closed).toBe(1);
+    const after = await tools.get("smart_recall").execute(
+      "recall-after",
+      { query: "repro endpoint" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    expect(after.details.results).toEqual([]);
+  });
+
+  it("uses current privacy settings when confirming a stored ref without changing its identity", async () => {
+    writeSmartCompactSettings({ scrubSecrets: false });
+    const { tools } = registeredTools();
+    const ctx = context();
+    const token = "sk-" + "test".repeat(12);
+    const saved = await tools.get("smart_save_memory").execute("save-unscrubbed", {
+      kind: "decision", title: "Quartz consent " + token,
+      content: "Quartz consent remains intact: " + token,
+      related_paths: ["private/" + token + ".txt"],
+    }, new AbortController().signal, undefined, ctx);
+    expect(saved.details.memory.content).toContain(token);
+    writeSmartCompactSettings({ scrubSecrets: true });
+    let confirmation = "";
+    ctx.ui.confirm = async (_title: string, message: string) => { confirmation = message; return true; };
+    const resolved = await tools.get("smart_save_memory").execute("resolve-scrubbed", {
+      status: "resolved", ref: saved.details.ref,
+    }, new AbortController().signal, undefined, ctx);
+    expect(confirmation).toContain("Quartz consent remains intact");
+    expect(confirmation).not.toContain(token);
+    expect(resolved.details.closed).toBe(1);
+  });
+
+  it("refuses content-only resolve instead of silently matching nothing", async () => {
+    const { tools } = registeredTools();
+    const ctx = context();
+    const saved = await tools.get("smart_save_memory").execute(
+      "save-noref",
+      { kind: "decision", content: "noref resolve fact" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    await tools.get("smart_save_memory").execute(
+      "resolve-noref",
+      { kind: "decision", status: "resolved", content: "noref resolve fact" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    const after = await tools.get("smart_recall").execute(
+      "recall-noref",
+      { query: "noref resolve fact" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    expect(after.details.results[0].id).toBe(saved.details.memory.id);
+  });
+
+  it("keeps stores isolated when switching backends: Mnemopi never reads or changes the local graph", async () => {
+    const { tools } = registeredTools({ contextGraphEnabled: true });
+    const ctx = context();
+    const signal = new AbortController().signal;
+    const saved = await tools.get("smart_save_memory").execute(
+      "save-cross",
+      { kind: "decision", content: "Cross backend survivor fact about quartz relays" },
+      signal,
+      () => { },
+      ctx,
+    );
+
+    writeSmartCompactSettings({ memoryBackend: "mnemopi", contextGraphEnabled: true });
+    const recalled = await tools.get("smart_recall").execute(
+      "recall-cross",
+      { query: "quartz relays" },
+      signal,
+      () => { },
+      ctx,
+    );
+    // Only the selected Mnemopi store is searched: the local fact stays invisible.
+    expect(recalled.content[0].text).toContain("Mnemopi Recall");
+    expect(recalled.content[0].text).toContain("No matching project memories");
+    expect(recalled.details.results).toBeUndefined();
+
+    // Resolving an old local ref while Mnemopi is selected is refused without
+    // contacting the inactive store.
+    await tools.get("smart_save_memory").execute(
+      "resolve-cross",
+      { status: "resolved", ref: saved.details.ref },
+      signal,
+      () => { },
+      ctx,
+    );
+
+    // Switching back finds the old data unchanged.
+    writeSmartCompactSettings({ memoryBackend: "local", contextGraphEnabled: true });
+    const after = await tools.get("smart_recall").execute(
+      "recall-cross-back",
+      { query: "quartz relays" },
+      signal,
+      () => { },
+      ctx,
+    );
+    expect(after.details.results.map((item: { id: string }) => item.id)).toEqual([saved.details.memory.id]);
+  });
+
+  it("never resolves refs with removed or changed targets", async () => {
+    const { tools } = registeredTools();
+    const ctx = context();
+    const signal = new AbortController().signal;
+    const save = tools.get("smart_save_memory");
+    const recall = tools.get("smart_recall");
+    const saved = await save.execute("bound-save", {
+      kind: "decision", content: "Target-bound quartz memory stays in its original store",
+    }, signal, undefined, ctx);
+    const ref: string = saved.details.ref;
+    for (const invalid of [ref.split("@")[0], ref.slice(0, -1) + (ref.endsWith("0") ? "1" : "0")]) {
+      await save.execute("unbound-resolve", { status: "resolved", ref: invalid }, signal, undefined, ctx);
+      const after = await recall.execute("bound-recall", { query: "Target-bound quartz" }, signal, undefined, ctx);
+      expect(after.details.results.map((item: { id: string }) => item.id)).toEqual([saved.details.memory.id]);
+    }
+    await save.execute("bound-resolve", { status: "resolved", ref }, signal, undefined, ctx);
+    const closed = await recall.execute("bound-recall-closed", { query: "Target-bound quartz" }, signal, undefined, ctx);
+    expect(closed.details.results).toEqual([]);
   });
 
   it("fails closed for project memory save and recall from HOME or root", async () => {
@@ -200,7 +348,7 @@ describe("context memory tools", () => {
           content: "must not cross projects",
         },
         new AbortController().signal,
-        () => {},
+        () => { },
         ctx,
       );
       const recalled = await tools.get("smart_recall").execute(
@@ -209,7 +357,7 @@ describe("context memory tools", () => {
           query: "cross projects",
         },
         new AbortController().signal,
-        () => {},
+        () => { },
         ctx,
       );
       expect(saved.content[0].text).toContain("run from a project directory");
@@ -236,7 +384,7 @@ describe("context memory tools", () => {
         content,
       },
       new AbortController().signal,
-      () => {},
+      () => { },
       ctx,
     );
 
@@ -249,7 +397,7 @@ describe("context memory tools", () => {
         query: "visible confirmation tail",
       },
       new AbortController().signal,
-      () => {},
+      () => { },
       ctx,
     );
     expect(recalled.content[0].text).toContain("No matching");
@@ -267,9 +415,9 @@ describe("context memory tools", () => {
       try {
         await save.execute(
           "save-failed",
-          { kind: "context", content: "durable fact" },
+          { kind: "context", content: "durable f act" },
           new AbortController().signal,
-          () => {},
+          () => { },
           context(),
         );
       } catch (error) {
@@ -292,7 +440,7 @@ describe("context memory tools", () => {
       "save-3",
       { kind: "context", content: "fact" },
       new AbortController().signal,
-      () => {},
+      () => { },
       ctx,
     );
     expect(result.content[0].text).toContain("interactive host confirmation");

@@ -1,5 +1,374 @@
 # Changelog
 
+## [Unreleased]
+
+## [9.8.0-canary.7] - 2026-09-27
+
+Local-only integration candidate; not published or installed in daily Pi.
+Offline receipts, a real-terminal walkthrough and loopback proofs are not a
+live evaluation or a production canary promotion.
+
+### Added
+
+- Session navigation, owned by Pi Continuity: named anchors with summaries,
+  read-only search of anchors from earlier sessions, and returning to an
+  anchor on a new branch with a required carryover. Home → History & recovery
+  → Session navigation, `/smart-compact context`, and the `smart_navigation`
+  agent tool (`view`, `recall`, `anchor`, `pivot`). Anchors recorded earlier by
+  pi-toolkit's `context` tool stay readable. The Anthropic anchor prompt-cache
+  marker and the footer anchor status are included.
+- On-demand agent tools: with `toolLoading: "lazy"` (default) the agent sees
+  only the `smart_tools` loader (about 400 bytes of tool JSON in a stock Pi
+  request) and loads the `navigation`, `history`, `memory` or `compaction`
+  group when needed; loaded groups reset at session start, branch change and
+  compaction. `eager` shows every permitted tool; `off` shows none while Home
+  and the navigation panel keep working. The context-management guide is read
+  only on request through `smart_tools` and is never injected into the system
+  prompt; Pi does not list it as a skill.
+- Settings → Agent tools & navigation: `toolLoading`,
+  `contextNavigationEnabled`, `contextRecallEnabled`, `contextPivotEnabled`,
+  `contextAnchorCacheEnabled`, `contextAnchorStatusEnabled` and
+  `contextGuidanceEnabled`. Existing settings are preserved; turning
+  navigation off keeps recorded anchors and the other switches.
+
+### Changed
+
+- Requests the extension makes itself (EESV stages and provider-native
+  compaction) go through the requesting session's public model runtime
+  instead of pi-ai's standalone completers, so request-time auth and provider
+  overrides registered by other extensions apply. Explicit caller API keys and
+  headers are no longer sent, so stored OAuth is never bypassed; stage auth is
+  an availability preflight only.
+- Removed the pi-toolkit cooperation contracts: the
+  `pi-toolkit:adapt-provider-request` channel, the `pi-toolkit:context-pivot`
+  pause, the `piToolkit.context.thinningEnabled` fixture and the task-eval
+  `--toolkit` option (every arm now runs with `toolLoading: "eager"`).
+  pi-toolkit's auto-context must not be loaded together with this extension.
+  Claude subscription routes need the separate `pi-claude-oauth-adapter`; the
+  published `0.2.2` normalizes the request body only for Pi's own turns, so a
+  build that normalizes the final payload inside its provider is required for
+  parity on nested requests. Such a patch was prepared and verified against
+  `0.2.2` in isolation; it is not part of this package.
+- Tool guidance for `smart_recall`, `smart_save_memory` and `smart_compact`
+  moved from Pi's system-prompt tool metadata into the tool descriptions, so
+  loading a group on demand does not rewrite the system prompt.
+- The session, context-compat and native-host pilots run without a pi-toolkit
+  checkout; the native-host pilot loads the standalone adapter from
+  `PSC_CLAUDE_OAUTH_EXTENSION` and classifies its quota preflight as a
+  non-model request.
+- LICENSE credits the pi-toolkit auto-context origin (MIT, Ersin Tarhan, with
+  the pi-provider-kimi-code and pi-better-messages-cache notices).
+
+### Fixed
+
+- A pivot queued by the agent was silently dropped when a threshold
+  compaction started in the same idle window; compaction now pauses while a
+  pivot is queued or applying.
+- Returning to a human-made anchor kept the carryover but dropped the anchor
+  and its summary; anchors are now labelled natively so the anchor text stays
+  in context.
+- Artifact offload never ran in the default on-demand mode because
+  `smart_context` was not yet active; offload now runs while the agent can
+  reach `smart_context` (active or loadable) and stops with agent tools `off`
+  or `smart_context` hidden with `/tools`.
+- The "Context OK" notice no longer refers to pi-toolkit.
+
+## [9.8.0-canary.6] - 2026-09-27
+
+Local-only corrected evaluation candidate; not published or installed in daily
+Pi. Canary.5 was rejected before paid calls: a synthetic raw `KERN_PROCARGS2`
+probe retrieved another host process environment despite native sandbox rules.
+Its frozen archives remain unchanged.
+
+### Fixed
+
+- Replace native macOS tool isolation with fresh, networkless Linux containers.
+  Mount only the synthetic fixture and owned HOME; keep the image read-only,
+  drop capabilities, limit resources, and isolate host/sibling process tables.
+  Resolve the prebuilt runtime image to an immutable ID before execution.
+- Create each container before starting it, then remove the complete container
+  on exit, cancellation or timeout, including detached children. File reads
+  remain byte-preserving and bounded; startup probes fail before provider use.
+- Preserve evaluator environment/transport restoration even when sandbox
+  teardown fails. A local Docker daemon and separately built runtime image
+  are evaluation prerequisites, not extension runtime dependencies.
+
+## [9.8.0-canary.5] - 2026-09-27
+
+Local-only evaluation-hardening candidate, retaining the canary.4 UI and
+identity changes. Not published or installed in daily Pi. A bounded synthetic
+live pilot is not production canary promotion evidence.
+
+### Fixed
+
+- Load only the selected custom provider/model and frozen credential in task
+  evaluation; API keys no longer fail an OAuth-only expiry check. Credential
+  commands, ambient templates, refresh and mutation are refused.
+- Cap main responses explicitly; refuse output reservations that do not fit
+  instead of silently shrinking a later response. Count cumulative Anthropic
+  stream usage once, retain missing values as unknown, and snapshot per-arm
+  request classes, actual usage and latency. JSON mode now emits its report.
+- Observe live host tool results and the context actually sent at each probe,
+  rather than offline-only counters or pre-compaction branch history. An
+  archive lookup question alone no longer counts as delivery of its answer.
+- Sandbox live model tools, fixture reads and oracle processes with a clean
+  child environment and native macOS filesystem/network restrictions. Startup
+  denial checks fail closed; unsupported platforms cannot enter live mode.
+
+## [9.8.0-canary.4] - 2026-09-27
+
+Local-only UI, identity and settings candidate; not published or installed in
+daily Pi. Live task comparison and production canary promotion are separate
+checks; offline validation alone does not satisfy the promotion gates.
+
+### Changed
+
+- Make Mode the only user-facing compaction selector. Advanced Mode budgets
+  retain existing Fast/aggressive, Balanced/balanced and Thorough/light values;
+  editing or resetting Mode does not rewrite legacy profiles or budget overrides.
+- Run the adversarial gate on every CI pull request and push to main, matching
+  the local release checks. Latest-Pi compatibility remains scheduled/manual.
+
+- Adopt **Pi Continuity** as the product identity for context hygiene and session
+  continuity. The npm package, repository, commands, tools, settings namespace
+  and stored data identifiers remain unchanged; this is not a package migration.
+- Replace the compaction-only artwork with a generated PNG continuity mark and
+  self-contained SVG banner, retaining the established asset URLs.
+- Restructure the README as an entry point, with separate user, configuration,
+  architecture and evaluation references. Mark historical experiments as dated
+  evidence and distinguish current unpublished behavior from the npm release.
+
+- Simplified Home to five task-oriented choices, with effective context and
+  automatic/agent status above the list. Settings, recovery and diagnostics
+  remain accessible without competing with the primary compact action.
+- Replaced technical setting labels with readable choices while preserving
+  defaults, persisted values, branch overrides and experimental confirmation.
+  Compact-picker cancellation now returns to Home.
+- Compact and review screens show the decision first, with technical details
+  under `D`. Capacity refusals explain the next step; provider fallback and
+  verification warnings remain visible.
+
+### Fixed
+
+- Normalize legacy profile-only `aggressive` settings to Fast on load, while
+  preserving explicit modes, custom budgets and the stored settings file.
+- Result/help scrolling and narrow-terminal controls: summaries can be read to
+  the end, selected truncated settings are disclosed in full, and compact
+  actions remain visible when planner details need paging.
+- Review no longer describes unresolved verification gaps as already patched.
+  Approval still requires `A`; `Enter` does not apply a candidate.
+
+## [9.8.0-canary.3] - 2026-09-25
+
+Local-only reliability candidate; not published or installed in daily Pi.
+Existing frozen candidates and user settings remain unchanged. Offline proof
+does not establish live provider reliability or satisfy canary promotion gates.
+
+### Fixed
+
+- Deterministic fallback keeps each constraint’s full 300-character extraction
+  bound and omits redundant category labels. The previous 200-character
+  decorated preview could contradict its own source, causing repeated
+  verification failures regardless of model. The verifier remains unchanged
+  and still rejects genuinely contradictory output.
+- Run-wide cancellation is no longer treated as a recoverable generation
+  failure: it stops subsequent synthesis, verification, staging and apply.
+  Timed-out previews cannot report success; host cancellation is recorded
+  once as neutral `cancelled`, separately from `timeout`. Manual deadline
+  notices no longer promise an automatic native fallback. Latency defaults
+  and configured budgets are unchanged.
+- Automatic behavior preset explicitly selects the existing `settled` trigger,
+  which works with Pi auto-compaction off. Native-hook readiness states its
+  host dependency and unknown host setting; threshold labels distinguish a
+  replacement gate from actual scheduling. Existing disabled/native-hook
+  configurations are not silently changed.
+
+### Changed
+
+- Ship only runtime JavaScript entries (`index`, `rtk`, `mnemopi-worker`) and
+  declarations. Evaluation/report commands run source scripts from a checkout;
+  installed `dist/*-eval.js` and `dist/telemetry-report.js` CLI paths are removed.
+  Runtime context hygiene, continuity, recovery and memory features remain.
+- Replace source/build-string and wording-only assertions with pipeline
+  cancellation regressions, installed-package checks and real Pi lifecycle
+  proof.
+
+## [9.8.0-canary.2] - 2026-09-25
+
+Local-only candidate; not published. Prepared for the fresh canary package
+paired with the partner pi-toolkit build. The deterministic release gate
+passed locally (four-project typecheck, full test suite, adversarial gate,
+benchmarks, build, installed-package audit with package-owned Bun, and Pi
+0.87.1/latest compatibility), but offline validation never replaces the
+required live production canary evidence.
+
+### Added
+
+- `/smart-compact` Home: a bare TUI invocation opens one keyboard screen with
+  Compact now (tokens/percent or the blocking reason), Queue local cleanup,
+  Setup & readiness, How it runs, Output, Models, Memory, History, Metrics and
+  Advanced settings. Behavior presets (Manual, Agent can compact, Local cleanup
+  only, Automatic cleanup + compaction) are derived from the exact persisted
+  flags, apply as one atomic settings patch, keep branch overrides visibly
+  separate, and leave the unchanged built-in default labeled as the default.
+  Output presets mark Visual hybrid as explicit opt-in and Native as
+  experimental with a second confirming Enter, showing why a preset cannot
+  apply for the current chat model.
+- `/smart-compact trim` and the Home cleanup row queue the same zero-LLM trim
+  through the one `smart_context` controller: no model call, no forced turn, the
+  first next provider request is sent untrimmed, and the edit applies at the
+  next natural completed-turn boundary. A pending Toolkit pivot or a newer
+  boundary change cancels the queued request with a visible notice.
+- `/smart-compact storage`: a strictly read-only inventory of saved tool output
+  (totals, per-session in-use / not-referenced-in-scan / unknown status, scan
+  coverage, self-managing retention neighbors). There is no `--clean` or
+  artifact garbage collection: sessions can live outside Pi's sessions root and
+  a running session can write new references at any time, so
+  unreferenced-in-scan is never safe-to-delete.
+- Model capacity feasibility: model rows and readiness use local estimates of
+  planned stage requests from a retention-aware chunk/extraction plan, with
+  requested output and 4,096 tokens of SDK headroom reserved — not the whole
+  conversation against the stage model’s window. Ineligible rows are disabled; sizes that only exist
+  after generation (explorer feedback, assembly, repair) cannot be pre-known;
+  every actual dispatch re-estimates and revalidates the built request before
+  the provider is contacted. Snapshots refresh after mode/model/privacy
+  changes; the UI never refreshes authentication to build them.
+
+### Changed
+
+- The selected memory backend is exclusive. With Hindsight selected, confirmed
+  saves and recall use only the user's existing configured server and bank —
+  Smart Compact never installs or starts a server — with no local copy or
+  fallback (`hindsightLocalFallback` is removed and reported as a stale ignored
+  key); failures report themselves instead of quietly using another store.
+  Mnemopi and local behave symmetrically, inactive stores are preserved
+  untouched, and `scope: "session"` is unsupported on remote backends (skipped,
+  nothing else is read). Structured continuity state, backups and artifact
+  spill remain session mechanisms independent of the backend choice.
+- Mnemopi runtime resolution is package-owned first: the pinned `bun` optional
+  dependency (1.4.2), then its platform `@oven/*` package, then a supported
+  Bun (>=1.3.14) on PATH. Normal installs ship the optional runtime and engine,
+  so no global Bun is required; nothing installs itself at use time and missing
+  pieces fail closed before any memory request is submitted.
+- RTK companion eligibility is exactly bare `git status`, `cargo test` and
+  `bun test`: `bun test` joined after an RTK 0.50.0 paired native/filtered
+  runner check showed exit-code and failure/load-error parity plus full recall
+  of the filtered output, with the command executed exactly once. `git diff`,
+  `tsc` and vitest 5 stay untouched (measured lossy or growing), `npm test` and
+  `node --test` have no rule, and commands with arguments or shell composition
+  remain passthrough.
+- Native compaction and replay are documented honestly about cache effects:
+  the request prefix legitimately diverges across a native boundary, while
+  checkpoint/rewind trims keep the checkpoint-stable prefix and archive removed
+  middle evidence for retrieval.
+
+### Verified
+
+- The release audit now runs the installed, packed Mnemopi worker under stock
+  Node with a PATH that offers no Bun — proving the package-owned runtime — and
+  adds missing-engine and missing-Bun fail-closed negatives that create no
+  store, make no model/network request, and keep the unselected local engine
+  from starting.
+- Long-session storage durability is pinned with real `SessionManager`
+  fixtures: artifacts aged past 20 days (timestamps aged deterministically, not
+  a wall-clock soak), retrieval through the public `smart_context` consumer
+  after actual reload and fork, fail-closed missing/tampered bytes, and
+  per-origin caps without losing earlier evidence.
+
+### Unchanged
+
+- The frozen 9.8.0-canary.0/.1 archives and the daily installation are
+  untouched; no publish, tag or commit accompanies this candidate. Exact
+  paired-archive hashes are recorded by the release owner at final packaging.
+
+## [9.8.0-canary.1] - 2026-09-25
+
+Local-only polish candidate; not published. Offline validation does not replace
+the required live production canary evidence.
+
+### Added
+
+- Stable, backend- and target-bound refs in confirmed memory saves/recall. Resolve requires the ref instead of exact preview text, names the actual store for consent, and does not retarget when settings change. Hindsight refs additionally bind project and document; unrelated remote documents have no actionable ref.
+- Explicit derived-only reset versus full local graph deletion, with saved/derived/legacy counts, confirmation, and clear exclusions for other backends, compaction state and backups.
+- One read-only effective-state view for preflight (`S`), metrics and dashboard: routes, credential presence versus live verification, backend prerequisites, effective branch policy, pressure gates and runtime preparation.
+- Packaged `task-eval` CLI: four paired stock-Pi continuation/memory arms, repeated-compaction probes, independent executable oracles, usage/cache and policy comparisons. Offline scripted transport is the default; the separate opt-in live path has explicit budgets and limitations, not an implied quality result.
+
+### Fixed
+
+- Promotion requires host-confirmed applied runs; cancellations cannot fill the 20-run minimum or manufacture failures. Unknown release channels are not stable evidence. Both cohorts need quality/damage coverage and canary data confidence must reach 85; native runs carry explicit cohort/route metadata.
+- Copied cross-project Hindsight refs, missing targets and target-tail substitution are rejected before deletion. Unknown or missing retain status blocks deletion until terminal evidence, preventing delayed retain completion from recreating a deleted fact. Bounded recall refresh includes unknown receipts; lock failures identify the retained lock without removing it automatically.
+- Current privacy settings re-scrub stored local facts before resolve confirmation without changing ref identity. Truncated recall previews and backend changes no longer make confirmed memories unresolvable.
+- Completed but unused preparation is recorded once with discard reason, timing and cost; graceful session shutdown drains late work and metric writes. Used/discarded reports keep cache categories, reported/estimated usage, subscription billing labels and repair provenance distinct.
+- Empty model pickers report missing credentials instead of cancellation; narrow rows preserve stored values, changed-setting markers refresh after edits/resets, and review accepts uppercase/Kitty Apply, Cancel and Quit keys.
+- Evaluator `--help` exits without running tasks or creating reports.
+
+### Unchanged
+
+- Hygiene savings floors, cooldowns, pressure thresholds and preparation TTLs are not tuned from synthetic results. Daily installation, automatic-memory policy and live-provider approval remain untouched.
+
+## [9.8.0-canary.0] - 2026-09-25
+
+Local-only candidate; not published. Isolated validation is not the required
+20-run production canary evidence.
+
+### Added
+
+- `compactionEngines`: an ordered engine list (default `["eesv"]`). Engines are tried in order; the first success applies. Unavailable engines are skipped with a reason, failures are recorded, and if none succeeds the conversation is unchanged and every outcome is reported. Settings offer four presets.
+- Native engine: the current model's own provider compaction, for Anthropic Messages (API key and Claude subscription), OpenAI Codex subscription and OpenAI Responses API key. Works on stock Pi 0.87.1+ as an extension: one nested Pi request is sent once as the provider's compaction request (no retries). The state is stored in the compaction entry's `details.native` and replayed to the same provider and model through `before_provider_request`; it is opaque and not EESV-verified. If replay cannot be applied (it depends on Pi's request format), the model reads the text summary, which for OpenAI routes is only the retained user messages. Cuts keep whole turns; a result that is not smaller is rejected. Opt-in; the default stays `["eesv"]`. Live on stock Pi: Codex subscription (gpt-5.6-luna) validated (compaction accepted, replay after reload accepted and byte-exact; recall of incidental details lossy; re-compaction offline only). Claude subscription is experimental: Anthropic may bill the compaction request as extra usage (real-session attempts were rejected with "400 You're out of extra usage"; cause not isolated). Anthropic and OpenAI API-key routes: offline tests only. For subscription users, "Native, fall back to smart summary" is the safe preset. Known limitation: in sessions smaller than Pi's `compaction.keepRecentTokens`, Pi refuses to apply after the engine has run; Smart Compact reports it and the conversation is unchanged.
+- Provider-request adaptation: nested Smart Compact requests to Anthropic Messages (native compaction, native replay and EESV calls) are offered to adapters on the `pi-toolkit:adapt-provider-request` v1 channel, because stock Pi does not run `before_provider_request` for extension-made requests. Claude subscription requests from extensions (native and EESV) require pi-toolkit's Claude OAuth adapter with this contract. A native "extra usage" rejection on a Claude subscription adds a hint to use an API key or put the smart summary engine first.
+- Optional Hindsight memory backend (`memoryBackend: "hindsight"`): confirmed `smart_save_memory` saves also go to a configured Hindsight bank, and `smart_recall` adds a strict project-scoped remote section. The confirmation shows the exact server, bank and document; the key is read from a named environment variable. Accepted, completed, failed and unknown outcomes are reported as such, with a configurable local copy. No automatic uploads. See `docs/hindsight-memory.md`.
+- Optional Mnemopi backend (`memoryBackend: "mnemopi"`): host-confirmed save/resolve and bounded full-text recall through the real local SQLite engine. A separate Bun worker preserves stock Node Pi support; private per-project databases, stable duplicate identity, checked provenance and cross-process locking prevent accidental cross-project or duplicate writes. Embeddings, model calls, shared default banks and automatic uploads remain off. Settings expose an optional absolute/`~/` data directory.
+- Independent `prepareContextPercent` for background preparation, strictly below the existing `minContextPercent` apply gate. Auto/null preserves adaptive lead; the 5,000-token minimum, idle apply lifecycle and all target/yield checks stay in force. TUI validation refuses conflicting edits in both directions.
+- Issue history: `/smart-compact metrics` starts with the last 20 problems (age, repeat count).
+- Settings TUI: per-row reset with `r`, changed-setting marks, inactive dependent rows with a reason, and a warning line for ignored `settings.json` values.
+
+- Repeatable offline full-AgentSession pilot with real tools, Toolkit cooperation, automatic hygiene, evidence retrieval, context-only rewind, correlated compaction and persistent reopen. Model transport is scripted, so results do not claim autonomous quality or provider-billing savings.
+- Opt-in `contextHygieneEnabled`, independent of automatic compaction, and `smart_context plan` for non-mutating batch previews. Automatic trimming batches at least 16,384 saved characters and respects an eight-assistant-turn branch-persisted cooldown; no per-turn prompts.
+- Separate, explicitly loaded RTK companion (`pi-smart-compact/rtk`), with CLI delegation, conservative command eligibility, cancellation/session guards and no execution retries. A real RTK 0.50 pilot restricts initial rewriting to bare `git status`/`cargo test`; lossy diffs and counterproductive typecheck filtering are left unchanged.
+- Offline native-compaction compatibility probes against real Pi adapters. Pi 0.87.1's adapters do not parse or replay signed Anthropic or opaque OpenAI compaction data themselves, which is why the native engine sends its own compaction request and replays the state from `before_provider_request`.
+- Opt-in `autoTriggerStrategy: "background"`: prepare EESV on a completed-turn snapshot before the pressure gate, then reuse it at native/idle compaction boundaries without a manual tool call. Single-task speculation, retry cooldown, TTL, cancellation, projected-content checks, and response-headroom/yield validation bound reuse; new tail messages remain verbatim.
+- Regression coverage for non-blocking preparation, late completion, model/config/branch invalidation, and correlated application without a second LLM call.
+- `smart_context`: one branch-local checkpoint, deferred context-only rewind with an agent-authored report, bounded trimming of old read-only output, and paged recovery from the original session log. Errors, side-effecting/unknown tools, recent turns, and tool pairs are preserved. Native boundary metadata survives reload without a second transcript store.
+- Background mode tries local trimming before speculative EESV when the context tool is active, without repeatedly invalidating work already in flight.
+- Opt-in `artifactOffloadEnabled`: persist large successful read-only text outputs before model input, returning a bounded preview and branch-owned reference. Private, integrity-checked, deduplicated files with per-origin quotas; failures keep original output and never claim incomplete recovery.
+- `smart_context search` and line-range reads across existing archived outputs, visual excerpts and new artifacts. Literal matching, bounded scans/pages, source labels, explicit missing-file errors and re-scrubbing before retrieval; no additional model calls or database.
+- Experimental `visualArchiveEnabled` (default `false`): locally rendered bitmap excerpts beside the verified EESV text summary. Optional Node-compatible resvg plus a licensed bundled font, bounded payload/source selection, branch/model/privacy validation, native-session reload/re-rendering, and text fallback. This preserves extra evidence at an additional image-token cost; the initial Sonnet 5 synthetic pilot found no token advantage over equivalent text excerpts.
+
+### Fixed
+
+- Native compaction rejects incomplete Codex responses and state missing the required Anthropic signature or OpenAI encrypted content instead of staging unusable context.
+- Native replay requires Pi's exact summary wrapper; overlapping text in a new user instruction is never replaced. Re-compaction stops before sending a request if the prior native state cannot be replayed.
+- Anthropic on-demand compaction removes incompatible `context_management`, including fields supplied by a request adapter. This does not establish the cause of the experimental Claude subscription billing rejection.
+- A queued `smart_context` operation cancelled by a Toolkit pivot now produces a visible, model-delivered cancellation message instead of silently disappearing; context remains unchanged.
+- Rejected settings edits no longer report warnings for hypothetical states that were never written, or hide the subsequent real invalid-file warning.
+- Optional-backend recall labels its local graph section explicitly. Missing Mnemopi dependencies fail before a request is submitted rather than reporting an uncertain write.
+- Notices from a run that finishes after a session switch no longer appear in the new session.
+- Background-run problems are no longer written to stderr inside the TUI; they are shown at the next event.
+
+- Artifact byte deduplication no longer overwrites distinct source labels. Paged discovery preserves each tool/source/content combination and authorized entry-ID reads while retaining existing content-hash IDs, branch revocation and re-scrubbing.
+- Archived native-output discovery uses the shared path extractor, including `filePath`, `filename`, `target_file`, `file_uri` and `absolute_path` aliases.
+- Bitmap admission compares equivalent text using the active reader's provider/model calibration, not the summarizer's calibration; checked before and after rendering.
+- Staged summaries now revalidate reader identity/limits, current context growth, native reserve/headroom and yield before apply. New compact instructions, model changes and navigation invalidate old candidates; late native-hook work cannot reapply an invalidated plan.
+- Early artifact offload leaves file/symbol read deliveries intact, preventing pi-lens from granting read-before-edit coverage for omitted middle content. Other eligible outputs still offload; historical trimming/retrieval is unchanged.
+- Cooperate with the updated Toolkit's explicit thinning-off mode and versioned pivot notifications. Pending navigation pauses preparation/compaction/context mutations; matching completion releases it on success/cancel/failure without stale-operation leakage.
+- Pre-compaction dedup now requires identical content, not only matching arguments, and preserves changed observations, unknown tools, media and instruction reads. Status-looking user text no longer authorizes deletion.
+- Shared instruction/skill-source protection across recoverable trim, rewind, artifacts, visual selection and pre-compaction pruning. Recovery tool outputs are not recursively trimmed; missing trim boundaries fail closed.
+- Multi-page rendering now uses a fresh child cancellation signal per page; resvg's native single-use AbortSignal binding previously rejected the second page with `InvalidArg` on Node and Bun. Added a regression test and a bounded, opt-in synthetic live pilot with recorded observations.
+- Compaction and preflight now use Pi's native context projection, honoring `context_edit` replacements and omissions. Raw-log recovery restores only truncated, unedited entries rather than overwriting intentionally changed siblings.
+- Extraction-cache reuse checks a message-content prefix hash as well as entry IDs. Staged summaries reject changed projected context even when their original branch IDs still exist.
+
+### Changed
+
+- Tools are exposed lazily, decided only at session start and after compaction: `smart_recall`/`smart_save_memory` once the project has memory (or with Hindsight/Mnemopi), `smart_context` when hygiene/offload/background is on or Toolkit's `context` tool is absent. Tool descriptions were shortened; a new session with Toolkit and no project memory now starts with about 267 tokens of Smart Compact tool text instead of about 1.56k. `/tools` choices are respected.
+- Problems are visible without debug mode: each one is shown once per session as a one-line "Smart Compact: what happened. Effect. What to do." notice. Provider errors include their scrubbed first line (at most 160 characters). `DEBUG=smart-compact` now only adds stack traces.
+- Nothing is added to Pi's footer while healthy. Background preparation no longer shows "preparing/ready", the RTK companion's "inactive" status became a one-time notice, and run progress moved out of the footer. `showStatus` now only shows a note when compaction is manual-only or disabled.
+- Without a UI (print, RPC, SDK), warnings and errors go to stderr, and `/smart-compact` with no arguments runs with the configured defaults instead of reporting "Cancelled".
+- Settings TUI reorganized by task into seven categories (Compaction, Models & reasoning, Memory, Context hygiene, Privacy & safety, This branch only, Advanced › Limits) with plain labels and descriptions. Setting keys and stored values are unchanged.
+- Product focus: context hygiene and session continuity; existing package name and compaction APIs remain stable.
+- Bitmap rendering crops blank width without shrinking glyphs. New archives require a validated model cost rule and at least 25% estimated benefit over equivalent text; unsupported/unprofitable cases retain verified text. No new live model calls or billed-savings claim.
+- Minimum Pi version is **0.87.1**. Host packages remain external peers; development dependencies pin the minimum version for reproducible checks. Update older Pi installations before using this release.
+- Existing `native-hook` default and manual approval behavior are unchanged. Visual evidence is opt-in; filesystem rollback is not included.
+
 ## [9.7.1] - 2026-09-23
 
 ### Fixed

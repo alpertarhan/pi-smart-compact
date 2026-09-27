@@ -3,6 +3,7 @@
  * Reduces compaction input by collapsing redundant message sequences.
  */
 
+import { createHash } from "node:crypto";
 import type { LlmMessage } from "../types.ts";
 import { isToolCallBlock } from "../utils/type-guards.ts";
 import { commandFailureEvidence, extractText, buildToolCallIndex, nestedToolCallId, type ToolCallIndex } from "./extraction.ts";
@@ -18,12 +19,14 @@ export interface PruningResult {
 }
 
 
-// pi-toolkit auto-context status messages injected every turn
-const PI_STATUS_RE = /^\[pi-auto-context\]/;
-
 // Maximum chars to keep from a tool result output
 import { MAX_TOOL_OUTPUT_CHARS, LIKELY_ERROR_RE } from "../constants.ts";
-import { classifyToolOperation, normalizeToolName } from "../domain/tool-semantics.ts";
+import { classifyToolOperation, isInstructionSource, isReadOnlyResearchTool, normalizeToolName } from "../domain/tool-semantics.ts";
+
+function textOnly(content: unknown): boolean {
+  return typeof content === "string" || (Array.isArray(content) && content.every(block =>
+    block && block.type === "text" && typeof block.text === "string"));
+}
 
 function stableArguments(args: Record<string, unknown>): string {
   return JSON.stringify(args, (_key, value) => {
@@ -65,46 +68,37 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
   // A successful mutation, delete, or opaque execute call invalidates every
   // prior access result. Reads on opposite sides of a write are observations
   // of different states and must never be deduplicated.
-  const accessIndices = new Map<string, number[]>();
+  const lastAccess = new Map<string, { index: number; hash: string }>();
   let mutationEpoch = 0;
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i].role !== "toolResult") continue;
     const tc = tcIdx.get(msgs[i].toolCallId ?? "");
-    if (!tc) continue;
+    if (!tc) { mutationEpoch++; continue; }
     const operation = classifyToolOperation(tc.arguments, tc.name);
-    if (operation === "mutate" || operation === "delete" || operation === "execute") {
+    if (msgs[i].isError || !isReadOnlyResearchTool(tc.name, tc.arguments)
+      || operation === "mutate" || operation === "delete" || operation === "execute") {
       mutationEpoch++;
       continue;
     }
-    if (msgs[i].isError || (operation !== "read" && operation !== "search" && operation !== "list")) continue;
+    if (!textOnly(msgs[i].content) || (operation !== "read" && operation !== "search" && operation !== "list")) {
+      mutationEpoch++;
+      continue;
+    }
     const key = mutationEpoch + "\0" + normalizeToolName(tc.name) + "\0" + stableArguments(tc.arguments);
-    const indices = accessIndices.get(key) ?? [];
-    indices.push(i);
-    accessIndices.set(key, indices);
-  }
-  for (const indices of accessIndices.values()) {
-    for (let j = 0; j < indices.length - 1; j++) {
-      const toolCallId = msgs[indices[j]].toolCallId ?? "";
-      keep.delete(indices[j]);
-      if (tcIdx.has(toolCallId)) removedToolCallIds.add(toolCallId);
+    const hash = createHash("sha256").update(JSON.stringify(msgs[i].content)).digest("hex");
+    const previous = lastAccess.get(key);
+    // Same arguments do not imply same evidence (external edits, changing search results).
+    // Reset on changed content: A → B → A is three observations, not two duplicates.
+    if (previous?.hash === hash) {
+      keep.delete(previous.index);
+      removedToolCallIds.add(msgs[previous.index].toolCallId!);
+      reasonMap.set("Duplicate file reads", (reasonMap.get("Duplicate file reads") ?? 0) + 1);
     }
-    if (indices.length > 1) {
-      reasonMap.set("Duplicate file reads", (reasonMap.get("Duplicate file reads") ?? 0) + indices.length - 1);
-    }
+    lastAccess.set(key, { index: i, hash });
   }
 
-  // ── 3b. pi-toolkit status messages: keep only the latest ──
-  const statusIndices: number[] = [];
-  for (let idx = 0; idx < msgs.length; idx++) {
-    const text = extractText(msgs[idx].content);
-    if (PI_STATUS_RE.test(text)) {
-      statusIndices.push(idx);
-    }
-  }
-  for (let i = 0; i < statusIndices.length - 1; i++) {
-    keep.delete(statusIndices[i]);
-    reasonMap.set("pi-auto-context status", (reasonMap.get("pi-auto-context status") ?? 0) + 1);
-  }
+  // Converted user messages have no trusted extension provenance. A status-looking
+  // prefix alone must never authorize dropping a user's instructions.
 
   // ── 4. Truncate long tool result outputs + build final list in one pass ──
   //
@@ -179,8 +173,9 @@ export function pruneRedundant(msgs: LlmMessage[], precomputedTcIdx?: ToolCallIn
     }
 
     const text = extractText(keptMessage.content);
-    if (keptMessage.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS) {
-      const call = ensuredIndex.get(keptMessage.toolCallId ?? "");
+    const call = ensuredIndex.get(keptMessage.toolCallId ?? "");
+    if (keptMessage.role === "toolResult" && text.length > MAX_TOOL_OUTPUT_CHARS && textOnly(keptMessage.content)
+      && !(call && isInstructionSource(call.arguments))) {
       const executionFailure = Boolean(call
         && classifyToolOperation(call.arguments, call.name) === "execute"
         && (/Command exited with code [1-9]\d*\s*$/i.test(text) || LIKELY_ERROR_RE.test(text)));

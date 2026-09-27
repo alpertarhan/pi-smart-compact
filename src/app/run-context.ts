@@ -136,6 +136,7 @@ export interface PreparedExt {
   /** Discriminator field; never read at runtime. */
   readonly _prepared: true;
   config: CompactConfig;
+  readerSignature?: string;
   profileCfg: ProfileConfig;
   providerCaps: ProviderCapabilities;
   estimator: TokenEstimator;

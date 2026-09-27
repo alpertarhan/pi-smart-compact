@@ -9,6 +9,7 @@
  * `ActiveTier` statically proves that an admitted run cannot carry "none".
  */
 
+import { notifyUser } from "../../utils/issues.ts";
 import type { RecoveredRc, TieredRc, ActiveTier } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import { MIN_TOKEN_THRESHOLD } from "../../constants.ts";
@@ -22,22 +23,22 @@ export function selectTier(rc: RecoveredRc): TieredRc | null {
  const tier: ActiveTier | "none" = rc.flags.overflowRecovery
   ? "full"
   : rc.flags.force
-    ? rc.contextPercent >= 80
-     ? "full"
-     : "light"
-    : selectCompactionTier(
-       rc.contextPercent,
-       rc.totalTokens,
-       MIN_TOKEN_THRESHOLD,
-       rc.config.minContextPercent,
-      );
+   ? rc.contextPercent >= 80
+    ? "full"
+    : "light"
+   : selectCompactionTier(
+    rc.contextPercent,
+    rc.totalTokens,
+    MIN_TOKEN_THRESHOLD,
+    rc.config.minContextPercent,
+   );
 
  if (tier === "none") {
   if (!rc.flags.autoTriggered) {
-   rc.ctx.ui.notify(
+   notifyUser(rc.ctx,
     "Context OK (" +
-     Math.round(rc.contextPercent) +
-     "%). pi-toolkit manages context well.",
+    Math.round(rc.contextPercent) +
+    "%). Nothing to compact yet.",
     "info",
    );
   }

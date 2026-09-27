@@ -2,6 +2,14 @@ MIT License
 
 Copyright (c) 2026 Semantic Compact Contributors
 
+Portions adapted from pi-toolkit:
+Copyright (c) 2025 Ersin Tarhan
+
+Upstream pi-toolkit notice:
+This package is a fork of pi-provider-kimi-code (Copyright (c) Leechael)
+and incorporates code from @mcowger/pi-better-messages-cache
+(Copyright (c) mcowger).
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

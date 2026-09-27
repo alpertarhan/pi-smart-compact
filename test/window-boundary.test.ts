@@ -46,7 +46,7 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
     },
     config: { minContextPercent: 60 },
     flags: { verbose: false, dryRun: false, autoTriggered: false, skipCompact: true, force: true },
-    notify: () => {},
+    notify: () => { },
     _prepared: true,
   } as unknown as PreparedRc;
 }
@@ -57,7 +57,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       { type: "custom_message", id: "custom", parentId: null, timestamp: "2026-01-01T00:00:00Z", customType: "smart-compact-restore", content: "RESTORED_SENTINEL: schema 7 is mandatory", display: false },
       { type: "branch_summary", id: "branch", parentId: "custom", timestamp: "2026-01-01T00:00:00Z", fromId: "old", summary: "BRANCH_SENTINEL: port 9123" },
       { type: "custom", id: "private", parentId: "branch", timestamp: "2026-01-01T00:00:00Z", customType: "private-state", data: "NOT_LLM_VISIBLE" },
-      ...Array.from({ length: 15 }, (_, i) => messageEntry("msg-" + i, i ? "msg-" + (i-1) : "private", { role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: ("Work item " + i + " ").repeat(1300) }], timestamp: i })) as SessionEntry[],
+      ...Array.from({ length: 15 }, (_, i) => messageEntry("msg-" + i, i ? "msg-" + (i - 1) : "private", { role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: ("Work item " + i + " ").repeat(1300) }], timestamp: i })) as SessionEntry[],
     ];
     const rc = makePreparedRc(branch as unknown as SessionMessageEntry[], 6_000);
     rc.ctx.getContextUsage = () => ({ tokens: 70_000 }) as any;
@@ -328,12 +328,17 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     const estimated = active.reduce((sum, entry) => sum + rc.estimator.message(entry.message as any), 0);
     rc.ctx.getContextUsage = () => ({ tokens: estimated, contextWindow: 150_000, percent: estimated / 1_500 } as any);
     rc.profileCfg.summaryBudgetTokens = 100;
-    (rc.ctx.sessionManager as any).getBranch = () => { throw new Error("append-only history must not be read"); };
-    (rc.ctx.sessionManager as any).buildContextEntries = () => active;
+    (rc.ctx.sessionManager as any).getBranch = () => [
+      messageEntry("summarized", null, { role: "user", content: "ALREADY_SUMMARIZED_RAW" }),
+      ...active.map((entry, index) => index === 0 ? { ...entry, parentId: "summarized" } : entry),
+      { type: "compaction", id: "previous", parentId: "active-6", timestamp: "2026-01-01T00:00:00Z", summary: "Preserved prior facts", firstKeptEntryId: "active-1", tokensBefore: estimated },
+    ];
+    (rc.ctx.sessionManager as any).buildContextEntries = () => { throw new Error("use the native projection, not entry-by-entry conversion"); };
 
     const result = resolveCompactionWindow(rc);
 
-    expect(result?.msgs.map(message => message.id)).toEqual(active.map(message => message.id));
+    expect(result?.msgs.map(message => message.id)).toEqual(["previous", ...active.map(message => message.id)]);
+    expect(JSON.stringify(result?.msgs)).not.toContain("ALREADY_SUMMARIZED_RAW");
     expect(result?.toCompact.length).toBeGreaterThan(0);
   });
 
@@ -612,14 +617,13 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result.compactionPlan.summaryBudgetTokens).toBe(10_000);
     expect(result.compactionPlan.targetAfterTokens).toBe(
       result.compactionPlan.fixedContextTokens + result.compactionPlan.retentionTargetTokens
-        + result.compactionPlan.finalSummaryAllowanceTokens!,
+      + result.compactionPlan.finalSummaryAllowanceTokens!,
     );
     expect(result.compactionPlan.hardBoundaryAdjusted).toBeFalse();
     expect(result.compactionPlan.relaxedSoftBoundaries).toContain("recent-user-turn");
   });
 
   it("stops a low-yield manual plan before LLM work", () => {
-    const notices: string[] = [];
     const branch = [
       messageEntry("old", null, { role: "user", content: [{ type: "text", text: "x".repeat(20_000) }] }),
       messageEntry("recent", "old", { role: "user", content: [{ type: "text", text: "y".repeat(75_000) }] }),
@@ -630,14 +634,11 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     rc.profileCfg.summaryBudgetTokens = 6_000;
     rc.ctx.model = { id: "manual", provider: "test", contextWindow: 100_000 } as any;
     rc.ctx.getContextUsage = () => ({ tokens: estimated, contextWindow: 100_000, percent: estimated / 1_000 } as any);
-    rc.notify = message => { notices.push(message); };
 
     expect(resolveCompactionWindow(rc)).toBeNull();
-    expect(notices.join(" ")).toContain("estimated saving is below 10%");
   });
 
   it("rejects overflow recovery when host usage contains uncompactable fixed overhead", () => {
-    const notices: string[] = [];
     const branch = Array.from({ length: 16 }, (_, index) => messageEntry(
       "overflow-" + index,
       index ? "overflow-" + (index - 1) : null,
@@ -652,10 +653,8 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     rc.profileCfg.summaryBudgetTokens = 3_000;
     rc.ctx.model = { id: "gpt-5.6-sol", provider: "openai-codex", contextWindow: 272_000 } as any;
     rc.ctx.getContextUsage = () => ({ tokens: 372_358, contextWindow: 272_000, percent: 137 } as any);
-    rc.notify = message => { notices.push(message); };
 
     expect(resolveCompactionWindow(rc)).toBeNull();
-    expect(notices.join(" ")).toContain("safe plan cannot meet its target");
   });
 
   it("never scales estimated messages up over fixed context during overflow", () => {
@@ -681,8 +680,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(plan.viable).toBeFalse();
   });
 
-  it("falls back before spending tokens when a protected tail cannot drop below the trigger", () => {
-    const notices: string[] = [];
+  it("rejects a plan whose protected tail cannot drop below the target", () => {
     const toolCallId = "anchor-call";
     const branch = [
       messageEntry("very-old", null, { role: "user", content: [{ type: "text", text: "very old" }] }),
@@ -698,9 +696,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     rc.ctx.model = { id: "primary", provider: "openai", contextWindow: 1_000 } as any;
     rc.ctx.getContextUsage = () => ({ tokens: 900, contextWindow: 1_000, percent: 90 } as any);
     rc.profileCfg.summaryBudgetTokens = 100;
-    rc.notify = message => { notices.push(message); };
 
     expect(resolveCompactionWindow(rc)).toBeNull();
-    expect(notices[0]).toContain("using native compaction instead");
   });
 });

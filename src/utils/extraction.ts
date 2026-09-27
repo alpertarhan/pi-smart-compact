@@ -568,7 +568,7 @@ export function isDiagnosticConstraintText(text: string): boolean {
  * it — each retry adding evidence that makes the next retry fail harder.
  */
 const OWN_OUTPUT_RE =
-  /(?:verification stopped apply|yield check stopped apply|smart compact failed|do not bypass verification|conversation unchanged|review \/smart-compact metrics|restart pi with debug=smart-compact)/i;
+  /(?:verification stopped apply|yield check stopped apply|smart compact failed|do not bypass verification|conversation unchanged|review \/smart-compact metrics|restart pi with debug=smart-compact|smart compact: )/i;
 
 /** `[x] Did the thing` is a completion record, not a live rule. `[ ]` stays. */
 const COMPLETED_CHECKLIST_RE = /^\[[xX✓✔]\]\s*\S/;

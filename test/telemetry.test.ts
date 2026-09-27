@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
-  assessCanary, buildPrivacySafeTelemetry, classifyTelemetryFailure, formatPrivacySafeTelemetry,
+  assessCanary, buildPreparationStats, buildPrivacySafeTelemetry, buildQualityProvenanceStats,
+  classifyTelemetryFailure, formatPrivacySafeTelemetry,
 } from "../src/domain/telemetry.ts";
 import type { CompactMetricsEntry } from "../src/types.ts";
+import { ModelCapacityError } from "../src/domain/model-capacity.ts";
 
 function metric(
   channel: "stable" | "canary",
@@ -31,6 +33,7 @@ describe("privacy-safe canary telemetry", () => {
     expect(classifyTelemetryFailure(new Error("API key is invalid"))).toBe("authentication");
     expect(classifyTelemetryFailure(Object.assign(new Error("aborted"), { name: "AbortError" }), true)).toBe("timeout");
     expect(classifyTelemetryFailure(new Error("LLM call budget exhausted"))).toBe("budget");
+    expect(classifyTelemetryFailure(new ModelCapacityError("batch", "request exceeds the selected model window"))).toBe("budget");
     expect(classifyTelemetryFailure(new Error("maximum output length limit"))).toBe("output-limit");
     expect(
       classifyTelemetryFailure(
@@ -77,7 +80,7 @@ describe("privacy-safe canary telemetry", () => {
     expect(report.canary.runs).toBe(20);
     expect(report.canary.appliedRuns).toBe(1);
     expect(report.decision).toBe("hold");
-    expect(report.reasons[0]).toContain("19 more canary runs with applied outcomes");
+    expect(report.reasons[0]).toContain("19 more canary runs with host-applied outcomes");
     expect(report.dataConfidence).toBeLessThan(60);
   });
 
@@ -105,8 +108,8 @@ describe("privacy-safe canary telemetry", () => {
 
   it("accepts the exact 95% success boundary", () => {
     const entries = [
-      ...Array.from({ length: 20 }, (_, index) => metric("stable", { status: index === 0 ? "error" : "success" })),
-      ...Array.from({ length: 20 }, (_, index) => metric("canary", { status: index === 0 ? "error" : "success" })),
+      ...Array.from({ length: 21 }, (_, index) => metric("stable", { status: index === 0 ? "error" : "success" })),
+      ...Array.from({ length: 21 }, (_, index) => metric("canary", { status: index === 0 ? "error" : "success" })),
     ];
     expect(assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 }).decision).toBe("promote");
   });
@@ -129,7 +132,7 @@ describe("privacy-safe canary telemetry", () => {
     ];
     const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
     expect(report.canary.runs).toBe(20);
-    expect(report.canary.appliedRuns).toBe(1);
+    expect(report.canary.appliedRuns).toBe(0);
     expect(report.decision).toBe("hold");
   });
 
@@ -139,7 +142,7 @@ describe("privacy-safe canary telemetry", () => {
       ...Array.from({ length: 3 }, () => metric("canary", { status: "error", verificationScore: 0 })),
     ];
     const report = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
-    expect(report.canary.appliedRuns).toBe(3);
+    expect(report.canary.attemptedRuns).toBe(3);
     expect(report.decision).toBe("rollback");
   });
 
@@ -212,6 +215,120 @@ describe("privacy-safe canary telemetry", () => {
     expect(report.canary.damageCoverage).toBe(1);
     expect(report.canary.damageRate).toBe(0.05);
     expect(report.decision).toBe("promote");
+  });
+
+  it("counts only host-applied runs: a voluntary user cancellation pads neither sample nor failures", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      ...Array.from({ length: 19 }, () => metric("canary")),
+      metric("canary", { status: "cancelled", failureKind: "cancelled" }),
+    ];
+    const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
+    // 19 successes + 1 user cancel must not read as 20 applied runs.
+    expect(report.canary.appliedRuns).toBe(19);
+    expect(report.canary.attemptedRuns).toBe(19);
+    expect(report.canary.successRate).toBe(1);
+    expect(report.decision).toBe("hold");
+    expect(report.reasons[0]).toContain("1 more canary run");
+  });
+
+  it("never silently counts an entry without an explicit release channel as stable", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable")),
+      ...Array.from({ length: 20 }, () => metric("canary")),
+      ...Array.from({ length: 3 }, () => metric("stable", { releaseChannel: undefined })),
+    ];
+    const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
+    // The 3 unattributed rows (e.g. a native entry that lost its channel) are
+    // excluded from the stable cohort, and the report says so.
+    expect(report.baseline.runs).toBe(20);
+    expect(report.decision).toBe("promote");
+    expect(report.reasons).toContainEqual(
+      "3 schema-v2 run(s) without an explicit release channel were excluded from both cohorts",
+    );
+    const exported = buildPrivacySafeTelemetry(entries, [], { version: "8.0.0", minCanaryRuns: 20 });
+    expect(exported.aggregates.find(aggregate => aggregate.channel === "unknown")?.runs).toBe(3);
+  });
+
+  it("holds when data confidence is 82 even with every other gate passing", () => {
+    const canary = Array.from({ length: 20 }, (_, index) => metric("canary", {
+      verificationScore: index < 14 ? 95 : undefined,
+    }));
+    const entries = [
+      ...Array.from({ length: 40 }, () => metric("stable")),
+      ...canary,
+    ];
+    // 14 of 20 canary successes observed: exactly 70% correlated coverage.
+    const damage = [
+      ...observed(entries.filter(entry => entry.releaseChannel === "stable")).slice(0, 28),
+      ...observed(canary).slice(0, 14),
+    ];
+    const report = assessCanary(entries, damage, { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.canary.qualityCoverage).toBe(0.7);
+    expect(report.canary.damageCoverage).toBe(0.7);
+    expect(report.dataConfidence).toBe(82);
+    expect(report.decision).toBe("hold");
+    expect(report.reasons).toContainEqual(
+      "data confidence 82% is below the agreed 85% promotion floor",
+    );
+  });
+
+  it("holds when the stable baseline has zero verifier-quality coverage", () => {
+    const entries = [
+      ...Array.from({ length: 20 }, () => metric("stable", { verificationScore: undefined })),
+      ...Array.from({ length: 20 }, () => metric("canary")),
+    ];
+    const report = assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
+    expect(report.baseline.qualityCoverage).toBe(0);
+    expect(report.decision).toBe("hold");
+    expect(report.reasons).toContainEqual("stable baseline quality coverage is below 70%");
+  });
+
+  it("aggregates preparation policy outcomes content-free and counts discarded cost once", () => {
+    const entries = [
+      metric("canary", { preparation: "background", preparationReadyMs: 8_000, preparationWaitMs: 2_000 }),
+      metric("canary", { preparation: "background", preparationReadyMs: 12_000, preparationWaitMs: 6_000 }),
+      metric("canary", {
+        preparation: "background", status: "discarded", preparationDiscardReason: "ttl",
+        totalInput: 900, totalCacheHit: 100, totalCacheWrite: 50, totalOutput: 200,
+      }),
+      metric("canary", {
+        preparation: "background", status: "discarded", preparationDiscardReason: "branch",
+        totalInput: 400, totalCacheHit: 0, totalOutput: 100,
+      }),
+      metric("canary", { preparation: "background", status: "timeout", failureKind: "timeout" }),
+      metric("stable"),
+    ];
+    const prep = buildPreparationStats(entries);
+    expect(prep.preparedRuns).toBe(5);
+    expect(prep.usedRuns).toBe(2);
+    expect(prep.discardedRuns).toBe(2);
+    expect(prep.otherOutcomes).toBe(1);
+    expect(prep.discardReasons).toEqual({ ttl: 1, branch: 1 });
+    expect(prep.reuseRate).toBe(0.5);
+    expect(prep.medianReadyMs).toBe(10_000);
+    expect(prep.medianWaitMs).toBe(4_000);
+    expect(prep.discardedCost).toEqual({
+      calls: 2, inputTokens: 1_300, cacheReadTokens: 100, cacheWriteTokens: 50, outputTokens: 300,
+    });
+    // Discards never pad the applied cohort.
+    const assessment = assessCanary(entries, [], { version: "8.0.0", minCanaryRuns: 5 });
+    expect(assessment.canary.runs).toBe(5);
+    expect(assessment.canary.appliedRuns).toBe(2);
+    expect(assessment.canary.attemptedRuns).toBe(3);
+  });
+
+  it("surfaces existing verification-provenance fields in aggregates", () => {
+    const provenance = buildQualityProvenanceStats([
+      metric("stable", { verificationScore: 95, initialVerificationScore: 80, deterministicPatchCount: 2, llmPatched: true }),
+      metric("stable", { verificationScore: 90, initialVerificationScore: 90, qualityFloorUsed: true }),
+    ]);
+    expect(provenance.measuredRuns).toBe(2);
+    expect(provenance.avgInitialQuality).toBe(85);
+    expect(provenance.avgRepairGain).toBe(7.5);
+    expect(provenance.deterministicPatchRuns).toBe(1);
+    expect(provenance.llmPatchRuns).toBe(1);
+    expect(provenance.qualityFloorRuns).toBe(1);
   });
 
   it("exports aggregates without session, project, prompt, path, or error text", () => {

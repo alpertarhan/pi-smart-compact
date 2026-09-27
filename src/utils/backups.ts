@@ -10,6 +10,7 @@ import {
 import { atomicWriteFile } from "../infra/fs.ts";
 import type { PreparedConversationBackup } from "../types.ts";
 import { loadConfig } from "./config.ts";
+import { errorDetail, recordIssue, reportIssue } from "./issues.ts";
 import * as log from "./logger.ts";
 
 const BACKUP_MAGIC = "# Smart Compact Backup\n";
@@ -165,7 +166,11 @@ export function prepareConversationBackup(
       contextTokens: metadata.contextTokens,
     };
   } catch (error) {
-    log.warn("prepareConversationBackup failed", error);
+    reportIssue({
+      key: "backup.prepare",
+      message: "Conversation backup could not be prepared (" + errorDetail(error) + "). Compaction continues without a restore point. Check backupDir permissions and disk space.",
+      error,
+    });
     return null;
   }
 }
@@ -201,7 +206,7 @@ export async function commitPreparedConversationBackup(
     schedulePruneBackups(path.dirname(prepared.path));
     return prepared.path;
   } catch (error) {
-    log.warn("commitPreparedConversationBackup failed", error);
+    recordIssue({ key: "backup.commit", message: "Conversation backup could not be written (" + errorDetail(error) + "). No restore point for this compaction.", error });
     return null;
   }
 }
@@ -243,7 +248,7 @@ export function listBackups(limit = 20): BackupEntry[] {
     );
     return out.slice(0, limit);
   } catch (error) {
-    log.warn("listBackups failed", error);
+    reportIssue({ key: "backup.list", message: "Backups could not be listed (" + errorDetail(error) + "). Restore shows none. Check backupDir permissions.", error });
     return [];
   }
 }
@@ -279,7 +284,7 @@ export function readConversationBackup(
         : {}),
     };
   } catch (error) {
-    log.warn("readConversationBackup failed", error);
+    recordIssue({ key: "backup.read", message: "Backup could not be read (" + errorDetail(error) + ").", error });
     return null;
   }
 }

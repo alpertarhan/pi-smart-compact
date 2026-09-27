@@ -22,14 +22,15 @@ describe("semantic compact progress", () => {
   it("renders completed/current/future phases and marks optional Explore skipped", () => {
     const { ctx, calls, widget } = context();
     showProgressOverlay(ctx, { phase: 3, phaseName: "Synthesize", detail: "Compressing older history · batch 2/4" });
-    expect(calls).toEqual(["status:Smart Compact 3/5 · Synthesize", "widget:set"]);
+    // Progress is a transient below-editor widget, never a footer status.
+    expect(calls).toEqual(["widget:set"]);
     const component = widget()!({}, { fg: (_color: string, text: string) => text, bold: (text: string) => text });
     expect(component.render(120)).toEqual([
       "✓ Extract  – Explore  ● Synthesize  ○ Verify  ○ Apply",
       "↳ Compressing older history · batch 2/4 · conversation unchanged",
     ]);
     clearCompactProgress(ctx);
-    expect(calls.slice(-2)).toEqual(["status:undefined", "widget:clear"]);
+    expect(calls.slice(-1)).toEqual(["widget:clear"]);
     expect(calls.some(call => call.startsWith("notify:"))).toBeFalse();
   });
 

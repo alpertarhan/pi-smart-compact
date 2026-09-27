@@ -1,5 +1,10 @@
 # Migrating from v7 to v8
 
+> **Scope:** Historical migration note for upgrading from v7 to v8 (8.0.8). Versions, host baselines and settings reflect that release, not the current package; current behavior is in the guide and configuration reference.
+> Current documentation for Pi Continuity (the `pi-smart-compact` package):
+> [guide](./guide.md) · [configuration](./configuration.md) ·
+> [evaluation](./evaluation.md) · [documentation index](./README.md).
+
 This guide applies to the stable `8.0.8` release.
 
 ## Compatibility
