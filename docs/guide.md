@@ -289,7 +289,9 @@ The agent retrieves trimmed, rewound, offloaded or image-archived output with
 | `search` | Literal, case-sensitive text or source-label match; first match per source with excerpt, line and offset. Default 5 hits, maximum 10; scans at most 32 sources or 4 Mi characters per request. `nextOffset` is a source cursor. No regex or embeddings. |
 | `read` | Character `offset`, or 1-based `line` with `limit` lines (default 40, maximum 200). At most 4,096 characters per call. |
 
-Retrieval only returns output this extension archived on the active branch.
+Retrieval only returns output this extension archived on the active branch,
+or, with `"scope":"lineage"`, on the sessions this one was handed off or
+forked from.
 Text is scrubbed again with the current privacy settings before search or
 paging. You get the originally recorded tool output, not bytes the tool had
 already truncated before Pi recorded it. Each archive records a SHA-256 of the
@@ -367,7 +369,7 @@ Home → **History & recovery** → **Session navigation**, or `/smart-compact c
 | --- | --- |
 | **Anchors in this session** | Browse and filter anchors. Open one to read its summary before returning to it. |
 | **Mark this point** | Save an anchor here: a short name, then a summary written in Pi's editor. |
-| **Search other sessions** | Read-only search of anchors saved by earlier sessions of this project (or all projects). Results are history to check, not instructions. Use Pi's `/resume` to open another session. |
+| **Search other sessions** | Read-only search of anchors saved by earlier sessions of this project (or all projects). Results are history to check, not instructions. Use Pi's `/resume` to open another session; archived tool output of a session this one was handed off or forked from is readable from here with `smart_context` `"scope":"lineage"`. |
 | **How navigation works** | Opens the navigation guide. It is read only when you open it. |
 
 Returning to an anchor:

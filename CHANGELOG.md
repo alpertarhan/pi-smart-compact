@@ -93,7 +93,7 @@
   32-output cap. Their markers add `(superseded: edited later)` or
   `(superseded: read again in full later)` to the
   subject line. Paths match after `path.normalize` only. Eligibility is
-  unchanged.
+  unchanged; `smart_context` `plan` reports `superseded`.
 
 ### Fixed
 

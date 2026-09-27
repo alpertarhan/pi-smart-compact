@@ -23,7 +23,8 @@ Load `history` for `smart_context`. This is different from tree navigation.
 
 - `plan` previews recoverable cleanup; `trim` requests it at an uncontested completed turn boundary.
 - `checkpoint` begins a bounded research segment. `rewind(report=...)` removes its eligible read-only exploration from delivered context while retaining the findings you explicitly report. Preserve decisions, evidence, constraints, failures and the next step. Do not hide side effects or discard an unresolved question.
-- `status`, `search` and `read` recover archived tool evidence. A preview is not the whole output; retrieve the needed source rather than inventing details.
+- `status`, `search` and `read` recover archived tool evidence on the active branch; add `scope="lineage"` to reach the sessions this one was handed off or forked from (read-only, up to three levels). A marker is a digest (subject, first line, risk lines), not the output; a `(superseded: …)` note means the file was edited or read again in full later. Old successful `bash` output and old `read` pages are archived the same way. A preview is not the whole output; retrieve the needed source rather than inventing details.
+- A `read` or `search` that reports archived text no longer matching its record means the session file changed after archiving; treat that source as unavailable and say so, never reconstruct it.
 - Anchor prefixes are protected. There is only one cleanup owner; do not add another extension that independently truncates the same history.
 
 ## Compaction and durable memory

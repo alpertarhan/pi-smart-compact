@@ -31,6 +31,7 @@ job—not the whole product.
 | Finish a research detour without carrying every read | **Checkpoint and rewind** | Keep a handoff report and a recovery path. Files and external side effects are not rolled back. |
 | Make room for the next stage of a task | **Verified compaction** | Extract working-state facts, synthesize a bounded summary, and check it before Pi applies it. |
 | Find the way back after a long detour | **Session navigation** | Named anchors with summaries; read-only search across earlier sessions; return to an anchor on a new branch with a required carryover. Files and processes are never rolled back. |
+| Start a fresh session without losing the thread | **Handoff** | A new session seeded from recorded state only (your note, the latest anchor, the continuity ledger, always-kept files, a memory recall); no model call. Its archived evidence stays readable from the new session. |
 | Carry a confirmed fact into another session | **Optional project memory** | Explicit saves and scoped recall through exactly one selected backend. No silent backend fallback. |
 
 The intended result is a smaller **working set**, not an inaccessible history.
@@ -88,12 +89,13 @@ Unavailable actions explain why. Use arrows and Enter to navigate, Esc to go
 back, and **D** for planning or result details. Long help and summaries can be
 scrolled to the end; advanced settings do not crowd the main action.
 
-Four useful direct commands:
+Five useful direct commands:
 
 ```text
 /smart-compact trim
 /smart-compact storage
 /smart-compact context
+/smart-compact handoff [dry-run] [-- note]
 /smart-compact metrics
 ```
 
@@ -104,7 +106,10 @@ Four useful direct commands:
   unreferenced result in one scan is not proof that it is safe to delete.
 - **`context`** opens session navigation: browse anchors, mark this point,
   search other sessions, or return to an anchor after reading it.
-- **`metrics`** shows effective state, recent issues and recorded run outcomes.
+- **`handoff`** opens a new session seeded from recorded state (preview first
+  with `dry-run` or from Home › History & recovery); no model call.
+- **`metrics`** shows effective state, recent issues, recorded run outcomes and
+  the host prompt-cache ledger.
 
 By default the agent sees one small loader tool, `smart_tools`, and loads the
 navigation, history, memory or compaction tools only when it needs them; the

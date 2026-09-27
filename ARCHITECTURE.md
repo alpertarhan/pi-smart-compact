@@ -947,7 +947,9 @@ content-free failure taxonomy, aggregates schema-v2 quality without IDs or
 conversation data, and compares an explicit `canary` cohort with `stable`
 history. `src/ui/dashboard-insights.ts` computes the dashboard's Data
 Confidence heuristic. `scripts/task-eval.ts` and `task-eval-case.ts` pair the
-same task across no-compaction, hygiene, EESV and hybrid stock-Pi sessions.
+same task across no-compaction, hygiene, EESV and hybrid stock-Pi sessions;
+`scripts/replay-eval.ts` replays recorded sessions under alternative trim
+policies and reports estimates only.
 Commands, exact decision thresholds and evidence limits are documented once, in
 [evaluation](./docs/evaluation.md).
 
@@ -992,7 +994,10 @@ stores by default.
 | `app/register-smart-context-tool.ts` | session-control tool and native turn-boundary lifecycle |
 | `app/context-operations.ts` | pure checkpoint validation, pair-safe edit planning, branch-scoped archived-output access |
 | `app/tool-artifacts.ts` | safe early tool-output spill, private storage quotas/integrity, branch-owned references |
-| `app/context-evidence.ts` | common bounded listing/search/read for session output, visual excerpts and artifacts |
+| `app/context-evidence.ts` | common bounded listing/search/read for session output, visual excerpts and artifacts, active branch first then loaded lineage |
+| `app/session-lineage.ts` | read-only in-memory load of `parentSession` ancestors (depth, size and cycle bounds) |
+| `app/session-handoff.ts` | handoff seed from recorded state only; preview and `ctx.newSession` seeding |
+| `app/host-cache-ledger.ts` | session-local ledger of Pi's own requests: rebuild detection, cause attribution, cache lifetime |
 | `app/artifact-storage.ts` | read-only storage inventory and lineage classification |
 | `app/visual-archive.ts` | bounded evidence selection, persisted archive validation, request-local image rehydration |
 | `app/native-compaction.ts` | native engine: nested-request compaction, clean-turn cut, route/size checks, replay |
@@ -1039,7 +1044,8 @@ Pure semantics: no I/O, no async, no globals.
 | --- | --- |
 | `domain/summary-schema.ts` | canonical section kinds + heading classification |
 | `domain/summary-parse.ts` | parse/render canonical H1/H2/H3 sections; merge duplicates; placement |
-| `domain/tool-semantics.ts` | fine tool operation taxonomy with broad compatibility wrapper |
+| `domain/tool-semantics.ts` | fine tool operation taxonomy with broad compatibility wrapper; file-operation paths for superseded ordering |
+| `domain/compaction-usage.ts` | applied run's provider usage in Pi's `Usage` shape, priced per route |
 | `domain/scrub.ts` | pure secret/PII redaction primitives and run-scoped scrubber |
 | `domain/keywords.ts` | salient-keyword extraction shared by verify and damage detection |
 | `domain/model-capacity.ts` | per-request output clamping and capacity reasons |
@@ -1111,6 +1117,7 @@ All external-world interaction.
 | `ui/metrics-dashboard-overlay.ts` | interactive metrics dashboard |
 | `ui/backup-overlays.ts` | backup picker, viewer and restore action |
 | `ui/open-loops-overlay.ts` | persisted open-loop manager |
+| `ui/handoff-overlay.ts` | Home handoff panel: note, seed preview, open |
 | `ui/settings-overlay.ts` | settings TUI: task-grouped categories, named values, dependency rules, branch overrides |
 | `ui/settings-complex.ts` | input, model and profile-budget rows with inline validation |
 | `ui/settings-list.ts` | settings list with per-row `r` reset and dimmed inactive rows |
