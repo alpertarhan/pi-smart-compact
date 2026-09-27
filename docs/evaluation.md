@@ -148,7 +148,9 @@ cost-accounting fixtures, `--cache-warming=off|streaming|idle` and
 `--background-prep`. Every arm runs with `toolLoading: "eager"`, so the arms
 differ only in hygiene/offload knobs, not in on-demand tool discovery.
 
-The default transport is scripted and offline. Independent oracles execute the
+The default transport is scripted and offline: the arm sets `PI_OFFLINE=1` so
+Pi never downloads tools, and it fails before the first round when `rg`
+(ripgrep, used by Pi's grep tool) is not on PATH. Independent oracles execute the
 changed store/server and test process, check preserved constraints, errors and
 side effects, require the newest decision, test unknown and false-premise
 answers, and verify archive retrieval plus actual saved-memory recall and use.

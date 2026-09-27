@@ -685,11 +685,14 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
  const previous = {
   HOME: process.env.HOME,
   PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+  PI_OFFLINE: process.env.PI_OFFLINE,
  };
 
  const originalFetch = globalThis.fetch;
  const originalWebSocket = globalThis.WebSocket;
  let attemptedFetches = 0;
+ // First blocked request: target and caller, so an offline failure names its source.
+ let firstBlockedFetch = "";
  let liveGuard: BudgetedFetch | undefined;
  let session: AgentSession | undefined;
  let sandbox: EvalSandbox | undefined;
@@ -723,6 +726,15 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
  try {
   process.env.HOME = scratch;
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  if (!args.live) {
+   // Pi's grep tool downloads ripgrep from GitHub when `rg` is missing; an
+   // offline arm must neither download nor silently degrade to grep errors.
+   process.env.PI_OFFLINE = "1";
+   const rg = spawnSync("rg", ["--version"], { stdio: "pipe" });
+   if (rg.error || rg.status !== 0) {
+    throw new Error("ripgrep (rg) is required on PATH for the offline task-eval; Pi tool downloads are disabled (PI_OFFLINE=1).");
+   }
+  }
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(agentDir, { recursive: true });
   const settings = armSmartCompactSettings(arm, { backgroundPrep: args.backgroundPrep });
@@ -747,8 +759,12 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
    preparedLive = prepareLiveProvider(credentialSourceDir, agentDir, [args.models, args.summaryModel || args.models]);
   } else {
    globalThis.fetch = Object.assign(
-    async () => {
+    async (input: unknown) => {
      attemptedFetches++;
+     if (!firstBlockedFetch) {
+      const target = input instanceof Request ? input.url : String(input);
+      firstBlockedFetch = target + "\n" + (new Error().stack ?? "").split("\n").slice(2, 8).join("\n");
+     }
      throw new Error("Network disabled by offline task-eval");
     },
     { preconnect() { } },
@@ -1273,7 +1289,7 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
    minCanaryRuns: 5,
   });
   const preparation = (telemetry as { preparation?: unknown }).preparation;
-  if (!F) assert.equal(attemptedFetches, 0, "Offline mode attempted network access");
+  if (!F) assert.equal(attemptedFetches, 0, "Offline mode attempted network access (" + attemptedFetches + "): " + firstBlockedFetch);
 
   // Per-run receipts attribute summary-class transport requests to their
   // origin: foreground staging vs background preparation (used/discarded).

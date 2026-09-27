@@ -46,6 +46,11 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Install ripgrep
+        # The audit's offline task-eval drives Pi's grep tool; without `rg` on
+        # PATH Pi would download it from GitHub, which the offline guard rejects.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
       - name: Packed artifact and frozen-install audit
         run: bun run release:audit
 
