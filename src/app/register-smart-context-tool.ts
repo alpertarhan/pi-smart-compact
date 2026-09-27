@@ -315,12 +315,16 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     let pressure = false;
     if (!request) {
       const configNow = config();
-      const enabled = configNow.contextHygieneEnabled || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
+      const hygiene = configNow.contextHygieneEnabled;
+      const enabled = hygiene || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
       if (!enabled || options.canAutoTrim?.(ctx) === false) return;
       const usage = ctx.getContextUsage()?.tokens;
       const window = effectiveContextWindow(ctx.model, configNow);
       pressure = typeof usage === "number" && Number.isFinite(usage) && typeof window === "number" && Number.isFinite(window) && window > 0
         && usage >= preparationWindow(configNow, window).startTokens;
+      // Background preparation alone trims only under pressure, as before the
+      // break-even rule; break-even and cold-cache timing are the opt-in cleanup.
+      if (!hygiene && !pressure) return;
     }
     const branch = ctx.sessionManager.getBranch();
     const sessionId = resolveSessionId(ctx);

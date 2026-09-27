@@ -947,8 +947,9 @@ function expectedTrim(session: SessionManager, model: PricedModel) {
 }
 
 /** An old read-only batch, optionally followed by a large non-trimmable tail, then protected recent turns. */
-function deferredFixture(model: PricedModel | undefined, largeTail: boolean) {
+function deferredFixture(model: PricedModel | undefined, largeTail: boolean, hygiene = true) {
   const h = harness({ background: true, model });
+  h.cfg.contextHygieneEnabled = hygiene; // break-even and cold-cache timing are the opt-in cleanup
   h.setTokens(100_000); // below the 140k start gate
   const old = toolBatch(h.session, "read", "old research".repeat(2_000));
   if (largeTail) h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });
@@ -1007,6 +1008,18 @@ describe("automatic trim timing", () => {
     const { h } = deferredFixture(undefined, false);
     expect(h.turn()).toBeUndefined();
     expect(h.controller.deferredTrim(h.session.getSessionId())?.breakEvenRequests).toBeNull();
+  });
+
+  it("trims only under pressure when the background strategy enables cleanup without contextHygieneEnabled", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, false, false);
+    expect(expectedTrim(h.session, ANTHROPIC).breakEvenRequests).toBeLessThanOrEqual(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    // Below the start gate: neither a break-even commit nor a held mark, and a cold request changes nothing.
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeUndefined();
+    h.setTokens(150_000); // at the 140k start gate
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ action: "trim", references: [old.result], cause: "pressure" });
   });
 
   it.each(["compaction", "context_edit"] as const)("drops a mark once a newer %s rewrote the context", kind => {

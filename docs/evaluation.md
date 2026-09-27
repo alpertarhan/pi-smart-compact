@@ -147,7 +147,11 @@ after rounds two and five), `--out` (absolute directory; defaults to
 `./task-eval-reports/<timestamp>`), `--json`, and two offline-only
 cost-accounting fixtures, `--cache-warming=off|streaming|idle` and
 `--background-prep`. Every arm runs with `toolLoading: "eager"`, so the arms
-differ only in hygiene/offload knobs, not in on-demand tool discovery.
+differ only in hygiene/offload knobs, not in on-demand tool discovery. With
+`--cache-warming=idle`, arms that have automatic cleanup on may commit a
+break-even trim at an idle boundary; the rebuilt context ends Pi's warming for
+that entry, so zero warm replays there is expected, while the `no-compaction`
+baseline keeps its refreshes.
 
 The default transport is scripted and offline: the arm sets `PI_OFFLINE=1` so
 Pi never downloads tools, and it fails before the first round when `rg`
