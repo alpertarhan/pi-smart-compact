@@ -48,6 +48,15 @@ export interface DeferredTrim {
   breakEvenRequests: number | null;
 }
 
+/** Why an automatic trim is being held, for Home/status text; token counts are estimates. */
+export function formatDeferredTrim(deferred: DeferredTrim): string {
+  const tokens = (value: number) => value >= 1000 ? `${Math.round(value / 1000)}k` : String(value);
+  const why = deferred.breakEvenRequests === null
+    ? "the model's cache price is unknown"
+    : `it pays back its cache rewrite only after ${Math.ceil(deferred.breakEvenRequests)} requests (limit ${AUTO_TRIM_BREAK_EVEN_REQUESTS})`;
+  return `Saves ~${tokens(deferred.savedTokens)} tokens, but ${why}, so it waits for a cold prompt cache.`;
+}
+
 /** A ready automatic trim held back while the cache is warm; its drafts commit with cause `cold`. */
 interface TrimMark extends DeferredTrim {
   sessionId: string;

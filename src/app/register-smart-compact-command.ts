@@ -13,7 +13,7 @@ import { readMetricsLog } from "../utils/cache.ts";
 import { loadConfig, writeGlobalConfigValues } from "../utils/config.ts";
 import { localGraphOpsAllowed } from "./memory-backend.ts";
 import { createModelFeasibilityResolver, type ModelFeasibility } from "./model-feasibility.ts";
-import type { ManualTrimRequest } from "./register-smart-context-tool.ts";
+import type { DeferredTrim, ManualTrimRequest } from "./register-smart-context-tool.ts";
 import { inspectArtifactStorage } from "./artifact-storage.ts";
 import { formatStorageReport } from "../ui/storage-report.ts";
 import { type HomeAction, localGraphOffReason, showSmartCompactHome } from "../ui/home-overlay.ts";
@@ -75,6 +75,8 @@ interface SmartCompactCommandDependencies {
  getRuntimeState?: (ctx: ExtensionContext) => EffectiveRuntimeState;
  /** Queue a zero-LLM local cleanup at the next natural turn boundary (smart_context controller). */
  requestManualTrim?: (ctx: ExtensionContext) => ManualTrimRequest;
+ /** Automatic trim held for a cold prompt cache in this session, if any. */
+ deferredTrim?: (ctx: ExtensionContext) => DeferredTrim | null;
  navigation?: NavigationController;
  toolSummary?: () => string;
  /**
@@ -451,6 +453,7 @@ async function showHome(
   effectiveState: () => effectiveState(ctx, dependencies),
   navigation: dependencies.navigation?.panel(ctx),
   toolSummary: dependencies.toolSummary,
+  deferredTrim: () => dependencies.deferredTrim?.(ctx) ?? null,
  });
 }
 

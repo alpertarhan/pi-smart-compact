@@ -240,6 +240,6 @@ describe("/smart-compact handoff", () => {
     await command().handler("handoff", ctx);
 
     expect(opened).toEqual([]);
-    expect(notices).toEqual([{ message: "Nothing to hand off: no anchor, continuity ledger or memory in this session.", level: "warning" }]);
+    expect(notices).toEqual([{ message: "Nothing to hand off yet. Mark this point (Home › History & recovery › Session navigation) or add a note: /smart-compact handoff -- <note>", level: "warning" }]);
   });
 });

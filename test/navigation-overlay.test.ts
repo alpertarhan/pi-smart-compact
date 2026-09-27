@@ -12,6 +12,7 @@ import type {
 } from "../src/app/navigation-types.ts";
 import type { SmartCompactPolicy } from "../src/app/smart-compact-policy.ts";
 import { createHomeList, type HomeAction } from "../src/ui/home-overlay.ts";
+import type { DeferredTrim } from "../src/app/register-smart-context-tool.ts";
 import { createNavigationPanel, type DeferredNavigation } from "../src/ui/navigation-overlay.ts";
 import { INACTIVE_PREFIX, type SmartSettingsList } from "../src/ui/settings-list.ts";
 import { GlobalSettingsCoordinator, settingsCategoryItems } from "../src/ui/settings-overlay.ts";
@@ -349,5 +350,34 @@ describe("home navigation entry", () => {
   it("opens navigation from History & recovery only while it is enabled", () => {
     expect(home(true)).toEqual(["navigation"]);
     expect(home(false)).toEqual([]);
+  });
+
+  it("shows a held automatic trim on the cleanup row and still queues it on select", () => {
+    const finished: Array<HomeAction | undefined> = [];
+    const build = (deferred: DeferredTrim | null) => createHomeList({
+      ctx: { ui: { notify: () => { } }, modelRegistry: { getAvailable: () => [] } } as unknown as ExtensionCommandContext,
+      policy: {
+        snapshot: () => ({ agentToolAccess: "inherit", agentToolEnabled: true, autoTrigger: true, showStatus: true }),
+        branchOverrides: () => ({}),
+      } as unknown as SmartCompactPolicy,
+      coordinator: new GlobalSettingsCoordinator(),
+      onApplied: () => { },
+      applyPatch: async () => { throw new Error("unused"); },
+      compactNow: () => ({ value: "ok" }),
+      readiness: () => Promise.withResolvers<never>().promise,
+      effectiveState: async () => "",
+      deferredTrim: () => deferred,
+    }, (action) => finished.push(action), () => { });
+    const held = build({ savedTokens: 12_400, tailTokens: 90_000, breakEvenRequests: 40.2 });
+    held.selectItem("trim");
+    const text = (list: ReturnType<typeof createHomeList>) => list.render(400).join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+    expect(text(held)).toContain("held for a cold cache");
+    expect(text(held)).toContain("Saves ~12k tokens, but it pays back its cache rewrite only after 41 requests (limit 24), so it waits for a cold prompt cache. Choose to apply it at the next completed turn instead.");
+    held.handleInput(ENTER);
+    expect(finished).toEqual(["trim"]);
+    const unpriced = build({ savedTokens: 900, tailTokens: 5_000, breakEvenRequests: null });
+    unpriced.selectItem("trim");
+    expect(text(unpriced)).toContain("Saves ~900 tokens, but the model's cache price is unknown, so it waits for a cold prompt cache.");
+    expect(text(build(null))).toContain("no model call");
   });
 });

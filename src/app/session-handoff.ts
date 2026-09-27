@@ -172,7 +172,7 @@ export async function runHandoff(ctx: ExtensionCommandContext, note: string | un
   recall: async query => (await executeRecall({ query, limit: HANDOFF_RECALL_LIMIT }, undefined, ctx)).content.map(part => part.text).join("\n"),
  });
  if (!sources.anchor && !sources.ledger && !sources.note && !sources.recall?.query) {
-  notifyUser(ctx, "Nothing to hand off: no anchor, continuity ledger or memory in this session.", "warning");
+  notifyUser(ctx, "Nothing to hand off yet. Mark this point (Home › History & recovery › Session navigation) or add a note: /smart-compact handoff -- <note>", "warning");
   return;
  }
  const handoff = buildHandoff(sources, new SecretScrubber(config.scrubSecrets, config.scrubPii));

@@ -91,7 +91,7 @@ The header shows `Context:` (current usage or why compaction is blocked) and
 | Row | What it does |
 | --- | --- |
 | **Compact now** | Opens the compact picker to choose a mode and summary model. Shows `unavailable` with a reason when blocked. |
-| **Clean up tool output** | Queues local cleanup (`no model call`). Applies at the next completed turn. |
+| **Clean up tool output** | Queues local cleanup (`no model call`). Applies at the next completed turn. Shows `held for a cold cache` with the reason when automatic cleanup is holding a batch; selecting it applies that batch at the next completed turn instead. |
 | **Settings** | `How it runs`, `Summary format`, `Models`, `Memory`, `Agent tools & navigation`, `Advanced settings`. |
 | **History & recovery** | `Session navigation`, `Restore a backup`, `Unfinished tasks`, `Storage`, `Forget local project memory`. |
 | **Status & help** | `Readiness & details`, `Which action should I use?`, `Metrics` (`Report`, `Dashboard`). |

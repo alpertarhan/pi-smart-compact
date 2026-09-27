@@ -342,6 +342,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   onNativeApplyError,
   policy,
   requestManualTrim: ctx => smartContext.requestManualTrim(ctx),
+  deferredTrim: ctx => smartContext.deferredTrim(resolveSessionId(ctx)),
   navigation,
   toolSummary: () => toolExposure.summary(),
   getRuntimeState: ctx => ({

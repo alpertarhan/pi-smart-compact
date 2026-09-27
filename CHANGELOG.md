@@ -55,6 +55,11 @@
 
 ### Changed
 
+- Home's `Clean up tool output` row shows `held for a cold cache` with the
+  estimated savings and pay-back when automatic cleanup is holding a batch;
+  selecting it applies the batch at the next completed turn. Settings and
+  profile texts for automatic cleanup now name all three commit causes; the
+  `handoff` "nothing to hand off" notice says how to record something.
 - Trim markers are now a deterministic digest of at most 6 lines and 400
   characters: the retrieval line, the call's subject (read path, first shell
   command line, or search pattern), the first non-empty output line, and up

@@ -458,7 +458,7 @@ const CATEGORIES: ReadonlyArray<{
           setting: {
             id: "contextHygieneEnabled",
             label: "Automatic cleanup",
-            description: "When context gets tight, moves old tool output to local archives, keeping recent turns and instructions.",
+            description: "Moves old tool output to local archives when it pays off, when the prompt cache is cold, or when context gets tight; recent turns and instructions stay.",
             values: BOOLEAN_VALUES,
           },
         },

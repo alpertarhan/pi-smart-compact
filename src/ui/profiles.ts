@@ -60,7 +60,7 @@ export const BEHAVIOR_PROFILES: readonly ProfileOption<BehaviorProfileId>[] = [
   {
     id: "cleanup",
     label: "Cleanup only",
-    summary: "Moves old tool output out of the context when it gets full. Local, no model calls; never compacts by itself.",
+    summary: "Moves old tool output out of the context when it pays off, when the prompt cache is cold, or when context gets full. Local, no model calls; never compacts by itself.",
     patch: { autoTrigger: false, contextHygieneEnabled: true, agentToolAccess: "disabled" },
   },
   {
