@@ -18,6 +18,9 @@ import { resolveProviderWatchdogMs } from "../src/infra/llm-client.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 import { serializeConversationText } from "../src/infra/ai-messages.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { planContextTrim } from "../src/app/context-operations.ts";
 
 const fullConversation: LlmMessage[] = Array.from(
   { length: 2_500 },
@@ -89,6 +92,27 @@ const verificationSummary = [
 ].join("\n");
 let sink = 0;
 
+// Automatic hygiene plans a trim at every enabled turn_end: 120 read results of ~20 KB,
+// a third of them edited later (superseded ordering), SHA-256 per chosen output.
+const trimBranch = (() => {
+  const session = SessionManager.inMemory("/bench");
+  const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const assistant = (content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]): AssistantMessage =>
+    ({ role: "assistant", content, api: "anthropic-messages", provider: "bench", model: "bench", stopReason, timestamp: 1, usage });
+  const text = "line lorem ipsum dolor sit amet consectetur adipiscing\n".repeat(400);
+  for (let i = 0; i < 120; i++) {
+    session.appendMessage({ role: "user", content: "step " + i, timestamp: 1 });
+    session.appendMessage(assistant([{ type: "toolCall", id: "read-" + i, name: "read", arguments: { path: "src/f" + (i % 40) + ".ts" } }], "toolUse"));
+    session.appendMessage({ role: "toolResult", toolCallId: "read-" + i, toolName: "read", content: [{ type: "text", text }], isError: false, timestamp: 1 });
+    if (i % 3 === 0) {
+      session.appendMessage(assistant([{ type: "toolCall", id: "edit-" + i, name: "edit", arguments: { path: "src/f" + (i % 40) + ".ts", oldText: "a", newText: "b" } }], "toolUse"));
+      session.appendMessage({ role: "toolResult", toolCallId: "edit-" + i, toolName: "edit", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 1 });
+    }
+    session.appendMessage(assistant([{ type: "text", text: "done " + i }], "stop"));
+  }
+  return session.getBranch();
+})();
+
 interface Benchmark {
   name: string;
   iterations: number;
@@ -117,6 +141,7 @@ const P95_LIMIT_MS: Record<string, number> = {
   "unique needles across 500 paths": 2,
   "verify 500 grounded paths": 50,
   "resolve provider watchdog profile": 0.1,
+  "plan trim over 120 archived reads": 25,
 };
 
 const benchmarks: Benchmark[] = [
@@ -228,6 +253,15 @@ const benchmarks: Benchmark[] = [
     iterations: 1_000,
     run: () => {
       sink += resolveProviderWatchdogMs("kimi-coding", 8_192);
+    },
+  },
+  {
+    name: "plan trim over 120 archived reads",
+    iterations: 5,
+    run: () => {
+      const plan = planContextTrim(trimBranch);
+      if (plan.entries.length !== 33 || plan.superseded !== 32) throw new Error("Trim plan changed shape: " + plan.entries.length + "/" + plan.superseded);
+      sink += plan.savedChars;
     },
   },
 ];
