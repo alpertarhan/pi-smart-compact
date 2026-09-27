@@ -206,6 +206,22 @@ waits for a later boundary. Preparation is silent while healthy; its state
 appears in the effective-state view (`Readiness & details`, preflight `S`,
 `metrics`).
 
+### Context cap for automatic percentages
+
+`maxContextTokens` (default `0`, off) caps the window that automatic trigger
+percentages are measured against: `min(model window, maxContextTokens)`. It
+applies to the `native-hook` replacement gate, the `settled` trigger, the
+`background` preparation window and the automatic run's admission gate. With
+`maxContextTokens: 200000` and `minContextPercent: 60`, a 1M-window model
+compacts from 120k tokens instead of 600k.
+
+It does not change model requests, the model window Pi reports, Pi's own
+compaction threshold, summary and retention sizing, or the hard response
+headroom checked before a summary is applied; those keep the real window. A
+cap at or above the model window has no effect. When a model window exceeds
+400k tokens and no smaller cap is set, Home shows a warning while automatic
+compaction is on.
+
 ### Automatic runs cap
 
 Automatic runs (native-hook, settled and background) are capped at **60
@@ -342,16 +358,53 @@ stop; existing archives stay on disk.
 
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
-| `contextHygieneEnabled` | `Automatic cleanup` | `false` | Pressure-gated, batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction. Works with `autoTrigger: false`. |
+| `contextHygieneEnabled` | `Automatic cleanup` | `false` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction; commits under pressure, at break-even, or once the prompt cache is cold (below). Works with `autoTrigger: false`. |
 | `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional renderer. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
 
 Fixed limits (not configurable): trim at most 32 outputs of 4,096+ characters
-per boundary, keep the latest four assistant turns; artifacts at most 2 MiB
-each and 256 files or 32 MiB per origin session; retrieval at most 4,096
+per boundary, keep the latest four assistant turns; each trimmed output becomes
+a digest marker of at most 6 lines and 400 characters (retrieval line, call
+subject, first output line, up to three error/warning lines; see
+[Clean up tool output](./guide.md#clean-up-tool-output)). Trimming covers
+successful text from read-only tools, shell (`bash`) output whose call stays
+in context, and `smart_context` `read` pages, which point back at their source
+ID; errors, writes, unknown tools and mixed turns stay whole. Order within the
+32: read-only outputs whose path a later call writes, edits or deletes come
+first, then those read again in full later (a plain `read` without
+`offset`/`limit`), then the rest, each in session order; their markers note
+`(superseded: edited later)` or `(superseded: read again in full later)`.
+Paths compare after `path.normalize` only
+(relative never matches absolute). This changes order and the note, not
+eligibility. Trim and rewind records store a SHA-256 and length of each
+archived output; `smart_context` `read`/`search` refuse text that no longer
+matches, and records from earlier versions have no hash and are read as
+before. Artifacts at most
+2 MiB each and 256 files or 32 MiB per origin session; retrieval at most 4,096
 characters per read. There is no artifact expiry or garbage collection; see
-[storage](./guide.md#storage-and-privacy).
+[storage](./guide.md#storage-and-privacy). `smart_context` with
+`scope: "lineage"` follows `parentSession` headers (handoff or fork) at most 3
+levels, reads only files of at most 64 MiB, stops at a missing file or a
+cycle, and never writes them; the search limits above apply across all
+sessions, active branch first.
+
+Automatic trim timing. Let `X` be the estimated tokens a batch removes (net of
+its markers) and `T` the estimated tokens of every message from the first
+trimmed output to the end, the part of the prompt cache a trim rewrites. With
+the active model's catalog prices, `r = cacheRead / input` and
+`w = cacheWrite / input` (`w = 1` when no write price is listed), the trim
+pays back after `N* = ((w - r) × T) / (r × X)` further requests (`0` when
+cache reads are free). At a completed turn boundary a ready batch commits with
+cause `pressure` when usage reached the early pressure gate, or `break-even`
+when `N* ≤ 24`. Otherwise it is held (`smart_context` `status` reports it as
+`deferredTrim`); the first request after the cache expired (5 minutes after
+the last response, 1 hour when it reported 1h cache writes) sends the trimmed
+messages, and the edits commit with cause `cold` when that turn completes. An
+unknown price only allows `pressure` and `cold`. A newer compaction, context
+edit, session change or queued manual/agent request drops the held batch.
+Manual and agent trims commit at the next boundary as before (`manual`,
+`agent`). Prices are catalog ratios, not measured cache behavior.
 
 ## Agent tools and session navigation
 
@@ -426,6 +479,7 @@ Hindsight details: [Hindsight memory backend](./hindsight-memory.md).
 | `autoTriggerStrategy` | `native-hook` \| `settled` \| `background` | `native-hook` | `Start when` |
 | `minContextPercent` | 0–100 | `60` | `Start at context %` |
 | `prepareContextPercent` | `null` or 0–100, below `minContextPercent` | `null` | `Prepare at context %` |
+| `maxContextTokens` | `0` (off) or integer 16,384–2,000,000 | `0` | `Context cap for start % (tokens)` |
 | `autoTriggerTimeoutMs` | integer 1,000–300,000 | `120000` | `Automatic run time limit (ms)`; capped at 60 s |
 | `compactionEngines` | ordered list of `eesv`, `native` | `["eesv"]` | `Engine` |
 | `requireApproval` | boolean | `true` | `Ask before applying` |
@@ -465,7 +519,8 @@ Hindsight details: [Hindsight memory backend](./hindsight-memory.md).
 
 Notes on specific keys:
 
-- `minContextPercent` is relative to the **active model's** window. It is the
+- `minContextPercent` is relative to the **active model's** window, or to
+  `maxContextTokens` for automatic runs when that is smaller. It is the
   apply gate for automatic and agent runs and the replacement gate for
   `native-hook`. Manual `/smart-compact` shows a warning and ignores it. A
   5,000-token floor always applies.

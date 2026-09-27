@@ -119,6 +119,21 @@ export function safeContextPercent(totalTokens: number | null | undefined, conte
 }
 
 /**
+ * Window for automatic trigger/preparation percentages: maxContextTokens when
+ * set (>0) and below a valid model window, else the model window unchanged.
+ * Hard headroom checks must keep using model.contextWindow.
+ */
+export function effectiveContextWindow(
+  model: { contextWindow: number } | undefined,
+  config: { maxContextTokens?: number },
+): number | undefined {
+  const window = model?.contextWindow;
+  const cap = config.maxContextTokens;
+  if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) return window;
+  return typeof cap === "number" && Number.isFinite(cap) && cap > 0 && cap < window ? cap : window;
+}
+
+/**
  * Bounded per-(provider,model) calibration factors smoothed by EMA.
  * Provider/model tokenization is process-wide knowledge rather than session
  * content, so production runs share one store while tests can inject isolated

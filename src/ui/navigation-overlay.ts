@@ -50,7 +50,7 @@ export interface NavigationPanelEnv {
   keybindings: KeybindingsManager;
 }
 
-type Screen = Component & {
+export type Screen = Component & {
   focused?: boolean;
   /** Called when the screen leaves the stack (Esc, replacement or close). */
   dispose?: () => void;
@@ -70,7 +70,7 @@ function when(timestamp: string): string {
   return timestamp.slice(0, 16).replace("T", " ");
 }
 
-class ScreenStack implements Component, Focusable {
+export class ScreenStack implements Component, Focusable {
   private readonly screens: Screen[] = [];
   private active = false;
 
@@ -147,7 +147,7 @@ class ScreenStack implements Component, Focusable {
 }
 
 /** Wrapped context lines above a list; input goes to the list. */
-class Framed implements Component {
+export class Framed implements Component {
   constructor(private readonly lines: () => string[], private readonly body: SmartSettingsList) { }
   render(width: number): string[] {
     const text = this.lines().flatMap((line) => (line ? wrapTextWithAnsi(line, Math.max(1, width)) : [""]));
@@ -217,7 +217,7 @@ class Prompt extends Container implements Focusable {
  * Pi's editor clears itself on submit; the field reopens it with the
  * submitted text so going back or a failed save never loses what was typed.
  */
-class TextArea implements Component, Focusable {
+export class TextArea implements Component, Focusable {
   private editor: ExtensionEditorComponent;
   private readonly status = new Text("", 0, 0);
   private busy = false;

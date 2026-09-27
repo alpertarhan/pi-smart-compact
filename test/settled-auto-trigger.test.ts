@@ -45,6 +45,24 @@ describe("settled auto-trigger host handoff", () => {
     }
   });
 
+  it("measures the start percent against maxContextTokens when it is below the model window", async () => {
+    const requests: unknown[] = [];
+    const ctx = context({
+      model: { provider: "openai", id: "large", contextWindow: 1_000_000 },
+      getContextUsage: () => ({ tokens: 180_000, contextWindow: 1_000_000, percent: 18 }),
+      compact: (options: unknown) => requests.push(options),
+    });
+    // 18% of the model window stays below the 60% gate without a cap.
+    await createSettledAutoTrigger().request(ctx, config({ minContextPercent: 60 }));
+    expect(requests).toHaveLength(0);
+    // 180k of a 200k cap is 90% ≥ 60%.
+    void createSettledAutoTrigger().request(ctx, config({ minContextPercent: 60, maxContextTokens: 200_000 }));
+    expect(requests).toHaveLength(1);
+    // 180k of a 400k cap is 45% < 60%.
+    await createSettledAutoTrigger().request(ctx, config({ minContextPercent: 60, maxContextTokens: 400_000 }));
+    expect(requests).toHaveLength(1);
+  });
+
   it("deduplicates concurrent requests and cools down only after success", async () => {
     let now = 1_000;
     const callbacks: Array<{ onComplete?: (result: unknown) => void; onError?: (error: Error) => void }> = [];

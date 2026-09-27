@@ -5,7 +5,8 @@ interface Entry {
   createdAt: number;
 }
 
-export type CommitDiscardReason = "expired" | "evicted" | "aborted" | "shutdown" | "apply-error";
+/** "foreign": another compaction (Pi's own or another extension's) was applied while this candidate waited. */
+export type CommitDiscardReason = "expired" | "evicted" | "aborted" | "shutdown" | "apply-error" | "foreign";
 
 export interface CompactionCommitStore {
   stage(pending: PendingCompaction): void;

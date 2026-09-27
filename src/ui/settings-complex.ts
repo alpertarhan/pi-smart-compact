@@ -109,6 +109,15 @@ export const MIN_CONTEXT_SETTING: InputSetting = {
   format: scalarFormat,
 };
 
+export const MAX_CONTEXT_SETTING: InputSetting = {
+  id: "maxContextTokens",
+  label: "Context cap for start % (tokens)",
+  description: "Automatic compaction measures Start at context % against this many tokens instead of the full model window, when smaller. Model requests and safety headroom still use the real window. 0 = off.",
+  placeholder: "0 or 16384–2000000; blank = off",
+  parse: numberParser(CONFIG_NUMERIC_LIMITS.maxContextTokens),
+  format: (value) => (value === undefined || value === 0 ? "off" : String(value)),
+};
+
 const parsePreparePercent = numberParser(CONFIG_NUMERIC_LIMITS.prepareContextPercent);
 
 export const PREPARE_CONTEXT_SETTING: InputSetting = {
@@ -710,6 +719,7 @@ export function complexConfigPaths(): GlobalConfigPath[] {
   return [
     ...MODEL_SETTINGS.map((setting) => setting.id),
     MIN_CONTEXT_SETTING.id,
+    MAX_CONTEXT_SETTING.id,
     ...LIMIT_SETTINGS.map((setting) => setting.id),
     BACKUP_DIR_SETTING.id,
     PIN_PATHS_SETTING.id,

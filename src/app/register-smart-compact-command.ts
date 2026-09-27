@@ -13,7 +13,7 @@ import { readMetricsLog } from "../utils/cache.ts";
 import { loadConfig, writeGlobalConfigValues } from "../utils/config.ts";
 import { localGraphOpsAllowed } from "./memory-backend.ts";
 import { createModelFeasibilityResolver, type ModelFeasibility } from "./model-feasibility.ts";
-import type { ManualTrimRequest } from "./register-smart-context-tool.ts";
+import type { DeferredTrim, ManualTrimRequest } from "./register-smart-context-tool.ts";
 import { inspectArtifactStorage } from "./artifact-storage.ts";
 import { formatStorageReport } from "../ui/storage-report.ts";
 import { type HomeAction, localGraphOffReason, showSmartCompactHome } from "../ui/home-overlay.ts";
@@ -58,12 +58,14 @@ import { formatCompactErrorForUi } from "../ui/error-format.ts";
 import { findModelById, resolveModels } from "./model-routing.ts";
 import type { PendingSlot } from "./pending-slot.ts";
 import { runSmartCompact } from "./run-smart-compact.ts";
+import { openHandoff, prepareHandoff, recallForHandoff, runHandoff } from "./session-handoff.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 import { parseSmartCompactCommand } from "./smart-compact-input.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
 import { describeEffectiveState, describeReadiness, type EffectiveRuntimeState } from "./effective-state.ts";
 import type { GlobalConfigPath } from "../utils/config.ts";
 import { showNavigationPanel } from "../ui/navigation-overlay.ts";
+import { showHandoffPanel } from "../ui/handoff-overlay.ts";
 import type { NavigationController } from "./register-navigation.ts";
 interface SmartCompactCommandDependencies {
  pendingRef: PendingSlot;
@@ -74,6 +76,8 @@ interface SmartCompactCommandDependencies {
  getRuntimeState?: (ctx: ExtensionContext) => EffectiveRuntimeState;
  /** Queue a zero-LLM local cleanup at the next natural turn boundary (smart_context controller). */
  requestManualTrim?: (ctx: ExtensionContext) => ManualTrimRequest;
+ /** Automatic trim held for a cold prompt cache in this session, if any. */
+ deferredTrim?: (ctx: ExtensionContext) => DeferredTrim | null;
  navigation?: NavigationController;
  toolSummary?: () => string;
  /**
@@ -450,6 +454,7 @@ async function showHome(
   effectiveState: () => effectiveState(ctx, dependencies),
   navigation: dependencies.navigation?.panel(ctx),
   toolSummary: dependencies.toolSummary,
+  deferredTrim: () => dependencies.deferredTrim?.(ctx) ?? null,
  });
 }
 
@@ -532,7 +537,7 @@ export function registerSmartCompactCommand(
   description:
    "EESV smart compaction v" +
    VERSION +
-   ". Usage: /smart-compact [model|settings] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
+   ". Usage: /smart-compact [model|settings|handoff] [mode] [flags] [--focus=topic] [--max-calls=N] [--max-input-tokens=N] [--note=text | -- text]",
   getArgumentCompletions(prefix: string) {
    const matches = [
     "verbose",
@@ -546,6 +551,7 @@ export function registerSmartCompactCommand(
     "forget",
     "storage",
     "trim",
+    "handoff",
     "context",
     "fast",
     "balanced",
@@ -614,6 +620,10 @@ export function registerSmartCompactCommand(
      await forgetProjectMemory(ctx);
      return;
     }
+    if (input.action === "handoff") {
+     await runHandoff(ctx, input.note, { dryRun: input.dryRun });
+     return;
+    }
     if (input.action === "settings") {
      if (ctx.mode !== "tui") {
       notifyUser(ctx,
@@ -645,6 +655,10 @@ export function registerSmartCompactCommand(
       else if (action === "storage") await showStorage(ctx);
       else if (action === "trim") queueLocalCleanup(ctx, dependencies);
       else if (action === "navigation" && dependencies.navigation) await showNavigationPanel(ctx, dependencies.navigation.panel(ctx));
+      else if (action === "handoff") {
+       const prepared = await showHandoffPanel(ctx, { prepare: note => prepareHandoff(ctx, note, recallForHandoff(ctx)) });
+       if (prepared) await openHandoff(ctx, prepared);
+      }
       break;
      }
      return;

@@ -88,6 +88,7 @@ describe("complex settings coverage", () => {
       "segmentationModel",
       "verificationModel",
       "minContextPercent",
+      "maxContextTokens",
       "maxLlmCalls",
       "maxLlmInputTokens",
       "maxLatencyMs",

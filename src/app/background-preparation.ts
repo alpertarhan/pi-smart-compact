@@ -6,6 +6,7 @@ import type { CompactConfig, MetricsSnapshot, PendingCompaction, PreparationDisc
 import { pendingMatchesBranch, revalidatePending } from "./pending-slot.ts";
 import { errorDetail, recordIssue } from "../utils/issues.ts";
 import { appendMetricsSnapshot } from "../utils/cache.ts";
+import { effectiveContextWindow } from "../utils/tokens.ts";
 
 /**
  * Default discard recorder: one bounded local metrics entry per discarded
@@ -178,9 +179,9 @@ export function createBackgroundPreparation(options: {
   if (isUnresolvedSessionId(sessionId)
    || (lastAttempt?.sessionId === sessionId && now() - lastAttempt.at < cooldownMs)) return;
   const tokens = ctx.getContextUsage()?.tokens;
-  const window = ctx.model.contextWindow;
+  const window = effectiveContextWindow(ctx.model, config);
   if (typeof tokens !== "number" || !Number.isFinite(tokens)
-   || !Number.isFinite(window) || window <= 0) return;
+   || typeof window !== "number" || !Number.isFinite(window) || window <= 0) return;
   const { startTokens, applyTokens } = preparationWindow(config, window);
   if (tokens < startTokens || tokens >= applyTokens) return;
 

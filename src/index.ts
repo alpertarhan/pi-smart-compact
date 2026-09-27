@@ -16,7 +16,7 @@ import {
  AUTO_TRIGGER_TIMEOUT_CAP_MS,
 } from "./constants.ts";
 import { loadConfig } from "./utils/config.ts";
-import { getProviderCaps, safeContextPercent } from "./utils/tokens.ts";
+import { effectiveContextWindow, getProviderCaps, safeContextPercent } from "./utils/tokens.ts";
 import { appendMetricsSnapshot } from "./utils/cache.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { applyGlobalSettingsRuntime } from "./app/global-settings-runtime.ts";
@@ -58,8 +58,10 @@ import { createNativeContinuityBridge } from "./app/native-continuity-bridge.ts"
 import { createNativeReplayHook, setNativeToolSource } from "./app/native-compaction.ts";
 import { createSettledAutoTrigger } from "./app/settled-auto-trigger.ts";
 import { createBackgroundPreparation } from "./app/background-preparation.ts";
+import { createHostCacheLedger, formatCacheLedgerSummary } from "./app/host-cache-ledger.ts";
 import { injectVisualArchive } from "./app/visual-archive.ts";
 import { SecretScrubber } from "./domain/scrub.ts";
+import { compactionUsage } from "./domain/compaction-usage.ts";
 import { registerArtifactOffload } from "./app/tool-artifacts.ts";
 import {
  registerContextTools,
@@ -74,6 +76,18 @@ import { createContextToolExposure, registerContextToolLoader } from "./app/lazy
 import { registerNavigation, type NavigationController } from "./app/register-navigation.ts";
 import { registerAnchorCache } from "./app/anchor-cache.ts";
 export { findModelById, resolveModels } from "./app/model-routing.ts";
+
+/** Provider-reported usage of the staged run for Pi's session totals; never a local estimate. */
+function usageFor(pending: PendingCompaction, ctx: ExtensionContext) {
+ const snapshot = pending.metricsSnapshot;
+ if (!snapshot) return undefined;
+ try {
+  return compactionUsage(snapshot, (provider, model) => ctx.modelRegistry.find(provider, model));
+ } catch (error) {
+  log.debugError("Compaction usage mapping failed", error);
+  return undefined;
+ }
+}
 
 /**
  * Translate a `ConsumeResult` into the side-effects the host expects:
@@ -130,6 +144,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  let preparationGeneration = 0;
  const damageMonitor = new OnlineDamageMonitor();
  const settledAutoTrigger = createSettledAutoTrigger();
+ const hostCache = createHostCacheLedger();
  const policy = createSmartCompactPolicy(pi, () => toolExposure.apply());
  const toolExposure = createContextToolExposure(pi, { compactionAccess: () => policy.snapshot().agentToolAccess });
  const automaticConfig = () => {
@@ -190,14 +205,18 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  ): Promise<boolean> | null => {
   if (!pending.metricsSnapshot) return null;
   const cancelled = reason === "aborted" || reason === "shutdown";
+  // A foreign win wasted the candidate without any failure of ours; the
+  // dashboard treats "discarded" as neutral, like dropped preparations.
   const write = appendMetricsSnapshot(pending.sessionId, {
    ...pending.metricsSnapshot,
-   status: cancelled ? "cancelled" : "error",
-   failureKind: cancelled
-    ? "cancelled"
-    : reason === "evicted"
-     ? "internal"
-     : "persistence",
+   status: reason === "foreign" ? "discarded" : cancelled ? "cancelled" : "error",
+   failureKind: reason === "foreign"
+    ? undefined
+    : cancelled
+     ? "cancelled"
+     : reason === "evicted"
+      ? "internal"
+      : "persistence",
    fallbackReason: "native-apply:" + reason,
   });
   applyFailureWrites.set(pending.runId, write);
@@ -216,6 +235,33 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  });
  const onNativeApplyError = (runId: string): boolean =>
   Boolean(commitCandidates.discard(runId, "apply-error"));
+ // Another compaction won the lifecycle. A staged Continuity candidate for
+ // this session was displaced: its provider work is recorded as discarded and
+ // the user learns the applied summary is not the one Continuity prepared.
+ const noteForeignCompaction = async (ctx: ExtensionContext, sessionId: string, actor: string): Promise<void> => {
+  const displaced = commitCandidates.clearSession(sessionId, "foreign");
+  if (displaced.length > 0) {
+   clearCompactProgress(ctx);
+   const calls = displaced.reduce((sum, pending) => sum + (pending.metricsSnapshot?.totalCalls ?? 0), 0);
+   reportIssue({
+    key: "compact.foreign-displaced",
+    message: actor + " was applied instead of Continuity's prepared summary; that summary (" + calls + " model call" + (calls === 1 ? "" : "s") + ") was discarded and its continuity state was not saved. If another compaction extension is installed, keep only one.",
+   }, ctx);
+   await Promise.all(displaced.flatMap((pending) => applyFailureWrites.get(pending.runId) ?? []));
+   return;
+  }
+  if (actor.startsWith("Another")) {
+   reportIssue({
+    key: "compact.foreign-extension",
+    message: actor + " was applied; Continuity did not summarize it and recorded no continuity state or metrics for it. If that is unintended, keep only one compaction extension.",
+   }, ctx);
+  } else if (automaticConfig().autoTrigger) {
+   reportIssue({
+    key: "compact.foreign-native",
+    message: actor + " was applied without a Continuity summary (none was ready when Pi asked). Earlier continuity state still carries over. Run /smart-compact manually if this repeats.",
+   }, ctx);
+  }
+ };
  const activateOnlineDamage = (pending: PendingCompaction): void => {
   if (!loadConfig().onlineDamageMonitor || !pending.projectId) return;
   damageMonitor.activate(
@@ -277,6 +323,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   config: automaticConfig,
   mutationBlocked: ctx => isRunning.isSessionActive(resolveSessionId(ctx)) ? "Compaction is running; wait for it to finish." : undefined,
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
+  onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
  registerArtifactOffload(pi, automaticConfig, () => toolExposure.reachable("history"));
  const smartContext = registerSmartContextTool(pi, {
@@ -286,6 +333,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   canAutoTrim: ctx => !background.hasWork() && !pendingRef.isPresent(resolveSessionId(ctx))
    && !isRunning.isSessionActive(resolveSessionId(ctx)),
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
+  onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
 
  registerSmartCompactCommand(pi, {
@@ -294,12 +342,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   onNativeApplyError,
   policy,
   requestManualTrim: ctx => smartContext.requestManualTrim(ctx),
+  deferredTrim: ctx => smartContext.deferredTrim(resolveSessionId(ctx)),
   navigation,
   toolSummary: () => toolExposure.summary(),
   getRuntimeState: ctx => ({
    running: isRunning.isRunning(resolveSessionId(ctx)),
    preparation: background.status(resolveSessionId(ctx)),
    paused: pivotQueued(ctx),
+   cacheLedger: hostCache.sessionId() === resolveSessionId(ctx) ? formatCacheLedgerSummary(hostCache.summary()) : [],
   }),
   onGlobalSettingsApplied(paths, ctx) {
    invalidatePreparation(ctx, "config");
@@ -320,6 +370,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   nativeReplay.refresh(ctx);
   flushIssues(ctx);
   invalidatePreparation(ctx);
+  hostCache.reset(resolveSessionId(ctx));
   toolExposure.atBoundary();
   policy.restore(ctx);
   navigation.refresh(ctx);
@@ -332,9 +383,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   policy.restore(ctx);
   navigation.refresh(ctx);
  });
- pi.on("session_before_switch", (_event, ctx) => { invalidatePreparation(ctx); });
+ pi.on("session_before_switch", (_event, ctx) => { invalidatePreparation(ctx); hostCache.reset(resolveSessionId(ctx)); });
  pi.on("session_before_tree", (_event, ctx) => { invalidatePreparation(ctx); });
- pi.on("session_before_fork", (_event, ctx) => { invalidatePreparation(ctx); });
+ pi.on("session_before_fork", (_event, ctx) => { invalidatePreparation(ctx); hostCache.reset(resolveSessionId(ctx)); });
  pi.on("model_select", (_event, ctx) => { invalidatePreparation(ctx, "config"); });
  pi.on("turn_end", (event, ctx) => {
   flushIssues(ctx);
@@ -375,6 +426,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
      firstKeptEntryId: consumed.firstKeptEntryId,
      tokensBefore: consumed.tokensBefore,
      details: consumed.details,
+     usage: usageFor(consumed, ctx),
     },
    };
   }
@@ -386,7 +438,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    // Threshold is advisory during overflow recovery: Pi already has a
    // rejected provider turn to rescue, even if model metadata understates
    // the backend's effective limit.
-   const pct = safeContextPercent(totalTokens, ctx.model?.contextWindow);
+   const pct = safeContextPercent(totalTokens, effectiveContextWindow(ctx.model, config));
    if (event.reason !== "overflow" && pct < config.minContextPercent) return;
    const cur = ctx.model;
    if (!cur) return;
@@ -473,6 +525,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
        firstKeptEntryId: fresh.firstKeptEntryId,
        tokensBefore: fresh.tokensBefore,
        details: fresh.details,
+       usage: usageFor(fresh, ctx),
       },
      };
     }
@@ -496,7 +549,8 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     | { runId?: unknown }
     | undefined;
    const runId = typeof details?.runId === "string" ? details.runId : null;
-   if (!runId) return; // another compaction extension
+   if (!runId) { await noteForeignCompaction(ctx, sessionId, "Another extension's compaction"); return; }
+   hostCache.noteContextEdit("compaction");
    const candidate = commitCandidates.take(runId, sessionId);
    if (!candidate) {
     clearCompactProgress(ctx);
@@ -533,6 +587,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    }
    return;
   }
+  await noteForeignCompaction(ctx, sessionId, "Pi's built-in compaction");
   if (isUnresolvedSessionId(sessionId)) return;
   const projectId = deriveProjectIdFromCwd(ctx.cwd);
   if (!projectId) return;
@@ -599,6 +654,21 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     },
    },
   };
+ });
+
+ // Host prompt-cache ledger: the session's own assistant messages, reported
+ // usage only. Rebuilds after a Continuity edit are attributed to it; repeated
+ // rebuilds with no edit of ours point at another cause and are said once.
+ pi.on("message_end", (event, ctx) => {
+  if (event.message.role !== "assistant") return;
+  const sessionId = resolveSessionId(ctx);
+  if (hostCache.sessionId() !== sessionId) hostCache.reset(sessionId);
+  if (!hostCache.observe(event.message)?.warn) return;
+  const { foreign } = hostCache.summary().rebuilds;
+  reportIssue({
+   key: "cache.foreign-rebuilds",
+   message: "Pi's prompt cache was rebuilt " + foreign.count + " times this session with no Continuity edit before them (" + foreign.uncached.toLocaleString("en-US") + " uncached prompt tokens re-sent). Other extensions, model or tool changes, or Pi's built-in compaction change the prefix too; Home › Readiness & details lists rebuild causes.",
+  }, ctx);
  });
 
  pi.on("message_end", async (event, ctx) => {

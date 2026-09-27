@@ -17,6 +17,7 @@ import {
  computeToolCharPercentage,
  selectCompactionTier,
 } from "../../utils/helpers.ts";
+import { effectiveContextWindow, safeContextPercent } from "../../utils/tokens.ts";
 
 export function selectTier(rc: RecoveredRc): TieredRc | null {
  const toolPercent = computeToolCharPercentage(rc.msgs);
@@ -26,12 +27,11 @@ export function selectTier(rc: RecoveredRc): TieredRc | null {
    ? rc.contextPercent >= 80
     ? "full"
     : "light"
-   : selectCompactionTier(
-    rc.contextPercent,
-    rc.totalTokens,
-    MIN_TOKEN_THRESHOLD,
-    rc.config.minContextPercent,
-   );
+   // Admission gate uses the maxContextTokens-capped window; the light/full
+   // label stays on the real window (rc.contextPercent).
+   : safeContextPercent(rc.totalTokens, effectiveContextWindow(rc.ctx.model, rc.config)) < rc.config.minContextPercent
+    ? "none"
+    : selectCompactionTier(rc.contextPercent, rc.totalTokens, MIN_TOKEN_THRESHOLD, 0);
 
  if (tier === "none") {
   if (!rc.flags.autoTriggered) {

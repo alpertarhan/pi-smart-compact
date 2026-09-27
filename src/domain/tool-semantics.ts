@@ -8,6 +8,8 @@
  * exposes only explicit literal mutation targets for extraction provenance.
  * Pure: no I/O, no async, no globals.
  */
+import { normalize } from "node:path";
+
 type Args = Record<string, unknown>;
 
 /**
@@ -73,6 +75,41 @@ export function isReadOnlyResearchTool(toolName: string, input: Args): boolean {
   const name = normalizeToolName(toolName);
   if (name === "smart_context") return ["status", "plan", "search", "read", "trim", "rewind"].includes(String(input.action));
   return READ_ONLY_TOOLS.has(name);
+}
+
+/** Shell runs have side effects; only their old text output is archivable, never the call. */
+export function isShellTool(toolName: string): boolean {
+  return normalizeToolName(toolName) === "bash";
+}
+
+/**
+ * Results a context trim may replace with a digest once old: read-only research,
+ * `smart_context read` pages (ephemeral copies of archived text), and shell output.
+ */
+export function isArchivableToolResult(toolName: string, input: Args): boolean {
+  if (isInstructionSource(input)) return false;
+  const name = normalizeToolName(toolName);
+  if (name === "smart_context") return input.action === "read";
+  return isShellTool(name) || isReadOnlyResearchTool(toolName, input);
+}
+
+const SUBJECT_KEYS = ["pattern", "query", "symbol", "url"] as const;
+
+/** The call's subject for a trim digest: file path, first command line, or search pattern. */
+export function toolCallSubject(toolName: string, args: unknown): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const a = args as Args;
+  const name = normalizeToolName(toolName);
+  if (name === "smart_context") return undefined;
+  if (name === "bash") {
+    const command = COMMAND_KEYS.map(key => a[key]).find((value): value is string => typeof value === "string" && value.trim() !== "");
+    const line = command?.split("\n").find(item => item.trim() !== "");
+    return line ? "$ " + line : undefined;
+  }
+  const path = extractToolPath(a);
+  if (["read", "read_symbol", "read_enclosing"].includes(name)) return path ? "path: " + path : undefined;
+  const key = SUBJECT_KEYS.find(item => typeof a[item] === "string" && a[item] !== "");
+  return key ? `${key}: ${a[key]}` : path ? "path: " + path : undefined;
 }
 
 export interface ShellFileOperations {
@@ -221,6 +258,27 @@ export function extractShellFileOperations(args: unknown): ShellFileOperations {
   return {
     modified: Array.from(new Set(modified)),
     deleted: Array.from(new Set(deleted.filter(file => !modified.includes(file)))),
+  };
+}
+
+/**
+ * File paths a call reads (read-only tools carrying a path) or writes/deletes (mutating
+ * tools by `classifyToolOperation`, plus literal shell targets). `path.normalize` only:
+ * relative and absolute forms never match, so an unknown relation stays unsuperseded.
+ */
+export function fileOperationPaths(name: string, args: unknown): { reads: string[]; writes: string[] } {
+  const input = args && typeof args === "object" ? args as Args : {};
+  const path = extractToolPath(input);
+  const writes: string[] = [];
+  if (isShellTool(name)) {
+    const shell = extractShellFileOperations(input);
+    writes.push(...shell.modified, ...shell.deleted);
+  } else if (path && ["mutate", "delete"].includes(classifyToolOperation(input, name))) {
+    writes.push(path);
+  }
+  return {
+    reads: path && !writes.length && isReadOnlyResearchTool(name, input) ? [normalize(path)] : [],
+    writes: Array.from(new Set(writes.map(item => normalize(item)))),
   };
 }
 

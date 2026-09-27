@@ -24,6 +24,19 @@ export const AUTO_TRIGGER_TIMEOUT_CAP_MS = 60_000;
 export const AUTO_TRIGGER_MAX_LLM_CALLS = 4;
 /** Suppress proactive settled-trigger churn after any confirmed compaction. */
 export const SETTLED_TRIGGER_COOLDOWN_MS = 10 * 60_000;
+/**
+ * Minimum uncached prompt tokens (input + cacheWrite) for a host request to
+ * count as a prompt-cache rebuild. Anthropic caches need >=1024-4096-token
+ * prefixes and every turn legitimately re-sends the new tail uncached (tool
+ * results, user input: routinely a few thousand tokens); 16k sits clearly
+ * above that tail noise while staying far below a real prefix rebuild.
+ */
+export const REBUILD_MIN_TOKENS = 16_384;
+/**
+ * Further requests within which a warm-cache automatic trim must pay back its
+ * prefix rewrite; sessions rarely run that many requests without another prefix change.
+ */
+export const AUTO_TRIM_BREAK_EVEN_REQUESTS = 24;
 
 /** Positive per-run bounds shared by CLI and tool arguments; config separately allows 0 as a mode-derived sentinel. */
 export const BUDGET_LIMITS = {
@@ -75,12 +88,16 @@ export const PROFILE_NUMERIC_BOUNDS = {
  batchMaxTokens: [1_000, 500_000],
 } as const;
 
+/** Home warns above this model window when maxContextTokens is off. */
+export const LARGE_CONTEXT_WINDOW_TOKENS = 400_000;
+
 export const CONFIG_NUMERIC_LIMITS = {
  minContextPercent: { min: 0, max: 100, integer: false },
  prepareContextPercent: { min: 0, max: 100, integer: false },
  autoTriggerTimeoutMs: { min: 1_000, max: 300_000, integer: true },
  maxLlmCalls: { min: 0, max: 100, integer: true },
  maxLlmInputTokens: { min: 0, max: 1_000_000, integer: true },
+ maxContextTokens: { min: 16_384, max: 2_000_000, integer: true, zeroOrRange: true },
  codexMaxCallMs: {
   min: 5_000,
   max: 3_600_000,
@@ -117,6 +134,7 @@ export const DEFAULT_CONFIG = {
  backupDir: "",
  minContextPercent: 60, // Don't compact below this context threshold (tool=97% ≠ context full)
  prepareContextPercent: null as number | null, // Auto: adaptive lead before minContextPercent
+ maxContextTokens: 0, // 0 = off; else caps the window used by automatic trigger/preparation percentages
  requireApproval: true,
  scrubSecrets: true,
  scrubPii: false,
@@ -360,10 +378,23 @@ export const MAX_EXPLORER_OUTPUT_CHARS = 12_000;
 /** Shell-output patterns signalling a likely error even in a non-`isError` result. */
 export const LIKELY_ERROR_RE =
  /(?:command not found|no such file|permission denied|syntax error|cannot find|module not found|compilation error|build failed|test failed|^FAIL\b|ERROR:)/i;
+/** Conservative risk lines kept in a trim marker's digest (errors, failures, warnings, exits). */
+export const TRIM_RISK_LINE_RE =
+ /\b(?:error|fail(?:ed|ure)|warn(?:ing)?|exception|traceback|panic|exit code|exited with|command not found|permission denied|ENOENT|EACCES)\b/i;
+/** Trim marker digest bounds: line 1 always kept; later lines dropped from the end to fit. */
+export const TRIM_MARKER_MAX_LINES = 6;
+export const TRIM_MARKER_MAX_CHARS = 400;
 /** How far forward to look for a retry of the same tool after an error. */
 export const ERROR_RETRY_WINDOW = 6;
 /** How far forward to look for that retry's resolving (non-error) result. */
 export const ERROR_RESOLVE_WINDOW = 10;
+/** Handoff seed cap (same as a pivot carryover); recall gets a bounded share. */
+export const HANDOFF_MAX_CHARS = 16_000;
+export const HANDOFF_RECALL_MAX_CHARS = 6_000;
+export const HANDOFF_RECALL_LIMIT = 5;
+/** Parent sessions `smart_context scope=lineage` follows through `parentSession` headers, and the largest file it loads. */
+export const LINEAGE_MAX_DEPTH = 3;
+export const LINEAGE_MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 // ── Per-run metrics buffer ──
 //

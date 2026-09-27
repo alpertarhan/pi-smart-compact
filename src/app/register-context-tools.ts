@@ -185,7 +185,7 @@ interface RecallParams {
  limit?: number;
 }
 
-async function executeRecall(
+export async function executeRecall(
  params: RecallParams,
  signal: AbortSignal | undefined,
  ctx: ExtensionContext,

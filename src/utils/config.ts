@@ -494,6 +494,12 @@ const NUMERIC_RULES: readonly NumericRule[] = [
    "smart-compact config: maxLlmInputTokens must be 0–1000000; 0 uses the mode cap.",
  },
  {
+  key: "maxContextTokens",
+  valid: (value) => validNumericLimit("maxContextTokens", value),
+  message: () =>
+   "smart-compact config: maxContextTokens must be 0 or 16384–2000000; using 0 (off).",
+ },
+ {
   key: "codexMaxCallMs",
   valid: (value) => validNumericLimit("codexMaxCallMs", value),
   message: () =>

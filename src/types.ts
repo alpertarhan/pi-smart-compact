@@ -67,6 +67,11 @@ export interface CompactConfig {
   * be below the effective minContextPercent, which stays the apply gate.
   */
  prepareContextPercent: number | null;
+ /**
+  * 0 = off. Otherwise automatic trigger/preparation percentages use
+  * min(model.contextWindow, maxContextTokens); hard headroom checks do not.
+  */
+ maxContextTokens: number;
  requireApproval: boolean;
  scrubSecrets: boolean;
  scrubPii: boolean;

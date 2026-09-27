@@ -52,7 +52,7 @@ Pi Continuity acts in four layers, from cheapest to most invasive:
 | --- | --- | --- | --- |
 | 1. Avoid noise | The optional RTK companion shortens a few shell outputs | No | Not loaded |
 | 2. Offload | Very large read-only tool outputs are saved to disk; the model sees a preview and an ID | No | Off |
-| 3. Trim, checkpoint, rewind | Old read-only output is replaced by references; research can be rewound to a report | No | Manual; automatic trimming off |
+| 3. Trim, checkpoint, rewind | Old read-only and shell output is replaced by short digests with references; research can be rewound to a report | No | Manual; automatic trimming off |
 | 4. Compact | Older history becomes a verified summary; recent turns stay raw | Usually (Fast may use none) | Replaces Pi's summary when Pi compacts |
 
 Layers 2 and 3 are recoverable: the original output stays in Pi's session file
@@ -91,9 +91,9 @@ The header shows `Context:` (current usage or why compaction is blocked) and
 | Row | What it does |
 | --- | --- |
 | **Compact now** | Opens the compact picker to choose a mode and summary model. Shows `unavailable` with a reason when blocked. |
-| **Clean up tool output** | Queues local cleanup (`no model call`). Applies at the next completed turn. |
+| **Clean up tool output** | Queues local cleanup (`no model call`). Applies at the next completed turn. Shows `held for a cold cache` with the reason when automatic cleanup is holding a batch; selecting it applies that batch at the next completed turn instead. |
 | **Settings** | `How it runs`, `Summary format`, `Models`, `Memory`, `Agent tools & navigation`, `Advanced settings`. |
-| **History & recovery** | `Session navigation`, `Restore a backup`, `Unfinished tasks`, `Storage`, `Forget local project memory`. |
+| **History & recovery** | `Session navigation`, `Hand off to a new session`, `Restore a backup`, `Unfinished tasks`, `Storage`, `Forget local project memory`. |
 | **Status & help** | `Readiness & details`, `Which action should I use?`, `Metrics` (`Report`, `Dashboard`). |
 
 Keys on every list: `↑`/`↓` choose, `Enter` select, `Esc` back (from Home,
@@ -121,11 +121,14 @@ Or Home → **Clean up tool output**. Either one:
 - makes no model call and does not force a new turn;
 - is queued, not applied: **the first next provider request is still sent
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
-- replaces old successful read-only text results of at least 4,096 characters
-  with references, up to 32 outputs per boundary;
+- replaces old successful text results of at least 4,096 characters with a
+  digest marker, up to 32 outputs per boundary: read-only tools, shell
+  (`bash`) output and `smart_context` `read` pages;
 - keeps the latest four assistant turns, an active checkpoint's prefix, errors,
-  shell commands, writes, unknown tools, instruction/skill-file reads and
-  another extension's explicit context edits;
+  every tool call (including shell commands), writes, unknown tools, turns
+  that mix shell or read-only calls with any other tool, instruction/skill-file
+  reads, `smart_context` results other than `read`, and another extension's
+  explicit context edits;
 - is cancelled with a visible notice if a return to an anchor is pending or a
   newer boundary change arrives.
 
@@ -133,12 +136,58 @@ Trimmed output stays retrievable with
 [`smart_context`](#retrieve-archived-output). Trimming is not secure deletion:
 the raw history remains in Pi's session JSONL.
 
+A digest marker has at most 6 lines and 400 characters and is derived only
+from the recorded call and output:
+
+```text
+[Archived bash output, 18088 chars. Retrieve with smart_context action=read id=3f9a1c2e.]
+$ bun test
+> bun test v1.4.2
+! error: expect(received).toBe(expected)
+! warning: snapshot obsolete
+```
+
+Line 1 names the tool, size and retrieval ID. Then, when known: the subject
+(`path:` for reads, `$ ` and the first command line for shell, the pattern or
+path for searches), the first non-empty output line (`> `), and up to three
+lines matching error, failure, warning, exception, traceback, panic, exit-code,
+`command not found`, `permission denied`, `ENOENT` or `EACCES` (`! `). Each
+line is whitespace-normalized and cut to 100 characters; lines past the
+limit are dropped from the end. Shell calls are never removed, only their old
+output; errored shell results stay whole. An archived `smart_context` `read`
+page points back at the source it paged
+(`[Archived smart_context read of id=<source-id>, …]`), so the agent re-reads
+the source instead of the copy.
+
+Superseded output goes first. A read-only result whose path a later call
+writes, edits or deletes (`write`, `edit`, path-carrying mutating tools, or a
+literal `bash` target such as `sed -i`, `>` or `rm`), or reads again in full
+(a plain `read` without `offset`/`limit`; searches, listings, symbol reads and
+ranged reads never count), is archived before other outputs, edited ones
+before re-read ones, each in session order; the 32-output cap then keeps
+them. The marker's subject line says why, e.g.
+`path: src/a.ts (superseded: edited later)` or
+`(superseded: read again in full later)`. Paths match only as written after
+normalization (`./src/a.ts` = `src/a.ts`, but not `/repo/src/a.ts`). This
+changes only the order and the note, never which outputs are eligible.
+
 Automatic trimming is separate and off by default: turn on
-**Automatic cleanup** (`contextHygieneEnabled`). It waits for the early
-pressure gate, at least 16,384 characters of net savings and eight assistant
-turns after the last trim, rewind or compaction. These are conservative limits
-to avoid breaking the provider's prompt cache often, not a measured cache-cost
-optimizer. Details are in [configuration](./configuration.md#context-hygiene-and-archives).
+**Automatic cleanup** (`contextHygieneEnabled`). A batch needs at least 16,384
+characters of net savings and eight assistant turns after the last trim,
+rewind or compaction. It then commits at the turn boundary for one of three
+causes, recorded on the trim entry:
+
+- `pressure`: context usage reached the early pressure gate.
+- `break-even`: the model's catalog prices say the trim pays back its prompt
+  cache rewrite within 24 further requests (see
+  [configuration](./configuration.md#context-hygiene-and-archives)).
+- `cold`: otherwise the batch is held back until the cache has expired (5
+  minutes after the last response, 1 hour when that response wrote 1h
+  cache). The first request after that already sends the trimmed context, and
+  the edits commit when that turn completes.
+
+The rule uses the model's catalog price ratios and estimated token counts, not
+measured cache behavior.
 
 ## Compact now
 
@@ -209,6 +258,11 @@ Two points matter most:
   compact at the next idle, queue-empty boundary once context reaches
   `Start at context %`, with a 10-minute cooldown after a compaction.
 
+`Start at context %` counts against the model's full window. On a large-window
+model (Home warns above 400k tokens), set `Context cap for start % (tokens)`
+(`maxContextTokens`) to measure it against a smaller window instead; requests
+and safety headroom still use the real window.
+
 Turning `Automatic compaction` off disables both Smart Compact strategies. It
 does not turn off Pi's own compactor. Automatic runs are capped at 60 seconds
 and four model calls, whatever the configured limits are. When they fail, Pi
@@ -226,6 +280,7 @@ The agent retrieves trimmed, rewound, offloaded or image-archived output with
 {"action":"search","query":"AUTH_EXPIRED","limit":3}
 {"action":"read","id":"<source-id>","line":120,"limit":20}
 {"action":"read","id":"<source-id>","offset":0,"limit":2048}
+{"action":"search","query":"AUTH_EXPIRED","scope":"lineage"}
 ```
 
 | Action | Behavior |
@@ -237,7 +292,21 @@ The agent retrieves trimmed, rewound, offloaded or image-archived output with
 Retrieval only returns output this extension archived on the active branch.
 Text is scrubbed again with the current privacy settings before search or
 paging. You get the originally recorded tool output, not bytes the tool had
-already truncated before Pi recorded it.
+already truncated before Pi recorded it. Each archive records a SHA-256 of the
+archived text; `read` and `search` refuse text that no longer matches (for
+example after a hand-edited session file), and a rewind leaves such outputs
+out of recovery. Archives from earlier versions have no hash and are read as
+before.
+
+With `"scope":"lineage"`, `status`, `search` and `read` also reach the sessions
+this one was handed off or forked from, following each session's recorded
+parent up to 3 levels (files over 64 MiB, missing files and cycles end the
+walk). Parent files are read, never opened through Pi or written. Their
+sources come after the active branch's and carry `session` and `depth`;
+`status` adds a `lineage` count per parent, and `read` of a parent source says
+which session it came from. Each parent's own archive records authorize and
+verify its outputs; checkpoints, rewind and trim stay on the active branch.
+The default `"scope":"session"` does not read other files.
 
 ### Automatic offload of large outputs
 
@@ -324,6 +393,38 @@ change), **Anchor status** (footer, display only) and **Navigation guide**.
 
 Anchors recorded by pi-toolkit's `context` tool in earlier sessions stay
 readable in browse and search.
+
+### Hand off to a new session
+
+```text
+/smart-compact handoff [dry-run] [-- note]
+```
+
+Opens a new Pi session seeded with one handoff message assembled from what
+this session already recorded, in this order: your note, the latest anchor on
+the branch, the continuity ledger (from the last Continuity compaction, else
+the saved state for this branch), always-kept files (`pinPaths`), a memory
+recall through the selected store (up to 5 results; the query is the note,
+else the anchor, else the ledger goal), and pointers back to this session. No
+model writes it. It is scrubbed and capped at 16,000 characters; recall is cut
+first, then always-kept files, the ledger, the anchor and the note, each marked
+`[truncated]`.
+
+The message is saved as an anchor named `handoff-<first 8 characters of this
+session id>`, so navigation lists it and cleanup keeps it. The new session
+records this one as its parent; this session is not modified. With no anchor,
+ledger or note, nothing opens. From the new session, `smart_context` with
+`"scope":"lineage"` searches and reads this session's archived output.
+
+From Home → **History & recovery** → **Hand off to a new session**: write an
+optional note (`Enter` continues, empty skips), then review the seed: its
+size and sources, **Read the full seed**, and **Open the new session**. The
+selection starts on **Go back**; `Esc` goes back one step, and on the note
+field closes. Nothing opens until you confirm.
+
+`dry-run` only shows the seed and opens nothing: in the TUI as the same
+read-only preview, in other UI modes as a message. Without a UI it warns and
+does nothing.
 
 ## Agent tools
 
@@ -443,6 +544,61 @@ Continuity: two extensions recording anchors and pruning the same branch are
 not safe in any load order. The `piToolkit.context.thinningEnabled` key is not
 read by Pi Continuity. Anchors recorded earlier by pi-toolkit stay readable.
 
+### Other compaction extensions and Pi's built-in compaction
+
+Pi applies one compaction per request: the last extension to answer
+`session_before_compact` wins, and with no answer Pi's built-in summarizer
+runs. When something other than Pi Continuity applies the compaction:
+
+- A summary Pi Continuity had already prepared for that session is discarded
+  and recorded in `/smart-compact metrics` as `discarded` with reason
+  `native-apply:foreign`; its continuity state is not saved. A notice names
+  the winner and the model calls that were wasted.
+- Another extension's compaction shows a once-per-session notice even when
+  nothing was prepared, because Pi Continuity recorded no state or metrics
+  for it. Keep only one compaction extension loaded.
+- Pi's built-in compaction shows a notice only while automatic compaction is
+  on (nothing was ready when Pi asked); earlier continuity state still carries
+  over through the capsule.
+
+Provider usage of the summary Pi Continuity applies (its own explore,
+synthesize and verify calls, or the provider-native compaction request) is
+returned to Pi with the compaction, so Pi's session totals and cost include
+that work at the route model's catalog rates. Runs that reused a cached
+summary report no usage; work whose usage a provider did not report is left
+out rather than estimated. Discarded preparations are only in
+`/smart-compact metrics`, never in Pi's totals.
+
+### Host prompt-cache ledger
+
+For each assistant response in the current session, Pi Continuity records the
+prompt usage the provider reported for Pi's own request: uncached input, cache
+reads and cache writes. Nothing is estimated; responses without reported
+usage, or with zero prompt tokens (aborted or failed requests), are skipped.
+
+A request counts as a cache rebuild when it is not the session's first and
+its uncached tokens (input + cache writes) are at least 16,384 and at least
+half of its prompt tokens. Each rebuild gets one cause, checked in this order:
+
+- **continuity**: a Continuity edit reached the branch since the previous
+  request (an output trim or checkpoint rewind, a navigation pivot, or a Pi
+  Continuity compaction). Edits that were queued but not committed do not
+  count.
+- **idle-expiry**: the gap since the previous request exceeded the cache
+  lifetime, 5 minutes, or 1 hour while the cached prefix was written with
+  1-hour retention (only Anthropic reports that split).
+- **foreign**: neither. Something else changed the prompt prefix, for
+  example another extension, a model or tool change, Pi's built-in
+  compaction, or eviction by the provider.
+
+Home › Readiness & details lists the request count, the share of prompt
+tokens read from cache, rebuilds by cause with their uncached tokens, and the
+cost Pi priced from that usage when the model has catalog prices. The third
+foreign rebuild in a session shows one notice with the count and uncached
+tokens. The ledger is session-local: it resets on a new or switched session,
+is not persisted, and covers only Pi's own requests; Pi Continuity's summary
+calls are in `/smart-compact metrics` instead.
+
 ### RTK companion (optional, experimental)
 
 RTK is not a dependency and is never loaded automatically. Install RTK 0.50 or
@@ -515,6 +671,7 @@ Image snapshots:
 | Get back the conversation from before a compaction | `/smart-compact restore` → pick a backup → `View content` or `Restore into a new session` |
 | Review tasks carried across compactions | `/smart-compact loops`: resolve/reopen, set priority, pin/unpin |
 | See what artifact storage holds | `/smart-compact storage` (read-only) |
+| Continue in a fresh session with the recorded state | `/smart-compact handoff [-- note]` (see [Hand off to a new session](#hand-off-to-a-new-session)) |
 | See what went wrong recently | `/smart-compact metrics`: effective state, then the last 20 issues |
 
 `Restore into a new session` first tries to fork at the exact pre-compaction
@@ -607,6 +764,8 @@ Without a UI, warnings and errors go to stderr.
 /smart-compact restore                 browse and restore backups
 /smart-compact loops                   manage open loops
 /smart-compact forget                  forget local project memory (TUI only)
+/smart-compact handoff [-- note]       new session seeded with anchor, ledger, pinned files, recall
+/smart-compact handoff dry-run [-- note]   preview the seed; opens nothing
 ```
 
 Direct compaction takes, in any order at the start: a model

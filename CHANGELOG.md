@@ -2,6 +2,111 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/smart-compact handoff [-- note]` opens a new Pi session seeded with one
+  anchor message assembled from recorded state: the note, the latest branch
+  anchor, the continuity ledger (last Continuity compaction, else the saved
+  branch state), `pinPaths`, a memory recall through the selected store, and
+  pointers back to the parent session. No model call writes it; it is
+  scrubbed and capped at 16,000 characters, cutting recall first. Nothing
+  opens when there is no anchor, ledger or note.
+- Home → History & recovery → **Hand off to a new session**: write a note,
+  review the seed (size, sources, full text), then confirm; the selection
+  starts on Go back. `/smart-compact handoff dry-run [-- note]` shows the seed
+  and opens nothing (TUI preview, a message in other UI modes).
+- `smart_context` `status`/`search`/`read` take `scope: "lineage"`: they also
+  reach archived output of the sessions this one was handed off or forked
+  from, read-only, following `parentSession` up to 3 levels (files up to
+  64 MiB; cycles and missing files end the walk). Parent sources carry
+  `session` and `depth`; each parent's own archive records authorize and
+  verify its outputs. The default `session` scope is unchanged. The handoff
+  seed now points at it instead of `/resume`.
+- Automatic cleanup (`contextHygieneEnabled`) no longer waits only for
+  context pressure. A ready batch commits at a turn boundary under pressure,
+  or when the model's catalog prices say it pays back its prompt-cache rewrite
+  within 24 requests (`N* = ((w - r) × T) / (r × X)`); otherwise it is held
+  and sent with the first request after the cache expired, then committed
+  when that turn completes. Trim entries record the cause (`pressure`,
+  `break-even`, `cold`, `manual`, `agent`); `smart_context` `status` reports a
+  held batch as `deferredTrim`. The rule uses catalog price ratios and token
+  estimates, not measured cache behavior.
+- `bun run replay-eval --sessions=<dir|file>` replays recorded sessions read-only
+  and estimates prompt tokens and catalog-priced cost per request under the
+  `none`, `pressure` and `timed-<N>` trim policies (`--break-even`,
+  `--rebuild-min`, `--limit`, `--json`), next to the recorded usage. Replay
+  estimates only; see `docs/evaluation.md`.
+- The compaction result returned to Pi carries the provider-reported usage of
+  the applied run (EESV stage calls or the provider-native compaction
+  request), priced at each route model's catalog rates, so Pi's session
+  totals and cost include the extension's own work. Cached or estimated runs
+  contribute nothing rather than a guess.
+- A foreign compaction (another extension's, or Pi's built-in one) no longer
+  passes silently: a prepared Continuity summary it displaces is recorded as
+  `discarded` (`native-apply:foreign`) in the metrics log and a once-per-
+  session notice names the winner; Pi's built-in compaction is reported only
+  while automatic compaction is on.
+- `maxContextTokens` (default `0`, off) makes automatic trigger percentages
+  (`minContextPercent`, the background preparation window and the automatic
+  admission gate) count against `min(model window, maxContextTokens)`. Model
+  requests, summary sizing and hard headroom checks keep the real window.
+  Settings › Compaction has a row for it, and Home warns when a model window
+  above 400k tokens is uncapped while automatic compaction is on.
+- A session-local host prompt-cache ledger records the provider-reported
+  input, cache-read and cache-write tokens of Pi's own requests and classifies
+  cache rebuilds (uncached ≥ 16,384 tokens and ≥ half the prompt) as following
+  a committed Continuity edit (trim/rewind, pivot, compaction), idle expiry of
+  the cache lifetime, or foreign. Home › Readiness & details shows the tallies;
+  the third foreign rebuild in a session shows one notice. `smart_context` and
+  navigation gain an `onContextEdit` hook that fires only once an edit is on
+  the branch.
+- Trimming also archives old, successful shell (`bash`) output of 4,096+
+  characters. The shell call itself stays in context; errored results and
+  turns that mix shell with writes or unknown tools stay whole. Rewind still
+  keeps shell exchanges.
+- Old `smart_context` `read` pages are trimmable like read-only output; the
+  marker points at the original source ID so the agent re-reads the source.
+  Other `smart_context` results (`status`, `search`, `plan`, `trim`, `rewind`)
+  are never trimmed.
+- Trim and rewind records store a SHA-256 and length per archived output
+  (`archives: [{ id, sha256, chars }]`). `smart_context` `read`/`search`
+  refuse text that no longer matches its record, `status` sources show
+  `hashed`, and a rewind withholds mismatched outputs from recovery and says
+  how many. Records from earlier versions have no hash and read as before.
+
+### Changed
+
+- Home's `Clean up tool output` row shows `held for a cold cache` with the
+  estimated savings and pay-back when automatic cleanup is holding a batch;
+  selecting it applies the batch at the next completed turn. Settings and
+  profile texts for automatic cleanup now name all three commit causes; the
+  `handoff` "nothing to hand off" notice says how to record something.
+- Trim markers are now a deterministic digest of at most 6 lines and 400
+  characters: the retrieval line, the call's subject (read path, first shell
+  command line, or search pattern), the first non-empty output line, and up
+  to three error/failure/warning lines, each whitespace-normalized and cut to
+  100 characters.
+- Trimming archives superseded output first: read-only results whose path a
+  later call writes, edits or deletes (including literal `bash` targets),
+  then results whose path a later plain `read` without `offset`/`limit`
+  shows again in full, then the rest, each in session order, within the same
+  32-output cap. Their markers add `(superseded: edited later)` or
+  `(superseded: read again in full later)` to the
+  subject line. Paths match after `path.normalize` only. Eligibility is
+  unchanged.
+
+### Fixed
+
+- A held automatic trim is applied through Pi's `context_with_system` event,
+  not `context`: a changed `context` result makes Pi collapse
+  mid-conversation system messages into one head, so the cold request and
+  the committed transcript would differ. Verified against the checkout's
+  `ExtensionRunner.emitContext`.
+- The offline task evaluator (`release:audit`) no longer reaches the network
+  when `rg` is missing: offline arms set `PI_OFFLINE=1` and fail before the
+  first round without ripgrep; CI installs it. The offline guard now names the
+  first blocked request and its caller.
+
 ## [9.8.0-canary.7] - 2026-09-27
 
 Local-only integration candidate; not published or installed in daily Pi.

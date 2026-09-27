@@ -215,6 +215,22 @@ describe("background preparation", () => {
     expect(lowered).toEqual([60]);
   });
 
+  it("sizes the preparation window from maxContextTokens on a larger model window", async () => {
+    const f = fixture();
+    Object.assign(f.ctx, { model: { ...f.ctx.model!, contextWindow: 1_000_000 } });
+    const lowered: number[] = [];
+    const worker = createBackgroundPreparation({ prepare: async (_ctx, c) => { lowered.push(c.minContextPercent); return f.pending; } });
+    f.setTokens(150_000);
+    worker.observe(f.ctx, config); // 15% of 1M: below the uncapped start
+    await flush();
+    expect(lowered).toEqual([]);
+    // Cap 200k: apply at 160k (80%), adaptive start 140k (70% of the cap).
+    expect(preparationWindow(config, 200_000)).toEqual({ startTokens: 140_000, applyTokens: 160_000 });
+    worker.observe(f.ctx, { ...config, maxContextTokens: 200_000 });
+    await flush();
+    expect(lowered).toEqual([70]);
+  });
+
   it("runtime proof: prepares at 60%, applies the same pending at 65% through the idle trigger", async () => {
     const f = fixture();
     const explicit = { ...config, minContextPercent: 65, prepareContextPercent: 60 };

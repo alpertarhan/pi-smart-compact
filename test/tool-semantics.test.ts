@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { classifyTool, classifyToolOperation, extractToolPath, normalizeToolName } from "../src/domain/tool-semantics.ts";
+import {
+  classifyTool, classifyToolOperation, extractToolPath, fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, normalizeToolName,
+  toolCallSubject,
+} from "../src/domain/tool-semantics.ts";
 
 describe("classifyTool", () => {
   it("classifies path + content payload as mutates (name-agnostic)", () => {
@@ -85,5 +88,52 @@ describe("extractToolPath", () => {
     expect(extractToolPath({ path: 42 })).toBeUndefined(); // non-string ignored
     expect(extractToolPath(undefined)).toBeUndefined();
     expect(extractToolPath(null)).toBeUndefined();
+  });
+});
+
+describe("isArchivableToolResult", () => {
+  it("admits shell output and smart_context reads without widening read-only research", () => {
+    expect(isArchivableToolResult("functions.bash", { command: "bun test" })).toBe(true);
+    expect(isReadOnlyResearchTool("bash", { command: "bun test" })).toBe(false);
+    expect(isArchivableToolResult("read", { path: "src/a.ts" })).toBe(true);
+    expect(isArchivableToolResult("smart_context", { action: "read", id: "x" })).toBe(true);
+    for (const action of ["status", "search", "plan", "trim", "rewind"]) {
+      expect(isArchivableToolResult("smart_context", { action })).toBe(false);
+      expect(isReadOnlyResearchTool("smart_context", { action })).toBe(true);
+    }
+    expect(isArchivableToolResult("write", { path: "a", content: "x" })).toBe(false);
+    expect(isArchivableToolResult("custom_tool", {})).toBe(false);
+    expect(isArchivableToolResult("read", { path: "/repo/AGENTS.md" })).toBe(false);
+  });
+});
+
+describe("toolCallSubject", () => {
+  it("names the path, first command line, or search pattern", () => {
+    expect(toolCallSubject("read_symbol", { path: "src/a.ts", symbol: "run" })).toBe("path: src/a.ts");
+    expect(toolCallSubject("bash", { command: "\n  bun test\nbun run build" })).toBe("$   bun test");
+    expect(toolCallSubject("grep", { pattern: "TODO", path: "src" })).toBe("pattern: TODO");
+    expect(toolCallSubject("ls", { path: "src" })).toBe("path: src");
+    expect(toolCallSubject("smart_context", { action: "read", id: "x" })).toBeUndefined();
+    expect(toolCallSubject("read", {})).toBeUndefined();
+  });
+});
+
+describe("fileOperationPaths", () => {
+  it("separates read targets from written, edited and deleted targets", () => {
+    expect(fileOperationPaths("read", { path: "./src/a.ts" })).toEqual({ reads: ["src/a.ts"], writes: [] });
+    expect(fileOperationPaths("grep", { pattern: "x", path: "src/" })).toEqual({ reads: ["src/"], writes: [] });
+    expect(fileOperationPaths("grep", { pattern: "x" })).toEqual({ reads: [], writes: [] });
+    expect(fileOperationPaths("write", { path: "src/a.ts", content: "" })).toEqual({ reads: [], writes: ["src/a.ts"] });
+    expect(fileOperationPaths("edit", { path: "src/x/../a.ts", oldText: "a", newText: "b" })).toEqual({ reads: [], writes: ["src/a.ts"] });
+    expect(fileOperationPaths("delete_file", { path: "src/a.ts" })).toEqual({ reads: [], writes: ["src/a.ts"] });
+    expect(fileOperationPaths("bash", { command: "sed -i '' 's/a/b/' src/a.ts && echo x > out.txt; rm -f old.ts" }))
+      .toEqual({ reads: [], writes: ["src/a.ts", "out.txt", "old.ts"] });
+    expect(fileOperationPaths("bash", { command: "cat src/a.ts" })).toEqual({ reads: [], writes: [] });
+  });
+
+  it("ignores unknown tools and non-object arguments", () => {
+    expect(fileOperationPaths("mystery", { path: "src/a.ts" })).toEqual({ reads: [], writes: [] });
+    expect(fileOperationPaths("read", null)).toEqual({ reads: [], writes: [] });
+    expect(fileOperationPaths("read", { path: "AGENTS.md" })).toEqual({ reads: [], writes: [] });
   });
 });

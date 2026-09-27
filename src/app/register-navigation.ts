@@ -9,6 +9,7 @@ import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { notifyUser } from "../utils/issues.ts";
 import { readContextGuide } from "./context-guide.ts";
+import type { ContextEditKind } from "./host-cache-ledger.ts";
 import { ANCHOR_CUSTOM_TYPE, NAVIGATION_TOOL_NAME, anchorFromEntry, getAnchors, getEditorInjectionFor, listAnchors, recallAnchors, resolveAnchorTarget } from "./navigation-data.ts";
 import type { AnchorPage, AnchorRecallPage, AnchorState, NavigationPanelActions } from "./navigation-types.ts";
 
@@ -37,7 +38,10 @@ export interface NavigationController {
 export function registerNavigation(pi: ExtensionAPI, options: {
  config?: () => CompactConfig;
  mutationBlocked?: (ctx: ExtensionContext) => string | undefined;
+ /** Staging-time signal: anchors, queued and about-to-apply pivots. */
  onContextChange?: (ctx: ExtensionContext) => void;
+ /** Commit-time signal: fires only after Pi applied a pivot's tree navigation. */
+ onContextEdit?: (ctx: ExtensionContext, kind: ContextEditKind) => void;
 } = {}): NavigationController {
  const config = options.config ?? loadConfig;
  let queued: Pivot | undefined;
@@ -131,6 +135,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const expectedInjection = getEditorInjectionFor(ctx.sessionManager, operation.targetId);
   try {
    const result = await ctx.navigateTree(operation.targetId, { summarize: true });
+   if (!result.cancelled && resolveSessionId(ctx) === operation.sessionId) options.onContextEdit?.(ctx, "navigation");
    if (result.cancelled || applying !== operation || resolveSessionId(ctx) !== operation.sessionId) return { ok: false, message: "Pivot cancelled; no continuation was sent." };
    if (ctx.hasUI && expectedInjection && ctx.ui.getEditorText() === expectedInjection && expectedInjection !== previousEditor) ctx.ui.setEditorText(previousEditor ?? "");
    applying = undefined;

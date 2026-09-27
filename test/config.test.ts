@@ -373,6 +373,19 @@ describe("validateSmartCompactConfig", () => {
     expect(invalid.maxLatencyMs).toBeUndefined();
   });
 
+  it("accepts maxContextTokens as 0 (off) or 16384–2000000 and discards the rest", () => {
+    for (const value of [0, 16_384, 200_000, 2_000_000]) {
+      const sc: Record<string, unknown> = { maxContextTokens: value };
+      validateSmartCompactConfig(sc);
+      expect(sc.maxContextTokens).toBe(value);
+    }
+    for (const value of [16_383, 2_000_001, -1, 200_000.5, Number.NaN, "200000"]) {
+      const sc: Record<string, unknown> = { maxContextTokens: value };
+      validateSmartCompactConfig(sc);
+      expect("maxContextTokens" in sc).toBe(false);
+    }
+  });
+
   it("accepts slow-model timeout values up to the raised ceilings (#61)", () => {
     const sc: Record<string, unknown> = {
       codexMaxCallMs: 1_800_000,

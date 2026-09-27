@@ -25,20 +25,24 @@ it("keeps a human anchor and its summary when native Pi returns to it, even with
     let anchorId: string | undefined;
     let failure: unknown;
     const errors: unknown[] = [];
+    const edits: string[] = [];
     const loader = new DefaultResourceLoader({
       cwd: root, agentDir: root, settingsManager: settings,
       noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       extensionFactories: [pi => {
-        const navigation = registerNavigation(pi, { config: () => ({ ...DEFAULT_CONFIG, toolLoading: "off" }) });
+        const navigation = registerNavigation(pi, { config: () => ({ ...DEFAULT_CONFIG, toolLoading: "off" }), onContextEdit: (_ctx, kind) => { edits.push(kind); } });
         pi.registerCommand("exercise-human-anchor", {
           handler: async (_args, ctx) => {
             try {
               const panel = navigation.panel(ctx);
               await panel.create("reviewed", "ANCHOR_FACT_913\nNext validate flags.");
+              // An anchor appends history; it does not edit the prompt prefix.
+              expect(edits).toEqual([]);
               anchorId = manager.getEntries().find(entry => anchorFromEntry(entry)?.name === "reviewed")?.id;
               pi.sendMessage({ customType: "later-fixture", content: "LATER_FACT_824", display: false }, { triggerTurn: false });
               const result = await panel.pivot("reviewed", "Keep LATER_FACT_824.");
               expect(result.ok).toBe(true);
+              expect(edits).toEqual(["navigation"]);
             } catch (error) { failure = error; }
           }
         });
