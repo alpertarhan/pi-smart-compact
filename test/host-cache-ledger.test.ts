@@ -57,6 +57,18 @@ describe("host prompt-cache ledger", () => {
     expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 31 * MINUTE + ONE_HOUR_MS + 1 + 6 * MINUTE)?.cause).toBe("idle-expiry");
   });
 
+  it("counts a cache_warm refresh as the previous keep-alive for one cache lifetime", () => {
+    const ledger = warm();
+    ledger.noteCacheWarm(4 * MINUTE);
+    // 8 minutes after the last request, 4 after the refresh: the prefix was still cached.
+    expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 8 * MINUTE)).toMatchObject({ cause: "foreign", gapMs: 8 * MINUTE });
+    ledger.noteCacheWarm(9 * MINUTE);
+    ledger.noteContextEdit("trim");
+    expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 12 * MINUTE)?.cause).toBe("continuity");
+    ledger.noteCacheWarm(30 * MINUTE);
+    expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 30 * MINUTE + FIVE_MINUTES_MS + 1)?.cause).toBe("idle-expiry");
+  });
+
   it("warns exactly once, on the third foreign rebuild", () => {
     const ledger = warm();
     const warns = Array.from({ length: 5 }, (_, i) => ledger.observe({ usage: usage(0, 0, 90_000) }, (i + 1) * MINUTE)?.warn);

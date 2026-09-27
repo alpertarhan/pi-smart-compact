@@ -400,8 +400,12 @@ cause `pressure` when usage reached the early pressure gate, or `break-even`
 when `N* ≤ 24`. Otherwise it is held (`smart_context` `status` reports it as
 `deferredTrim`); the first request after the cache expired (5 minutes after
 the last response, 1 hour when it reported 1h cache writes) sends the trimmed
-messages, and the edits commit with cause `cold` when that turn completes. An
-unknown price only allows `pressure` and `cold`. A newer compaction, context
+messages, and the edits commit with cause `cold` when that turn completes. A
+Pi cache-warming refresh counts as a response for this expiry; while a batch
+is held, warming stops once `p × (missCost − w' × X / 1e6) − warmCost < $0.05`
+(Pi's own rule, `w'` = cache-write price per million tokens, or input price
+when none is listed). An unknown price only allows `pressure` and `cold`. A
+newer compaction, context
 edit, session change or queued manual/agent request drops the held batch.
 Manual and agent trims commit at the next boundary as before (`manual`,
 `agent`). Prices are catalog ratios, not measured cache behavior.

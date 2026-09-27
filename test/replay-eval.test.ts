@@ -10,9 +10,10 @@ const T0 = Date.parse("2026-09-01T10:00:00Z");
 const MODEL = { api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5" };
 const READ_PATH = "/repo/src/PARSER_PATH_SECRET.ts";
 
-/** Session JSONL: one old large read, a large non-trimmable tail, then a 20-minute idle gap. */
-function fixture() {
-  const lines: unknown[] = [{ type: "session", version: 3, id: "0f1e2d3c-replay-fixture", timestamp: new Date(T0).toISOString(), cwd: root }];
+/** Session JSONL: one old large read, a large non-trimmable tail, then a 20-minute idle gap, optionally kept warm by Pi's `cache_warm` refreshes. */
+function fixture(warmed = false) {
+  const id = warmed ? "0f1e2d3c-replay-warmed" : "0f1e2d3c-replay-fixture";
+  const lines: unknown[] = [{ type: "session", version: 3, id, timestamp: new Date(T0).toISOString(), cwd: root }];
   const usages: { input: number; cacheRead: number; cacheWrite: number; output: number; total: number }[] = [];
   let parentId: string | null = null;
   let seq = 0;
@@ -45,7 +46,16 @@ function fixture() {
     assistant([{ type: "text", text: `Step ${turn} done.` }], T0 + turn * 20 * s);
     user(`Continue with step ${turn + 1}.`, T0 + turn * 20 * s + 5 * s);
   }
-  // Request 8 follows a 20-minute idle gap: the 5-minute cache has expired.
+  // Request 8 follows a 20-minute idle gap: the 5-minute cache has expired unless refreshes kept it alive.
+  if (warmed) {
+    for (let minute = 4; minute <= 16; minute += 4) {
+      const at = T0 + 140 * s + minute * 60 * s;
+      const entryId = `w${minute}`;
+      lines.push({ type: "usage", id: entryId, parentId, timestamp: new Date(at).toISOString(), kind: "cache_warm", ...MODEL,
+        usage: { input: 1, output: 1, cacheRead: 40_000, cacheWrite: 0, totalTokens: 40_002, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+      parentId = entryId;
+    }
+  }
   assistant([{ type: "text", text: "Resumed after the break." }], T0 + 140 * s + 20 * 60 * s);
   user("Finish up.", T0 + 150 * s + 20 * 60 * s);
   assistant([{ type: "text", text: "Done." }], T0 + 160 * s + 20 * 60 * s);
@@ -104,4 +114,27 @@ it("replays a recorded session read-only and times automatic trims per policy", 
   for (const name of ["none", "pressure", "timed-24", "timed-1000"]) expect(policy(name).requests).toBe(usages.length);
   expect(policy("timed-24").cost).toBeLessThan(policy("none").cost);
   expect(policy("timed-24").uncached).toBeLessThan(policy("timed-1000").uncached);
+});
+
+it("treats a cache_warm refresh inside the idle gap as keeping the prefix cached", () => {
+  const sessions = path.join(root, "warm-sessions");
+  fs.mkdirSync(sessions);
+  fs.writeFileSync(path.join(sessions, "cold.jsonl"), fixture().text);
+  fs.writeFileSync(path.join(sessions, "warmed.jsonl"), fixture(true).text);
+  const out = path.join(root, "warm-out");
+  const home = path.join(root, "warm-home");
+  fs.mkdirSync(home);
+  const run = Bun.spawnSync(["bun", "run", "scripts/replay-eval.ts", `--sessions=${sessions}`, `--out=${out}`, "--json", "--break-even=24"], {
+    cwd: path.join(import.meta.dir, ".."), env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
+  });
+  expect(run.stderr.toString()).toBe("");
+  expect(run.exitCode).toBe(0);
+  const report = JSON.parse(fs.readFileSync(path.join(out, "replay-eval.json"), "utf8"));
+  const policy = (id: string, name: string) => report.sessions.find((row: { id: string }) => row.id === id)
+    .policies.find((row: { policy: string }) => row.policy === name);
+  const events = (id: string) => policy(id, "timed-24").events.map(({ atRequest, cause }: { atRequest: number; cause: string }) => ({ atRequest, cause }));
+  expect(events("0f1e2d3c-replay-fixture")).toEqual([{ atRequest: 8, cause: "cold" }]);
+  expect(events("0f1e2d3c-replay-warmed")).toEqual([]);
+  // Request 8 reads the refreshed prefix instead of rebuilding it.
+  expect(policy("0f1e2d3c-replay-warmed", "none").rebuilds).toBe(policy("0f1e2d3c-replay-fixture", "none").rebuilds - 1);
 });

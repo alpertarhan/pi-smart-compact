@@ -56,6 +56,8 @@ export interface HostCacheLedger {
   sessionId(): string | null;
   /** A Continuity edit reached the branch; attributes the next observed rebuild. */
   noteContextEdit(kind: ContextEditKind): void;
+  /** Pi sent a `cache_warm` refresh at `at`; it keeps the live prefix alive like a request. */
+  noteCacheWarm(at: number): void;
   /** Assistant message at message_end; null when it carries no usable usage. */
   observe(message: ObservedMessage, at?: number): LedgerEntry | null;
   summary(): LedgerSummary;
@@ -73,6 +75,8 @@ export function createHostCacheLedger(): HostCacheLedger {
   let sessionId: string | null = null;
   let summary: LedgerSummary;
   let previousAt: number | undefined;
+  // Latest cache_warm refresh since the previous request; extends the prefix's lifetime.
+  let warmedAt: number | undefined;
   // Lifetime of the live cached prefix: set by the last request that wrote cache.
   let lifetimeMs = FIVE_MINUTES_MS;
   let pendingEdit: ContextEditKind | undefined;
@@ -80,6 +84,7 @@ export function createHostCacheLedger(): HostCacheLedger {
   const reset = (id: string | null) => {
     sessionId = id;
     previousAt = undefined;
+    warmedAt = undefined;
     lifetimeMs = FIVE_MINUTES_MS;
     pendingEdit = undefined;
     summary = {
@@ -95,6 +100,7 @@ export function createHostCacheLedger(): HostCacheLedger {
     reset,
     sessionId: () => sessionId,
     noteContextEdit(kind) { pendingEdit = kind; },
+    noteCacheWarm(at) { warmedAt = Math.max(warmedAt ?? at, at); },
     observe(message, at) {
       const usage = message.usage;
       if (!usage || typeof usage.input !== "number" || !Number.isFinite(usage.input)) return null;
@@ -114,7 +120,8 @@ export function createHostCacheLedger(): HostCacheLedger {
         entry.gapMs = Math.max(0, time - previousAt);
         if (uncached >= Math.max(REBUILD_MIN_TOKENS, 0.5 * prompt)) {
           entry.rebuild = true;
-          entry.cause = pendingEdit ? "continuity" : entry.gapMs > lifetimeMs ? "idle-expiry" : "foreign";
+          const alive = Math.max(previousAt, warmedAt ?? previousAt);
+          entry.cause = pendingEdit ? "continuity" : time - alive > lifetimeMs ? "idle-expiry" : "foreign";
           const cause = summary.rebuilds[entry.cause];
           cause.count++;
           cause.uncached += uncached;
@@ -138,6 +145,7 @@ export function createHostCacheLedger(): HostCacheLedger {
       }
       if (cacheWrite > 0) lifetimeMs = cacheLifetimeMs(usage);
       previousAt = time;
+      warmedAt = undefined;
       pendingEdit = undefined;
       return entry;
     },

@@ -48,6 +48,7 @@ import {
  writeRemediationHints,
 } from "./utils/damage.ts";
 import { errorDetail, flushIssues, notifyUser, reportIssue } from "./utils/issues.ts";
+import { conflictNotice, detectExtensionConflicts } from "./app/extension-conflicts.ts";
 import * as log from "./utils/logger.ts";
 import { deriveProjectIdFromCwd } from "./utils/fingerprint.ts";
 import {
@@ -334,6 +335,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    && !isRunning.isSessionActive(resolveSessionId(ctx)),
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
+  onCacheWarm: (ctx, at) => { if (hostCache.sessionId() === resolveSessionId(ctx)) hostCache.noteCacheWarm(at); },
  });
 
  registerSmartCompactCommand(pi, {
@@ -369,6 +371,16 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  pi.on("session_start", (_event, ctx) => {
   nativeReplay.refresh(ctx);
   flushIssues(ctx);
+  try {
+   const conflicts = detectExtensionConflicts({ commands: typeof pi.getCommands === "function" ? pi.getCommands() : [], tools: pi.getAllTools() });
+   if (conflicts.length > 0) reportIssue({ key: "interop.conflicts", message: conflictNotice(conflicts) }, ctx);
+  } catch (error) {
+   reportIssue({
+    key: "interop.detect",
+    message: "Could not check loaded extensions for conflicts (" + errorDetail(error) + "). Other compaction extensions are not detected at startup. Please report this if it repeats.",
+    error,
+   }, ctx);
+  }
   invalidatePreparation(ctx);
   hostCache.reset(resolveSessionId(ctx));
   toolExposure.atBoundary();
