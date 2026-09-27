@@ -133,7 +133,7 @@ export function buildHandoff(sources: HandoffSources, scrubber: SecretScrubber):
  add("ledger", sources.ledger);
  add("pinned", sources.pinPaths.length ? `## Always-kept files\n${sources.pinPaths.map(item => `- ${item}`).join("\n")}` : undefined);
  add("recall", sources.recall && `## Memory recall\n${sources.recall.query ? `Query: ${sources.recall.query}\n\n` : ""}${sources.recall.text}`);
- add("evidence", `## Earlier evidence\nRaw history stays in session ${sessionId}. \`smart_navigation action=recall\` finds it and its anchors; Pi's /resume reopens it, where \`smart_context action=search\` reaches its archived evidence. \`smart_recall\` queries project memory.`);
+ add("evidence", `## Earlier evidence\nRaw history stays in session ${sessionId}; \`smart_context action=search scope=lineage\` and \`read\` reach its archived evidence from here, \`smart_navigation action=recall\` finds its anchors, and \`smart_recall\` queries project memory.`);
 
  const render = () => [header, ...sections.map(section => section.text)].join("\n\n");
  const reserve = TRUNCATED.length + 2;

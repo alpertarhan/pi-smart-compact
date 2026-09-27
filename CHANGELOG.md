@@ -15,6 +15,13 @@
   review the seed (size, sources, full text), then confirm; the selection
   starts on Go back. `/smart-compact handoff dry-run [-- note]` shows the seed
   and opens nothing (TUI preview, a message in other UI modes).
+- `smart_context` `status`/`search`/`read` take `scope: "lineage"`: they also
+  reach archived output of the sessions this one was handed off or forked
+  from, read-only, following `parentSession` up to 3 levels (files up to
+  64 MiB; cycles and missing files end the walk). Parent sources carry
+  `session` and `depth`; each parent's own archive records authorize and
+  verify its outputs. The default `session` scope is unchanged. The handoff
+  seed now points at it instead of `/resume`.
 - Automatic cleanup (`contextHygieneEnabled`) no longer waits only for
   context pressure. A ready batch commits at a turn boundary under pressure,
   or when the model's catalog prices say it pays back its prompt-cache rewrite

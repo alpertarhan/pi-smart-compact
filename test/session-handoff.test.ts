@@ -71,6 +71,7 @@ describe("buildHandoff", () => {
     expect(order.every(index => index > 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(full.content).toContain("Query: continue parser\n\nMEMORY_FACT_71");
+    expect(full.content).toContain("Raw history stays in session 0123456789abcdef; `smart_context action=search scope=lineage` and `read` reach its archived evidence from here");
     expect(full.name).toBe("handoff-01234567");
     expect(full.summary).toBe("ANCHOR_FACT_913\nNext validate flags.");
     expect(buildHandoff(sources(), scrubber())).toEqual(full);

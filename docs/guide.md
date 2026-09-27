@@ -280,6 +280,7 @@ The agent retrieves trimmed, rewound, offloaded or image-archived output with
 {"action":"search","query":"AUTH_EXPIRED","limit":3}
 {"action":"read","id":"<source-id>","line":120,"limit":20}
 {"action":"read","id":"<source-id>","offset":0,"limit":2048}
+{"action":"search","query":"AUTH_EXPIRED","scope":"lineage"}
 ```
 
 | Action | Behavior |
@@ -296,6 +297,16 @@ archived text; `read` and `search` refuse text that no longer matches (for
 example after a hand-edited session file), and a rewind leaves such outputs
 out of recovery. Archives from earlier versions have no hash and are read as
 before.
+
+With `"scope":"lineage"`, `status`, `search` and `read` also reach the sessions
+this one was handed off or forked from, following each session's recorded
+parent up to 3 levels (files over 64 MiB, missing files and cycles end the
+walk). Parent files are read, never opened through Pi or written. Their
+sources come after the active branch's and carry `session` and `depth`;
+`status` adds a `lineage` count per parent, and `read` of a parent source says
+which session it came from. Each parent's own archive records authorize and
+verify its outputs; checkpoints, rewind and trim stay on the active branch.
+The default `"scope":"session"` does not read other files.
 
 ### Automatic offload of large outputs
 
@@ -402,7 +413,8 @@ first, then always-kept files, the ledger, the anchor and the note, each marked
 The message is saved as an anchor named `handoff-<first 8 characters of this
 session id>`, so navigation lists it and cleanup keeps it. The new session
 records this one as its parent; this session is not modified. With no anchor,
-ledger or note, nothing opens.
+ledger or note, nothing opens. From the new session, `smart_context` with
+`"scope":"lineage"` searches and reads this session's archived output.
 
 From Home → **History & recovery** → **Hand off to a new session**: write an
 optional note (`Enter` continues, empty skips), then review the seed: its

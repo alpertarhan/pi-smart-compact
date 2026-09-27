@@ -383,7 +383,11 @@ matches, and records from earlier versions have no hash and are read as
 before. Artifacts at most
 2 MiB each and 256 files or 32 MiB per origin session; retrieval at most 4,096
 characters per read. There is no artifact expiry or garbage collection; see
-[storage](./guide.md#storage-and-privacy).
+[storage](./guide.md#storage-and-privacy). `smart_context` with
+`scope: "lineage"` follows `parentSession` headers (handoff or fork) at most 3
+levels, reads only files of at most 64 MiB, stops at a missing file or a
+cycle, and never writes them; the search limits above apply across all
+sessions, active branch first.
 
 Automatic trim timing. Let `X` be the estimated tokens a batch removes (net of
 its markers) and `T` the estimated tokens of every message from the first

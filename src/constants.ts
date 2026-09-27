@@ -392,6 +392,9 @@ export const ERROR_RESOLVE_WINDOW = 10;
 export const HANDOFF_MAX_CHARS = 16_000;
 export const HANDOFF_RECALL_MAX_CHARS = 6_000;
 export const HANDOFF_RECALL_LIMIT = 5;
+/** Parent sessions `smart_context scope=lineage` follows through `parentSession` headers, and the largest file it loads. */
+export const LINEAGE_MAX_DEPTH = 3;
+export const LINEAGE_MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 // ── Per-run metrics buffer ──
 //
