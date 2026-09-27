@@ -1,8 +1,11 @@
 /** Session-local, append-only context edits. Original evidence stays in Pi's JSONL. */
 import { buildSessionProjection, type SessionBoundaryDraft, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ModelCostRates } from "@earendil-works/pi-ai";
 import { isReadOnlyResearchTool, normalizeToolName } from "../domain/tool-semantics.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { extractText, flattenToolCallBlock } from "../utils/extraction.ts";
+import type { LlmMessage } from "../types.ts";
+import { makeTokenEstimator } from "../utils/tokens.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { anchorFromEntry } from "./navigation-data.ts";
 
@@ -33,9 +36,14 @@ export interface ContextCheckpoint {
   snapshot: ReturnType<typeof fingerprintContext>;
 }
 
+/** Why a trim was committed: context pressure, warm-cache break-even, cold-cache apply, or an explicit request. */
+export type TrimCause = "pressure" | "break-even" | "cold" | "manual" | "agent";
+const TRIM_CAUSES: readonly unknown[] = ["pressure", "break-even", "cold", "manual", "agent"] satisfies TrimCause[];
+
 type ControlData =
   | { version: 1; action: "checkpoint"; checkpoint: ContextCheckpoint }
-  | { version: 1; action: "trim" | "rewind"; references: string[] };
+  | { version: 1; action: "trim"; references: string[]; cause?: TrimCause }
+  | { version: 1; action: "rewind"; references: string[] };
 
 function controlData(entry: SessionEntry): ControlData | null {
   if (entry.type !== "custom" || entry.customType !== CONTEXT_CONTROL_TYPE) return null;
@@ -48,7 +56,8 @@ function controlData(entry: SessionEntry): ControlData | null {
       && cp.snapshot && Number.isSafeInteger(cp.snapshot.messageCount) && cp.snapshot.messageCount >= 0
       && typeof cp.snapshot.hash === "string" && /^[a-f0-9]{64}$/.test(cp.snapshot.hash)) return data as ControlData;
   } else if ((data.action === "trim" || data.action === "rewind") && Array.isArray(data.references)
-    && data.references.length <= MAX_CONTEXT_EDITS && data.references.every(id => typeof id === "string" && id.length <= 128)) {
+    && data.references.length <= MAX_CONTEXT_EDITS && data.references.every(id => typeof id === "string" && id.length <= 128)
+    && (data.action !== "trim" || !("cause" in data) || TRIM_CAUSES.includes(data.cause))) {
     return data as ControlData;
   }
   return null;
@@ -172,6 +181,52 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   const cooldownTurns = lastChange < 0 ? 0 : Math.max(0, AUTO_TRIM_COOLDOWN_TURNS - turnsSinceChange);
   const automatic = savedChars < MIN_AUTO_TRIM_SAVING_CHARS ? "insufficient-savings" : cooldownTurns > 0 ? "cooldown" : "ready";
   return { entries, references, savedChars, automatic, cooldownTurns };
+}
+
+/** The plan's context edits followed by a trim control entry recording `cause`. */
+export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references: string[] }, cause: TrimCause): SessionBoundaryDraft[] {
+  const edits = plan.entries.filter(entry => entry.type === "context_edit");
+  return edits.length ? [...edits, contextControlEntry({ version: 1, action: "trim", references: plan.references, cause })] : [];
+}
+
+/**
+ * Estimated tokens a trim removes (net of markers) and tokens of the rebuilt tail:
+ * every projected message from the first edited target on, with markers in place.
+ */
+export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft[], provider?: string, model?: string) {
+  const markers = new Map(entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
+    ? [[entry.targetId, entry.replacement.content] as const] : []));
+  const estimator = makeTokenEstimator(provider, model);
+  const projected = contextMessageEntries(branch);
+  const first = projected.findIndex(entry => markers.has(entry.id));
+  let savedTokens = 0;
+  let tailTokens = 0;
+  for (const { id, message: raw } of first < 0 ? [] : projected.slice(first)) {
+    // SAFETY: contextMessageEntries yields convertToLlm() output, i.e. real LLM messages.
+    const message = raw as LlmMessage;
+    const marker = markers.get(id);
+    if (marker === undefined) { tailTokens += estimator.message(message); continue; }
+    const kept = estimator.message({ ...message, content: [{ type: "text", text: marker }] });
+    savedTokens += estimator.message(message) - kept;
+    tailTokens += kept;
+  }
+  return { savedTokens, tailTokens };
+}
+
+/**
+ * Further requests after which a warm-cache trim pays back its prefix rewrite:
+ * N* = ((w - r) * T) / (r * X), r = cacheRead/input, w = cacheWrite/input (1 when the
+ * catalog lists no write surcharge). 0 when cache reads are free; null when the price is unknown.
+ */
+export function trimBreakEvenRequests(cost: Partial<ModelCostRates> | undefined, savedTokens: number, tailTokens: number): number | null {
+  const input = cost?.input;
+  if (typeof input !== "number" || !Number.isFinite(input) || input <= 0 || savedTokens <= 0) return null;
+  const read = cost?.cacheRead;
+  const write = cost?.cacheWrite;
+  if (typeof read !== "number" || !Number.isFinite(read) || read < 0) return null;
+  const r = read / input;
+  const w = typeof write === "number" && Number.isFinite(write) && write > 0 ? write / input : 1;
+  return r <= 0 ? 0 : ((w - r) * tailTokens) / (r * savedTokens);
 }
 
 export function planContextRewind(branch: SessionEntry[], sessionId: string, checkpointId: string, report: string) {

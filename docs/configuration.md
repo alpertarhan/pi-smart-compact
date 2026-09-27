@@ -358,7 +358,7 @@ stop; existing archives stay on disk.
 
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
-| `contextHygieneEnabled` | `Automatic cleanup` | `false` | Pressure-gated, batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction. Works with `autoTrigger: false`. |
+| `contextHygieneEnabled` | `Automatic cleanup` | `false` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction; commits under pressure, at break-even, or once the prompt cache is cold (below). Works with `autoTrigger: false`. |
 | `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional renderer. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
@@ -368,6 +368,23 @@ per boundary, keep the latest four assistant turns; artifacts at most 2 MiB
 each and 256 files or 32 MiB per origin session; retrieval at most 4,096
 characters per read. There is no artifact expiry or garbage collection; see
 [storage](./guide.md#storage-and-privacy).
+
+Automatic trim timing. Let `X` be the estimated tokens a batch removes (net of
+its markers) and `T` the estimated tokens of every message from the first
+trimmed output to the end, the part of the prompt cache a trim rewrites. With
+the active model's catalog prices, `r = cacheRead / input` and
+`w = cacheWrite / input` (`w = 1` when no write price is listed), the trim
+pays back after `N* = ((w - r) × T) / (r × X)` further requests (`0` when
+cache reads are free). At a completed turn boundary a ready batch commits with
+cause `pressure` when usage reached the early pressure gate, or `break-even`
+when `N* ≤ 24`. Otherwise it is held (`smart_context` `status` reports it as
+`deferredTrim`); the first request after the cache expired (5 minutes after
+the last response, 1 hour when it reported 1h cache writes) sends the trimmed
+messages, and the edits commit with cause `cold` when that turn completes. An
+unknown price only allows `pressure` and `cold`. A newer compaction, context
+edit, session change or queued manual/agent request drops the held batch.
+Manual and agent trims commit at the next boundary as before (`manual`,
+`agent`). Prices are catalog ratios, not measured cache behavior.
 
 ## Agent tools and session navigation
 

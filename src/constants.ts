@@ -32,6 +32,11 @@ export const SETTLED_TRIGGER_COOLDOWN_MS = 10 * 60_000;
  * above that tail noise while staying far below a real prefix rebuild.
  */
 export const REBUILD_MIN_TOKENS = 16_384;
+/**
+ * Further requests within which a warm-cache automatic trim must pay back its
+ * prefix rewrite; sessions rarely run that many requests without another prefix change.
+ */
+export const AUTO_TRIM_BREAK_EVEN_REQUESTS = 24;
 
 /** Positive per-run bounds shared by CLI and tool arguments; config separately allows 0 as a mode-derived sentinel. */
 export const BUDGET_LIMITS = {

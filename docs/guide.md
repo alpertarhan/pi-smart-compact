@@ -134,11 +134,22 @@ Trimmed output stays retrievable with
 the raw history remains in Pi's session JSONL.
 
 Automatic trimming is separate and off by default: turn on
-**Automatic cleanup** (`contextHygieneEnabled`). It waits for the early
-pressure gate, at least 16,384 characters of net savings and eight assistant
-turns after the last trim, rewind or compaction. These are conservative limits
-to avoid breaking the provider's prompt cache often, not a measured cache-cost
-optimizer. Details are in [configuration](./configuration.md#context-hygiene-and-archives).
+**Automatic cleanup** (`contextHygieneEnabled`). A batch needs at least 16,384
+characters of net savings and eight assistant turns after the last trim,
+rewind or compaction. It then commits at the turn boundary for one of three
+causes, recorded on the trim entry:
+
+- `pressure`: context usage reached the early pressure gate.
+- `break-even`: the model's catalog prices say the trim pays back its prompt
+  cache rewrite within 24 further requests (see
+  [configuration](./configuration.md#context-hygiene-and-archives)).
+- `cold`: otherwise the batch is held back until the cache has expired (5
+  minutes after the last response, 1 hour when that response wrote 1h
+  cache). The first request after that already sends the trimmed context, and
+  the edits commit when that turn completes.
+
+The rule uses the model's catalog price ratios and estimated token counts, not
+measured cache behavior.
 
 ## Compact now
 

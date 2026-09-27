@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { SessionManager, buildSessionProjection, type ExtensionContext, type SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import { DEFAULT_CONFIG } from "../src/constants.ts";
+import { AUTO_TRIM_BREAK_EVEN_REQUESTS, DEFAULT_CONFIG, FIVE_MINUTES_MS, ONE_HOUR_MS } from "../src/constants.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
+import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import type { LlmMessage } from "../src/types.ts";
 import { fingerprintContext } from "../src/app/pending-slot.ts";
 import { registerSmartContextTool } from "../src/app/register-smart-context-tool.ts";
 import {
@@ -54,26 +56,27 @@ function tail(session: SessionManager, count = 4) {
 }
 function ids(session: SessionManager) { return buildSessionProjection(session.getBranch()).entries.filter(entry => entry.messages.length).map(entry => entry.sourceEntry.id); }
 
-function harness(options: { background?: boolean; canTrim?: boolean; session?: SessionManager; canMutate?: boolean } = {}) {
+function harness(options: { background?: boolean; canTrim?: boolean; session?: SessionManager; canMutate?: boolean; model?: object } = {}) {
   const session = options.session ?? manager();
   const handlers = new Map<string, any[]>();
   let tool: any;
   let active = true;
   let tokens = 140_000;
   let changed = 0;
+  let clock = 1 + 60_000;
   const edits: string[] = [];
   let paused = false;
   let canMutate = options.canMutate !== false;
   const cfg = { ...DEFAULT_CONFIG, autoTrigger: true, autoTriggerStrategy: options.background ? "background" as const : "native-hook" as const, minContextPercent: 80 };
   const ctx = {
     sessionManager: session, cwd: process.cwd(), hasUI: false,
-    model: { contextWindow: 200_000 }, getContextUsage: () => ({ tokens }),
+    model: { contextWindow: 200_000, ...options.model }, getContextUsage: () => ({ tokens }),
   } as unknown as ExtensionContext;
   const controller = registerSmartContextTool({
     registerTool: (definition: any) => { tool = definition; },
     getActiveTools: () => active ? ["smart_context"] : [],
     on: (name: string, fn: any) => handlers.set(name, [...handlers.get(name) ?? [], fn]),
-  } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => options.canTrim !== false, canAgentMutate: () => canMutate, onContextChange: () => { changed++; }, onContextEdit: (_ctx, kind) => { edits.push(kind); } });
+  } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => options.canTrim !== false, canAgentMutate: () => canMutate, onContextChange: () => { changed++; }, onContextEdit: (_ctx, kind) => { edits.push(kind); }, now: () => clock });
 
   const execute = async (params: ToolCall["arguments"], signal?: AbortSignal) => {
     const callId = "control-" + sequence++;
@@ -100,6 +103,17 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
   return {
     session, ctx, handlers, execute, boundary, tool, controller, cfg, changes: () => changed, edits: () => edits, setPaused: (value: boolean) => { paused = value; },
     nextRequest: () => handlers.get("context")![0]({ type: "context", messages: [] }, ctx),
+    /** A provider request carrying the host's projected conversation, as Pi clones it. */
+    request: () => {
+      const messages = structuredClone(buildSessionProjection(session.getBranch()).messages);
+      return { messages, result: handlers.get("context")![0]({ type: "context", messages }, ctx) };
+    },
+    /** An ordinary completed (or overridden) turn, not a smart_context request. */
+    turn: (overrides: Record<string, unknown> = {}) => {
+      const leaf = session.getLeafId()!;
+      return boundary({ response: {}, message: assistant(), messageEntryId: leaf, toolResults: [], toolResultEntryIds: [] } as any, overrides);
+    },
+    setNow: (value: number) => { clock = value; },
     setCanMutate: (value: boolean) => { canMutate = value; },
     setActive: (value: boolean) => { active = value; }, setTokens: (value: number) => { tokens = value; }
   };
@@ -477,6 +491,9 @@ describe("smart_context boundary lifecycle", () => {
     h.boundary({ response: {}, message: assistant(), messageEntryId: h.session.getLeafId()!, toolResults: [result], toolResultEntryIds: [] } as any);
     expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(shouldTrim);
     expect(h.changes()).toBe(shouldTrim ? 1 : 0);
+    const control = h.session.getBranch().find(entry => entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE);
+    expect(control?.type === "custom" ? control.data : undefined).toEqual(shouldTrim
+      ? { version: 1, action: "trim", references: [old.result], cause: "pressure" } : undefined);
   });
 });
 
@@ -658,5 +675,148 @@ describe("manual trim controller", () => {
     expect(empty.controller.requestManualTrim(empty.ctx)).toEqual({
       state: "no-eligible", notice: "No eligible archived output to trim.",
     });
+  });
+});
+
+type PricedModel = { provider: string; id: string; cost: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+const ANTHROPIC: PricedModel = { provider: "anthropic", id: "claude-test", cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
+const OPENAI: PricedModel = { provider: "openai", id: "gpt-test", cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } };
+
+/** Independent expectation: the host's own projection after committing the plan, measured with the same estimator. */
+function expectedTrim(session: SessionManager, model: PricedModel) {
+  const branch = session.getBranch();
+  const plan = planContextTrim(branch);
+  const edited = SessionManager.inMemory(process.cwd(), undefined, [session.getHeader()!, ...branch]);
+  apply(edited, plan.entries);
+  const estimator = makeTokenEstimator(model.provider, model.id);
+  const tokens = (entry: { message: unknown }) => estimator.message(entry.message as LlmMessage);
+  const before = contextMessageEntries(branch);
+  const after = contextMessageEntries(edited.getBranch());
+  const targets = new Set(plan.references);
+  const tailTokens = after.slice(after.findIndex(entry => targets.has(entry.id))).reduce((sum, entry) => sum + tokens(entry), 0);
+  const savedTokens = plan.references.reduce((sum, id) =>
+    sum + tokens(before.find(entry => entry.id === id)!) - tokens(after.find(entry => entry.id === id)!), 0);
+  const r = model.cost.cacheRead / model.cost.input;
+  const w = model.cost.cacheWrite > 0 ? model.cost.cacheWrite / model.cost.input : 1;
+  const projected = buildSessionProjection(edited.getBranch()).entries;
+  const marker = (id: string) => projected.find(entry => entry.sourceEntry.id === id)!.messages[0];
+  return { plan, savedTokens, tailTokens, breakEvenRequests: ((w - r) * tailTokens) / (r * savedTokens), marker };
+}
+
+/** An old read-only batch, optionally followed by a large non-trimmable tail, then protected recent turns. */
+function deferredFixture(model: PricedModel | undefined, largeTail: boolean) {
+  const h = harness({ background: true, model });
+  h.setTokens(100_000); // below the 140k start gate
+  const old = toolBatch(h.session, "read", "old research".repeat(2_000));
+  if (largeTail) h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });
+  tail(h.session);
+  return { h, old };
+}
+function controlOf(entries: SessionBoundaryDraft[] | undefined) {
+  const control = entries?.find(entry => entry.type === "custom");
+  return control?.type === "custom" ? control.data : undefined;
+}
+
+describe("automatic trim timing", () => {
+  it("marks a warm-cache trim, applies it on the first cold request and commits it at the next completed turn", async () => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    const expected = expectedTrim(h.session, ANTHROPIC);
+    expect(h.turn()).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+    const deferred = h.controller.deferredTrim(h.session.getSessionId())!;
+    expect(deferred).toMatchObject({ savedTokens: expected.savedTokens, tailTokens: expected.tailTokens });
+    expect(deferred.breakEvenRequests).toBeCloseTo(expected.breakEvenRequests, 9);
+    expect(deferred.breakEvenRequests!).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    const status = JSON.parse((await h.tool.execute("s", { action: "status" }, undefined, undefined, h.ctx)).content[0].text);
+    expect(status.deferredTrim).toEqual(deferred);
+
+    expect(h.request().result).toBeUndefined(); // 1 minute after the last response: cache warm
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    const cold = h.request();
+    const sent = cold.result!.messages;
+    expect(sent).toHaveLength(cold.messages.length);
+    const target = cold.messages.findIndex(message => message.role === "toolResult" && JSON.stringify(message.content).includes("old research"));
+    expect(sent[target]).toEqual(expected.marker(old.result));
+    sent.forEach((message: unknown, index: number) => { if (index !== target) expect(message).toBe(cold.messages[index]); });
+    // Inside the tool loop the cache is warm again, but the prefix must not flip back.
+    h.session.appendMessage({ ...assistant([{ type: "text", text: "loop" }]), timestamp: 1 + FIVE_MINUTES_MS + 2 });
+    expect(h.request().result!.messages[target]).toEqual(expected.marker(old.result));
+
+    expect(h.edits()).toEqual([]);
+    const committed = h.turn();
+    expect(committed!.entries.filter((entry: SessionBoundaryDraft) => entry.type === "context_edit")).toEqual(
+      expected.plan.entries.filter(entry => entry.type === "context_edit"));
+    expect(controlOf(committed!.entries)).toEqual({ version: 1, action: "trim", references: [old.result], cause: "cold" });
+    expect(h.edits()).toEqual([]);
+    h.nextRequest();
+    expect(h.edits()).toEqual(["trim"]);
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+  });
+
+  it("commits immediately when the tail is small enough to pay back within the horizon", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, false);
+    expect(expectedTrim(h.session, ANTHROPIC).breakEvenRequests).toBeLessThanOrEqual(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], cause: "break-even" });
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+  });
+
+  it("never commits a break-even trim when the model price is unknown", () => {
+    const { h } = deferredFixture(undefined, false);
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())?.breakEvenRequests).toBeNull();
+  });
+
+  it.each(["compaction", "context_edit"] as const)("drops a mark once a newer %s rewrote the context", kind => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    h.turn();
+    if (kind === "compaction") h.session.appendCompaction("intervening", h.session.getBranch()[0].id, 1000);
+    else h.session.appendContextEdit(old.result, { content: "foreign edit" });
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeUndefined();
+    expect(h.turn()).toBeUndefined();
+    expect(h.session.getBranch().filter(entry => entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE)).toEqual([]);
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+  });
+
+  it("keeps nothing from an aborted turn and re-applies on the next cold request", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    const expected = expectedTrim(h.session, ANTHROPIC);
+    h.turn();
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeDefined();
+    expect(h.turn({ outcome: "aborted" })).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+    const again = h.request();
+    expect(again.result!.messages.find((message: { role: string }) => message.role === "toolResult")).toEqual(expected.marker(old.result));
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "cold" });
+  });
+
+  it("keeps a cold-applied trim in force across a contested boundary until one can commit it", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    const expected = expectedTrim(h.session, ANTHROPIC);
+    h.turn();
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeDefined();
+    // Queued user input owns this boundary: nothing commits, but the next
+    // request must not flip the prefix back to the untrimmed version.
+    expect(h.turn({ context: { pendingMessages: [{ role: "user", content: "queued" }], contextEntries: [] } })).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+    h.session.appendMessage({ ...assistant([{ type: "text", text: "after the queued input" }]), timestamp: 1 + FIVE_MINUTES_MS + 2 });
+    expect(h.request().result!.messages.find((message: { role: string }) => message.role === "toolResult")).toEqual(expected.marker(old.result));
+    expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], cause: "cold" });
+  });
+
+  it("prices OpenAI-style caches without a write surcharge and honors 1h retention", () => {
+    const { h } = deferredFixture(OPENAI, true);
+    const oneHour = assistant([{ type: "text", text: "cached for an hour" }]);
+    oneHour.usage = { ...oneHour.usage, cacheWrite: 5_000, cacheWrite1h: 5_000 };
+    h.session.appendMessage(oneHour);
+    const expected = expectedTrim(h.session, OPENAI);
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())!.breakEvenRequests).toBeCloseTo(expected.breakEvenRequests, 9);
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeUndefined();
+    h.setNow(1 + ONE_HOUR_MS + 1);
+    expect(h.request().result).toBeDefined();
   });
 });

@@ -65,18 +65,22 @@ const num = (value: unknown): number => typeof value === "number" && Number.isFi
 const tallies = <K extends string>(keys: readonly K[]) =>
   Object.fromEntries(keys.map(key => [key, { count: 0, uncached: 0 }])) as Record<K, TokenTally>;
 
+/** Lifetime of the prefix a request cached: 1 h when it reported 1h-retention writes, else 5 min. */
+export const cacheLifetimeMs = (usage: Partial<Usage> | undefined): number =>
+  num(usage?.cacheWrite1h) > 0 ? ONE_HOUR_MS : FIVE_MINUTES_MS;
+
 export function createHostCacheLedger(): HostCacheLedger {
   let sessionId: string | null = null;
   let summary: LedgerSummary;
   let previousAt: number | undefined;
-  // Retention of the live cached prefix: set by the last request that wrote cache.
-  let oneHourRetention = false;
+  // Lifetime of the live cached prefix: set by the last request that wrote cache.
+  let lifetimeMs = FIVE_MINUTES_MS;
   let pendingEdit: ContextEditKind | undefined;
 
   const reset = (id: string | null) => {
     sessionId = id;
     previousAt = undefined;
-    oneHourRetention = false;
+    lifetimeMs = FIVE_MINUTES_MS;
     pendingEdit = undefined;
     summary = {
       sessionId: id, requests: 0, input: 0, cacheRead: 0, cacheWrite: 0,
@@ -110,8 +114,7 @@ export function createHostCacheLedger(): HostCacheLedger {
         entry.gapMs = Math.max(0, time - previousAt);
         if (uncached >= Math.max(REBUILD_MIN_TOKENS, 0.5 * prompt)) {
           entry.rebuild = true;
-          const ttl = oneHourRetention ? ONE_HOUR_MS : FIVE_MINUTES_MS;
-          entry.cause = pendingEdit ? "continuity" : entry.gapMs > ttl ? "idle-expiry" : "foreign";
+          entry.cause = pendingEdit ? "continuity" : entry.gapMs > lifetimeMs ? "idle-expiry" : "foreign";
           const cause = summary.rebuilds[entry.cause];
           cause.count++;
           cause.uncached += uncached;
@@ -133,7 +136,7 @@ export function createHostCacheLedger(): HostCacheLedger {
         summary.cost.total += cost.total;
         if (entry.rebuild) summary.cost.rebuildUncached += num(cost.input) + num(cost.cacheWrite);
       }
-      if (cacheWrite > 0) oneHourRetention = num(usage.cacheWrite1h) > 0;
+      if (cacheWrite > 0) lifetimeMs = cacheLifetimeMs(usage);
       previousAt = time;
       pendingEdit = undefined;
       return entry;

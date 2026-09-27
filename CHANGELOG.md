@@ -4,6 +4,15 @@
 
 ### Added
 
+- Automatic cleanup (`contextHygieneEnabled`) no longer waits only for
+  context pressure. A ready batch commits at a turn boundary under pressure,
+  or when the model's catalog prices say it pays back its prompt-cache rewrite
+  within 24 requests (`N* = ((w - r) × T) / (r × X)`); otherwise it is held
+  and sent with the first request after the cache expired, then committed
+  when that turn completes. Trim entries record the cause (`pressure`,
+  `break-even`, `cold`, `manual`, `agent`); `smart_context` `status` reports a
+  held batch as `deferredTrim`. The rule uses catalog price ratios and token
+  estimates, not measured cache behavior.
 - The compaction result returned to Pi carries the provider-reported usage of
   the applied run (EESV stage calls or the provider-native compaction
   request), priced at each route model's catalog rates, so Pi's session
