@@ -15,20 +15,17 @@ This guide is task oriented. For every setting, default and range, see the
 release evidence, see [evaluation](./evaluation.md).
 
 > [!NOTE]
-> **Which version this describes.** This guide describes the current source
-> checkout: `9.8.0-canary.8`, including the Home/settings UI changes, session
-> navigation and on-demand agent tools. The 9.8.0 canaries are local-only and
-> not published. The most recent stable changelog entry is `9.7.1`, which
-> predates most features here: the Home screen, the `trim`, `storage` and
-> `context` commands, `smart_context`, `smart_tools`, `smart_navigation`,
-> artifact offload, the Hindsight and Mnemopi backends, the provider (native)
-> engine, image snapshots and the RTK companion. If you installed from npm,
-> check [the changelog](../CHANGELOG.md) for what your version contains.
+> **Which version this describes.** This guide targets Pi Continuity `10.0.0`,
+> the stable release of the context-hygiene and continuity rework. The earlier
+> `9.8.0-canary.*` entries in the changelog are historical local candidates,
+> not npm releases. See [upgrade notes](#upgrade-from-9x) when coming from 9.x
+> and [the changelog](../CHANGELOG.md) for the release scope and evidence limits.
 
 ## Contents
 
 - [How it works in one minute](#how-it-works-in-one-minute)
 - [Install and first run](#install-and-first-run)
+- [Upgrade from 9.x](#upgrade-from-9x)
 - [The Home screen](#the-home-screen)
 - [Clean up tool output](#clean-up-tool-output)
 - [Compact now](#compact-now)
@@ -92,6 +89,33 @@ Then, inside Pi:
 Opening Home changes nothing. With the built-in defaults, automatic compaction
 depends on Pi starting it. Automatic local cleanup, early output offload and
 speculative background preparation are off until selected.
+
+## Upgrade from 9.x
+
+10.0.0 is the Pi Continuity product and workflow rework. The npm package,
+`/smart-compact` commands, `smart_*` tools, `smartCompact` settings namespace
+and stored paths keep their names; do not rename existing data directories.
+
+1. Update Pi to **0.87.1+** and use **Node.js 22.19+**. Install the release with
+   `pi install npm:pi-smart-compact@10.0.0`, then reload or restart Pi.
+2. Open `/smart-compact` in the TUI. The bare command now opens Home; **Compact
+   now** starts the interactive compaction flow. Print/RPC/SDK use still runs
+   compaction directly. Review requires **A** to apply, not Enter.
+3. Expect the agent to see `smart_tools` first. It loads navigation, history,
+   memory and compaction tools on demand. Choose **Always available** only if
+   you want all permitted tools exposed from the start.
+4. Keep one context-editing owner. Disable pi-toolkit auto-context or another
+   overlapping cleanup/compaction extension before using these features; see
+   [extension compatibility](#working-with-other-extensions-and-features).
+5. Review **Memory store** if you use project memory. Exactly one backend is
+   used, with no silent fallback. Mnemopi and image snapshots now require
+   [separately installed optional components](../README.md#optional-components);
+   the default local memory store does not.
+
+Automatic cleanup, early offload, background preparation, provider-native
+compaction and image snapshots remain opt-in. Existing compaction permissions
+are preserved. Claude subscription routes still need the compatible separate
+adapter described under [provider compaction](#summary-format-provider-compaction-and-images).
 
 ## The Home screen
 

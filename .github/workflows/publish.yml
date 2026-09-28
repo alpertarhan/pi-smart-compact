@@ -1,0 +1,79 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26.10.0"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Validate release and select npm tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          const { version } = JSON.parse(readFileSync("package.json", "utf8"));
+          if (process.env.RELEASE_TAG !== `v${version}`) {
+            throw new Error("Release tag must match package.json version");
+          }
+          const prerelease = version.split("+")[0].includes("-");
+          if (String(prerelease) !== process.env.RELEASE_PRERELEASE) {
+            throw new Error("GitHub prerelease flag must match the package version");
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `npm-tag=${prerelease ? "next" : "latest"}\n`);
+          NODE
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Setup npm with OIDC support
+        run: npm install --global npm@11.19.1
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install ripgrep for offline package audit
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+
+      - name: Check minimum Pi compatibility
+        run: bun run compat:pi 0.87.1
+
+      - name: Audit dependencies
+        run: bun audit
+
+      - name: Publish with npm Trusted Publishing
+        # prepublishOnly runs release:check (including latest-Pi compatibility).
+        # npm obtains OIDC credentials and provenance; no npm token is stored here.
+        env:
+          NPM_DIST_TAG: ${{ steps.release.outputs.npm-tag }}
+        run: npm publish --tag "$NPM_DIST_TAG"

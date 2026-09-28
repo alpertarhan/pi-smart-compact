@@ -7,10 +7,9 @@ Pi Continuity is the product name only. Settings keep their technical names:
 everything lives under the `smartCompact` key, and the settings screen is opened
 with `/smart-compact settings`.
 
-Defaults on this page were checked against the current source checkout
-(`9.8.0-canary.8`; local-only, not published). Some capabilities
-and keys are newer than the latest stable changelog entry, `9.7.1`; check
-[the changelog](../CHANGELOG.md) for your installed version.
+Defaults on this page were checked against Pi Continuity `10.0.0`. For an older
+installation, use [the changelog](../CHANGELOG.md) and the
+[upgrade notes](./guide.md#upgrade-from-9x) before adopting these settings.
 
 ## Contents
 

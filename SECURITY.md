@@ -9,7 +9,7 @@ Security fixes target the latest published version of `pi-smart-compact`.
 
 | Version | Supported |
 | --- | --- |
-| Latest `9.x` | Yes |
+| Latest `10.x` | Yes |
 | Older | No |
 
 Prerelease and unpublished source checkouts are not separately supported; fixes
