@@ -1,12 +1,12 @@
 name: Bug report
-description: Report a reproducible pi-smart-compact problem
+description: Report a reproducible Pi Continuity (pi-smart-compact) problem
 title: "bug: "
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Please include enough context to reproduce the issue without sharing secrets or private session content.
+        Thanks for reporting a bug. Please include enough context to reproduce the issue without sharing secrets or private session content. Report vulnerabilities privately through GitHub Security Advisories instead (see SECURITY.md). Home › Status & help › Readiness & details shows local readiness and effective settings without contacting a provider.
   - type: textarea
     id: summary
     attributes:
@@ -18,7 +18,8 @@ body:
     id: version
     attributes:
       label: pi-smart-compact version
-      placeholder: "9.7.1"
+      description: Shown in the `/smart-compact` command description. Say whether it is an npm release or a source checkout.
+      placeholder: "e.g. 9.7.1 from npm"
     validations:
       required: true
   - type: input
@@ -33,11 +34,18 @@ body:
     attributes:
       label: Integration surface
       options:
-        - /smart-compact command
+        - /smart-compact Home or subcommand
+        - automatic compaction (native-hook, settled or background)
         - smart_compact tool
-        - session_before_compact auto-trigger
-        - metrics/dashboard
-        - install/build
+        - smart_context tool, cleanup or archived output
+        - smart_navigation tool or navigation panel
+        - smart_tools loader
+        - memory (smart_recall, smart_save_memory, backend)
+        - provider-native compaction engine
+        - visual evidence
+        - RTK companion
+        - metrics/dashboard/storage report
+        - install/build/optional components
         - other
     validations:
       required: true
@@ -76,5 +84,7 @@ body:
         Bun:
         Node:
         Model/provider:
+        Memory backend (local, hindsight, mnemopi):
+        Other context or compaction extensions loaded:
     validations:
       required: false

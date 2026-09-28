@@ -17,13 +17,17 @@ Start with the [user guide](./docs/guide.md) and
 
 Helpful things to include:
 
-- `pi-smart-compact` version (from `package.json` or `/smart-compact` output),
-  and whether it is a published npm release or a source checkout
+- `pi-smart-compact` version (shown in the `/smart-compact` command
+  description, or in `package.json`), and whether it is a published npm
+  release or a source checkout
 - Pi Coding Agent version
-- the surface involved: `/smart-compact` Home or a subcommand, the
-  `smart_compact`, `smart_context`, `smart_recall` or `smart_save_memory` tool,
-  or automatic compaction (and which `autoTriggerStrategy`)
+- the surface involved: `/smart-compact` Home or a subcommand, an agent tool
+  (`smart_tools`, `smart_navigation`, `smart_compact`, `smart_context`,
+  `smart_recall` or `smart_save_memory`), or automatic compaction (and which
+  `autoTriggerStrategy`)
 - the selected memory backend, if memory is involved
+- other context-editing or compaction extensions you have loaded; Pi
+  Continuity warns at session start when it recognizes one
 - relevant non-secret `smartCompact` configuration
 - redacted error output or logs
 

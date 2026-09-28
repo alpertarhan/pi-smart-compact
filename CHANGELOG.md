@@ -4,6 +4,17 @@
 
 ### Changed
 
+- Documentation now separates quick start, usage/reference and historical
+  evidence; long guides have clearer navigation and troubleshooting. Corrected
+  local-memory defaults, automatic-cleanup tool requirements, settings refresh
+  behavior and optional Hindsight authentication. Shipped pages link to
+  repository-only material without depending on excluded local files.
+- Pi Continuity has a unified return-path mark, outlined vector banner and
+  reproducible SVG/PNG exports. The catalog image URL is unchanged; the README
+  uses a font-independent PNG banner. Asset ownership and export instructions
+  are documented in `docs/identity.md` and `assets/README.md`.
+- Contributor and issue templates reflect current tools, privacy boundaries
+  and package contents. Repository paths and runtime identifiers are unchanged.
 - Dated reports and pilot data moved to `docs/reports/` and, like the review
   findings, are no longer packed into the npm package (about 150 KB less per
   install; `docs/README.md` still indexes them).

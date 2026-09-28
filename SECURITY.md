@@ -40,9 +40,13 @@ Operational guidance:
   sensitive project context.
 - Review provider and model configuration before enabling automatic
   compaction; summaries are produced by the configured model provider.
-- Remote memory is opt-in. With the Hindsight backend, confirmed facts and
-  recall queries go to the configured server, which may store raw text and run
-  its own models; see [Hindsight memory backend](./docs/hindsight-memory.md).
+- Memory uses exactly one selected backend. The default local backend
+  (`contextGraphEnabled`, on by default) indexes facts derived from confirmed
+  compactions in a local SQLite store; manual saves always need confirmation.
+  Mnemopi also stores locally. Remote memory is opt-in: with the Hindsight
+  backend, confirmed facts and recall queries go to the configured server,
+  which may store raw text and run its own models; see
+  [Hindsight memory backend](./docs/hindsight-memory.md).
 
 Runtime artifacts are written under `~/.pi/agent/`; private artifact
 directories are enforced as `0700` and files as `0600`. Pre-compaction backups

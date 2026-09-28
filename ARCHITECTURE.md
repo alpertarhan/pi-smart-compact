@@ -9,7 +9,21 @@ unchanged.
 Usage lives in the [user guide](./docs/guide.md), every setting in
 [configuration](./docs/configuration.md), and evidence rules in
 [evaluation](./docs/evaluation.md). This page explains how the parts fit and
-which invariants they must keep.
+which invariants they must keep. Contributor workflow and the repository map
+are in [`CONTRIBUTING.md`](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md).
+
+**Contents:** [product layers](#product-layers) ·
+[integration surfaces](#integration-surfaces) ·
+[1. context hygiene](#1-context-hygiene) ·
+[2. recoverable continuity](#2-recoverable-continuity) ·
+[3. verified compaction](#3-verified-compaction) ·
+[4. cross-session memory](#4-optional-cross-session-memory) ·
+[state and persistence](#state-caching-and-persistence) ·
+[concurrency and safety](#concurrency-and-safety-model) ·
+[provider awareness](#provider-awareness) ·
+[layer responsibilities](#layer-responsibilities) ·
+[host dependency boundary](#host-dependency-boundary) ·
+[extending the system](#extending-the-system)
 
 ## Product layers
 
@@ -39,8 +53,9 @@ flowchart LR
 Quality means retained constraints, trustworthy failure evidence and low
 retrieval churn, not merely fewer tokens. There are no recurring
 model-visible status prompts, no automatic error deletion, and no destructive
-file rollback. The [2026-09-24 context hygiene report](./docs/reports/context-hygiene-2026-09-24.md)
-records the original experiments and acceptance criteria.
+file rollback. The [2026-09-24 context hygiene report](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/context-hygiene-2026-09-24.md)
+(repository only, historical) records the original experiments and acceptance
+criteria.
 
 ## Design ideas
 
@@ -65,7 +80,7 @@ compacted summary is not a lossless copy of the history it replaces.
 
 ## Integration surfaces
 
-Registered in [`src/index.ts`](./src/index.ts).
+Registered in [`src/index.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/index.ts).
 
 | Surface | Lifecycle |
 | --- | --- |
@@ -86,6 +101,17 @@ Registered in [`src/index.ts`](./src/index.ts).
 | `smart_context` tool | Session-local checkpoint/rewind, safe trimming, and bounded original-output retrieval via native boundary drafts. |
 | `smart_recall` tool | Searches the selected memory backend only. `scope: "session"` is local-graph-only; remote backends skip it and read nothing else. |
 | `smart_save_memory` tool | Saves a host-confirmed scrubbed fact through the selected backend, or resolves the exact store named by a target-bound ref. |
+
+The table lists the owning surfaces. Other host events support them:
+session switch/fork/tree and `model_select` cancel speculative
+preparation and queued edits; `session_start` also names known conflicting
+compaction or context-editing extensions (`app/extension-conflicts.ts`,
+name-based evidence from the live command/tool registry, one notice);
+`before_agent_start` injects the one-shot native continuity bridge;
+`message_end` feeds damage monitoring and the host prompt-cache ledger;
+`context_with_system` and `cache_warming_decision` serve held automatic trims
+(see [recoverable trimming](#recoverable-trimming)); the RTK companion uses
+`tool_call`.
 
 Tool exposure is owned by `app/lazy-tools.ts`. With `toolLoading: "lazy"`
 (default) only the `smart_tools` loader is active; a group becomes active when
@@ -220,12 +246,23 @@ bounded reference marker. Already-edited entries are not rewritten. Automatic
 trimming runs with `contextHygieneEnabled` independently of compaction, or with
 the effective `background` strategy, and requires `smart_context` reachable
 by the model (`canAutoTrim` checks it like artifact offload does).
-`plan` gives an on-demand non-mutating preview. Automatic edits require at
+`plan` gives an on-demand non-mutating preview. Automatic batches require at
 least 16,384 net saved characters and eight assistant turns since the last
 owned trim/rewind/compaction; branch history supplies that cooldown across
-reloads and forks. This batches cache-prefix invalidations; it does not claim
-to optimize provider cache billing. Explicit trim bypasses batching, not
-safety.
+reloads and forks. At a completed, uncontested turn boundary a ready batch
+commits with cause `pressure` (early pressure gate reached) or `break-even`
+(catalog prices say it pays back within `AUTO_TRIM_BREAK_EVEN_REQUESTS` = 24
+requests). Otherwise it is held (`deferredTrim` in `smart_context` status):
+once the prompt cache has expired, `context_with_system` sends the trimmed
+results request-locally, byte-identical to the future `context_edit`, and the
+edits commit with cause `cold` at the next completed turn. While a batch is
+held, `cache_warming_decision` may stop Pi's cache warming when a refresh no
+longer pays. Unknown prices allow only `pressure` and `cold`. The formula and
+drop conditions are in [configuration](./docs/configuration.md);
+`app/host-cache-ledger.ts` attributes observed prefix rebuilds. These are
+catalog-price estimates, not measured cache billing. Manual and agent trims
+commit at the next boundary with cause `manual` or `agent`; explicit trim
+bypasses batching, not safety.
 
 Instruction and skill sources stay inline through trim, rewind, artifact,
 bitmap and pre-compaction pruning; recovery tool output is not recursively
@@ -405,7 +442,7 @@ flowchart LR
     Y -- Yes --> J[Pending compaction returned to Pi]
 ```
 
-The orchestrator ([`src/app/run-smart-compact.ts`](./src/app/run-smart-compact.ts))
+The orchestrator ([`src/app/run-smart-compact.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/app/run-smart-compact.ts))
 threads a typed context through ten stages:
 
 | # | Stage | Module | Transition |
@@ -426,7 +463,7 @@ threads a typed context through ten stages:
 
 ### The typed stage machine
 
-[`src/app/run-context.ts`](./src/app/run-context.ts) models the pipeline
+[`src/app/run-context.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/app/run-context.ts) models the pipeline
 context as a state machine of branded intersection types. Each step accepts the
 previous stage type and returns the next, so reordering or skipping a step is a
 compile-time error:
@@ -517,7 +554,7 @@ and written atomically only after the matching native compaction is confirmed.
 
 ### Extract
 
-[`src/utils/extraction.ts`](./src/utils/extraction.ts). Zero LLM calls.
+[`src/utils/extraction.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/utils/extraction.ts). Zero LLM calls.
 Deterministically pulls modified/read/deleted files, tool and bash-like errors,
 retry/resolution signals, explicit and implicit decisions, constraints and
 preferences, heuristic topic segments, timeline events, the main goal and open
@@ -526,7 +563,7 @@ synthesis and verification trust.
 
 ### Explore
 
-[`src/phases/explore.ts`](./src/phases/explore.ts). Runs only in `thorough`
+[`src/phases/explore.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/phases/explore.ts). Runs only in `thorough`
 mode or when `auto` selects it from deterministic risk. The model inspects the
 conversation through a small toolset: message ranges, conversation search,
 recent user messages, local context around an index, file-change lookups and
@@ -538,7 +575,7 @@ caching.
 
 ### Synthesize
 
-[`src/phases/synthesize.ts`](./src/phases/synthesize.ts). Three paths:
+[`src/phases/synthesize.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/phases/synthesize.ts). Three paths:
 
 - **Deterministic zero-call** for high-confidence Fast extractions.
 - **Single-pass** when the compacted conversation fits under the configured
@@ -555,7 +592,7 @@ budget or LLM call fails.
 
 ### Verify
 
-[`src/phases/verify.ts`](./src/phases/verify.ts) scores the summary against
+[`src/phases/verify.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/phases/verify.ts) scores the summary against
 deterministic extraction, continuity, explicit focus/note steering and source
 messages. It checks missing modified/read/deleted files, unresolved errors,
 high-confidence constraints, weak goal coverage, missing structure, suspicious
@@ -691,7 +728,8 @@ Anthropic blocks or opaque OpenAI items, so this extension does both:
 
 `test/native-compaction-compat.test.ts` pins what stock adapters drop by
 themselves. The design research and measured runs are in the
-[2026-09-24 research report](./docs/reports/hindsight-native-compaction-research-2026-09-24.md).
+[2026-09-24 research report](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/hindsight-native-compaction-research-2026-09-24.md)
+(repository only, historical).
 
 ### Experimental visual evidence
 
@@ -726,9 +764,9 @@ summary. Changing model/provider/API or using a text-only model withholds
 images; stricter scrubbing also withholds old pixels that cannot be
 retroactively redacted. Only the latest compaction's archive is eligible, and
 native fallback can discard it. Metrics record only visual token estimates and
-frame counts. The [2026-09-24 visual pilot](./docs/reports/visual-pilot-2026-09-24.md)
-is a dated single-model synthetic sample, not production or cross-model
-accuracy.
+frame counts. The [2026-09-24 visual pilot](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/visual-pilot-2026-09-24.md)
+(repository only) is a dated single-model synthetic sample, not production or
+cross-model accuracy.
 
 ## 4. Optional cross-session memory
 
@@ -862,7 +900,7 @@ The extension runs alongside other Pi sessions and other extensions.
 
 ### Pending-compaction slot
 
-[`src/app/pending-slot.ts`](./src/app/pending-slot.ts) is an encapsulated,
+[`src/app/pending-slot.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/app/pending-slot.ts) is an encapsulated,
 host-agnostic state cell (one producer, one consumer, single-threaded event
 loop). `consume()` returns a discriminated result:
 
@@ -874,7 +912,7 @@ loop). `consume()` returns a discriminated result:
 | `mismatch` | staged by a different session, project, or non-ancestor branch head |
 
 Session identity comes from
-[`infra/session-identity.ts`](./src/infra/session-identity.ts): a real ID when
+[`infra/session-identity.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/infra/session-identity.ts): a real ID when
 the host exposes one, otherwise a per-call unforgeable `unresolved:<uuid>`, so
 two unresolved sessions never collide. Apply also requires the staged branch
 head to be the current head or one of its visible ancestors, so navigation to a
@@ -885,7 +923,7 @@ invalidate.
 ### Cancellation deadlines
 
 Automatic compaction combines the host event's `AbortSignal` with its own
-deadline through a shared [`ExternalCancellation`](./src/app/run-smart-compact.ts)
+deadline through a shared [`ExternalCancellation`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/app/run-smart-compact.ts)
 handle. Either source calls `abort()`, and every side-effect gate checks the
 shared state before writing or applying. The caller waits for a safe pipeline
 unwind; no `Promise.race` hard return can leave work running past the hook
@@ -893,7 +931,7 @@ lifecycle.
 
 ### Filesystem and locks
 
-JSON/text cache writes use [`src/infra/fs.ts`](./src/infra/fs.ts): private
+JSON/text cache writes use [`src/infra/fs.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/infra/fs.ts): private
 artifact directories are 0700 and files 0600; atomic temp-file + rename
 prevents half-truncated readers but does not claim fsync/power-loss
 durability. Append/trim operations run asynchronously, yield before
@@ -913,7 +951,7 @@ the lock cannot be acquired.
 
 ## Provider awareness
 
-[`src/utils/tokens.ts`](./src/utils/tokens.ts) keeps a per-provider capability
+[`src/utils/tokens.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/utils/tokens.ts) keeps a per-provider capability
 table (Anthropic, OpenAI, Google, DeepSeek, MiniMax, Xiaomi, Mistral, xAI, …)
 with a safe default and fuzzy alias matching for unknowns:
 
@@ -942,10 +980,10 @@ host's decision, never an implicit fallback promised to manual callers.
 
 ### Evaluation and telemetry
 
-[`src/domain/provider-evaluation.ts`](./src/domain/provider-evaluation.ts)
+[`src/domain/provider-evaluation.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/domain/provider-evaluation.ts)
 aggregates call telemetry into an advisory stage × context-pressure ×
 tool-density matrix; it never mutates configuration.
-[`src/domain/telemetry.ts`](./src/domain/telemetry.ts) maps exceptions to a
+[`src/domain/telemetry.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/domain/telemetry.ts) maps exceptions to a
 content-free failure taxonomy, aggregates schema-v2 quality without IDs or
 conversation data, and compares an explicit `canary` cohort with `stable`
 history. `src/ui/dashboard-insights.ts` computes the dashboard's Data
@@ -958,7 +996,7 @@ Commands, exact decision thresholds and evidence limits are documented once, in
 
 ## Dependency injection
 
-[`src/infra/services.ts`](./src/infra/services.ts) is a per-`runSmartCompact`
+[`src/infra/services.ts`](https://github.com/alpertarhan/pi-smart-compact/blob/main/src/infra/services.ts) is a per-`runSmartCompact`
 service bag. Metrics, budgets, scrubbers and prompt namespaces are isolated per
 run. Production shares only bounded provider/model capability and calibration
 knowledge, which contains no conversation or session data; tests use isolated
@@ -1001,6 +1039,7 @@ stores by default.
 | `app/session-lineage.ts` | read-only in-memory load of `parentSession` ancestors (depth, size and cycle bounds) |
 | `app/session-handoff.ts` | handoff seed from recorded state only; preview and `ctx.newSession` seeding |
 | `app/host-cache-ledger.ts` | session-local ledger of Pi's own requests: rebuild detection, cause attribution, cache lifetime |
+| `app/extension-conflicts.ts` | startup detection of known conflicting compaction/context-editing extensions; name-based, one notice |
 | `app/artifact-storage.ts` | read-only storage inventory and lineage classification |
 | `app/visual-archive.ts` | bounded evidence selection, persisted archive validation, request-local image rehydration |
 | `app/native-compaction.ts` | native engine: nested-request compaction, clean-turn cut, route/size checks, replay |
@@ -1083,6 +1122,7 @@ All external-world interaction.
 | `infra/native-protocol.ts` | provider wire formats for native compaction and replay; no Pi imports |
 | `infra/hindsight-client.ts` | four fixed Hindsight routes; no generic request |
 | `infra/hindsight-receipts.ts` | origin/bank/project-scoped submission receipts; never evicts unconfirmed ones |
+| `infra/optional-components.ts` | read-only presence checks and exact install commands for optional peers (Mnemopi, Bun, resvg); no shell or network |
 | `infra/memory-ref.ts` | opaque backend/id refs and target-binding checks |
 | `infra/visual-renderer.ts` | lazy optional resvg renderer using `assets/DejaVuSansMono.ttf` |
 
@@ -1117,6 +1157,7 @@ All external-world interaction.
 | `ui/profiles.ts` | presets derived from exact persisted flags; model feasibility snapshot type |
 | `ui/overlays.ts` | progressive preflight, phase progress and approval review |
 | `ui/storage-report.ts` | read-only storage inventory rendering; no deletion verbs |
+| `ui/navigation-overlay.ts` | human session navigation: browse anchors, mark a point, search earlier sessions, confirmed return |
 | `ui/metrics-dashboard-overlay.ts` | interactive metrics dashboard |
 | `ui/backup-overlays.ts` | backup picker, viewer and restore action |
 | `ui/open-loops-overlay.ts` | persisted open-loop manager |
@@ -1152,7 +1193,9 @@ the bundles.
   lists use budgeted path tails plus collision-checked digests while scoped
   state keeps full paths.
 - The recent tail stays live outside the compacted region.
-- Memory is opt-in per fact and confined to one selected backend.
+- Memory is confined to one selected backend; explicit saves need per-fact
+  host confirmation, and only the local backend indexes derived facts, from
+  apply-confirmed compactions.
 
 ## Extending the system
 

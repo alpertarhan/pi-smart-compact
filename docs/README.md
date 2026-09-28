@@ -1,73 +1,69 @@
 # Pi Continuity documentation
 
-Context hygiene and session continuity for Pi Coding Agent. The installed
-package remains `pi-smart-compact`; its commands, tools, configuration and stored
-data identifiers have not changed. [Identity and naming](./identity.md).
+[Project overview](../README.md) · [User guide](./guide.md) · [Configuration](./configuration.md)
 
-These guides describe the current source checkout, including unreleased work.
-Use the [changelog](../CHANGELOG.md) to distinguish source behavior from a
-published version. Historical reports below are evidence, not current setup
-instructions.
+Pi Continuity is the product name; `pi-smart-compact` remains the package,
+command family and repository. [Identity and naming](./identity.md).
 
-## Find the next step
+These guides follow the **current source checkout**, including unreleased work.
+Compare your installed version with the [changelog](../CHANGELOG.md). Dated
+reports describe their own revisions, not necessarily today's behavior.
+
+## Start with your task
 
 | I want to… | Read |
 | --- | --- |
-| Install and choose how the extension runs | [README](../README.md#get-started) |
-| Clean up output, compact, or retrieve earlier evidence | [User guide](./guide.md) |
-| Understand a setting or fix a trigger/model/budget mismatch | [Configuration](./configuration.md) |
-| Use an existing Hindsight server | [Hindsight memory](./hindsight-memory.md) |
-| Understand ownership, preservation and apply rules | [Architecture](../ARCHITECTURE.md) |
-| Interpret quality, cost, timing or canary results | [Evaluation](./evaluation.md) |
-| Work on the code | [Contributing](../CONTRIBUTING.md) |
-| Prepare a new package | [Release checklist](./RELEASE.md) |
-| Report a problem safely | [Support](../SUPPORT.md) · [Security](../SECURITY.md) |
+| Install and choose how the extension runs | [Get started](../README.md#get-started) |
+| Clean up output, compact or recover evidence | [User guide](./guide.md) |
+| Use anchors or move work to a fresh session | [Session navigation and handoff](./guide.md#session-navigation) |
+| Understand a setting, trigger, model route or budget | [Configuration reference](./configuration.md) |
+| Choose where project memory lives | [Memory stores](./guide.md#memory-store-memorybackend) |
+| Connect an existing Hindsight server | [Hindsight setup and privacy](./hindsight-memory.md) |
+| Diagnose unexpected behavior | [Troubleshooting](./guide.md#troubleshooting) · [Support](../SUPPORT.md) |
+| Report sensitive information privately | [Security policy](../SECURITY.md) |
 
-## Three concepts to keep separate
+## Understand or contribute
 
-**Context hygiene** reduces the active working set. Eligible tool output can
-be archived and retrieved; local cleanup does not need a summary-model call.
+| Document | Scope |
+| --- | --- |
+| [Architecture](../ARCHITECTURE.md) | Ownership, preservation rules, apply boundaries and module responsibilities. |
+| [Evaluation](./evaluation.md) | Available checks and experiments; what quality, cost and timing evidence can establish. |
+| [Contributing](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md) | Development setup, repository map and pull-request expectations. |
+| [Release checklist](./RELEASE.md) | Package validation, compatibility and publication gates. |
+| [Identity and assets](./identity.md) | Product naming, logo sources, palette and reproducible image exports. |
+| [Changelog](../CHANGELOG.md) | Versioned changes and unpublished work. |
 
-**Session continuity** carries working-state constraints, decisions, failures
-and next steps through research, compaction and reload. A checkpoint is a
-context boundary, not a filesystem snapshot. A summary is not the complete
-original history.
+## Keep these concepts separate
 
-**Project memory** is optional cross-session storage for approved facts. It is
-not an automatic transcript upload, a backup, or the tool-output archive. Exactly
-one backend is selected at a time.
+| Concept | Purpose | Not a substitute for… |
+| --- | --- | --- |
+| **Context hygiene** | Reduce active tool-output noise while keeping eligible evidence retrievable. Local cleanup needs no summary-model call. | A new conversation summary. |
+| **Session continuity** | Carry constraints, decisions, failures and next steps through research, compaction and reload. | Filesystem rollback or a complete copy of the original history. |
+| **Project memory** | Recall scoped facts through one selected backend; explicit saves require confirmation. The local graph can also index derived compaction state. | Backups, output archives or automatic transcript upload. |
+
+The [storage guide](./guide.md#storage-and-privacy) explains where each kind of
+state lives and how long it is retained.
 
 ## Historical evidence
 
-Dates and measured results in these reports are intentionally preserved. They
-can describe an older candidate or earlier design; their own limits still apply.
-They live under [`reports/`](./reports/) and, like the review findings, stay
-out of the npm package (`package.json` `files`).
+Reports are preserved as dated evidence. Their measurements, revision limits and
+warnings remain part of the record; they are not current setup instructions.
 
-| Report | What it establishes |
-| --- | --- |
-| [Context hygiene experiments, 2026-09-24](./reports/context-hygiene-2026-09-24.md) | Implementation decisions, local experiments and a dated remediation record. |
-| [AgentSession pilot, 2026-09-24](./reports/session-pilot-2026-09-24.md) | Scripted stock-Pi lifecycle, recovery and continuation behavior, with dated follow-ups. |
-| [Visual evidence pilot, 2026-09-24](./reports/visual-pilot-2026-09-24.md) | A bounded visual-reader experiment, including measured overhead and limitations. |
-| [Hindsight/native research, 2026-09-24](./reports/hindsight-native-compaction-research-2026-09-24.md) | Earlier alternatives, proposals and implementation follow-ups—not all current settings. |
-| [Provider baseline, 2026-08-06](./reports/provider-evaluation-2026-08-06.md) | A small historical routing sample, not a current recommendation or reliability ranking. |
-| [v7 → v8 migration](./MIGRATING_TO_V8.md) | Instructions for that historical version transition, not the current install baseline. |
+- [Pilot and research reports on GitHub](https://github.com/alpertarhan/pi-smart-compact/tree/main/docs/reports):
+  context hygiene, AgentSession lifecycle, visual evidence, Hindsight/native
+  compaction research and the earlier provider baseline. The
+  [evaluation guide](./evaluation.md#pilots-and-dated-reports) explains each scope.
+- [Review findings on GitHub](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/findings/README.md):
+  the index of external-model and agent-harness audits, organized by reviewer
+  and date. Findings are advisory, not a release gate or product guarantee.
+- [v7 → v8 migration](./MIGRATING_TO_V8.md): instructions for that historical
+  transition, **not** the current installation baseline.
 
-A green scripted pilot does not establish live-model fidelity, billed savings or
-production readiness. Follow the [evaluation limits](./evaluation.md) and
+`docs/reports/` and `docs/findings/` are repository-only and excluded from npm.
+Links to those archives deliberately open GitHub, so this index also works from
+an installed package. User guides and brand assets ship with the package;
+developer source, tests and evaluation scripts do not.
+
+A green scripted pilot does not establish live-model fidelity, billed savings
+or production readiness. Use the [evaluation limits](./evaluation.md) and
 [release checklist](./RELEASE.md) before making those claims.
-
-## Review findings
-
-Audits written by external models and agent harnesses live under
-[`findings/`](./findings/). Each report targets a specific revision range and is
-advisory, not a product guarantee or release gate.
-
-| Reviewer | Report | Scope |
-| --- | --- | --- |
-| `deepseek-v4.1-flash-opencode` | [Recent-changes review, 2026-09-28](./findings/deepseek-v4.1-flash-opencode/2026-09-28-recent-changes-review.md) | Commits #75–#79 (`9.8.0-canary.7` wave) |
-| `glm-5.3-pi` | [Recent-changes ponytail review, 2026-09-28](./findings/glm-5.3-pi/2026-09-28-recent-changes-ponytail-review.md) | Commits #75–#79 |
-| `claude-opus-5-5-pi` | [Recent-changes review, 2026-09-28](./findings/claude-opus-5-5-pi/2026-09-28-recent-changes-review.md) | Commits #76–#79 line-by-line; #75 packaging only |
-| `muse-spark-1.3-contributor-pi` | [Recent-changes ponytail review, 2026-09-28](./findings/muse-spark-1.3-contributor-pi/2026-09-28-recent-changes-ponytail-review.md) | Commits #75–#79 |
-
-Reports are kept out of the npm package (`package.json` `files`).

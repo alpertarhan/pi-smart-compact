@@ -101,7 +101,8 @@ All defaults preserve the selected model and require no migration edits.
 | `summaryModel` | `null` | Explicit Synthesis route; selected model when null |
 | `verificationModel` | `null` | Explicit repair route; summary/selected model when null |
 
-See the README configuration table for budgets and monitoring options.
+For current budgets and monitoring options, see the [configuration
+reference](./configuration.md); the defaults above describe v8.
 
 ## Backups and rollout
 
