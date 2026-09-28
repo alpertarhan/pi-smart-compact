@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { CompactMetricsEntry } from "../src/types.ts";
 import {
+  dashboardPageSize,
   formatCurrentSession,
   formatMetricRunCompact,
   formatRecentRuns,
@@ -87,5 +88,13 @@ describe("dashboard format helpers", () => {
     expect(metricPct(2.5)).toBe("100%");
     expect(metricPct(-1)).toBe("0%");
     expect(metricPct(undefined)).toBe("—");
+  });
+
+  it("pages the dashboard within the terminal height", () => {
+    expect(dashboardPageSize(undefined)).toBe(24);
+    expect(dashboardPageSize(24)).toBe(14);
+    expect(dashboardPageSize(30)).toBe(19);
+    expect(dashboardPageSize(8)).toBe(4);
+    expect(dashboardPageSize(200)).toBe(24);
   });
 });

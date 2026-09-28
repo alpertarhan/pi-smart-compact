@@ -216,7 +216,8 @@ export function applyCompaction(rc: StatedRc): void {
     },
     onError: (e) => {
       clearCompactProgress(rc.ctx);
-      rc.pendingRef.clear(rc.sessionId);
+      // Only this run's candidate: a newer run may already have staged its own.
+      if (rc.pendingRef.peek(rc.sessionId)?.runId === rc.runId) rc.pendingRef.clear(rc.sessionId);
       const handled = rc.onNativeApplyError?.(rc.runId, e) ?? false;
       if (!handled) {
         void recordFailureMetrics(rc, e, {

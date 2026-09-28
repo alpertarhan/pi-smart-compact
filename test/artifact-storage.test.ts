@@ -89,6 +89,24 @@ describe("artifact storage inventory", () => {
     expect(by(ownerOf(originalId))).toMatchObject({ status: "unreferenced-in-scan" });
   });
 
+  it("scans a session whose tool-result line spans several read chunks", async () => {
+    const sessionId = "66666666-6666-6666-6666-666666666666";
+    const referenced = hex(0xe1, "e");
+    const file = writeSessionFile(sessionId, []);
+    // ~1.2 MB line: larger than one 1 MiB read chunk, below the per-line scan bound.
+    fs.appendFileSync(file, JSON.stringify({ type: "message", id: "big", parentId: null, timestamp: new Date().toISOString(),
+      message: { role: "toolResult", toolCallId: "c-big", toolName: "bash", content: [{ type: "text", text: "y".repeat(1_200_000) }], isError: false,
+        details: { smartCompactArtifact: { version: 1, owner: referenced, hash: hex(7), previewHash: hex(8), chars: 8, bytes: 8, lines: 1, tool: "bash", source: "cmd" } } } }) + "\n");
+    writeArtifactFiles(ownerOf(sessionId), [10]);
+    writeArtifactFiles(referenced, [20]);
+    const report = await inspectArtifactStorage();
+    expect(report.sessionFilesUnreadable).toEqual([]);
+    expect(report.scanComplete).toBe(true);
+    const by = (owner: string) => report.owners.find(item => item.owner === owner);
+    expect(by(ownerOf(sessionId))).toMatchObject({ status: "live", reasons: ["session-file"] });
+    expect(by(referenced)).toMatchObject({ status: "live", reasons: ["artifact-reference"] });
+  });
+
   it.each(["permission", "garbage-line", "oversize-line", "symlinked-file"])("poisons the scan on %s so nothing can be classified unreferenced", async (kind) => {
     const sessionId = "44444444-4444-4444-4444-444444444444";
     const referenced = hex(0xc1, "c");

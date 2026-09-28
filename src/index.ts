@@ -351,7 +351,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   navigation,
   toolSummary: () => toolExposure.summary(),
   getRuntimeState: ctx => ({
-   running: isRunning.isRunning(resolveSessionId(ctx)),
+   running: isRunning.isSessionActive(resolveSessionId(ctx)),
    preparation: background.status(resolveSessionId(ctx)),
    paused: pivotQueued(ctx),
    cacheLedger: hostCache.sessionId() === resolveSessionId(ctx) ? formatCacheLedgerSummary(hostCache.summary()) : [],
@@ -463,7 +463,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     config,
    );
    if (!sumModel) return;
-   if (!isRunning.isRunning(resolveSessionId(ctx))) {
+   if (!isRunning.isSessionActive(resolveSessionId(ctx))) {
     const caps = getProviderCaps(sumModel.provider);
     const effectiveTimeoutMs = Math.min(
      AUTO_TRIGGER_TIMEOUT_CAP_MS,

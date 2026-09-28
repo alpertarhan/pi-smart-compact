@@ -143,6 +143,15 @@ describe("anthropic compaction request", () => {
 		expect((failed.result() as Error).message).toContain("Overloaded");
 	});
 
+	it("reads top-level usage when the iterations list is empty", async () => {
+		const answer = provider(() =>
+			json({ content: [block], stop_reason: "compaction", usage: { input_tokens: 700, output_tokens: 40, cache_read_input_tokens: 5, iterations: [] } }),
+		);
+		const compaction = createCompactionFetch({ api: "anthropic-messages", provider: "anthropic", model: "claude-x", fetch: answer.fetch });
+		await piSends(compaction, "https://api.anthropic.com/v1/messages", {}, { messages: [] });
+		expect((compaction.result() as NativeCompactionResult).usage).toEqual({ input: 700, output: 40, cacheRead: 5, cacheWrite: 0 });
+	});
+
 	it("reports an incomplete compaction or an HTTP error literally", async () => {
 		const ended = provider(() => json({ content: [], stop_reason: "end_turn", usage: {} }));
 		const incomplete = createCompactionFetch({ api: "anthropic-messages", provider: "anthropic", model: "claude-x", fetch: ended.fetch });
@@ -374,5 +383,15 @@ describe("stored state validation", () => {
 		expect(isNativeState({ ...anthropicState, items: [] })).toBe(false);
 		expect(isNativeState({ ...anthropicState, items: ["text"] })).toBe(false);
 		expect(isNativeState({ ...anthropicState, items: [{}] })).toBe(false);
+	});
+
+	it("rejects stored state beyond the item-count and size bounds", () => {
+		const window = (items: JsonObject[]) => ({ version: 1, api: "openai-responses", provider: "openai", model: "gpt-y", items });
+		const compaction = { type: "compaction", id: "cmp_4", encrypted_content: "opaque" };
+		const message = { type: "message", role: "user", content: [{ type: "input_text", text: "kept" }] };
+		expect(isNativeState(window([...Array(1_023).fill(message), compaction]))).toBe(true);
+		expect(isNativeState(window([...Array(1_024).fill(message), compaction]))).toBe(false);
+		expect(isNativeState(window([{ ...compaction, encrypted_content: "x".repeat(3 * 1024 * 1024) }]))).toBe(true);
+		expect(isNativeState(window([{ ...compaction, encrypted_content: "x".repeat(4 * 1024 * 1024) }]))).toBe(false);
 	});
 });

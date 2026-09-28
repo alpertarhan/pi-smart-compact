@@ -367,7 +367,8 @@ const CATEGORIES: ReadonlyArray<{
           paths: () => HINDSIGHT_SETTINGS.map((setting) => setting.id),
           inactive: needsHindsight,
           open: (env, done) =>
-            inputSettingsList(HINDSIGHT_SETTINGS, env.requestRender, done, env.writeConfig),
+            inputSettingsList(HINDSIGHT_SETTINGS, env.requestRender, done, env.writeConfig,
+              (message) => notifyUser(env.ctx, message, "error")),
         },
         { kind: "input", setting: MNEMOPI_DATA_DIR_SETTING, inactive: needsMnemopi },
       ],
@@ -597,7 +598,7 @@ const CATEGORIES: ReadonlyArray<{
                 profileBudgetsList(env.requestRender, () => {
                   profiles.currentValue = countChangedPaths(profileConfigPaths());
                   close();
-                }, env.writeConfig),
+                }, env.writeConfig, (message) => notifyUser(env.ctx, message, "error")),
             };
             items.push(profiles);
             return new SmartSettingsList(items, 9, () => { }, done, (id) => {
@@ -1130,6 +1131,15 @@ export function createSettingsController(
   };
 }
 
+/** Persist one global path, then run the live-apply hook with the new config. */
+export function appliedConfigWriter(onApplied: GlobalSettingApplied): GlobalConfigWriter {
+  return async (path, value) => {
+    const config = await writeGlobalConfigValue(path, value);
+    await onApplied(path, config);
+    return config;
+  };
+}
+
 /** Open the unified Smart Compact settings panel. */
 export async function showSmartCompactSettings(
   ctx: ExtensionCommandContext,
@@ -1137,11 +1147,7 @@ export async function showSmartCompactSettings(
   coordinator: GlobalSettingsCoordinator = new GlobalSettingsCoordinator(),
   onApplied: GlobalSettingApplied = () => { },
 ): Promise<void> {
-  const writeConfig: GlobalConfigWriter = async (path, value) => {
-    const config = await writeGlobalConfigValue(path, value);
-    await onApplied(path, config);
-    return config;
-  };
+  const writeConfig = appliedConfigWriter(onApplied);
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     const root = createSettingsRoot(
       policy,

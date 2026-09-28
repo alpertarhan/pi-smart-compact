@@ -188,16 +188,6 @@ export function outputProfileLimit(
 
 // ── Models ────────────────────────────────────────────────────────────────
 
-/** Pipeline stages; all runs (manual, agent, automatic) use the same routes. */
-export const STAGES = ["summary", "segmentation", "verification"] as const;
-export type Stage = (typeof STAGES)[number];
-
-export const STAGE_MODEL_PATH: Record<Stage, "summaryModel" | "segmentationModel" | "verificationModel"> = {
-  summary: "summaryModel",
-  segmentation: "segmentationModel",
-  verification: "verificationModel",
-};
-
 export type ModelProfileId = "chat" | "summary";
 
 type ModelFlags = Pick<CompactConfig, "summaryModel" | "segmentationModel" | "verificationModel">;

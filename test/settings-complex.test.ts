@@ -18,6 +18,7 @@ import type { SettingsList } from "@earendil-works/pi-tui";
 import {
   complexConfigPaths,
   modelSettingsItems,
+  profileBudgetsList,
 } from "../src/ui/settings-complex.ts";
 import {
   createSettingsController,
@@ -279,5 +280,27 @@ describe("validated input settings", () => {
     expect(readGlobalConfigValue("profiles.light.maxChunkTokens")).toBe(
       20_000,
     );
+  });
+
+  it("updates a mode row after its budgets change and reports a failed reset", async () => {
+    const errors: string[] = [];
+    const modes = profileBudgetsList(() => {}, () => {}, writeGlobalConfigValue, (message) => errors.push(message));
+    modes.selectItem("thorough");
+    modes.handleInput("\r");
+    modes.handleInput("\r");
+    modes.handleInput("20000");
+    modes.handleInput("\r");
+    await settleActive(modes);
+    modes.handleInput("\x1b");
+    expect(modes.render(100).join("\n")).toMatch(/Thorough.*1 changed/);
+
+    const failing = profileBudgetsList(() => {}, () => {}, async () => {
+      throw new Error("settings.json is read-only");
+    }, (message) => errors.push(message));
+    failing.selectItem("thorough");
+    failing.handleInput("\r");
+    failing.handleInput("r");
+    await Bun.sleep(0);
+    expect(errors).toEqual(["settings.json is read-only"]);
   });
 });

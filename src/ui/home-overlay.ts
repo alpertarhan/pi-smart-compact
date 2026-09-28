@@ -12,12 +12,14 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { CompactConfig } from "../types.ts";
+import { errorDetail } from "../utils/issues.ts";
 import { loadConfig } from "../utils/config.ts";
 import type { SmartCompactPolicy } from "../app/smart-compact-policy.ts";
 import { SmartSettingsList } from "./settings-list.ts";
 import type { EffectiveReadiness } from "../app/effective-state.ts";
 import { localGraphOpsAllowed } from "../app/memory-backend.ts";
 import {
+  appliedConfigWriter,
   createSettingsController,
   createSettingsRoot,
   type GlobalSettingApplied,
@@ -116,7 +118,6 @@ function profileList<Id extends string>(
   done: (label?: string) => void,
   notify: (message: string) => void,
   extra: SettingItem[] = [],
-  onExtra: (id: string) => boolean = () => false,
 ): SmartSettingsList {
   let armed: Id | undefined;
   const now = current();
@@ -135,9 +136,9 @@ function profileList<Id extends string>(
     ...extra,
   ];
   const list = new SmartSettingsList(rows, 9, () => { }, () => done(), () => { }, new Set(), (id) => {
-    if (onExtra(id)) return true;
     const option = options.find((candidate) => candidate.id === id);
-    if (!option) return true; // "Now" is informational
+    // Extra rows with a submenu open it; "Now" is informational.
+    if (!option) return !extra.some((item) => item.id === id && item.submenu);
     if (confirm.has(option.id) && armed !== option.id && current().id !== option.id) {
       armed = option.id;
       list.updateValue(option.id, "Enter again to use");
@@ -203,8 +204,9 @@ export function createHomeList(
     requestRender();
     return config;
   };
+  const writeConfig = appliedConfigWriter(options.onApplied);
   const categories = settingsCategoryItems(
-    policy, ctx, requestRender, options.coordinator, options.onApplied, undefined, options.feasibility,
+    policy, ctx, requestRender, options.coordinator, options.onApplied, writeConfig, options.feasibility,
   );
   const category = (id: string) => categories.find((item) => item.id === id)!;
   const memoryBackendLabel = (config: CompactConfig) =>
@@ -286,7 +288,12 @@ export function createHomeList(
       setup.currentValue = readinessValue(readiness);
       setup.description = readiness.blockers[0] ?? setupDescription;
       requestRender();
-    }, () => { });
+    }, (error: unknown) => {
+      if (revision !== readinessRevision) return;
+      setup.currentValue = "unavailable";
+      setup.description = "Readiness could not be read: " + (errorDetail(error) || "unknown error") + ".";
+      requestRender();
+    });
   };
 
   const readinessLines = (readiness: EffectiveReadiness): string[] => [
@@ -330,7 +337,6 @@ export function createHomeList(
       },
       notify,
       [{ ...branch, label: "This branch", currentValue: String(branch.currentValue) }],
-      () => false,
     );
   };
   output.submenu = (_value, done) =>
@@ -441,7 +447,7 @@ export function createHomeList(
     const root = createSettingsRoot(policy, ctx, () => {
       refresh();
       done();
-    }, requestRender, options.coordinator, options.onApplied, undefined, options.feasibility);
+    }, requestRender, options.coordinator, options.onApplied, writeConfig, options.feasibility);
     return root;
   };
   settings.submenu = (_value, done) => new SmartSettingsList(
@@ -493,7 +499,8 @@ export async function showSmartCompactHome(options: HomeOptions): Promise<HomeAc
         const config = loadConfig();
         const policy = options.policy.snapshot();
         const automatic = !policy.autoTrigger ? "off"
-          : config.autoTriggerStrategy === "native-hook" ? "follows Pi" : "when idle";
+          : config.autoTriggerStrategy === "native-hook" ? "follows Pi"
+            : config.autoTriggerStrategy === "background" ? "prepare in background" : "when idle";
         const lines = [
           "Context: " + options.compactNow().value,
           "Automatic: " + automatic + " · Agent: " + (policy.agentToolEnabled ? "allowed" : "off"),

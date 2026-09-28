@@ -576,6 +576,7 @@ export function inputSettingsList(
   requestRender: () => void,
   done: () => void,
   writeConfig: GlobalConfigWriter,
+  onError: (message: string) => void,
 ): SmartSettingsList {
   const items = settings.map((setting) => inputSettingItem(setting, requestRender, writeConfig));
   const byId = new Map(settings.map((setting) => [setting.id as string, setting]));
@@ -588,7 +589,7 @@ export function inputSettingsList(
       item.currentValue = setting.format(undefined);
       item.description = inputEffectiveDescription(setting, config);
       requestRender();
-    });
+    }, (error: unknown) => onError(error instanceof Error ? error.message : String(error)));
   });
 }
 
@@ -597,15 +598,23 @@ export function profileBudgetsList(
   requestRender: () => void,
   done: () => void,
   writeConfig: GlobalConfigWriter,
+  onError: (message: string) => void,
 ): SmartSettingsList {
-  const modes: SettingItem[] = MODE_BUDGETS.map(({ mode, profile, label }) => ({
-    id: mode,
-    label,
-    description: `Token budgets used when a run is ${label}, including when Auto picks ${label}.`,
-    currentValue: countChangedPaths(profileSettings(profile).map((setting) => setting.id)),
-    submenu: (_current, close) =>
-      inputSettingsList(profileSettings(profile), requestRender, close, writeConfig),
-  }));
+  const modes: SettingItem[] = MODE_BUDGETS.map(({ mode, profile, label }) => {
+    const ids = profileSettings(profile).map((setting) => setting.id);
+    const item: SettingItem = {
+      id: mode,
+      label,
+      description: `Token budgets used when a run is ${label}, including when Auto picks ${label}.`,
+      currentValue: countChangedPaths(ids),
+      submenu: (_current, close) =>
+        inputSettingsList(profileSettings(profile), requestRender, () => {
+          item.currentValue = countChangedPaths(ids);
+          close();
+        }, writeConfig, onError),
+    };
+    return item;
+  });
   return new SmartSettingsList(modes, 7, () => {}, done);
 }
 

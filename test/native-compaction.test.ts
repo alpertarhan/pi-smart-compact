@@ -8,6 +8,7 @@ import {
  createNativeReplayHook,
  nativeCompactionCut,
  resetNativeSkipWarningsForTests,
+ shouldWarnNativeSkip,
  setNativeToolSource,
  setNativeTransportForTests,
 } from "../src/app/native-compaction.ts";
@@ -15,6 +16,7 @@ import { createPendingSlot, revalidatePending } from "../src/app/pending-slot.ts
 import { DEFAULT_CONFIG } from "../src/constants.ts";
 import type { CompactConfig, PendingCompaction } from "../src/types.ts";
 import { validateSmartCompactConfig } from "../src/utils/config.ts";
+import { readMetricsLog } from "../src/utils/cache.ts";
 import { formatCompactErrorForUi } from "../src/ui/error-format.ts";
 import { notifyNativeText } from "../src/ui/overlays.ts";
 import { recentIssues, resetIssuesForTests } from "../src/utils/issues.ts";
@@ -298,7 +300,7 @@ function fakeProvider(
 async function run(
  branch: any[],
  engines: Array<"eesv" | "native">,
- options: { ctx?: any; skipCompact?: boolean; dryRun?: boolean; force?: boolean; extraConfig?: Partial<CompactConfig> } = {},
+ options: { ctx?: any; skipCompact?: boolean; autoTriggered?: boolean; dryRun?: boolean; force?: boolean; extraConfig?: Partial<CompactConfig> } = {},
 ) {
  const harness = options.ctx ?? makeCtx(branch);
  const pendingRef = createPendingSlot({ ttlMs: 60_000 });
@@ -312,6 +314,7 @@ async function run(
   isRunning: { value: false },
   force: options.force ?? true,
   skipCompact: options.skipCompact ?? true,
+  autoTriggered: options.autoTriggered,
   dryRun: options.dryRun,
  });
  return { outcome, harness, pendingRef };
@@ -376,6 +379,15 @@ describe("native compaction engine", () => {
   await run(branch, ["native", "eesv"], { ctx: failing });
   await run(branch, ["native", "eesv"], { ctx: failing });
   expect(failing.notices.filter((notice) => notice.message.startsWith("Native compaction failed")).length).toBe(2);
+ });
+
+ it("classifies the run like EESV metrics: a tool run stays a tool run even when auto-triggered", async () => {
+  useProvider(fakeProvider());
+  const { outcome } = await run(conversation(), ["native"], { autoTriggered: true });
+  expect(outcome.kind).toBe("staged");
+  const snapshot = (outcome as { pending: PendingCompaction }).pending.metricsSnapshot!;
+  expect(snapshot.runType).toBe("tool");
+  expect(snapshot.avgLatency).toBe(snapshot.durationMs!);
  });
 
  it("stages Anthropic state in details.native through one nested Pi request", async () => {
@@ -468,6 +480,22 @@ describe("native compaction engine", () => {
   expect(harness.notices.at(-1)!.message).toContain("Native compaction (anthropic/claude-test) was not applied: host refused");
  });
 
+ it("keeps a newer run's staged candidate when an older apply fails", async () => {
+  useProvider(fakeProvider());
+  const { harness, pendingRef } = await run(conversation(), ["native"], { skipCompact: false });
+  const older = pendingRef.peek("native-session")!;
+  pendingRef.set({ ...older, runId: "run-newer", details: { ...older.details, runId: "run-newer" } });
+  harness.compactCalls[0].onError(new Error("host refused"));
+  expect(pendingRef.peek("native-session")?.runId).toBe("run-newer");
+ });
+
+ it("evicts only the oldest skip warning at capacity", () => {
+  for (let index = 0; index < 500; index++) expect(shouldWarnNativeSkip("s" + index, "route")).toBe(true);
+  expect(shouldWarnNativeSkip("s-new", "route")).toBe(true);
+  expect(shouldWarnNativeSkip("s1", "route")).toBe(false);
+  expect(shouldWarnNativeSkip("s0", "route")).toBe(true);
+ });
+
  it("asks for approval naming the native engine and cancels when declined", async () => {
   useProvider(fakeProvider());
   const branch = conversation();
@@ -479,6 +507,9 @@ describe("native compaction engine", () => {
   });
   expect(outcome).toEqual({ kind: "cancelled", source: "user" });
   expect(harness.compactCalls).toHaveLength(0);
+  // The provider call happened; a declined run is recorded like a declined EESV run.
+  expect(readMetricsLog().map((entry) => [entry.sessionId, entry.method, entry.status, entry.totalCalls]))
+   .toEqual([["native-session", "native", "cancelled", 1]]);
  });
 
  it("does not apply an incomplete Codex response even after a compaction item and usage arrive", async () => {
@@ -649,6 +680,8 @@ describe("native compaction engine", () => {
   expect(outcome.kind).toBe("dry-run");
   expect(pendingRef.isPresent("native-session")).toBe(false);
   expect(fake.wire).toHaveLength(1);
+  expect(readMetricsLog().map((entry) => [entry.sessionId, entry.method, entry.status, entry.totalCalls]))
+   .toEqual([["native-session", "native", "dry-run", 1]]);
  });
 });
 

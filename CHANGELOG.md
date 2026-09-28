@@ -146,6 +146,55 @@
 - A committed rewind was counted as a `trim` in the host prompt-cache ledger;
   it is now `rewind`.
 - Review reports under `docs/findings` stay out of the npm package.
+- Settings opened from Home now apply limits, pinned paths, backup
+  directory, Hindsight and model rows to the running session at once, as the
+  standalone `/smart-compact settings` screen does; they used to be saved
+  only.
+- Home → Settings → How it runs → **This branch** opens the branch-only
+  settings again; Enter on it did nothing.
+- The Home header reads `Automatic: prepare in background` for the
+  `background` strategy instead of `when idle`.
+- When the readiness check fails, Home's `Status & help` row shows
+  `unavailable` with the first line of the error instead of `checking`
+  forever.
+- Mode budget rows (Fast, Balanced, Thorough) update their "N changed" count
+  after you edit a budget, and a failed budget or Hindsight reset reports the
+  error instead of failing silently.
+- `/smart-compact dashboard` outside the TUI says it needs TUI mode and
+  points to `/smart-compact metrics` and the HTML dashboard path; it used to
+  do nothing.
+- `/smart-compact storage` and `/smart-compact metrics` without a UI print
+  their report: to stdout in print mode, to stderr in JSON/SDK mode (RPC
+  keeps the notice). Both were silent in JSON mode and `metrics` in print
+  mode.
+- Metrics p95 latency uses the nearest rank; with 20 runs it was the slowest
+  run.
+- The metrics dashboard pages to the terminal height (at most 24 lines), so
+  the position line and key hints stay visible in short terminals.
+- `/smart-compact storage` no longer marks the scan incomplete (and every
+  owner `unknown`) when a session file holds a line longer than 1 MiB, such
+  as a large tool result.
+- An unreadable Hindsight receipt ledger is no longer read as "no pending
+  saves": resolve refuses to delete and saves are refused, both naming the
+  ledger file, which is left untouched for repair.
+- Mnemopi readiness reports `ready` when the package and a supported Bun are
+  found (worker and database still unverified); the package check no longer
+  fails for an installed package.
+- A settled or background auto-trigger whose host never reports back releases
+  the session after the hook budget plus `autoTriggerTimeoutMs` and reports
+  it once, so later triggers can run.
+- A staged candidate confirmed for another session is discarded and recorded
+  instead of lingering and later surfacing as missing local records.
+- Anthropic native compaction reads the top-level usage when the response has
+  an empty `iterations` list; it used to record zero tokens.
+- Stored native compaction state larger than 1,024 items or 4 MiB is rejected
+  instead of being replayed.
+- Native compaction metrics classify tool runs like EESV runs and record the
+  run's latency and provider-cache hit rate instead of zeros; native dry runs
+  and declined native runs now appear in metrics.
+- A failed apply (native or EESV) clears only its own staged candidate, and
+  the once-per-route native skip notice no longer repeats for every session
+  after 500 sessions.
 
 ## [9.8.0-canary.7] - 2026-09-27
 

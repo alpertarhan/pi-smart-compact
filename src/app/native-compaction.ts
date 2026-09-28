@@ -21,6 +21,8 @@ import type {
   SmartCompactDetails,
 } from "../types.ts";
 import { VERSION } from "../constants.ts";
+import { cacheHitRateOf } from "../utils/cache.ts";
+import { runType } from "./steps/metrics.ts";
 import { isRecord } from "../utils/type-guards.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import type { WindowedRc } from "./run-context.ts";
@@ -318,14 +320,15 @@ export async function attemptNativeCompaction(
       totalOutput: usage?.output ?? 0,
       totalCacheHit: usage?.cacheRead ?? 0,
       totalCacheWrite: usage?.cacheWrite ?? 0,
-      avgLatency: 0,
-      cacheHitRate: 0,
+      // One provider call: its latency is the run's, and the cache rate uses the shared formula.
+      avgLatency: nativeDurationMs,
+      cacheHitRate: cacheHitRateOf(usage?.input ?? 0, usage?.cacheRead ?? 0, usage?.cacheWrite ?? 0),
       method: "native",
       model: model.id,
       provider: model.provider,
       mode: rc.mode,
       profile: rc.profile,
-      runType: rc.flags.autoTriggered ? "auto" : rc.flags.skipCompact ? "tool" : "manual",
+      runType: runType(rc),
       status: "success",
       contextPercent: Math.round(rc.contextPercent),
       tokensBefore,
@@ -396,7 +399,8 @@ export function applyNativeCompaction(rc: WindowedRc, pending: PendingCompaction
     },
     onError: (error) => {
       clearCompactProgress(rc.ctx);
-      rc.pendingRef.clear(rc.sessionId);
+      // Only this run's candidate: a newer run may already have staged its own.
+      if (rc.pendingRef.peek(rc.sessionId)?.runId === pending.runId) rc.pendingRef.clear(rc.sessionId);
       rc.onNativeApplyError?.(pending.runId, error);
       notifyUser(rc.ctx, 
         "Native compaction (" + pending.details.model + ") was not applied: " + engineErrorText(error) +
@@ -418,7 +422,8 @@ const MAX_WARNED_SKIPS = 500;
 export function shouldWarnNativeSkip(sessionId: string, route: string): boolean {
   const key = sessionId + "\u0000" + route;
   if (warnedSkips.has(key)) return false;
-  if (warnedSkips.size >= MAX_WARNED_SKIPS) warnedSkips.clear();
+  // Drop only the oldest key (Set iteration is insertion order), not every warning.
+  if (warnedSkips.size >= MAX_WARNED_SKIPS) warnedSkips.delete(warnedSkips.values().next().value!);
   warnedSkips.add(key);
   return true;
 }

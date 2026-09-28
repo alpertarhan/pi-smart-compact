@@ -151,12 +151,6 @@ const messageMapCache = new Map<
   }
 >();
 
-/** @internal Test-only: drop both module caches between cases. */
-export function __resetSessionLogCachesForTests(): void {
-  logPathCache.clear();
-  messageMapCache.clear();
-}
-
 function sessionDirectoryForCwd(cwd: string): string {
   const safeCwd = path
     .resolve(cwd)

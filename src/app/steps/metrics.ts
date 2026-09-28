@@ -49,7 +49,7 @@ const KNOWN_VERIFICATION_GAP_KINDS = {
  "unsupported-claim": true,
 } as const satisfies Record<VerificationGap["kind"], true>;
 
-function runType(rc: RcBase): "manual" | "auto" | "tool" {
+export function runType(rc: Pick<RcBase, "flags">): "manual" | "auto" | "tool" {
  return rc.flags.skipCompact
   ? "tool"
   : rc.flags.autoTriggered

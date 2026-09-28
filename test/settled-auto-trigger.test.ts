@@ -100,6 +100,18 @@ describe("settled auto-trigger host handoff", () => {
     await retry;
   });
 
+  it("releases the session after a bounded wait when the host never calls back", async () => {
+    const callbacks: unknown[] = [];
+    const ctx = context({ compact: (options: unknown) => callbacks.push(options) });
+    const trigger = createSettledAutoTrigger({ watchdogMs: 10 });
+
+    await trigger.request(ctx, config());
+    expect(callbacks).toHaveLength(1);
+    // No cooldown was recorded, so the next settled event may request again.
+    void trigger.request(ctx, config());
+    expect(callbacks).toHaveLength(2);
+  });
+
   it("uses confirmed host compaction as cooldown and clears session state on shutdown", async () => {
     const callbacks: Array<{ onComplete?: (result: unknown) => void }> = [];
     const ctx = context({ compact: (options: any) => callbacks.push(options) });

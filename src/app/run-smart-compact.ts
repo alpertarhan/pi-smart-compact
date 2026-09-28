@@ -47,6 +47,7 @@ import { buildState } from "./steps/state.ts";
 import { attachVisualArchive } from "./steps/visual.ts";
 import { runDamageDetection, stagePendingCompaction, applyCompaction } from "./steps/persist.ts";
 import { buildSuccessMetrics, recordSuccessMetrics, recordFailureMetrics } from "./steps/metrics.ts";
+import { appendMetricsSnapshot } from "../utils/cache.ts";
 import { applyNativeCompaction, attemptNativeCompaction, EngineChainError, engineErrorText, nativeRouteLabelOf, shouldWarnNativeSkip } from "./native-compaction.ts";
 import type { CompactionEngine, EngineAttempt } from "../types.ts";
 import { errorDetail, notifyUser, recordIssue, reportIssue } from "../utils/issues.ts";
@@ -375,6 +376,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
   }
   const { pending } = result;
   if (windowed.flags.dryRun) {
+   // Like an EESV dry run: the provider call happened, so it is recorded.
+   if (pending.metricsSnapshot) await appendMetricsSnapshot(windowed.sessionId, { ...pending.metricsSnapshot, status: "dry-run" });
    say(
     "DRY RUN (native " + pending.details.model + ") — " + pending.details.totalMessages +
     " msgs, ~" + (pending.details.estimatedAfterTokens ?? 0).toLocaleString() + "t after",
@@ -406,6 +409,8 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
    windowed.cancellation.signal.throwIfAborted();
    if (!approved) {
     windowed.pendingRef.clear(windowed.sessionId);
+    // Like a declined EESV run: the provider call happened, so it is recorded.
+    if (pending.metricsSnapshot) await appendMetricsSnapshot(windowed.sessionId, { ...pending.metricsSnapshot, status: "cancelled" });
     say("Compaction cancelled — current conversation unchanged", "info");
     return { kind: "cancelled", source: "user" };
    }
