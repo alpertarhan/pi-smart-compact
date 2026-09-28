@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompactConfig, MemoryBackend } from "../types.ts";
 import type { MemoryRef } from "../infra/memory-ref.ts";
+import { componentInstalled, installCommand } from "../infra/optional-components.ts";
 import { resolveHindsightTarget } from "./hindsight-memory.ts";
 
 /** Local context-graph operations run only for an exclusively selected local backend. */
@@ -159,10 +160,11 @@ function bunPlatformPackages(): Array<{ pkg: string; exe: string }> {
 }
 
 /**
- * Resolve the executable for the Bun-only Mnemopi worker: the package-owned
- * bun optional dependency first (metadata + actual installed layout, with the
- * platform @oven package as fallback), then a supported PATH Bun. Read-only
- * filesystem checks only: no shell, no download, no self-install, no network.
+ * Resolve the executable for the Bun-only Mnemopi worker: the optional bun
+ * component installed beside the extension first (metadata + actual installed
+ * layout, with the platform @oven package as fallback), then a supported PATH
+ * Bun. Read-only filesystem checks only: no shell, no download, no
+ * self-install, no network.
  */
 export function resolveBunExecutable(parentUrl: string = import.meta.url): BunExecutable | null {
  const require = createRequire(parentUrl);
@@ -237,19 +239,18 @@ function runBunVersion(
 
 /**
  * Presence/version evidence for the Mnemopi runtime: the optional
- * @oh-my-pi/pi-mnemopi package, the worker file, and a usable Bun executable
- * (package-owned first, PATH fallback). The engine is never loaded and no
- * database is opened or created. `ready` means only these checks passed.
+ * @oh-my-pi/pi-mnemopi component, the worker file, and a usable Bun executable
+ * (the optional bun component first, PATH fallback). The engine is never
+ * loaded and no database is opened or created. `ready` means only these
+ * checks passed. Missing components name the install command.
  */
 export async function describeMnemopiRuntime(
  parentUrl: string = import.meta.url,
 ): Promise<{ ready: boolean; reason: string }> {
  const unavailable = (reason: string) => ({ ready: false, reason: "unavailable: " + reason });
- // The package exports only an "import" condition, so require.resolve() can
- // never find it; look for its manifest along the node_modules lookup paths.
- const lookup = createRequire(parentUrl).resolve.paths("@oh-my-pi/pi-mnemopi") ?? [];
- if (!lookup.some((dir) => existsSync(path.join(dir, "@oh-my-pi", "pi-mnemopi", "package.json")))) {
-  return unavailable("optional @oh-my-pi/pi-mnemopi package is not locally resolvable");
+ if (!componentInstalled("mnemopi", parentUrl)) {
+  return unavailable("the optional @oh-my-pi/pi-mnemopi component is not installed. Install it with: "
+   + installCommand(["mnemopi"], parentUrl));
  }
  const worker = new URL(
   import.meta.url.endsWith(".ts") ? "./mnemopi-worker.ts" : "./mnemopi-worker.js",
@@ -261,21 +262,21 @@ export async function describeMnemopiRuntime(
  if (owned) {
   const probed = await runBunVersion(owned.executable, undefined);
   if (!probed.ok) {
-   return unavailable("the package-owned Bun binary did not run (" + probed.error + ")");
+   return unavailable("the installed bun component did not run (" + probed.error + ")");
   }
   return bunVersionSupported(probed.version)
    ? {
     ready: true,
     reason: "Bun " + probed.version + " (" +
-     (owned.source === "package" ? "package-owned dependency" : "platform package") +
+     (owned.source === "package" ? "installed bun component" : "platform package") +
      ") and Mnemopi package found; worker/database operation not verified",
    }
    : unavailable("Bun >=1.3.14 is required (found " + probed.version + ")");
  }
  const probed = await runBunVersion("bun", { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot });
  if (!probed.ok) {
-  return unavailable("no package-owned Bun dependency is installed and none was found on PATH (" +
-   probed.error + ")");
+  return unavailable("no bun component is installed beside the extension and none was found on PATH (" +
+   probed.error + "). Install it with: " + installCommand(["bun"], parentUrl));
  }
  return bunVersionSupported(probed.version)
   ? { ready: true, reason: "Bun " + probed.version + " from PATH and Mnemopi package found; worker/database operation not verified" }

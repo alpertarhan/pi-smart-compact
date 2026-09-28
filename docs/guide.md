@@ -512,11 +512,15 @@ migrated or cleared.
 
 - Hindsight: Pi Continuity never installs, starts or configures a server. See
   [Hindsight memory backend](./hindsight-memory.md).
-- Mnemopi runs in a bounded `bun --no-install` worker. Normal installs include
-  the pinned `bun` (1.4.2) and `@oh-my-pi/pi-mnemopi` optional dependencies;
-  otherwise a Bun 1.3.14 or newer on `PATH` is used. Missing pieces fail before
-  any request is sent. Embeddings, model calls, automatic consolidation and
-  model downloads are off. It never opens the shared OMP/Mnemopi default bank.
+- Mnemopi runs in a bounded `bun --no-install` worker. The engine
+  (`@oh-my-pi/pi-mnemopi` 18.3.1) is an optional component you install into
+  Pi's package directory; the worker runs on a Bun 1.3.14 or newer from `PATH`,
+  or on the optional `bun` (1.4.2) component installed the same way. Nothing is
+  downloaded with the extension; **Readiness & details** shows the install
+  command (see [Optional components](../README.md#optional-components)).
+  Missing pieces fail before any request is sent. Embeddings, model calls,
+  automatic consolidation and model downloads are off. It never opens the
+  shared OMP/Mnemopi default bank.
 - Each project can hold at most 500 active manually saved facts in the local
   store.
 
@@ -679,8 +683,9 @@ Image snapshots:
   cheaper replacement for the text summary. A synthetic pilot used more input
   tokens than the same excerpts as text (see [evaluation](./evaluation.md)).
 - A cost rule is validated only for direct Anthropic `claude-sonnet-5`; other
-  models stay text only. Snapshots need the optional `@resvg/resvg-js` renderer;
-  when it is missing, output falls back to text.
+  models stay text only. Snapshots need the optional `@resvg/resvg-js`
+  component, which is not installed with the extension (**Readiness & details**
+  shows the install command); when it is missing, output falls back to text.
 - Limits: 2 pages, 8 excerpts of up to 3,000 characters, 1 MB of PNG, and only
   Latin/Turkish text. Errors, writes and edited-away messages are never
   rendered.

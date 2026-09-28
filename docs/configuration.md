@@ -360,7 +360,7 @@ stop; existing archives stay on disk.
 | --- | --- | --- | --- |
 | `contextHygieneEnabled` | `Automatic cleanup` | `false` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction; commits under pressure, at break-even, or once the prompt cache is cold (below). Works with `autoTrigger: false`. |
 | `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
-| `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional renderer. |
+| `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
 
 Fixed limits (not configurable): trim at most 32 outputs of 4,096+ characters
@@ -437,7 +437,7 @@ with Pi's `/tools` stay hidden until you show them again.
 | Key | TUI label | Default | Notes |
 | --- | --- | --- | --- |
 | `contextGraphEnabled` | `Project memory` | `true` | Local store: index verified compaction state and enable recall/save. Explicit Hindsight/Mnemopi stores keep their tools with this off. |
-| `memoryBackend` | `Memory store` | `local` | `local` (`This machine`), `hindsight` (`Hindsight server`), `mnemopi` (`Mnemopi (local SQLite)`) |
+| `memoryBackend` | `Memory store` | `local` | `local` (`This machine`), `hindsight` (`Hindsight server`), `mnemopi` (`Mnemopi (local SQLite)`; needs the optional `@oh-my-pi/pi-mnemopi` component and Bun 1.3.14+ on `PATH` or the optional `bun` component — `Readiness & details` shows the install command, see [Optional components](../README.md#optional-components)) |
 | `hindsightBaseUrl` | `Server URL` | `null` | HTTPS, no credentials, query or fragment; plain HTTP only for loopback |
 | `hindsightBankId` | `Memory bank` | `null` | Required; 1–128 of letters, digits, `.`, `_`, `-`; never guessed |
 | `hindsightApiKeyEnv` | `API key variable` | `null` | Name of the environment variable holding the key, not the key |

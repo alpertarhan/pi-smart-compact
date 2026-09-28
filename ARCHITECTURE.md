@@ -755,10 +755,10 @@ backends receive nothing automatically.
   host. `app/mnemopi-memory.ts` starts a bounded worker and waits for a
   readiness line after its imports before sending any content over stdin.
   `resolveBunExecutable()` resolves the worker runtime read-only: the
-  package-owned `bun` optional dependency first (manifest bin plus a real-file
-  check that rejects the postinstall placeholder), then the platform `@oven/*`
-  package, then a supported PATH Bun (>=1.3.14). No shell, download or
-  self-install is involved, so missing dependencies fail before a memory
+  optional `bun` component installed beside the extension first (manifest bin
+  plus a real-file check that rejects the postinstall placeholder), then the
+  platform `@oven/*` package, then a supported PATH Bun (>=1.3.14). No shell,
+  download or self-install is involved, so missing components fail before a memory
   request; interrupted submitted writes remain uncertain. TypeBox validates both
   IPC directions and persisted engine metadata. Project-isolated files,
   author/kind filters and checked provenance prevent cross-project recall. The

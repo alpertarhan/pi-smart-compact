@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The Mnemopi engine (`@oh-my-pi/pi-mnemopi`), its `bun` runtime and the
+  image-snapshot renderer (`@resvg/resvg-js`) are no longer installed with
+  the extension. They are optional peer dependencies for features that are
+  off by default; a plain install used to download about 260 MB for them
+  (macOS arm64). When a selected feature lacks its component, Readiness,
+  the effective-state report and the failure notices show the exact
+  `npm install … --prefix <Pi install root> --legacy-peer-deps` command
+  (see README "Optional components"). The release audit now installs the
+  components the user's way into a Pi-style npm root and proves they survive
+  a Pi update.
+
 ### Added
 
 - Automatic cleanup held for a cold prompt cache now waits while Pi's cache

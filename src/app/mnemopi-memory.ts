@@ -7,6 +7,7 @@ import type { CompactConfig } from "../types.ts";
 import { home, piAgentDir } from "../infra/paths.ts";
 import { acquireLock, ensureDir } from "../infra/fs.ts";
 import { mnemopiTargetDigest } from "../infra/memory-ref.ts";
+import { installCommand } from "../infra/optional-components.ts";
 import {
   type BunExecutable,
   resolveBunExecutable,
@@ -55,12 +56,12 @@ export async function runMnemopi(
       } catch { /* A partial worker response cannot prove whether a mutation committed. */ }
     }
     if (error?.code === "ENOENT") {
-      resolve({ state: "failed", reason: "Mnemopi requires the package-owned Bun dependency (reinstall this package without --ignore-scripts) or Bun >=1.3.14 on PATH; no memory was changed" });
+      resolve({ state: "failed", reason: "Mnemopi needs Bun >=1.3.14 on PATH or the optional bun component (install it with: " + installCommand(["bun"]) + "); no memory was changed" });
       return;
     }
     resolve({
       state: request.operation === "recall" || !submitted ? "failed" : "unknown",
-      reason: "Mnemopi worker did not complete. Check Bun >=1.3.14 and the optional @oh-my-pi/pi-mnemopi package. " +
+      reason: "Mnemopi worker did not complete. Check Bun >=1.3.14 and the optional @oh-my-pi/pi-mnemopi component (" + installCommand(["mnemopi"]) + "). " +
         (!submitted ? "No memory request was sent." : request.operation === "recall" ? "Recall unavailable." : "Write outcome unknown; repeating the same fact is idempotent."),
       dbPath: request.dbPath,
     });

@@ -217,10 +217,11 @@ verifies that the existing server URL, explicit bank, and the named key
 environment variable are configured — server reachability, authentication and
 server-side models are explicitly **not** verified, and no server is installed,
 started, or configured. Local-backend readiness reflects `contextGraphEnabled`.
-Mnemopi readiness checks the optional package, the worker file, and a usable
-Bun executable — the package-owned `bun` optional dependency first (resolved
-from package metadata and the installed layout, never downloaded or
-self-installed at runtime), then a supported Bun (>= 1.3.14) on `PATH`.
+Mnemopi readiness checks the optional component, the worker file, and a usable
+Bun executable — the optional `bun` component installed beside the extension
+first (resolved from package metadata and the installed layout, never
+downloaded or self-installed at runtime), then a supported Bun (>= 1.3.14) on
+`PATH`. A missing component is reported with its install command.
 
 ## Tests
 
@@ -240,9 +241,10 @@ self-installed at runtime), then a supported Bun (>= 1.3.14) on `PATH`.
   backend-exclusivity regressions at the tool and index layers (mnemopi-only
   recall cannot see local facts, mid-drain backend switches cancel queued
   index jobs without creating the graph).
-- `test/memory-backend.test.ts`: Bun executable resolution (package-owned
-  metadata/layout, placeholder rejection, platform fallback, traversal
-  refusal), version gate, readiness evidence, and the exclusive-policy guard.
+- `test/memory-backend.test.ts`: Bun executable resolution (installed
+  component metadata/layout, placeholder rejection, platform fallback,
+  traversal refusal), version gate, readiness evidence, and the
+  exclusive-policy guard.
 - `test/hindsight-live.canary.ts`: opt-in live canary. It is not run by
   `bun test`.
 

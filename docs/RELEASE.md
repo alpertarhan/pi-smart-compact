@@ -31,7 +31,7 @@ checkout version and the version currently on npm distinct in every note.
       loaded with the candidate.
 - [ ] Confirm Pi remains a host peer (`">=0.87.1"`) and TypeBox a wildcard peer (`"*"`); neither is bundled.
 - [ ] Confirm the visual renderer remains optional/external and the font plus its license ship in `assets/`. Verify default Node loading without the optional addon and a real PNG render where supported.
-- [ ] Confirm Mnemopi stays an optional external engine with TypeBox external in its worker, and that the packed manifest pins the optional `bun` runtime and `@oh-my-pi/pi-mnemopi`. Verify the installed Node-host worker runs on the package-owned Bun with no Bun on `PATH`, plus fail-closed missing-engine and missing-Bun failures that submit no memory request and create no store.
+- [ ] Confirm Mnemopi stays an optional external engine with TypeBox external in its worker, and that `bun`, `@oh-my-pi/pi-mnemopi` and `@resvg/resvg-js` remain optional peers pinned to `OPTIONAL_COMPONENTS` (never `optionalDependencies`). Verify a plain install pulls none of them in, the failure names the install command for the install root, the installed Node-host worker runs on the user-installed `bun` component under a Pi-style npm root with no Bun on `PATH`, and the fail-closed missing-engine and missing-Bun failures submit no memory request and create no store.
 - [ ] Confirm no secrets, local JSONL, SQLite data, backups, or generated
       credentials are tracked or packed.
 
@@ -49,8 +49,10 @@ manifest/version/peers, supported SECURITY major, package contents
 (runtime-only `dist`: exactly `index.js`, `rtk.js`, and `mnemopi-worker.js` plus
 declarations), isolated and frozen installs, extension/tool registration, Node
 SQLite, and the optional Mnemopi worker through real Node-host tools. It also
-runs the installed worker under a Bun-free `PATH` on the package-owned pinned
-Bun and checks the missing-engine and missing-Bun negatives (no store, no
+runs the installed worker under a Bun-free `PATH` on the user-installed
+pinned `bun` component (installed with the command Readiness shows into a
+Pi-style npm root, then kept across a Pi update) and checks the
+install-command, missing-engine and missing-Bun negatives (no store, no
 model/network request). Evaluation and report CLIs are source-checkout tools,
 not packed: the audit runs `scripts/provider-eval.ts`,
 `scripts/telemetry-report.ts`, and all four offline continuation/memory arms of
