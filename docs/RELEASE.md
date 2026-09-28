@@ -14,15 +14,16 @@ checkout version and the version currently on npm distinct in every note.
 
 ## 1. Prepare the candidate
 
-- [ ] Use a distinct prerelease version (for example `9.8.0-canary.6`) until
+- [ ] Use a distinct prerelease version (for example `9.8.0-canary.8`) until
       the stable/canary gates pass; stamp it in `package.json` and sync
       `src/constants.ts` before packing.
 - [ ] Move shipped notes from `[Unreleased]` into the dated version in
       `CHANGELOG.md`; never word a candidate entry as if the final release
       check or canary promotion already passed.
 - [ ] Update the guide, configuration, evaluation, architecture and migration
-      notes for behavior/config changes. Dated reports stay historical; add a
-      new report or addendum instead of rewriting them.
+      notes for behavior/config changes. Dated reports (`docs/reports/`) stay
+      historical and are not packed; add a new report or addendum instead of
+      rewriting them.
 - [ ] For Claude subscription routes, pair the fresh candidate with the exact
       `pi-claude-oauth-adapter` build used in the proofs (published `0.2.2`
       plus the final-payload patch until it is released upstream) and record

@@ -3,7 +3,7 @@
 	"version": "9.8.0-canary.8",
 	"description": "Pi Continuity — context hygiene and session continuity for Pi Coding Agent: recoverable cleanup, checkpoints, memory and verified compaction.",
 	"type": "module",
-	"packageManager": "bun@1.4.0",
+	"packageManager": "bun@1.4.2",
 	"engines": {
 		"node": ">=22.19.0"
 	},
@@ -49,6 +49,7 @@
 		"dist",
 		"docs",
 		"!docs/findings",
+		"!docs/reports",
 		"assets",
 		"README.md",
 		"ARCHITECTURE.md",

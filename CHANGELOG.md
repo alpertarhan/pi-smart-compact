@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Dated reports and pilot data moved to `docs/reports/` and, like the review
+  findings, are no longer packed into the npm package (about 150 KB less per
+  install; `docs/README.md` still indexes them).
+- `replay-eval` gained `--since=DAYS` and `--progress`, and a session file that
+  changes while it is being read (a live session) is now skipped and counted
+  instead of failing the whole run.
+
 ## [9.8.0-canary.8] - 2026-09-28
 
 Integration candidate for the maintainer's daily Pi (real-session data

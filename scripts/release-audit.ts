@@ -116,8 +116,10 @@ try {
   if (packedJs.join("\n") !== runtimeJs.join("\n")) {
     throw new Error("packed dist JavaScript must be exactly " + runtimeJs.join(", ") + "; got " + packedJs.join(", "));
   }
+  // Historical reports and external review findings are repository documentation, never shipped.
   const forbidden = files.filter(file =>
     file.startsWith("package/src/") || file.startsWith("package/test/") || file.includes("node_modules")
+    || file.startsWith("package/docs/reports/") || file.startsWith("package/docs/findings/")
     || /(?:^|\/)(?:\.env|auth\.json|context-graph\.sqlite|.*\.jsonl)$/.test(file),
   );
   if (forbidden.length) throw new Error("forbidden packed files: " + forbidden.join(", "));

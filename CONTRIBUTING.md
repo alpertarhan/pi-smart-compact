@@ -69,7 +69,9 @@ src/
 scripts/              build, audit, compatibility, evaluation and pilot CLIs
 bench/                hot-path benchmark gate
 test/                 unit, integration and regression tests
-docs/                 guide, configuration, evaluation, release, dated reports, assets
+docs/                 guide, configuration, evaluation, release, assets
+  reports/            dated reports and pilots (historical; not packed)
+  findings/           external review findings (advisory; not packed)
 ```
 
 ## Development workflow
@@ -105,7 +107,7 @@ Update the page that owns the topic:
 | Vulnerability reporting, data handling | `SECURITY.md` |
 | Support routing | `SUPPORT.md` |
 
-Dated reports (`docs/*-YYYY-MM-DD.md`) and `docs/MIGRATING_TO_V8.md` are
+Dated reports (`docs/reports/*-YYYY-MM-DD.md`) and `docs/MIGRATING_TO_V8.md` are
 historical. Do not rewrite their measurements, dates or shipped names; add a
 new dated report or an addendum instead.
 

@@ -121,7 +121,7 @@ receives the same three bounded coding-continuity scenarios (`implementation`,
 60-second timeout per call, scored by the deterministic verifier. It reports
 score, latency and reported usage. Apply a route manually, and only after
 representative evidence; one probe is not that evidence. The dated
-[2026-08-06 baseline](./provider-evaluation-2026-08-06.md) is an example of
+[2026-08-06 baseline](./reports/provider-evaluation-2026-08-06.md) is an example of
 this output, not a current ranking.
 
 ## Paired continuation and memory evaluation
@@ -326,10 +326,12 @@ only: savings floors, cooldowns, pressure gates and TTLs are unchanged by them.
 ### Replay estimates
 
 `bun run replay-eval --sessions=<dir|file[,file…]> [--out=/abs/dir] [--json]
-[--break-even=8,16,24,48] [--rebuild-min=16384] [--limit=N]` replays recorded
-session files in memory (never written; input mtimes are checked afterwards)
-and judges the automatic-trim timing constants `AUTO_TRIM_BREAK_EVEN_REQUESTS`
-and `REBUILD_MIN_TOKENS`. Recorded automatic trims are removed first so every
+[--break-even=8,16,24,48] [--rebuild-min=16384] [--limit=N] [--since=DAYS]
+[--progress]` replays recorded session files in memory (never written; a file
+that changes while it is read, such as a live session, is skipped and counted;
+`--since` keeps files modified in the last `DAYS` days; `--progress` prints one
+line per file to stderr) and judges the automatic-trim timing constants
+`AUTO_TRIM_BREAK_EVEN_REQUESTS` and `REBUILD_MIN_TOKENS`. Recorded automatic trims are removed first so every
 policy starts from the same history. Policies:
 
 - `none`: no automatic trim.
@@ -379,8 +381,8 @@ retroactively. Current behavior is described in the [guide](./guide.md),
 
 | Report | Scope |
 | --- | --- |
-| [Provider evaluation baseline, 2026-08-06](./provider-evaluation-2026-08-06.md) | Live three-scenario probe across five models; advisory |
-| [Context hygiene and continuity, 2026-09-24](./context-hygiene-2026-09-24.md) | Hygiene design and offline experiments |
-| [Hindsight and provider-native compaction research, 2026-09-24](./hindsight-native-compaction-research-2026-09-24.md) | Pre-implementation research plus later measured results |
-| [Full AgentSession offline pilot, 2026-09-24](./session-pilot-2026-09-24.md) | Scripted-transport lifecycle pilot |
-| [Visual evidence pilot, 2026-09-24](./visual-pilot-2026-09-24.md) | Live synthetic bitmap-versus-text reading pilot on one model |
+| [Provider evaluation baseline, 2026-08-06](./reports/provider-evaluation-2026-08-06.md) | Live three-scenario probe across five models; advisory |
+| [Context hygiene and continuity, 2026-09-24](./reports/context-hygiene-2026-09-24.md) | Hygiene design and offline experiments |
+| [Hindsight and provider-native compaction research, 2026-09-24](./reports/hindsight-native-compaction-research-2026-09-24.md) | Pre-implementation research plus later measured results |
+| [Full AgentSession offline pilot, 2026-09-24](./reports/session-pilot-2026-09-24.md) | Scripted-transport lifecycle pilot |
+| [Visual evidence pilot, 2026-09-24](./reports/visual-pilot-2026-09-24.md) | Live synthetic bitmap-versus-text reading pilot on one model |

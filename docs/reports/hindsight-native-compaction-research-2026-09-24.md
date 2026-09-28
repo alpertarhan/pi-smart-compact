@@ -1,9 +1,9 @@
 # Hindsight and provider-native compaction research
 
-> **Scope:** Historical research record, dated 2026-09-24. Sections and measurements are kept as written; current Hindsight behavior is documented in [Hindsight memory backend](./hindsight-memory.md).
+> **Scope:** Historical research record, dated 2026-09-24. Sections and measurements are kept as written; current Hindsight behavior is documented in [Hindsight memory backend](../hindsight-memory.md).
 > Current documentation for Pi Continuity (the `pi-smart-compact` package):
-> [guide](./guide.md) · [configuration](./configuration.md) ·
-> [evaluation](./evaluation.md) · [documentation index](./README.md).
+> [guide](../guide.md) · [configuration](../configuration.md) ·
+> [evaluation](../evaluation.md) · [documentation index](../README.md).
 
 Date: 2026-09-24. Sections 1–5 are the original research and design, written before
 anything was implemented. They made no Hindsight server call or live compaction request.

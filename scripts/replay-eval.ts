@@ -24,10 +24,13 @@ figure. It cannot show real savings, provider cache behavior or billing.
   --break-even=N,…       timed-<N> policies (default: 8,16,${AUTO_TRIM_BREAK_EVEN_REQUESTS},48)
   --rebuild-min=N        Rebuild threshold floor in tokens (default: ${REBUILD_MIN_TOKENS})
   --limit=N              Replay at most N session files (sorted by path)
+  --since=DAYS           Only session files modified in the last DAYS days
+  --progress             Print one line per file to stderr (index, requests, elapsed)
   --json                 Also write <out>/replay-eval.json (session ids and numbers only)
   --out=/absolute/dir    JSON output directory (default: ./replay-eval-reports/TIMESTAMP)
 
-Input files are read once and never written; subscription (OAuth) requests are never priced.`;
+Input files are read once and never written; a file that changes while it is read (a live
+session) is skipped and counted; subscription (OAuth) requests are never priced.`;
 
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
@@ -46,6 +49,8 @@ if (!inputs.length) throw new Error("--sessions is required; see --help");
 const breakEven = [...new Set(integers("break-even", flag("break-even") ?? `8,16,${AUTO_TRIM_BREAK_EVEN_REQUESTS},48`, 1))];
 const [rebuildMin] = integers("rebuild-min", flag("rebuild-min") ?? String(REBUILD_MIN_TOKENS), 0);
 const limit = flag("limit") === undefined ? Infinity : integers("limit", flag("limit")!, 1)[0];
+const since = flag("since") === undefined ? undefined : Date.now() - integers("since", flag("since")!, 1)[0] * 86_400_000;
+const progress = argv.includes("--progress");
 const json = argv.includes("--json");
 const out = flag("out") ?? path.resolve("replay-eval-reports", new Date().toISOString().replace(/[:.]/g, "-"));
 if (!path.isAbsolute(out)) throw new Error("--out must be an absolute directory");
@@ -58,14 +63,16 @@ function sessionFiles(input: string): string[] {
     .filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))
     .map(entry => path.join(entry.parentPath, entry.name));
 }
-const files = [...new Set(inputs.flatMap(sessionFiles))].sort().slice(0, limit);
-const before = new Map(files.map(file => [file, fs.statSync(file)]));
+const files = [...new Set(inputs.flatMap(sessionFiles))].sort()
+  .filter(file => since === undefined || fs.statSync(file).mtimeMs >= since)
+  .slice(0, limit);
 
 // Offline catalog: synthetic auth and model stores in a private temp dir, no network.
 const catalogRoot = fs.mkdtempSync(path.join(os.tmpdir(), "replay-eval-"));
 const policies = policiesFor(breakEven);
 const sessions: SessionResult[] = [];
 let skipped = 0;
+let changed = 0;
 try {
   const authPath = path.join(catalogRoot, "auth.json");
   fs.writeFileSync(authPath, "{}");
@@ -82,33 +89,31 @@ try {
     }
     return models.get(key);
   };
-  for (const file of files) {
-    const session = loadSession(fs.readFileSync(file, "utf8"));
-    if (!session) { skipped++; continue; }
-    sessions.push(replaySession(session, catalog, { policies, rebuildMin }));
-  }
+  files.forEach((file, index) => {
+    const started = performance.now();
+    const before = fs.statSync(file);
+    const text = fs.readFileSync(file, "utf8");
+    const after = fs.statSync(file);
+    // A session being written right now cannot be evidence; skip it rather than discarding the run.
+    if (after.mtimeMs !== before.mtimeMs || after.size !== before.size) { changed++; return; }
+    const session = loadSession(text);
+    if (!session) { skipped++; return; }
+    const result = replaySession(session, catalog, { policies, rebuildMin });
+    sessions.push(result);
+    if (progress) console.error(`[${index + 1}/${files.length}] ${path.basename(file)} ${result.policies[0]?.requests ?? 0} requests ${Math.round(performance.now() - started)} ms`);
+  });
 } finally {
   fs.rmSync(catalogRoot, { recursive: true, force: true });
 }
 
-const changed = files.filter(file => {
-  const now = fs.statSync(file);
-  const then = before.get(file)!;
-  return now.mtimeMs !== then.mtimeMs || now.size !== then.size;
-});
-if (changed.length) {
-  console.error(`Input changed during replay (${changed.length} file(s)); results discarded.`);
-  process.exit(1);
-}
-
 console.log(formatReport(sessions, policies));
-console.log(`\n${sessions.length} session(s) replayed, ${skipped} skipped without a valid header; break-even ${breakEven.join(",")}; rebuild-min ${rebuildMin}.`);
+console.log(`\n${sessions.length} session(s) replayed, ${skipped} skipped without a valid header, ${changed} skipped because they changed while being read; break-even ${breakEven.join(",")}; rebuild-min ${rebuildMin}.`);
 if (json) {
   fs.mkdirSync(out, { recursive: true });
   const report = {
     evidence: "replay estimates over recorded sessions; not real savings, provider cache behavior or billing",
     parameters: { breakEven, rebuildMin, pressureRatio: PRESSURE_RATIO },
-    skipped, sessions, totals: totals(sessions, policies),
+    skipped, changed, sessions, totals: totals(sessions, policies),
   };
   const target = path.join(out, "replay-eval.json");
   fs.writeFileSync(target, JSON.stringify(report, null, 2) + "\n");

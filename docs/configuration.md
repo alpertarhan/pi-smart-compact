@@ -8,7 +8,7 @@ everything lives under the `smartCompact` key, and the settings screen is opened
 with `/smart-compact settings`.
 
 Defaults on this page were checked against the current source checkout
-(`9.8.0-canary.6`; local-only, not published). Some capabilities
+(`9.8.0-canary.8`; local-only, not published). Some capabilities
 and keys are newer than the latest stable changelog entry, `9.7.1`; check
 [the changelog](../CHANGELOG.md) for your installed version.
 

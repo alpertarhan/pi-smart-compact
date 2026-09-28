@@ -41,14 +41,16 @@ one backend is selected at a time.
 
 Dates and measured results in these reports are intentionally preserved. They
 can describe an older candidate or earlier design; their own limits still apply.
+They live under [`reports/`](./reports/) and, like the review findings, stay
+out of the npm package (`package.json` `files`).
 
 | Report | What it establishes |
 | --- | --- |
-| [Context hygiene experiments, 2026-09-24](./context-hygiene-2026-09-24.md) | Implementation decisions, local experiments and a dated remediation record. |
-| [AgentSession pilot, 2026-09-24](./session-pilot-2026-09-24.md) | Scripted stock-Pi lifecycle, recovery and continuation behavior, with dated follow-ups. |
-| [Visual evidence pilot, 2026-09-24](./visual-pilot-2026-09-24.md) | A bounded visual-reader experiment, including measured overhead and limitations. |
-| [Hindsight/native research, 2026-09-24](./hindsight-native-compaction-research-2026-09-24.md) | Earlier alternatives, proposals and implementation follow-ups—not all current settings. |
-| [Provider baseline, 2026-08-06](./provider-evaluation-2026-08-06.md) | A small historical routing sample, not a current recommendation or reliability ranking. |
+| [Context hygiene experiments, 2026-09-24](./reports/context-hygiene-2026-09-24.md) | Implementation decisions, local experiments and a dated remediation record. |
+| [AgentSession pilot, 2026-09-24](./reports/session-pilot-2026-09-24.md) | Scripted stock-Pi lifecycle, recovery and continuation behavior, with dated follow-ups. |
+| [Visual evidence pilot, 2026-09-24](./reports/visual-pilot-2026-09-24.md) | A bounded visual-reader experiment, including measured overhead and limitations. |
+| [Hindsight/native research, 2026-09-24](./reports/hindsight-native-compaction-research-2026-09-24.md) | Earlier alternatives, proposals and implementation follow-ups—not all current settings. |
+| [Provider baseline, 2026-08-06](./reports/provider-evaluation-2026-08-06.md) | A small historical routing sample, not a current recommendation or reliability ranking. |
 | [v7 → v8 migration](./MIGRATING_TO_V8.md) | Instructions for that historical version transition, not the current install baseline. |
 
 A green scripted pilot does not establish live-model fidelity, billed savings or
