@@ -5,7 +5,6 @@ import path from "node:path";
 import { runSmartCompact } from "../src/app/run-smart-compact.ts";
 import {
  attemptNativeCompaction,
- CLAUDE_OAUTH_ADAPTER_HINT,
  createNativeReplayHook,
  nativeCompactionCut,
  resetNativeSkipWarningsForTests,
@@ -232,8 +231,8 @@ function ordinaryRequest(model: any, context: any): { url: string; init: Request
 }
 
 function compactionResponse(api: string, behaviour: string): Response {
- if (behaviour === "throw" || behaviour === "extra-usage") {
-  const message = behaviour === "throw" ? "provider rejected compaction" : "You're out of extra usage";
+ if (behaviour === "throw") {
+  const message = "provider rejected compaction";
   return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }), { status: 400 });
  }
  const opaque = behaviour === "too-big" ? "x".repeat(2_000_000) : "opaque-state";
@@ -268,7 +267,7 @@ function compactionResponse(api: string, behaviour: string): Response {
  * 400 and ends the stream as an error; the transport is the provider behind the wrapper.
  */
 function fakeProvider(
- behaviour: "ok" | "throw" | "too-big" | "no-request" | "extra-usage" | "incomplete" = "ok",
+ behaviour: "ok" | "throw" | "too-big" | "no-request" | "incomplete" = "ok",
  onStream?: () => void,
 ) {
  const streamCalls: Array<{ model: any; context: any; options: any }> = [];
@@ -537,18 +536,6 @@ describe("native compaction engine", () => {
   );
   expect(formatCompactErrorForUi(failure)).toBe(failure.message);
   expect(fake.wire).toHaveLength(1);
- });
-
- it("adds the Toolkit adapter hint to an Anthropic OAuth 'extra usage' rejection only", async () => {
-  useProvider(fakeProvider("extra-usage"));
-  const branch = conversation();
-  const oauth = await run(branch, ["native"], { ctx: makeCtx(branch, { oauth: true }) }).catch((error) => error);
-  expect(oauth.message).toContain(
-   "native failed (400 invalid_request_error: You're out of extra usage " + CLAUDE_OAUTH_ADAPTER_HINT + ")",
-  );
-  useProvider(fakeProvider("extra-usage"));
-  const apiKey = await run(branch, ["native"], { ctx: makeCtx(branch, { oauth: false }) }).catch((error) => error);
-  expect(apiKey.message).not.toContain("pi-toolkit");
  });
 
  it("rejects results that are not smaller than the prefix", async () => {

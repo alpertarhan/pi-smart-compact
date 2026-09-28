@@ -104,9 +104,8 @@ Registered in [`src/index.ts`](https://github.com/alpertarhan/pi-smart-compact/b
 
 The table lists the owning surfaces. Other host events support them:
 session switch/fork/tree and `model_select` cancel speculative
-preparation and queued edits; `session_start` also names known conflicting
-compaction or context-editing extensions (`app/extension-conflicts.ts`,
-name-based evidence from the live command/tool registry, one notice);
+preparation and queued edits; `session_start` initializes replay, cache,
+tool exposure, policy and navigation state;
 `before_agent_start` injects the one-shot native continuity bridge;
 `message_end` feeds damage monitoring and the host prompt-cache ledger;
 `context_with_system` and `cache_warming_decision` serve held automatic trims
@@ -338,14 +337,10 @@ bytes, and hold the per-origin caps without losing earlier evidence.
 ### Session navigation and apply-time validation
 
 `app/register-navigation.ts` owns anchors, cross-session recall, pivots, the
-anchor footer and the Anthropic anchor cache marker (`app/anchor-cache.ts`;
-semantics adapted from pi-toolkit's auto-context under its MIT license).
+anchor footer and the Anthropic anchor cache marker (`app/anchor-cache.ts`).
 `app/navigation-data.ts` reads both owned anchors (`custom_message` entries of
 type `smart-context-anchor`, plus `smart_navigation` tool results) and legacy
-`context` tool anchors recorded by pi-toolkit; recall scans other sessions'
-JSONL read-only. pi-toolkit's auto-context extension is not a supported
-co-resident: two anchor and pruning owners are unsafe in any load order, and
-`piToolkit.context.thinningEnabled` is no longer read.
+`context` tool anchors; recall scans other sessions' JSONL read-only.
 
 A human anchor is a `sendMessage` custom message followed by a native label on
 that entry; a human pivot navigates to the label so Pi's `custom_message`
@@ -1039,7 +1034,6 @@ stores by default.
 | `app/session-lineage.ts` | read-only in-memory load of `parentSession` ancestors (depth, size and cycle bounds) |
 | `app/session-handoff.ts` | handoff seed from recorded state only; preview and `ctx.newSession` seeding |
 | `app/host-cache-ledger.ts` | session-local ledger of Pi's own requests: rebuild detection, cause attribution, cache lifetime |
-| `app/extension-conflicts.ts` | startup detection of known conflicting compaction/context-editing extensions; name-based, one notice |
 | `app/artifact-storage.ts` | read-only storage inventory and lineage classification |
 | `app/visual-archive.ts` | bounded evidence selection, persisted archive validation, request-local image rehydration |
 | `app/native-compaction.ts` | native engine: nested-request compaction, clean-turn cut, route/size checks, replay |

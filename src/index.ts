@@ -48,7 +48,6 @@ import {
  writeRemediationHints,
 } from "./utils/damage.ts";
 import { errorDetail, flushIssues, notifyUser, reportIssue } from "./utils/issues.ts";
-import { conflictNotice, detectExtensionConflicts } from "./app/extension-conflicts.ts";
 import * as log from "./utils/logger.ts";
 import { deriveProjectIdFromCwd } from "./utils/fingerprint.ts";
 import {
@@ -248,7 +247,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    const calls = displaced.reduce((sum, pending) => sum + (pending.metricsSnapshot?.totalCalls ?? 0), 0);
    reportIssue({
     key: "compact.foreign-displaced",
-    message: actor + " was applied instead of Continuity's prepared summary; that summary (" + calls + " model call" + (calls === 1 ? "" : "s") + ") was discarded and its continuity state was not saved. If another compaction extension is installed, keep only one.",
+    message: actor + " was applied instead of Continuity's prepared summary; that summary (" + calls + " model call" + (calls === 1 ? "" : "s") + ") was discarded and its continuity state was not saved.",
    }, ctx);
    await Promise.all(displaced.flatMap((pending) => applyFailureWrites.get(pending.runId) ?? []));
    return;
@@ -256,7 +255,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   if (source === "extension") {
    reportIssue({
     key: "compact.foreign-extension",
-    message: actor + " was applied; Continuity did not summarize it and recorded no continuity state or metrics for it. If that is unintended, keep only one compaction extension.",
+    message: actor + " was applied; Continuity did not summarize it and recorded no continuity state or metrics for it.",
    }, ctx);
   } else if (automaticConfig().autoTrigger) {
    reportIssue({
@@ -374,16 +373,6 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  pi.on("session_start", (_event, ctx) => {
   nativeReplay.refresh(ctx);
   flushIssues(ctx);
-  try {
-   const conflicts = detectExtensionConflicts({ commands: typeof pi.getCommands === "function" ? pi.getCommands() : [], tools: pi.getAllTools() });
-   if (conflicts.length > 0) reportIssue({ key: "interop.conflicts", message: conflictNotice(conflicts) }, ctx);
-  } catch (error) {
-   reportIssue({
-    key: "interop.detect",
-    message: "Could not check loaded extensions for conflicts (" + errorDetail(error) + "). Other compaction extensions are not detected at startup. Please report this if it repeats.",
-    error,
-   }, ctx);
-  }
   invalidatePreparation(ctx);
   hostCache.reset(resolveSessionId(ctx));
   toolExposure.atBoundary();

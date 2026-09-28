@@ -7,7 +7,7 @@ Pi Continuity is the product name only. Settings keep their technical names:
 everything lives under the `smartCompact` key, and the settings screen is opened
 with `/smart-compact settings`.
 
-Defaults on this page were checked against Pi Continuity `10.0.0`. For an older
+Defaults on this page were checked against Pi Continuity `10.0.1`. For an older
 installation, use [the changelog](../CHANGELOG.md) and the
 [upgrade notes](./guide.md#upgrade-from-9x) before adopting these settings.
 

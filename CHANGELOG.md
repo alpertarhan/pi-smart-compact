@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [10.0.1] - 2026-09-28
+
+### Removed
+
+- Name-based startup scanning of unrelated extensions and instructions to
+  disable or uninstall them. An unrelated command name no longer produces a
+  guessed extension-conflict warning. Actual compaction lifecycle and
+  continuity-state checks remain in place.
+- Unrelated extension lists and compatibility-policing guidance from current
+  product documentation and release notes. Required and optional dependency
+  instructions, legacy session-data support and license attribution remain.
+
 ## [10.0.0] - 2026-09-28
 
 **Pi Continuity**: the stable release of the context-hygiene and session-continuity
@@ -22,10 +34,9 @@ rework. This release includes the work recorded in the unpublished
 - Mnemopi, its optional Bun runtime and image rendering are separate optional
   components, not automatic downloads. Readiness shows the correct install
   command. The default local graph does not require these components.
-- Use only one context-editing owner. Do not load pi-toolkit auto-context
-  alongside Continuity navigation. Claude subscription requests require the
-  separate adapter with final-payload normalization; the published adapter
-  `0.2.2` alone does not cover nested calls (upstream PR #10).
+- Claude subscription requests require the separate adapter with final-payload
+  normalization; the published adapter `0.2.2` alone does not cover nested calls
+  (upstream PR #10).
 
 ### Added
 

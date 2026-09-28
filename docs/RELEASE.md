@@ -38,8 +38,7 @@ package installation.
       plus the final-payload patch, [upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10),
       until it is released) and record
       the paired archive paths and hashes at final packaging — do not
-      reconstruct them from memory. pi-toolkit's auto-context must not be
-      loaded with the candidate.
+      reconstruct them from memory.
 - [ ] Confirm Pi remains a host peer (`">=0.87.1"`) and TypeBox a wildcard peer (`"*"`); neither is bundled.
 - [ ] Confirm the visual renderer remains optional/external and the font plus its license ship in `assets/`, together with the on-demand context guide `assets/skills/context-management/SKILL.md`. Verify default Node loading without the optional addon and a real PNG render where supported.
 - [ ] Confirm Mnemopi stays an optional external engine with TypeBox external in its worker, and that `bun`, `@oh-my-pi/pi-mnemopi` and `@resvg/resvg-js` remain optional peers pinned to `OPTIONAL_COMPONENTS` (never `optionalDependencies`). Verify a plain install pulls none of them in, the failure names the install command for the install root, the installed Node-host worker runs on the user-installed `bun` component under a Pi-style npm root with no Bun on `PATH`, and the fail-closed missing-engine and missing-Bun failures submit no memory request and create no store.
