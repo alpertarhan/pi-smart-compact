@@ -4,9 +4,11 @@ Use this checklist before publishing Pi Continuity as the npm package
 `pi-smart-compact`. The package name, command, tool names and configuration
 key do not change with the documentation brand.
 
-> **Stop condition:** validation, packing, and isolated installation are safe.
-> `npm publish`, Git tags, GitHub releases, and deployment require separate
-> explicit approval. The automated checks never perform them.
+> **Approval boundary:** validation, packing and isolated installation do not
+> publish anything. Creating a published GitHub release is the explicit
+> approval that starts npm publication through Trusted Publishing. Use a draft
+> release for preparation; ordinary commits, tags and pull-request CI do not
+> publish packages.
 
 Evidence classes and their limits are defined in
 [evaluation](./evaluation.md#offline-and-live-evidence). Keep the unpublished
@@ -17,9 +19,11 @@ package installation.
 
 ## 1. Prepare the candidate
 
-- [ ] Use a distinct prerelease version (for example `9.8.0-canary.8`) until
-      the stable/canary gates pass; stamp it in `package.json` and sync
-      `src/constants.ts` before packing.
+- [ ] Use a distinct prerelease until the stable/canary gates pass, unless the
+      release owner explicitly approves a version-specific stable exception.
+      Record any exception and missing evidence in the release notes; it is
+      not a `PROMOTE` result. Stamp `package.json` and run
+      `bun run sync-version` before packing.
 - [ ] Move shipped notes from `[Unreleased]` into the dated version in
       `CHANGELOG.md`; never word a candidate entry as if the final release
       check or canary promotion already passed.
@@ -166,35 +170,74 @@ subscription (OAuth) routes — never price subscription usage at API rates or
 strip cached tokens from quota.
 
 A `ROLLBACK` result blocks promotion. `HOLD` means collect evidence or fix data
-coverage; it is not a pass. Promotion authority remains manual: these gates
-inform the release owner, they never publish anything.
+coverage; it is not a pass. Promotion authority remains manual. A release-owner
+exception must name its version and evidence limits; it does not turn missing
+evidence into a passing gate.
 
 ## 5. Publish — explicit approval required
 
-Only after the user/release owner explicitly approves:
+### One-time npm Trusted Publisher setup
 
-```bash
-# RC
-npm publish --tag next
+In the npm package settings for `pi-smart-compact`, add a **GitHub Actions**
+trusted publisher with these exact values:
 
-# Stable, after canary approval and a stable SemVer bump
-npm publish
-```
+| Field | Value |
+| --- | --- |
+| Organization or user | `alpertarhan` |
+| Repository | `pi-smart-compact` |
+| Workflow filename | `publish.yml` (not `.github/workflows/publish.yml`) |
+| Environment | Leave empty; the workflow does not use an environment |
+| Publish permission | Allow direct `npm publish`, not only `npm stage publish` |
 
-`prepublishOnly` reruns `release:check`; it does not bypass any gate.
+The current npm default can permit staging only. Direct publication must be
+enabled to avoid a manual approval for every package. npm does not verify these
+fields when saving; the first successful workflow publication proves the link.
+See [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/).
+
+No `NPM_TOKEN` or `NODE_AUTH_TOKEN` secret is needed.
+[`publish.yml`](https://github.com/alpertarhan/pi-smart-compact/blob/main/.github/workflows/publish.yml)
+uses a GitHub-hosted runner, `id-token: write`, Node 26.10.0, npm 11.19.1 and
+the Bun version pinned in `package.json`. npm obtains short-lived OIDC
+credentials and automatically attaches provenance for this public repository.
+Keep these versions and the workflow filename aligned when changing tooling.
+
+### Release an approved version
+
+1. Merge the version, generated `VERSION`, changelog and release documentation
+   through a PR into `main`, with required CI passing. Complete the checks above.
+2. Create a GitHub release at that exact `main` commit with tag `v<version>`,
+   matching `package.json`. Include upgrade notes and the actual validation
+   evidence; document any explicitly approved canary exception.
+3. For a SemVer prerelease, mark the GitHub release **pre-release**. For a stable
+   version, leave that flag off. Publish the release, not just its tag.
+4. Follow **Actions → Publish to npm**. The workflow rejects tags that do not
+   match the package version, mismatched prerelease flags and commits outside
+   `main`. Prereleases publish to npm `next`; stable versions publish to `latest`.
+
+The workflow checks minimum-Pi compatibility and dependency advisories, then
+calls `npm publish`. Its existing `prepublishOnly` hook runs the full
+`release:check`, including the packed install audit and latest-Pi compatibility,
+before uploading. It never uses `--ignore-scripts` to bypass these gates.
+
+If the first run fails authentication, check the exact owner/repository/workflow
+fields, the empty environment and direct-publish permission on npm. After fixing
+the configuration, rerun the failed Actions job; do not publish manually to
+mask a broken OIDC setup. Once a version is published, it is immutable: a new
+package change needs a new version, not a republish or a moved release tag.
 
 ## 6. After publishing
 
-1. Verify npm package contents and integrity.
-2. Create the matching Git tag and GitHub release with migration/compatibility
-   notes.
-3. Install through Pi in a clean profile:
+1. Confirm **Publish to npm** completed successfully. A published GitHub release
+   alone does not prove the package reached npm.
+2. Check the registry version, dist-tag, integrity and provenance:
 
    ```bash
-   pi install npm:pi-smart-compact@next   # RC
-   # or npm:pi-smart-compact for stable
+   VERSION=$(node -p 'require("./package.json").version')
+   npm view "pi-smart-compact@$VERSION" version dist.integrity dist.attestations --json
+   npm view pi-smart-compact dist-tags --json
    ```
 
-4. Re-run tool registration, one manual compaction, Smart Recall, and the local
-   dashboard.
-5. Keep canary monitoring active through the agreed observation window.
+3. Install the exact version through Pi in a clean profile, then re-run tool
+   registration, one manual compaction, Smart Recall and the local dashboard.
+4. Keep canary monitoring active through the agreed observation window;
+   successful publication is not production-quality evidence.

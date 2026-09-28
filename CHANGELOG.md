@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+## [10.0.0] - 2026-09-28
+
+**Pi Continuity**: the stable release of the context-hygiene and session-continuity
+rework. This release includes the work recorded in the unpublished
+`9.8.0-canary.*` candidates below; those candidates were never npm releases.
+
+### Upgrade from 9.x
+
+- Requires Pi **0.87.1+** and Node.js **22.19+**. The npm package remains
+  `pi-smart-compact`; commands, settings namespace and stored paths are not
+  renamed. See the [upgrade guide](./docs/guide.md#upgrade-from-9x).
+- A bare `/smart-compact` opens Home in the TUI. Use **Compact now** for the
+  interactive flow; print/RPC/SDK use still runs compaction directly. Apply a
+  reviewed summary with **A**, not Enter.
+- Agent tools load on demand through `smart_tools` by default. **Always
+  available** remains an explicit alternative; tool visibility is not permission
+  to bypass compaction or memory confirmation controls.
+- Mnemopi, its optional Bun runtime and image rendering are separate optional
+  components, not automatic downloads. Readiness shows the correct install
+  command. The default local graph does not require these components.
+- Use only one context-editing owner. Do not load pi-toolkit auto-context
+  alongside Continuity navigation. Claude subscription requests require the
+  separate adapter with final-payload normalization; the published adapter
+  `0.2.2` alone does not cover nested calls (upstream PR #10).
+
+### Added
+
+- Recoverable context hygiene: queued manual and automatic cleanup, large-output
+  offload, checkpoint/rewind, archived-output search and paged reads. Automatic
+  cleanup uses pressure, catalog-price break-even or a cold-cache boundary;
+  shell calls, failures, instructions and recent work retain their protections.
+- Session anchors, read-only recall across earlier sessions and branch navigation
+  with required carryover. Handoff opens a fresh session from recorded state
+  without a model call; lineage retrieval reaches parent-session evidence.
+- A five-choice Home screen, task-oriented settings, effective-state/readiness
+  diagnostics, storage reporting and a host prompt-cache ledger.
+- Exclusive project-memory backends: the local graph, an optional local Mnemopi
+  engine or an existing Hindsight server. Explicit saves need confirmation;
+  stable backend-bound refs support resolution without silent store fallback.
+- Opt-in background preparation, provider-native compaction, image snapshots
+  and an explicitly loaded RTK companion. EESV text remains the default;
+  experimental provider/image results are not proof of semantic fidelity or
+  billed savings.
+- Read-only session replay estimates and paired continuation/memory evaluation
+  tooling, with offline defaults and explicit approval for live provider use.
+- GitHub-release-driven npm Trusted Publishing. `publish.yml` uses OIDC instead
+  of a stored npm token, preserves the full `prepublishOnly` release gate and
+  maps stable releases to `latest`, prereleases to `next`.
+
 ### Changed
 
 - Documentation now separates quick start, usage/reference and historical
@@ -21,6 +70,25 @@
 - `replay-eval` gained `--since=DAYS` and `--progress`, and a session file that
   changes while it is being read (a live session) is now skipped and counted
   instead of failing the whole run.
+
+### Fixed
+
+- Context edits, queued navigation and staged compactions revalidate branch,
+  session, model, configuration and cancellation state before applying. Rewind
+  and pivot change context, never files or external side effects.
+- Archived-output integrity, lineage authorization and target-bound memory refs
+  reject tampered or mismatched evidence instead of silently reconstructing it.
+- Provider calls use the requesting Pi session's model runtime, preserving
+  registered provider overrides. Native replay requires matching provider state
+  and the exact host summary wrapper.
+
+### Release decision
+
+The release owner explicitly approved **10.0.0 stable** instead of another
+canary. The available canary report was `HOLD`, with no completed candidate
+cohort; this is a version-specific release-owner exception, not a `PROMOTE`
+result. Deterministic checks and offline pilots do not establish live-model
+quality, billed savings or a completed production observation window.
 
 ## [9.8.0-canary.8] - 2026-09-28
 

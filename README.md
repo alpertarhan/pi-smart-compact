@@ -19,10 +19,10 @@ this extension adds context hygiene and continuity policies around it.
 > The TUI still says **Smart Compact**. No data or configuration migration is
 > needed. [Identity and naming](./docs/identity.md).
 >
-> **Source documentation:** this checkout describes the unpublished
-> `9.8.0-canary.8` candidate and subsequent unreleased work. Installing from npm
-> selects a published version, which may not include these features. Check the
-> [changelog](./CHANGELOG.md) against your installed version.
+> **Pi Continuity 10.0.0:** upgrading from 9.x? Update Pi to 0.87.1 or newer
+> and read the [upgrade notes](./docs/guide.md#upgrade-from-9x). Optional memory
+> engines and image rendering are installed separately. The
+> [changelog](./CHANGELOG.md) records the full release and its evidence limits.
 
 ## What it does
 
