@@ -366,6 +366,25 @@ describe("hindsight memory backend", () => {
     expect(after).toHaveLength(MAX_HINDSIGHT_RECEIPTS);
   });
 
+  it("refuses resolve and save on an unreadable receipt ledger and leaves it byte-identical", async () => {
+    const harness = setup(hindsightSettings());
+    fake.retainStatus = "processing";
+    const saved = await harness.save({ content: FACT });
+    const corrupt = '{"version":1,"receipts":[{"key":';
+    fs.writeFileSync(hindsightReceiptsFile(), corrupt);
+    const requestsBefore = fake.requests.length;
+
+    const resolved = await harness.save({ status: "resolved", ref: saved.details.ref });
+    expect(resolved.details.remote.state).toBe("failed");
+    expect(resolved.content[0].text).toContain(hindsightReceiptsFile());
+    const again = await harness.save({ content: FACT + " while the ledger is unreadable" });
+    expect(again.details.remote.state).toBe("failed");
+    expect(again.content[0].text).toContain(hindsightReceiptsFile());
+
+    expect(fake.requests.slice(requestsBefore).filter((request) => request.method !== "GET")).toHaveLength(0);
+    expect(fs.readFileSync(hindsightReceiptsFile(), "utf8")).toBe(corrupt);
+  });
+
   it("keeps tools visible for hindsight when the local graph is disabled and never reads it", async () => {
     const harness = setup(hindsightSettings({ contextGraphEnabled: false }));
     expect([...harness.active]).toContain("smart_save_memory");

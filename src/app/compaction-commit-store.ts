@@ -5,8 +5,11 @@ interface Entry {
   createdAt: number;
 }
 
-/** "foreign": another compaction (Pi's own or another extension's) was applied while this candidate waited. */
-export type CommitDiscardReason = "expired" | "evicted" | "aborted" | "shutdown" | "apply-error" | "foreign";
+/**
+ * "foreign": another compaction (Pi's own or another extension's) was applied while this candidate waited.
+ * "session-mismatch": the run was confirmed for a different session; the candidate can never commit.
+ */
+export type CommitDiscardReason = "expired" | "evicted" | "aborted" | "shutdown" | "apply-error" | "foreign" | "session-mismatch";
 
 export interface CompactionCommitStore {
   stage(pending: PendingCompaction): void;
@@ -62,7 +65,11 @@ export function createCompactionCommitStore(options: {
     take(runId, sessionId) {
       sweep();
       const entry = entries.get(runId);
-      if (!entry || entry.pending.sessionId !== sessionId) return null;
+      if (!entry) return null;
+      if (entry.pending.sessionId !== sessionId) {
+        remove(runId, "session-mismatch", true);
+        return null;
+      }
       entries.delete(runId);
       return entry.pending;
     },

@@ -5,8 +5,11 @@
  * target change can never resolve or report another server's state.
  */
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
-import { acquireLockSync, ensureDir, readJsonSync, writeJsonSync } from "./fs.ts";
+import { errorDetail, reportIssue } from "../utils/issues.ts";
+import { isRecord } from "../utils/type-guards.ts";
+import { acquireLockSync, ensureDir, writeJsonSync } from "./fs.ts";
 import { contextGraphFile } from "./paths.ts";
 
 export type HindsightReceiptState =
@@ -104,10 +107,48 @@ export function operationIdFor(
   );
 }
 
+/**
+ * A present but unreadable ledger is never treated as empty: that would let a
+ * resolve delete a document with in-flight retains, and the next save would
+ * overwrite the evidence. Callers refuse instead; the file is left untouched.
+ */
+export class ReceiptLedgerUnreadableError extends Error {
+  constructor(file: string, detail: string) {
+    super(
+      "Hindsight receipt ledger " +
+        file +
+        " is unreadable (" +
+        detail +
+        "); it was left untouched. Repair or move it aside before saving or resolving Hindsight memories",
+    );
+    this.name = "ReceiptLedgerUnreadableError";
+  }
+}
+
+function unreadableLedger(file: string, detail: string, error?: unknown): ReceiptLedgerUnreadableError {
+  const failure = new ReceiptLedgerUnreadableError(file, detail);
+  reportIssue({ key: "hindsight-receipts-unreadable:" + file, message: failure.message, error });
+  return failure;
+}
+
 function readAll(file: string): HindsightReceipt[] {
-  const parsed = readJsonSync<ReceiptFile>(file);
-  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.receipts)) return [];
-  return parsed.receipts.filter(
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw unreadableLedger(file, errorDetail(error), error);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw unreadableLedger(file, errorDetail(error), error);
+  }
+  if (!isRecord(parsed) || parsed.version !== 1 || !Array.isArray(parsed.receipts)) {
+    throw unreadableLedger(file, "unexpected ledger shape");
+  }
+  return (parsed as unknown as ReceiptFile).receipts.filter(
     (item) =>
       item &&
       typeof item.key === "string" &&
@@ -134,20 +175,6 @@ export function listReceipts(
       sameScope(receipt, scope) &&
       (documentId === undefined || receipt.documentId === documentId),
   );
-}
-
-/**
- * Number of confirmed deletions of this document in this scope. Mixing it into
- * the revision gives a re-save after resolve a fresh operation id.
- */
-export function documentGeneration(
-  scope: HindsightReceiptScope,
-  documentId: string,
-  file = hindsightReceiptsFile(),
-): number {
-  return listReceipts(scope, documentId, file).filter(
-    (receipt) => receipt.state === "deleted",
-  ).length;
 }
 
 export class ReceiptLedgerFullError extends Error {

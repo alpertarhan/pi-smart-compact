@@ -18,9 +18,17 @@ describe("CompactionCommitStore", () => {
   it("commits only the matching run and session exactly once", () => {
     const store = createCompactionCommitStore();
     store.stage(pending("run-123456"));
-    expect(store.take("run-123456", "other")).toBeNull();
     expect(store.take("run-123456", "s")?.runId).toBe("run-123456");
     expect(store.take("run-123456", "s")).toBeNull();
+  });
+
+  it("discards a candidate confirmed for another session instead of keeping it staged", () => {
+    const discarded: string[] = [];
+    const store = createCompactionCommitStore({ onDiscard: (item, reason) => discarded.push(item.runId + ":" + reason) });
+    store.stage(pending("run-123456"));
+    expect(store.take("run-123456", "other")).toBeNull();
+    expect(discarded).toEqual(["run-123456:session-mismatch"]);
+    expect(store.size()).toBe(0);
   });
 
   it("rejects mismatched and duplicate correlation ids", () => {

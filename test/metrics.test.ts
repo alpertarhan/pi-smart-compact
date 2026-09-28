@@ -516,4 +516,15 @@ describe("metrics reporting", () => {
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
+
+  it("reports nearest-rank p95 latency instead of the slowest run", () => {
+    const entries = Array.from({ length: 20 }, (_, index) => ({
+      ts: new Date().toISOString(), sessionId: "s" + index, status: "success" as const,
+      totalCalls: 1, totalInput: 0, totalOutput: 0, totalCacheHit: 0, avgLatency: 0, cacheHitRate: 0,
+      durationMs: (index + 1) * 100,
+    }));
+    const report = metricsReport.buildMetricsReport(entries);
+    expect(report).toContain("Latency: avg 1050ms, p95 1900ms");
+    expect(metricsReport.buildMetricsReport(entries.slice(0, 1))).toContain("p95 100ms");
+  });
 });

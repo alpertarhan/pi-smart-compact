@@ -137,6 +137,38 @@ describe("no-UI modes", () => {
     expect(stderr.join("")).not.toContain("Cancelled");
   });
 
+  it("points /smart-compact dashboard at the text report outside the TUI", async () => {
+    const { commands } = extension();
+    const rpc = context(true);
+    rpc.ctx.mode = "rpc";
+    await commands.get("smart-compact").handler("dashboard", rpc.ctx);
+    expect(rpc.customCalls).toHaveLength(0);
+    expect(rpc.notices.join("\n")).toContain("The metrics dashboard needs TUI mode. Use /smart-compact metrics for the text report");
+
+    const print = context(false);
+    await commands.get("smart-compact").handler("dashboard", print.ctx);
+    expect(print.customCalls).toHaveLength(0);
+    expect(stderr.join("")).toContain("Smart Compact: The metrics dashboard needs TUI mode.");
+  });
+
+  it("reports storage and metrics without a UI instead of dropping them", async () => {
+    const { commands } = extension();
+    const json = context(false);
+    json.ctx.mode = "json";
+    await commands.get("smart-compact").handler("storage", json.ctx);
+    expect(stderr.join("")).toContain("Smart Compact storage — read-only");
+
+    const stdout: string[] = [];
+    const originalStdout = process.stdout.write.bind(process.stdout);
+    (process.stdout as any).write = (chunk: string) => { stdout.push(String(chunk)); return true; };
+    try {
+      await commands.get("smart-compact").handler("metrics", context(false).ctx);
+    } finally {
+      (process.stdout as any).write = originalStdout;
+    }
+    expect(stdout.join("")).toContain("Effective state");
+  });
+
   it("still opens the interactive picker when a UI exists", async () => {
     const { commands } = extension();
     const harness = context(true);

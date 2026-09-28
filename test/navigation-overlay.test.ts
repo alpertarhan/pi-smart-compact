@@ -11,7 +11,7 @@ import type {
   NavigationPanelActions,
 } from "../src/app/navigation-types.ts";
 import type { SmartCompactPolicy } from "../src/app/smart-compact-policy.ts";
-import { createHomeList, type HomeAction } from "../src/ui/home-overlay.ts";
+import { createHomeList, type HomeAction, type HomeOptions, showSmartCompactHome } from "../src/ui/home-overlay.ts";
 import type { DeferredTrim } from "../src/app/register-smart-context-tool.ts";
 import { createNavigationPanel, type DeferredNavigation } from "../src/ui/navigation-overlay.ts";
 import { INACTIVE_PREFIX, type SmartSettingsList } from "../src/ui/settings-list.ts";
@@ -384,5 +384,100 @@ describe("home navigation entry", () => {
     unpriced.selectItem("trim");
     expect(text(unpriced)).toContain("Saves ~900 tokens, but the model's cache price is unknown, so it waits for a cold prompt cache.");
     expect(text(build(null))).toContain("no model call");
+  });
+});
+
+describe("home settings", () => {
+  function options(overrides: Partial<HomeOptions> = {}): HomeOptions {
+    return {
+      ctx: { ui: { notify: () => { } }, modelRegistry: { getAvailable: () => [] } } as unknown as ExtensionCommandContext,
+      policy: {
+        snapshot: () => ({ agentToolAccess: "inherit", agentToolEnabled: true, autoTrigger: true, showStatus: true }),
+        branchOverrides: () => ({}),
+      } as unknown as SmartCompactPolicy,
+      coordinator: new GlobalSettingsCoordinator(),
+      onApplied: () => { },
+      applyPatch: async () => { throw new Error("unused"); },
+      compactNow: () => ({ value: "ok" }),
+      readiness: () => Promise.withResolvers<never>().promise,
+      effectiveState: async () => "",
+      ...overrides,
+    };
+  }
+  /** The innermost open list: keys typed at Home reach it. */
+  function leaf(list: SmartSettingsList): SmartSettingsList & { settled?: () => Promise<void> } {
+    // submenuComponent is a private pi-tui field; read it untyped.
+    let active = list as unknown as Record<string, unknown>;
+    while (active.submenuComponent) active = active.submenuComponent as Record<string, unknown>;
+    return active as unknown as SmartSettingsList & { settled?: () => Promise<void> };
+  }
+  const text = (list: SmartSettingsList) => list.render(400).join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+
+  it("applies input settings edited through Settings live", async () => {
+    await writeGlobalConfigValue("memoryBackend", "hindsight");
+    const applied: string[] = [];
+    const edit = async (path: string[], value: string) => {
+      const home = createHomeList(options({ onApplied: (id) => { applied.push(id); } }), () => { }, () => { });
+      home.selectItem("settings");
+      home.handleInput(ENTER);
+      for (const id of path) {
+        leaf(home).selectItem(id);
+        home.handleInput(ENTER);
+      }
+      home.handleInput(value);
+      home.handleInput(ENTER);
+      await leaf(home).settled?.();
+    };
+    await edit(["advanced", "compaction", "minContextPercent"], "75");
+    await edit(["memory", "hindsight", "hindsightTimeoutMs"], "5000");
+    expect(readGlobalConfigValue("minContextPercent")).toBe(75);
+    expect(readGlobalConfigValue("hindsightTimeoutMs")).toBe(5000);
+    expect(applied).toEqual(["minContextPercent", "hindsightTimeoutMs"]);
+  });
+
+  it("opens the branch-only settings from How it runs › This branch", () => {
+    const home = createHomeList(options(), () => { }, () => { });
+    home.selectItem("settings");
+    home.handleInput(ENTER);
+    leaf(home).selectItem("behavior");
+    home.handleInput(ENTER);
+    leaf(home).selectItem("session");
+    home.handleInput(ENTER);
+    expect(text(home)).toContain("Agent can compact");
+    expect(text(home)).toContain("Footer status");
+  });
+
+  it("shows a failed readiness check instead of checking forever", async () => {
+    let renders = 0;
+    const home = createHomeList(options({
+      readiness: async () => { throw new Error("config unreadable\nstack line"); },
+    }), () => { }, () => renders++);
+    await Bun.sleep(0);
+    home.selectItem("setup");
+    expect(text(home)).toContain("unavailable");
+    expect(text(home)).not.toContain("checking");
+    expect(text(home)).toContain("Readiness could not be read: config unreadable.");
+    expect(renders).toBeGreaterThan(0);
+  });
+
+  it("labels background preparation like Settings in the Home header", async () => {
+    await writeGlobalConfigValue("autoTriggerStrategy", "background");
+    let header = "";
+    const base = options();
+    await showSmartCompactHome({
+      ...base,
+      ctx: {
+        ...base.ctx,
+        ui: {
+          notify: () => { },
+          custom: async (factory: (...args: unknown[]) => Component) => {
+            const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value };
+            header = factory({ requestRender: () => { } }, theme, {}, () => { }).render(200).join("\n");
+            return undefined;
+          },
+        },
+      } as unknown as ExtensionCommandContext,
+    });
+    expect(header).toContain("Automatic: prepare in background");
   });
 });

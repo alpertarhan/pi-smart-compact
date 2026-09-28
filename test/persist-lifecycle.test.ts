@@ -123,6 +123,14 @@ describe("applyCompaction onError", () => {
   expect(rc.pendingRef.peek()).toBeNull();
  });
 
+ it("keeps a newer run's staged candidate when an older apply rejects", () => {
+  const rc = makeRC("error");
+  const older = rc.pendingRef.peek()!;
+  rc.pendingRef.set({ ...older, runId: "persist-lifecycle-newer", details: { ...older.details, runId: "persist-lifecycle-newer" } });
+  applyCompaction(rc);
+  expect(rc.pendingRef.peek()?.runId).toBe("persist-lifecycle-newer");
+ });
+
  it("does not call ctx.compact when skipCompact is set", () => {
   const rc = makeRC("complete");
   rc.flags.skipCompact = true;

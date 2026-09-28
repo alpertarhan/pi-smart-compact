@@ -59,6 +59,10 @@ const CODEX_RETAINED_USER_CHARS = 256_000;
 // Pi's wrapper around a compaction summary (`convertToLlm` in pi-coding-agent).
 const SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const SUMMARY_SUFFIX = "\n</summary>";
+// Replayed state comes from session files: bound it before trusting it. A real window is one
+// compaction item plus at most 256k chars of retained user messages, far below both limits.
+const MAX_NATIVE_STATE_ITEMS = 1_024;
+const MAX_NATIVE_STATE_CHARS = 4 * 1024 * 1024;
 
 export function isNativeApi(api: string): api is NativeApi {
  return (NATIVE_APIS as readonly string[]).includes(api);
@@ -77,7 +81,9 @@ export function isNativeState(value: unknown): value is NativeState {
   typeof value.provider === "string" &&
   typeof value.model === "string" &&
   Array.isArray(value.items) &&
-  value.items.every(isObject)
+  value.items.length <= MAX_NATIVE_STATE_ITEMS &&
+  value.items.every(isObject) &&
+  JSON.stringify(value.items).length <= MAX_NATIVE_STATE_CHARS
  )) return false;
  let compactions = 0;
  for (const item of value.items) {
@@ -224,9 +230,11 @@ async function readAnthropicMessage(response: Response): Promise<JsonObject> {
 }
 
 // Compaction usage is reported per iteration; the top-level counters stay zero.
+// Without (or with an empty list of) iterations the top-level counters are the usage.
 function anthropicUsage(usage: unknown): NativeUsage {
  const top = isObject(usage) ? usage : {};
- const iterations = Array.isArray(top.iterations) ? top.iterations.filter(isObject) : [top];
+ const listed = Array.isArray(top.iterations) ? top.iterations.filter(isObject) : [];
+ const iterations = listed.length ? listed : [top];
  const sum = (key: string) => iterations.reduce((total, item) => total + numberAt(item, key), 0);
  return {
   input: sum("input_tokens"),
@@ -292,7 +300,8 @@ async function compactCodex(
  return { state: stateFor(options, window), summary: windowSummary(options, window), usage };
 }
 
-// ponytail: whole messages newest-first until the budget is spent; Codex also truncates the one that straddles it.
+// ponytail: whole messages newest-first; the first one that no longer fits stops the walk, so it
+// and every older message are dropped (Codex would keep a truncated copy of that one).
 function retainedUserMessages(history: JsonObject[]): JsonObject[] {
  const retained: JsonObject[] = [];
  let budget = CODEX_RETAINED_USER_CHARS;

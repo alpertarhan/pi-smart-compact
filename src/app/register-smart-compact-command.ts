@@ -36,6 +36,7 @@ import {
  isUnresolvedSessionId,
  resolveSessionId,
 } from "../infra/session-identity.ts";
+import { metricsDashboardFile } from "../infra/paths.ts";
 import type { CompactConfig } from "../types.ts";
 import {
  buildLocalDashboardInsights,
@@ -111,9 +112,16 @@ async function showMetrics(
  action: "metrics" | "dashboard",
  dependencies: SmartCompactCommandDependencies,
 ): Promise<void> {
+ if (action === "dashboard" && (ctx.mode !== "tui" || !ctx.hasUI)) {
+  notifyUser(ctx,
+   "The metrics dashboard needs TUI mode. Use /smart-compact metrics for the text report; the HTML dashboard, written from the TUI dashboard, is " + metricsDashboardFile() + ".",
+   "warning",
+  );
+  return;
+ }
  const state = "Effective state\n" + await effectiveState(ctx, dependencies);
  if (action === "metrics") {
-  notifyUser(ctx, state + "\n\n" + formatRecentIssues() + "\n\n" + buildMetricsReport(), "info");
+  showReport(ctx, state + "\n\n" + formatRecentIssues() + "\n\n" + buildMetricsReport());
   return;
  }
  const entries = readMetricsLog(200);
@@ -385,13 +393,20 @@ function queueLocalCleanup(ctx: ExtensionCommandContext, dependencies: SmartComp
  notifyUser(ctx, result.notice, result.state === "queued" ? "info" : "warning");
 }
 
-/** Read-only storage inventory; works without a UI (print/RPC) as a message. */
-async function showStorage(ctx: ExtensionCommandContext): Promise<void> {
- const report = formatStorageReport(await inspectArtifactStorage());
- // Info notices are dropped without a UI; plain print mode owns a text
- // stdout, so the report goes there. JSON/RPC stdout is a protocol: untouched.
+/**
+ * A read-only text report, also without a UI. Info notices are dropped
+ * without a UI; plain print mode owns a text stdout, so the report goes there.
+ * JSON/SDK stdout is a protocol: untouched, so the report goes to stderr.
+ */
+function showReport(ctx: ExtensionCommandContext, report: string): void {
  if (ctx.mode === "print") process.stdout.write(report + "\n");
- else notifyUser(ctx, report, "info");
+ else if (ctx.hasUI) notifyUser(ctx, report, "info");
+ else process.stderr.write(report + "\n");
+}
+
+/** Read-only storage inventory; works without a UI (print/RPC/JSON) as a message. */
+async function showStorage(ctx: ExtensionCommandContext): Promise<void> {
+ showReport(ctx, formatStorageReport(await inspectArtifactStorage()));
 }
 
 /** Value of the Home "Compact now" row, or why it cannot run. */

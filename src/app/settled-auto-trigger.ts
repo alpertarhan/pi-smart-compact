@@ -2,7 +2,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactConfig } from "../types.ts";
-import { MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
+import { AUTO_TRIGGER_TIMEOUT_CAP_MS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
 import { effectiveContextWindow, safeContextPercent } from "../utils/tokens.ts";
 import { errorDetail, reportIssue } from "../utils/issues.ts";
@@ -16,6 +16,8 @@ export interface SettledAutoTrigger {
 export interface SettledAutoTriggerOptions {
   now?: () => number;
   cooldownMs?: number;
+  /** Test seam; defaults to the hook budget cap plus the configured run limit. */
+  watchdogMs?: number;
 }
 
 /**
@@ -63,9 +65,22 @@ export function createSettledAutoTrigger(
     active.set(sessionId, requestToken);
     await new Promise<void>(resolve => {
       let finished = false;
+      // Pi normally always answers; a host that never calls back must not pin
+      // this session's request slot forever. The budget covers our hook (capped)
+      // plus Pi's own summary after a fallback.
+      const watchdogMs = options.watchdogMs ?? AUTO_TRIGGER_TIMEOUT_CAP_MS + config.autoTriggerTimeoutMs;
+      const watchdog = setTimeout(() => {
+        reportIssue({
+          key: "auto.settled-no-callback",
+          message: "Pi did not report the automatic compaction result within " + Math.round(watchdogMs / 1000) + "s. The next settled turn may request it again.",
+        }, ctx);
+        finish();
+      }, watchdogMs);
+      watchdog.unref?.();
       const finish = (): void => {
         if (finished) return;
         finished = true;
+        clearTimeout(watchdog);
         if (active.get(sessionId) === requestToken) active.delete(sessionId);
         resolve();
       };

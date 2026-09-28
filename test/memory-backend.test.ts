@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   bunVersionSupported,
   describeMemoryBackendReadiness,
+  describeMnemopiRuntime,
   localGraphOpsAllowed,
   resolveBunExecutable,
 } from "../src/app/memory-backend.ts";
@@ -144,6 +145,15 @@ describe("describeMemoryBackendReadiness", () => {
     expect(JSON.stringify(ready)).not.toContain("secret");
     const missing = await describeMemoryBackendReadiness(base, {});
     expect(missing.ready).toBe(false);
+  });
+
+  it("derives Mnemopi readiness from the runtime probe and never claims worker verification", async () => {
+    const selected = await describeMemoryBackendReadiness({ ...DEFAULT_CONFIG, memoryBackend: "mnemopi" }, {});
+    expect(selected).toMatchObject({ backend: "mnemopi", ready: true, localOpsAllowed: false });
+    expect(selected.reason).toContain("worker/database operation not verified");
+    // Resolving from a directory without node_modules: the optional package is absent.
+    const missing = await describeMnemopiRuntime(pathToFileURL(path.join(dir, "probe.js")).href);
+    expect(missing).toEqual({ ready: false, reason: "unavailable: optional @oh-my-pi/pi-mnemopi package is not locally resolvable" });
   });
 
 });

@@ -82,12 +82,7 @@ export async function describeMemoryBackendReadiness(
    };
   }
   case "mnemopi":
-   return {
-    backend: "mnemopi",
-    ready: false,
-    reason: await describeMnemopiRuntime(),
-    localOpsAllowed,
-   };
+   return { backend: "mnemopi", ...(await describeMnemopiRuntime()), localOpsAllowed };
  }
 }
 
@@ -244,39 +239,45 @@ function runBunVersion(
  * Presence/version evidence for the Mnemopi runtime: the optional
  * @oh-my-pi/pi-mnemopi package, the worker file, and a usable Bun executable
  * (package-owned first, PATH fallback). The engine is never loaded and no
- * database is opened or created.
+ * database is opened or created. `ready` means only these checks passed.
  */
-export async function describeMnemopiRuntime(): Promise<string> {
- const require = createRequire(import.meta.url);
- try {
-  require.resolve("@oh-my-pi/pi-mnemopi");
- } catch {
-  return "unavailable: optional @oh-my-pi/pi-mnemopi package is not locally resolvable";
+export async function describeMnemopiRuntime(
+ parentUrl: string = import.meta.url,
+): Promise<{ ready: boolean; reason: string }> {
+ const unavailable = (reason: string) => ({ ready: false, reason: "unavailable: " + reason });
+ // The package exports only an "import" condition, so require.resolve() can
+ // never find it; look for its manifest along the node_modules lookup paths.
+ const lookup = createRequire(parentUrl).resolve.paths("@oh-my-pi/pi-mnemopi") ?? [];
+ if (!lookup.some((dir) => existsSync(path.join(dir, "@oh-my-pi", "pi-mnemopi", "package.json")))) {
+  return unavailable("optional @oh-my-pi/pi-mnemopi package is not locally resolvable");
  }
  const worker = new URL(
   import.meta.url.endsWith(".ts") ? "./mnemopi-worker.ts" : "./mnemopi-worker.js",
   import.meta.url,
  );
- if (!existsSync(worker)) return "unavailable: Mnemopi worker is missing; rebuild or reinstall the package";
+ if (!existsSync(worker)) return unavailable("Mnemopi worker is missing; rebuild or reinstall the package");
 
- const owned = resolveBunExecutable();
+ const owned = resolveBunExecutable(parentUrl);
  if (owned) {
   const probed = await runBunVersion(owned.executable, undefined);
   if (!probed.ok) {
-   return "unavailable: the package-owned Bun binary did not run (" + probed.error + ")";
+   return unavailable("the package-owned Bun binary did not run (" + probed.error + ")");
   }
   return bunVersionSupported(probed.version)
-   ? "Bun " + probed.version + " (" +
-   (owned.source === "package" ? "package-owned dependency" : "platform package") +
-   ") and Mnemopi package found; worker/database operation not verified"
-   : "unavailable: Bun >=1.3.14 is required (found " + probed.version + ")";
+   ? {
+    ready: true,
+    reason: "Bun " + probed.version + " (" +
+     (owned.source === "package" ? "package-owned dependency" : "platform package") +
+     ") and Mnemopi package found; worker/database operation not verified",
+   }
+   : unavailable("Bun >=1.3.14 is required (found " + probed.version + ")");
  }
  const probed = await runBunVersion("bun", { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot });
  if (!probed.ok) {
-  return "unavailable: no package-owned Bun dependency is installed and none was found on PATH (" +
-   probed.error + ")";
+  return unavailable("no package-owned Bun dependency is installed and none was found on PATH (" +
+   probed.error + ")");
  }
  return bunVersionSupported(probed.version)
-  ? "Bun " + probed.version + " from PATH and Mnemopi package found; worker/database operation not verified"
-  : "unavailable: Bun >=1.3.14 is required (found " + probed.version + " on PATH)";
+  ? { ready: true, reason: "Bun " + probed.version + " from PATH and Mnemopi package found; worker/database operation not verified" }
+  : unavailable("Bun >=1.3.14 is required (found " + probed.version + " on PATH)");
 }

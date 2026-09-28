@@ -12,10 +12,11 @@ function escapeHtml(value: unknown): string {
   return String(value ?? "").replace(/[&<>\"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c] ?? c));
 }
 
+/** Nearest-rank percentile: the smallest value covering p% of the samples. */
 function percentile(values: number[], p: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * sorted.length)))];
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1))];
 }
 
 function average(values: number[]): number {

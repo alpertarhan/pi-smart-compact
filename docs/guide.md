@@ -86,7 +86,7 @@ A bare `/smart-compact` in the TUI opens Home. Without a UI (print, RPC, SDK) it
 instead runs one compaction with your configured defaults.
 
 The header shows `Context:` (current usage or why compaction is blocked) and
-`Automatic: off | follows Pi | when idle · Agent: allowed | off`.
+`Automatic: off | follows Pi | when idle | prepare in background · Agent: allowed | off`.
 
 | Row | What it does |
 | --- | --- |
@@ -781,7 +781,7 @@ Without a UI, warnings and errors go to stderr.
 /smart-compact settings                categorized settings (TUI only)
 /smart-compact context                 session navigation: anchors, search, return (TUI only)
 /smart-compact metrics                 effective state, recent issues, metrics report
-/smart-compact dashboard               interactive metrics dashboard
+/smart-compact dashboard               interactive metrics dashboard (TUI only)
 /smart-compact restore                 browse and restore backups
 /smart-compact loops                   manage open loops
 /smart-compact forget                  forget local project memory (TUI only)

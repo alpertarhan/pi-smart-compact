@@ -177,11 +177,6 @@ function calibrationKey(provider: string, model?: string): string {
   return model ? provider + "/" + model : provider + "/*";
 }
 
-/** @internal Test-only reset; do not call from production code. */
-export function __resetTokenCalibrationForTests(): void {
-  _fallbackCalibration.clear();
-}
-
 /** JSON-density tuning knobs (named, not inline magic numbers). */
 const JSON_PENALTY = 0.85;
 const JSON_DENSITY_THRESHOLD = 0.05;

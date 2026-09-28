@@ -10,7 +10,7 @@ import {
   type DashboardInsights,
 } from "./dashboard-insights.ts";
 import {
-  DASHBOARD_PAGE_SIZE,
+  dashboardPageSize,
   formatCurrentSession,
   formatMetricRunCompact,
   formatRecentRuns,
@@ -241,11 +241,12 @@ export async function showMetricsDashboardUI(
           }
 
           const content = pageLines();
-          const maxScroll = Math.max(0, content.length - DASHBOARD_PAGE_SIZE);
+          const pageSize = dashboardPageSize();
+          const maxScroll = Math.max(0, content.length - pageSize);
           scroll = Math.min(scroll, maxScroll);
           for (const line of content.slice(
             scroll,
-            scroll + DASHBOARD_PAGE_SIZE,
+            scroll + pageSize,
           )) {
             let styled = theme.fg("text", line);
             if (isDashboardTitleLine(line))
@@ -253,7 +254,7 @@ export async function showMetricsDashboardUI(
             else if (line.startsWith("-")) styled = theme.fg("dim", line);
             lines.push(truncateToWidth("  " + styled, width));
           }
-          if (content.length > DASHBOARD_PAGE_SIZE) {
+          if (content.length > pageSize) {
             lines.push(
               truncateToWidth(
                 theme.fg(
@@ -261,7 +262,7 @@ export async function showMetricsDashboardUI(
                   "  showing " +
                     (scroll + 1) +
                     "-" +
-                    Math.min(content.length, scroll + DASHBOARD_PAGE_SIZE) +
+                    Math.min(content.length, scroll + pageSize) +
                     " of " +
                     content.length,
                 ),
@@ -301,17 +302,15 @@ export async function showMetricsDashboardUI(
               if (item.view) resetPage(item.view);
             }
           } else {
-            const maxScroll = Math.max(
-              0,
-              pageLines().length - DASHBOARD_PAGE_SIZE,
-            );
+            const pageSize = dashboardPageSize();
+            const maxScroll = Math.max(0, pageLines().length - pageSize);
             if (data === "b" || matchesKey(data, Key.left)) resetPage("menu");
             else if (matchesKey(data, Key.home)) scroll = 0;
             else if (matchesKey(data, Key.end)) scroll = maxScroll;
             else if (keybindings.matches(data, "tui.select.pageUp"))
-              scroll = Math.max(0, scroll - DASHBOARD_PAGE_SIZE);
+              scroll = Math.max(0, scroll - pageSize);
             else if (keybindings.matches(data, "tui.select.pageDown"))
-              scroll = Math.min(maxScroll, scroll + DASHBOARD_PAGE_SIZE);
+              scroll = Math.min(maxScroll, scroll + pageSize);
             else if (keybindings.matches(data, "tui.select.up"))
               scroll = Math.max(0, scroll - 1);
             else if (keybindings.matches(data, "tui.select.down"))

@@ -23,7 +23,6 @@ import {
  retainDocument,
 } from "../infra/hindsight-client.ts";
 import {
- documentGeneration,
  type HindsightReceipt,
  type HindsightReceiptScope,
  type HindsightReceiptState,
@@ -31,6 +30,7 @@ import {
  listReceipts,
  operationIdFor,
  ReceiptLedgerFullError,
+ ReceiptLedgerUnreadableError,
  receiptCapacityAvailable,
  receiptKey,
  updateReceiptState,
@@ -175,8 +175,7 @@ export type RemoteSaveOutcome =
  | { state: "completed"; receipt: HindsightReceipt }
  | { state: "accepted"; receipt: HindsightReceipt; operationStatus: string }
  | { state: "failed"; receipt?: HindsightReceipt; reason: string }
- | { state: "unknown"; receipt: HindsightReceipt; reason: string }
- | { state: "skipped"; reason: string };
+ | { state: "unknown"; receipt: HindsightReceipt; reason: string };
 
 function stateForError(error: unknown): {
  state: Extract<HindsightReceiptState, "failed" | "unknown">;
@@ -225,19 +224,29 @@ export async function saveHindsightMemory(
  const scope = receiptScope(target, memory.projectId);
  const documentId = hindsightDocumentId(memory.memoryId);
  const content = hindsightRetainContent(memory);
- // Deletions and definite failures advance the generation so a re-save gets a
- // fresh operation id; unknown/accepted attempts keep it (idempotent retry).
+ let receipts: HindsightReceipt[];
+ let capacityAvailable: boolean;
+ try {
+  receipts = listReceipts(scope, documentId);
+  capacityAvailable = receiptCapacityAvailable();
+ } catch (error) {
+  if (error instanceof ReceiptLedgerUnreadableError) return { state: "failed", reason: error.message };
+  throw error;
+ }
+ // Confirmed deletions and definite failures advance the generation so a
+ // re-save after resolve gets a fresh operation id; unknown/accepted attempts
+ // keep it (idempotent retry).
  const generation =
-  documentGeneration(scope, documentId) +
+  receipts.filter((item) => item.state === "deleted").length +
   ":" +
-  listReceipts(scope, documentId).filter((item) => item.state === "failed").length;
+  receipts.filter((item) => item.state === "failed").length;
  const revision = createHash("sha256")
   .update(content + "\u0000" + generation)
   .digest("hex")
   .slice(0, 16);
  const key = receiptKey(scope, documentId, revision);
  const operationId = operationIdFor(scope, documentId, revision);
- const existing = listReceipts(scope, documentId).find((item) => item.key === key);
+ const existing = receipts.find((item) => item.key === key);
  if (existing?.state === "completed") {
   return { state: "completed", receipt: existing };
  }
@@ -258,7 +267,7 @@ export async function saveHindsightMemory(
    return { state: "unknown", receipt: existing, reason: mapped.reason };
   }
  }
- if (!existing && !receiptCapacityAvailable()) {
+ if (!existing && !capacityAvailable) {
   return { state: "failed", reason: new ReceiptLedgerFullError().message };
  }
  const now = Date.now();
@@ -282,7 +291,7 @@ export async function saveHindsightMemory(
   return {
    state: "failed",
    reason:
-    error instanceof ReceiptLedgerFullError
+    error instanceof ReceiptLedgerFullError || error instanceof ReceiptLedgerUnreadableError
      ? error.message
      : "could not record the local submission receipt; nothing was sent",
   };
@@ -350,7 +359,14 @@ export async function resolveHindsightMemory(
 ): Promise<RemoteResolveOutcome> {
  const scope = receiptScope(target, projectId);
  const documentId = hindsightDocumentId(memoryId);
- const open = listReceipts(scope, documentId).filter(isOpenReceipt);
+ let open: HindsightReceipt[];
+ try {
+  open = listReceipts(scope, documentId).filter(isOpenReceipt);
+ } catch (error) {
+  // An unreadable ledger cannot rule out an in-flight retain: never delete.
+  if (error instanceof ReceiptLedgerUnreadableError) return { state: "failed", documentId, reason: error.message };
+  throw error;
+ }
  const stillPending: string[] = [];
  for (const receipt of open.slice(0, MAX_RESOLVE_STATUS_CHECKS)) {
   try {
@@ -404,7 +420,15 @@ export async function refreshPendingReceipts(
  projectId: string,
  signal?: AbortSignal,
 ): Promise<HindsightReceipt[]> {
- const open = listReceipts(receiptScope(target, projectId))
+ let receipts: HindsightReceipt[];
+ try {
+  receipts = listReceipts(receiptScope(target, projectId));
+ } catch (error) {
+  // Already reported; recall itself stays read-only and usable.
+  if (error instanceof ReceiptLedgerUnreadableError) return [];
+  throw error;
+ }
+ const open = receipts
   .filter((receipt) => receipt.state !== "completed" && receipt.state !== "failed" && receipt.state !== "deleted")
   .sort((a, b) => a.updatedAt - b.updatedAt)
   .slice(0, MAX_RECALL_REFRESH);
@@ -526,8 +550,6 @@ export function describeRemoteSave(outcome: RemoteSaveOutcome): string {
    );
   case "failed":
    return "Hindsight: FAILED — " + outcome.reason + ". Nothing is searchable remotely.";
-  case "skipped":
-   return "Hindsight: not contacted — " + outcome.reason + ".";
  }
 }
 

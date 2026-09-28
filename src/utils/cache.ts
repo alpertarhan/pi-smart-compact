@@ -144,6 +144,12 @@ export function effectivePromptInputTokens(
  );
 }
 
+/** Share of the complete wire prompt served from the provider cache, capped at 1. */
+export function cacheHitRateOf(inputTokens: number, cacheHitTokens: number, cacheWriteTokens: number): number {
+ const denominator = effectivePromptInputTokens(inputTokens, cacheHitTokens, cacheWriteTokens);
+ return denominator > 0 ? Math.min(1, cacheHitTokens / denominator) : 0;
+}
+
 export function getMetricsSummary(services: SmartCompactServices): {
  totalCalls: number;
  totalInput: number;
@@ -157,17 +163,9 @@ export function getMetricsSummary(services: SmartCompactServices): {
  // The services container computes a structurally identical summary but
  // uses a slightly different cache-hit denominator. Keep the previously
  // published denominator (capped at <=1) so dashboards don't show >100%.
- const cacheDenominator = effectivePromptInputTokens(
-  sum.totalInput,
-  sum.totalCacheHit,
-  sum.totalCacheWrite,
- );
  return {
   ...sum,
-  cacheHitRate:
-   cacheDenominator > 0
-    ? Math.min(1, sum.totalCacheHit / cacheDenominator)
-    : 0,
+  cacheHitRate: cacheHitRateOf(sum.totalInput, sum.totalCacheHit, sum.totalCacheWrite),
  };
 }
 

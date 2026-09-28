@@ -105,8 +105,12 @@ async function eachSessionLine(file: string, visit: (line: string) => void): Pro
         emit();
         start = at + 1;
       }
-      pending.push(chunk.subarray(start, bytesRead));
-      pendingBytes = pending.reduce((sum, part) => sum + part.length, 0);
+      // Complete lines above are emitted before the next read; the carried tail must be copied
+      // because `chunk` is refilled in place.
+      if (start < bytesRead) {
+        pending.push(Buffer.from(chunk.subarray(start, bytesRead)));
+        pendingBytes += bytesRead - start;
+      }
       if (pendingBytes > MAX_LINE_BYTES) throw new Error("Session line exceeds scan bound");
     }
     emit();

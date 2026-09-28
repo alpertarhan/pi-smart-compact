@@ -130,7 +130,7 @@ export function registerSmartCompactTool(
       const config = loadConfig();
       const resolvedMode = mode ?? config.mode;
       const sessionId = resolveSessionId(ctx);
-      if (!dryRun && pendingRef.peek(sessionId)?.sessionId === sessionId) {
+      if (!dryRun && pendingRef.peek(sessionId)) {
         return textResult(
           "A smart summary is already staged; context is unchanged. Run /compact before the 5-minute staging TTL expires to apply it. No LLM calls were made.",
         );

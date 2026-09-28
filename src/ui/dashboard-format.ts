@@ -1,6 +1,10 @@
 import type { CompactMetricsEntry, PipelinePhaseTiming } from "../types.ts";
 
-export const DASHBOARD_PAGE_SIZE = 24;
+/** Dashboard lines per page: fits the 85%-high overlay minus its 6 chrome lines; 24 without a known height. */
+export function dashboardPageSize(rows: number | undefined = process.stdout.rows): number {
+  if (!rows) return 24;
+  return Math.max(4, Math.min(24, Math.floor(rows * 0.85) - 6));
+}
 
 export function metricDuration(entry: CompactMetricsEntry): number {
   return entry.durationMs ?? entry.phaseTimings?.reduce((sum, phase) => sum + phase.durationMs, 0) ?? 0;
