@@ -202,8 +202,9 @@ output archives and backups remain separate from cross-session memory.
 - **Claude subscription requests need the separate adapter.** Requests this
   extension makes itself go through Pi's model runtime; on Claude OAuth routes
   that runtime needs `pi-claude-oauth-adapter`, and the published `0.2.2`
-  normalizes only Pi's own requests. pi-toolkit's auto-context must not be
-  loaded alongside session navigation.
+  normalizes only Pi's own requests
+  ([upstream fix, PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
+  pi-toolkit's auto-context must not be loaded alongside session navigation.
 - **Budgets still matter.** A slow provider can exceed your deadline. Cancelled
   work is not an applied compaction, and unused background preparation still costs.
 - **Offline evidence is not a savings claim.** Scripted sessions validate

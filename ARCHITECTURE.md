@@ -680,7 +680,8 @@ Anthropic blocks or opaque OpenAI items, so this extension does both:
   provider registered by another extension with `pi.registerProvider`, such as
   the separate `pi-claude-oauth-adapter`; stock Pi still skips
   `before_provider_request` for these requests, so an adapter must normalize
-  the final payload inside its own provider (the published `0.2.2` does not).
+  the final payload inside its own provider (the published `0.2.2` does not;
+  [upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
   Caller `apiKey`/`headers` are stripped so an explicit key never bypasses
   stored OAuth; `app/stage-auth.ts` is an availability preflight only. The
   Anthropic prior-state replay runs in the caller's `onPayload` before any
