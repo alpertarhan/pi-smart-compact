@@ -3,7 +3,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { FIVE_MINUTES_MS, ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../constants.ts";
 
-export type ContextEditKind = "trim" | "navigation" | "compaction";
+export type ContextEditKind = "trim" | "rewind" | "navigation" | "compaction";
 export type RebuildCause = "continuity" | "idle-expiry" | "foreign";
 
 /** Foreign rebuilds needed before the ledger asks the integrator to warn once. */
@@ -90,7 +90,7 @@ export function createHostCacheLedger(): HostCacheLedger {
     summary = {
       sessionId: id, requests: 0, input: 0, cacheRead: 0, cacheWrite: 0,
       rebuilds: tallies(["continuity", "idle-expiry", "foreign"] as const),
-      continuity: tallies(["trim", "navigation", "compaction"] as const),
+      continuity: tallies(["trim", "rewind", "navigation", "compaction"] as const),
       cost: { requests: 0, total: 0, rebuildUncached: 0 },
     };
   };

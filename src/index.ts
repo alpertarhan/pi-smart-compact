@@ -239,7 +239,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // Another compaction won the lifecycle. A staged Continuity candidate for
  // this session was displaced: its provider work is recorded as discarded and
  // the user learns the applied summary is not the one Continuity prepared.
- const noteForeignCompaction = async (ctx: ExtensionContext, sessionId: string, actor: string): Promise<void> => {
+ const FOREIGN_ACTOR = { extension: "Another extension's compaction", native: "Pi's built-in compaction" } as const;
+ const noteForeignCompaction = async (ctx: ExtensionContext, sessionId: string, source: keyof typeof FOREIGN_ACTOR): Promise<void> => {
+  const actor = FOREIGN_ACTOR[source];
   const displaced = commitCandidates.clearSession(sessionId, "foreign");
   if (displaced.length > 0) {
    clearCompactProgress(ctx);
@@ -251,7 +253,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    await Promise.all(displaced.flatMap((pending) => applyFailureWrites.get(pending.runId) ?? []));
    return;
   }
-  if (actor.startsWith("Another")) {
+  if (source === "extension") {
    reportIssue({
     key: "compact.foreign-extension",
     message: actor + " was applied; Continuity did not summarize it and recorded no continuity state or metrics for it. If that is unintended, keep only one compaction extension.",
@@ -331,7 +333,8 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   config: automaticConfig,
   isPaused: pivotQueued,
   canAgentMutate: () => policy.snapshot().agentToolAccess !== "disabled",
-  canAutoTrim: ctx => !background.hasWork() && !pendingRef.isPresent(resolveSessionId(ctx))
+  // Digests point the model at smart_context; like offload, automatic trims need it reachable.
+  canAutoTrim: ctx => toolExposure.reachable("history") && !background.hasWork() && !pendingRef.isPresent(resolveSessionId(ctx))
    && !isRunning.isSessionActive(resolveSessionId(ctx)),
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
@@ -395,9 +398,9 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   policy.restore(ctx);
   navigation.refresh(ctx);
  });
- pi.on("session_before_switch", (_event, ctx) => { invalidatePreparation(ctx); hostCache.reset(resolveSessionId(ctx)); });
+ pi.on("session_before_switch", (_event, ctx) => { invalidatePreparation(ctx); });
  pi.on("session_before_tree", (_event, ctx) => { invalidatePreparation(ctx); });
- pi.on("session_before_fork", (_event, ctx) => { invalidatePreparation(ctx); hostCache.reset(resolveSessionId(ctx)); });
+ pi.on("session_before_fork", (_event, ctx) => { invalidatePreparation(ctx); });
  pi.on("model_select", (_event, ctx) => { invalidatePreparation(ctx, "config"); });
  pi.on("turn_end", (event, ctx) => {
   flushIssues(ctx);
@@ -561,7 +564,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
     | { runId?: unknown }
     | undefined;
    const runId = typeof details?.runId === "string" ? details.runId : null;
-   if (!runId) { await noteForeignCompaction(ctx, sessionId, "Another extension's compaction"); return; }
+   if (!runId) { await noteForeignCompaction(ctx, sessionId, "extension"); return; }
    hostCache.noteContextEdit("compaction");
    const candidate = commitCandidates.take(runId, sessionId);
    if (!candidate) {
@@ -599,7 +602,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    }
    return;
   }
-  await noteForeignCompaction(ctx, sessionId, "Pi's built-in compaction");
+  await noteForeignCompaction(ctx, sessionId, "native");
   if (isUnresolvedSessionId(sessionId)) return;
   const projectId = deriveProjectIdFromCwd(ctx.cwd);
   if (!projectId) return;

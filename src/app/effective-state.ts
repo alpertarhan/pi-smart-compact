@@ -161,8 +161,9 @@ export async function describeEffectiveState(
   lines.push("Auto limits: " + Math.min(config.autoTriggerTimeoutMs, AUTO_TRIGGER_TIMEOUT_CAP_MS) / 1_000
     + " s timeout; " + SETTLED_TRIGGER_COOLDOWN_MS / 60_000 + " min cooldown; " + FIVE_MINUTES_MS / 60_000 + " min preparation TTL");
   const backgroundHygiene = policy.autoTrigger && config.autoTriggerStrategy === "background";
-  lines.push("Context hygiene: " + (config.contextHygieneEnabled ? "on (explicit, independently pressure-gated)"
-    : backgroundHygiene ? "on (enabled by effective background strategy, pressure-gated)" : "off"));
+  lines.push("Context hygiene: " + (config.contextHygieneEnabled ? "on (explicit: commits under pressure, at cache break-even, or on a cold cache)"
+    : backgroundHygiene ? "on (enabled by effective background strategy, pressure-gated)" : "off")
+    + ((config.contextHygieneEnabled || backgroundHygiene) && config.toolLoading === "off" ? " — automatic trims inactive: agent tools are off, so archived output could not be read back" : ""));
   const memory = await describeMemoryBackendReadiness(config);
   lines.push("Memory selected: " + config.memoryBackend + (projectId ? " (project-bound)" : " — unavailable: no project scope"));
   lines.push("Memory readiness: " + memory.reason);

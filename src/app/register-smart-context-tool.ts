@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
-import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
+import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD, FIVE_MINUTES_MS } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { effectiveContextWindow } from "../utils/tokens.ts";
@@ -67,7 +67,23 @@ interface TrimMark extends DeferredTrim {
   leafId: string;
   entries: SessionBoundaryDraft[];
   targets: { targetId: string; toolCallId: string; toolName: string; replacement: string }[];
-  markedAt: number;
+}
+
+/**
+ * The live cached prefix: dated by the last response (an aborted or fully
+ * cached one still refreshes it), with the lifetime of the last response that
+ * wrote cache, as the host cache ledger keeps it. Null before any response.
+ */
+function cachedPrefix(branch: SessionEntry[]): { since: number; lifetimeMs: number } | null {
+  let since: number | undefined;
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index]!;
+    if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+    const message = entry.message as AssistantMessage;
+    since ??= message.timestamp;
+    if ((message.usage?.cacheWrite ?? 0) > 0) return { since, lifetimeMs: cacheLifetimeMs(message.usage) };
+  }
+  return since === undefined ? null : { since, lifetimeMs: FIVE_MINUTES_MS };
 }
 
 /** True when `leafId` is still on the branch with no newer context rewrite after it. */
@@ -102,7 +118,10 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   const config = options.config ?? loadConfig;
   const now = options.now ?? Date.now;
   let queued: QueuedChange | null = null;
-  // Automatic trim deferred while the cache is warm; `applied` once a cold request carried it.
+  // Automatic trim deferred while the cache is warm; `applied` once a cold request
+  // carried it. `applied` stays in force (every request keeps the same rewrite)
+  // until a boundary commits it, a newer context rewrite invalidates it, the
+  // session changes, or the user turns automatic cleanup off.
   let mark: TrimMark | null = null;
   let applied: TrimMark | null = null;
   // Latest refresh Pi decided to send; it keeps the entry alive past the last response.
@@ -112,7 +131,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       ...(mark.warmingStopped ? { warmingStopped: true as const } : {}) } : null;
   // The host commits turn_end drafts only after every handler ran (a later
   // handler may replace them), so confirmation waits for the next branch read.
-  let staged: { sessionId: string; leafId: string; targets: Set<string> } | null = null;
+  let staged: { sessionId: string; leafId: string; targets: Set<string>; kind: ContextEditKind } | null = null;
   const confirmStaged = (ctx: ExtensionContext) => {
     const edit = staged;
     staged = null;
@@ -120,7 +139,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     const branch = ctx.sessionManager.getBranch();
     const leaf = branch.findIndex(entry => entry.id === edit.leafId);
     if (leaf >= 0 && branch.slice(leaf + 1).some(entry => entry.type === "context_edit" && edit.targets.has(entry.targetId))) {
-      options.onContextEdit?.(ctx, "trim");
+      options.onContextEdit?.(ctx, edit.kind);
     }
   };
   const active = () => pi.getActiveTools().includes(TOOL_NAME);
@@ -261,10 +280,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     if (!current) {
       if (mark?.sessionId !== sessionId) return;
       if (!unchangedSince(branch, mark.leafId)) { mark = null; return; }
-      const last = branch.findLast(entry => entry.type === "message" && entry.message.role === "assistant");
-      const message = last?.type === "message" ? last.message as AssistantMessage : undefined;
-      const since = Math.max(message?.timestamp ?? 0, warm?.sessionId === sessionId ? warm.at : 0);
-      if (!message || now() - since <= cacheLifetimeMs(message.usage)) return;
+      const prefix = cachedPrefix(branch);
+      const since = Math.max(prefix?.since ?? 0, warm?.sessionId === sessionId ? warm.at : 0);
+      if (!prefix || now() - since <= prefix.lifetimeMs) return;
       current = applied = mark;
     }
     const { targets } = current;
@@ -282,11 +300,12 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   };
 
   /**
-   * Stop warming when the held trim makes a refresh not pay. After a cold miss
-   * the next request carries the trim and costs `w·(A+T)` instead of
-   * `w·(A+X+T)` (X = removed tokens, w = write price), so the miss Pi prices at
-   * `missCost` really costs `missCost − w·X`. Later per-request savings `r·X`
-   * are ignored (conservative: fewer vetoes).
+   * Stop warming when the held trim makes a refresh not pay. Pi's `missCost` is
+   * `(w − r)·(A+X+T)`: a cold request writes the whole prompt instead of
+   * reading it (X = removed tokens, w = write price, r = read price). A warm
+   * request still reads X; a cold one carries the trim and neither reads nor
+   * writes it, so the miss really costs `missCost − w·X`. Later per-request
+   * savings `r·X` are ignored (conservative: fewer vetoes).
    */
   const vetoWarming = (event: CacheWarmingDecisionEvent, ctx: ExtensionContext, sessionId: string): boolean => {
     if (mark?.sessionId !== sessionId || !unchangedSince(ctx.sessionManager.getBranch(), mark.leafId)) return false;
@@ -301,10 +320,10 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   pi.on("turn_end", (event, ctx) => {
     const request = queued;
     queued = null;
-    const pending = applied;
-    applied = null;
     if (request) mark = null;
-    if (event.outcome !== "completed" || request?.signal?.aborted) return;
+    if (event.outcome !== "completed" || request?.signal?.aborted) {
+      return request ? cancelled(event, "The turn did not complete.") : undefined;
+    }
     if (request && !request.manual && (config().toolLoading === "off" || !active())) return cancelled(event, "Agent tool access was revoked.");
     if (options.isPaused?.(ctx)) {
       return request ? cancelled(event, "A pending navigation pivot takes priority.") : undefined;
@@ -316,6 +335,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     if (!request) {
       const configNow = config();
       const hygiene = configNow.contextHygieneEnabled;
+      // Cleanup turned off: forget a held or carried trim (one prefix rewrite)
+      // rather than keep an unrecorded rewrite in every request.
+      if (!hygiene) mark = applied = null;
       const enabled = hygiene || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
       if (!enabled || options.canAutoTrim?.(ctx) === false) return;
       const usage = ctx.getContextUsage()?.tokens;
@@ -330,10 +352,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     const sessionId = resolveSessionId(ctx);
     const state = inspectContext(branch, sessionId);
     // Do not compete with another boundary writer or queued user instructions.
+    // A cold-applied trim stays in force across a contested boundary; dropping
+    // it here would flip the prefix back next request.
     if (event.entries.length || event.context.pendingMessages.length) {
-      // A cold-applied trim stays in force until an uncontested boundary can
-      // commit it; dropping it here would flip the prefix back next request.
-      if (!request && pending?.sessionId === sessionId) applied = pending;
       return request ? cancelled(event, "Another boundary change or queued input takes priority.") : undefined;
     }
     if (request && !request.manual && (request.sessionId !== sessionId || !branch.some(entry => entry.id === request.originId)
@@ -359,10 +380,11 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         })];
       } else if (request?.action === "rewind") {
         entries = planContextRewind(branch, sessionId, request.checkpointId, request.text).entries;
-      } else if (!request && pending?.sessionId === sessionId && unchangedSince(branch, pending.leafId)) {
+      } else if (!request && applied?.sessionId === sessionId && unchangedSince(branch, applied.leafId)) {
         // The cold request already carried these edits; commit them regardless of pressure or cooldown.
         mark = null;
-        entries = pending.entries;
+        entries = applied.entries;
+        applied = null;
       } else {
         const plan = planContextTrim(branch, state.checkpoint?.originId);
         if (request) {
@@ -377,7 +399,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             const edits = new Map(plan.entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
               ? [[entry.targetId, entry.replacement.content] as const] : []));
             mark = {
-              sessionId, leafId: branch.at(-1)!.id, entries: trimEntries(plan, "cold"), markedAt: now(),
+              sessionId, leafId: branch.at(-1)!.id, entries: trimEntries(plan, "cold"),
               ...economics, breakEvenRequests,
               targets: branch.flatMap(entry => entry.type === "message" && entry.message.role === "toolResult" && edits.has(entry.id)
                 ? [{ targetId: entry.id, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName, replacement: edits.get(entry.id)! }] : []),
@@ -394,7 +416,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     if (entries.some(entry => entry.type === "context_edit")) {
       options.onContextChange?.(ctx);
       staged = {
-        sessionId, leafId: branch.at(-1)!.id,
+        sessionId, leafId: branch.at(-1)!.id, kind: request?.action === "rewind" ? "rewind" : "trim",
         targets: new Set(entries.flatMap(entry => entry.type === "context_edit" ? [entry.targetId] : [])),
       };
     }

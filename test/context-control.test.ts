@@ -72,6 +72,7 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
   const edits: string[] = [];
   let paused = false;
   let canMutate = options.canMutate !== false;
+  let canTrim = options.canTrim !== false;
   const cfg = { ...DEFAULT_CONFIG, autoTrigger: true, autoTriggerStrategy: options.background ? "background" as const : "native-hook" as const, minContextPercent: 80 };
   const ctx = {
     sessionManager: session, cwd: process.cwd(), hasUI: false,
@@ -81,7 +82,7 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
     registerTool: (definition: any) => { tool = definition; },
     getActiveTools: () => active ? ["smart_context"] : [],
     on: (name: string, fn: any) => handlers.set(name, [...handlers.get(name) ?? [], fn]),
-  } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => options.canTrim !== false, canAgentMutate: () => canMutate, onContextChange: () => { changed++; }, onContextEdit: (_ctx, kind) => { edits.push(kind); }, now: () => clock });
+  } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => canTrim, canAgentMutate: () => canMutate, onContextChange: () => { changed++; }, onContextEdit: (_ctx, kind) => { edits.push(kind); }, now: () => clock });
 
   const execute = async (params: ToolCall["arguments"], signal?: AbortSignal) => {
     const callId = "control-" + sequence++;
@@ -127,7 +128,7 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
       return boundary({ response: {}, message: assistant(), messageEntryId: leaf, toolResults: [], toolResultEntryIds: [] } as any, overrides);
     },
     setNow: (value: number) => { clock = value; },
-    setCanMutate: (value: boolean) => { canMutate = value; },
+    setCanMutate: (value: boolean) => { canMutate = value; }, setCanTrim: (value: boolean) => { canTrim = value; },
     setActive: (value: boolean) => { active = value; }, setTokens: (value: number) => { tokens = value; }
   };
 }
@@ -566,10 +567,12 @@ describe("smart_context boundary lifecycle", () => {
     if (kind === "compaction") h.session.appendCompaction("intervening", h.session.getBranch()[0].id, 1000);
     if (kind === "cancelled-call") controller.abort();
     if (kind === "disabled") h.setActive(false);
-    h.boundary(batch, overrides);
+    const result = h.boundary(batch, overrides);
     expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint).toBeNull();
     expect(h.changes()).toBe(0);
     if (kind === "other-drafts") expect(h.session.getBranch().some(entry => entry.type === "custom" && entry.customType === "other")).toBe(true);
+    // The user learns why nothing was applied, on an incomplete turn too.
+    if (kind === "aborted") expect(result.entries.at(-1)).toMatchObject({ type: "custom_message", content: "Context operation not applied: The turn did not complete." });
   });
 
   it("rejects conflicting mutations within one batch and requires a rewind report", async () => {
@@ -646,6 +649,15 @@ describe("smart_context boundary lifecycle", () => {
     h.nextRequest();
     h.nextRequest();
     expect(h.edits()).toEqual(["trim"]);
+  });
+
+  it("reports a committed rewind as a rewind, not a trim", async () => {
+    const h = harness();
+    h.boundary(await h.execute({ action: "checkpoint", label: "Investigate" }));
+    toolBatch(h.session, "read", "DETAIL_TO_REMOVE".repeat(200));
+    h.boundary(await h.execute({ action: "rewind", report: "Fix expiry comparison. Next: patch." }));
+    h.nextRequest();
+    expect(h.edits()).toEqual(["rewind"]);
   });
 
   it.each([
@@ -1034,17 +1046,49 @@ describe("automatic trim timing", () => {
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
   });
 
-  it("keeps nothing from an aborted turn and re-applies on the next cold request", () => {
+  it.each(["aborted", "error"] as const)("keeps a cold-applied trim through an %s turn, whose response dates the cache again", outcome => {
     const { h, old } = deferredFixture(ANTHROPIC, true);
     const expected = expectedTrim(h.session, ANTHROPIC);
     h.turn();
     h.setNow(1 + FIVE_MINUTES_MS + 1);
     expect(h.request().result).toBeDefined();
-    expect(h.turn({ outcome: "aborted" })).toBeUndefined();
+    // Pi persists the interrupted response (fresh timestamp, no usage) before turn_end.
+    h.session.appendMessage({ ...assistant([], outcome === "aborted" ? "aborted" : "error"), timestamp: 1 + FIVE_MINUTES_MS + 2, usage: { ...assistant().usage, input: 0, output: 0, totalTokens: 0 } });
+    expect(h.turn({ outcome })).toBeUndefined();
     expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+    // The provider cached the trimmed prefix; the next request must not flip it back.
     const again = h.request();
     expect(again.result!.messages.find((message: { role: string }) => message.role === "toolResult")).toEqual(expected.marker(old.result));
     expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "cold" });
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(true);
+  });
+
+  it("keeps a cold-applied trim while automatic cleanup is busy, then commits it", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    const expected = expectedTrim(h.session, ANTHROPIC);
+    h.turn();
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeDefined();
+    h.setCanTrim(false); // background preparation or a running compaction
+    expect(h.turn()).toBeUndefined();
+    h.session.appendMessage({ ...assistant([{ type: "text", text: "meanwhile" }]), timestamp: 1 + FIVE_MINUTES_MS + 2 });
+    expect(h.request().result!.messages.find((message: { role: string }) => message.role === "toolResult")).toEqual(expected.marker(old.result));
+    h.setCanTrim(true);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ action: "trim", references: [old.result], cause: "cold" });
+  });
+
+  it("forgets a held or carried trim once automatic cleanup is turned off", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    h.turn();
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeDefined();
+    h.cfg.contextHygieneEnabled = false;
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    // Nothing is carried or committed without the setting: the next request is the recorded conversation.
+    expect(h.request().result).toBeUndefined();
+    expect(h.turn()).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
   });
 
   it("keeps a cold-applied trim in force across a contested boundary until one can commit it", () => {
@@ -1072,7 +1116,12 @@ describe("automatic trim timing", () => {
     expect(h.controller.deferredTrim(h.session.getSessionId())!.breakEvenRequests).toBeCloseTo(expected.breakEvenRequests, 9);
     h.setNow(1 + FIVE_MINUTES_MS + 1);
     expect(h.request().result).toBeUndefined();
-    h.setNow(1 + ONE_HOUR_MS + 1);
+    // A fully cached response writes nothing but refreshes the 1h entry; its lifetime is the last writer's.
+    const hit = { ...assistant([{ type: "text", text: "fully cached" }]), timestamp: 1 + FIVE_MINUTES_MS + 2, usage: { ...assistant().usage, cacheRead: 5_000, cacheWrite: 0 } };
+    h.session.appendMessage(hit);
+    h.setNow(hit.timestamp + FIVE_MINUTES_MS + 1);
+    expect(h.request().result).toBeUndefined();
+    h.setNow(hit.timestamp + ONE_HOUR_MS + 1);
     expect(h.request().result).toBeDefined();
   });
 

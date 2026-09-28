@@ -54,3 +54,18 @@ can describe an older candidate or earlier design; their own limits still apply.
 A green scripted pilot does not establish live-model fidelity, billed savings or
 production readiness. Follow the [evaluation limits](./evaluation.md) and
 [release checklist](./RELEASE.md) before making those claims.
+
+## Review findings
+
+Audits written by external models and agent harnesses live under
+[`findings/`](./findings/). Each report targets a specific revision range and is
+advisory, not a product guarantee or release gate.
+
+| Reviewer | Report | Scope |
+| --- | --- | --- |
+| `deepseek-v4.1-flash-opencode` | [Recent-changes review, 2026-09-28](./findings/deepseek-v4.1-flash-opencode/2026-09-28-recent-changes-review.md) | Commits #75–#79 (`9.8.0-canary.7` wave) |
+| `glm-5.3-pi` | [Recent-changes ponytail review, 2026-09-28](./findings/glm-5.3-pi/2026-09-28-recent-changes-ponytail-review.md) | Commits #75–#79 |
+| `claude-opus-5-5-pi` | [Recent-changes review, 2026-09-28](./findings/claude-opus-5-5-pi/2026-09-28-recent-changes-review.md) | Commits #76–#79 line-by-line; #75 packaging only |
+| `muse-spark-1.3-contributor-pi` | [Recent-changes ponytail review, 2026-09-28](./findings/muse-spark-1.3-contributor-pi/2026-09-28-recent-changes-ponytail-review.md) | Commits #75–#79 |
+
+Reports are kept out of the npm package (`package.json` `files`).
