@@ -11,6 +11,9 @@ key do not change with the documentation brand.
 Evidence classes and their limits are defined in
 [evaluation](./evaluation.md#offline-and-live-evidence). Keep the unpublished
 checkout version and the version currently on npm distinct in every note.
+Toolchain prerequisites (Bun pin, Node with npm, ripgrep) are listed at the top
+of [evaluation](./evaluation.md); `release:audit` also needs network access for
+package installation.
 
 ## 1. Prepare the candidate
 
@@ -24,6 +27,8 @@ checkout version and the version currently on npm distinct in every note.
       notes for behavior/config changes. Dated reports (`docs/reports/`) stay
       historical and are not packed; add a new report or addendum instead of
       rewriting them.
+- [ ] On a major version change, update the supported-versions row in
+      `SECURITY.md`; `release:audit` requires it to read ``Latest `<major>.x` ``.
 - [ ] For Claude subscription routes, pair the fresh candidate with the exact
       `pi-claude-oauth-adapter` build used in the proofs (published `0.2.2`
       plus the final-payload patch, [upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10),
@@ -32,7 +37,7 @@ checkout version and the version currently on npm distinct in every note.
       reconstruct them from memory. pi-toolkit's auto-context must not be
       loaded with the candidate.
 - [ ] Confirm Pi remains a host peer (`">=0.87.1"`) and TypeBox a wildcard peer (`"*"`); neither is bundled.
-- [ ] Confirm the visual renderer remains optional/external and the font plus its license ship in `assets/`. Verify default Node loading without the optional addon and a real PNG render where supported.
+- [ ] Confirm the visual renderer remains optional/external and the font plus its license ship in `assets/`, together with the on-demand context guide `assets/skills/context-management/SKILL.md`. Verify default Node loading without the optional addon and a real PNG render where supported.
 - [ ] Confirm Mnemopi stays an optional external engine with TypeBox external in its worker, and that `bun`, `@oh-my-pi/pi-mnemopi` and `@resvg/resvg-js` remain optional peers pinned to `OPTIONAL_COMPONENTS` (never `optionalDependencies`). Verify a plain install pulls none of them in, the failure names the install command for the install root, the installed Node-host worker runs on the user-installed `bun` component under a Pi-style npm root with no Bun on `PATH`, and the fail-closed missing-engine and missing-Bun failures submit no memory request and create no store.
 - [ ] Confirm no secrets, local JSONL, SQLite data, backups, or generated
       credentials are tracked or packed.
@@ -90,8 +95,11 @@ bun run task-eval --out=/tmp/psc-task-eval-new
 
 Check that:
 
-- [ ] packed files are limited to `dist`, `docs`, `assets`, README, LICENSE,
-      CHANGELOG, SECURITY, SUPPORT, ARCHITECTURE, and package metadata;
+- [ ] packed files are limited to `dist`, `docs` (without `docs/reports/` and
+      `docs/findings/`), `assets`, README, LICENSE, CHANGELOG, SECURITY,
+      SUPPORT, ARCHITECTURE, and package metadata; `release:audit` requires
+      `ARCHITECTURE.md`, `docs/RELEASE.md` and `docs/MIGRATING_TO_V8.md` and
+      rejects reports and findings;
 - [ ] `dist` holds only `index.js`, `rtk.js`, `mnemopi-worker.js`, and
       declarations — no evaluation/report CLI bundles;
 - [ ] the extension registers `smart_compact`, `smart_context`,

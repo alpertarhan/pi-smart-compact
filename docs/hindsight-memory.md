@@ -2,9 +2,16 @@
 
 Cross-session memory is the optional fourth layer of Pi Continuity (the
 `pi-smart-compact` package), after context hygiene, recoverable continuity and
-compaction. See [architecture](../ARCHITECTURE.md#4-optional-cross-session-memory)
-for how the backends fit together and [configuration](./configuration.md) for
-all settings.
+compaction. The guide's [memory section](./guide.md#memory-what-is-stored-where)
+compares the three stores; see
+[architecture](../ARCHITECTURE.md#4-optional-cross-session-memory) for how the
+backends fit together and [configuration](./configuration.md#memory) for all
+settings.
+
+Contents: [Set up](#set-up) · [Configuration](#configuration) ·
+[Data that leaves the machine](#data-that-leaves-the-machine) ·
+[Consent](#consent) · [Identity, refs, and lifecycle](#identity-refs-and-lifecycle) ·
+[Readiness](#readiness) · [Troubleshooting](#troubleshooting) · [Tests](#tests)
 
 The extension can optionally send **explicitly confirmed** project memories to
 an existing [Hindsight](https://hindsight.vectorize.io) server, and include a
@@ -32,16 +39,30 @@ What this feature does **not** do:
   operation status, recall, delete one document) and no generic request
   method, so it cannot reach routes such as `DELETE /memories`.
 - No server installation, setup, or bootstrap. An already-running server's
-  URL, an explicit bank, and a named environment variable holding the API key
-  are required configuration; readiness checks are presence-level only.
+  URL and an explicit bank are required configuration; an API key is
+  optional and is read from a named environment variable. Readiness checks
+  are presence-level only.
+
+## Set up
+
+1. Have a Hindsight server running and a bank for these memories. Pi
+   Continuity never creates either.
+2. If the server needs a key, export it in the environment Pi starts from,
+   for example `export HINDSIGHT_API_TOKEN=…`. Only the variable's **name**
+   goes into settings.
+3. Configure the store (below), either in `~/.pi/agent/settings.json` or in
+   `/smart-compact settings` → **Memory**: set *Memory store* to *Hindsight
+   server*, then fill the *› Hindsight server* submenu (Server URL, Memory
+   bank, API key variable, Request timeout (ms), Recall size (tokens)).
+4. Open Home → **Status & help** → **Readiness & details**. `configuration
+   complete` means the values are present; it does not prove the server is
+   reachable or the key is valid.
+5. Ask the agent to save one fact. Approve the confirmation dialog, then
+   check the reported receipt state (see [receipt states](#identity-refs-and-lifecycle)).
 
 ## Configuration
 
-Add to `~/.pi/agent/settings.json`, or use `/smart-compact settings` →
-**Memory**: *Memory store* (This machine / Hindsight server / Mnemopi (local
-SQLite)); the *› Hindsight server* submenu (Server URL, Memory bank, API key
-variable, Request timeout (ms), Recall size (tokens)); and *Mnemopi data
-folder*.
+In `~/.pi/agent/settings.json` (only this global file is read):
 
 ```json
 {
@@ -61,7 +82,7 @@ folder*.
 | `memoryBackend` | `"local"` | `local`, `hindsight`, or `mnemopi` (local SQLite full-text store). The selected backend is the only store contacted. |
 | `hindsightBaseUrl` | `null` | HTTPS URL. Plain `http` only for loopback (`localhost`, `127.x`, `::1`). Credentials, query and fragment are rejected. Redirects are refused. |
 | `hindsightBankId` | `null` | Required. Never inferred. `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`. |
-| `hindsightApiKeyEnv` | `null` | **Name** of the environment variable that holds the API key, sent as `Authorization: Bearer`. The key itself never goes into settings, receipts, tool output or errors. If the variable is named but unset, Hindsight is treated as not configured and saves are refused — nothing is written anywhere else. |
+| `hindsightApiKeyEnv` | `null` | Optional. **Name** of the environment variable that holds the API key (`[A-Z_][A-Z0-9_]*`, at most 128 characters), sent as `Authorization: Bearer`. With `null`, requests carry no `Authorization` header. The key itself never goes into settings, receipts, tool output or errors. If the variable is named but unset, Hindsight is treated as not configured: saves and recalls are refused and nothing is written anywhere else. |
 | `hindsightTimeoutMs` | `12000` | Per-request timeout, 1000–60000. |
 | `hindsightRecallMaxTokens` | `2048` | Server-side recall budget, 128–4096. Rendered output is additionally capped locally at about 3000 characters, 600 per fact. |
 
@@ -85,13 +106,15 @@ compaction-state indexing). Saves and recalls contact only the server.
   project id, local memory id, revision). The raw working directory is not
   sent. `scrubSecrets` and `scrubPii` apply before the confirmation, so the
   user approves exactly what is sent.
-- **Recall:** the scrubbed query, restricted to the current project tag with
+- **Recall:** the scrubbed query (at most 500 characters), restricted to the
+  current project tag with
   `tags_match: "all_strict"`, `budget: "low"`, and no chunks, source facts or
   entities. Results that lack the project tag are also discarded client-side.
   `scope: "session"` is not supported on this backend and searches nothing.
 - **Resolve:** a `DELETE` of that single document id.
 
-Server-side caveats, verified on the real server (API 0.9.2):
+Server-side caveats, observed on a real server (API 0.9.2); check your own
+server's configuration:
 
 - `store_document_text` is enabled there, so **the raw retained text is
   stored on the server**, not only the extracted facts.
@@ -105,15 +128,17 @@ Server-side caveats, verified on the real server (API 0.9.2):
 
 - Enabling `memoryBackend: "hindsight"` is the consent for remote **recall**
   of scrubbed queries.
-- Every **save and resolve** still requires `ctx.ui.confirm`. The dialog shows
-  the kind, title, full scrubbed content, paths, and the destination:
+- Every **save and resolve** still requires your approval in Pi's
+  confirmation dialog. The dialog shows the kind, title, full scrubbed
+  content, paths, and the destination:
   - server URL and bank;
   - project tag;
   - document id and the ref;
   - for resolve, "DELETE this one document".
-- Non-interactive sessions (`hasUI: false`) are refused, and nothing is sent.
+- Sessions without an interactive UI (print, RPC, SDK) are refused, and
+  nothing is sent.
 
-What to save follows the bank's retain mission:
+What to save:
 
 - Save: durable engineering decisions with rationale, enforced conventions,
   resolved bugs with root cause, tooling gotchas, and stated preferences.
@@ -123,23 +148,25 @@ What to save follows the bank's retain mission:
 
 ## Identity, refs, and lifecycle
 
-- **Memory refs:** saves and recall results for PSC-confirmed facts carry a ref
-  naming the backend, stable id, and a mandatory 96-bit target digest:
-  `local:cg-…@…`, `mnemopi:cg-…@…`, `hindsight:cg-…@…`. The target is the
-  local graph file, Mnemopi database path, or Hindsight server+bank respectively.
-  Hindsight additionally binds the project and document id: a copied ref or a
-  document id combined with another project's target cannot delete across projects.
-  Unsuffixed or altered refs are rejected; there is no legacy retargeting path.
-  Compaction-derived graph items and unrelated remote documents have no actionable ref.
-  Resolving (`smart_save_memory` with `status: "resolved"`) requires the ref; recall
-  renders truncated previews, so exact-text matching is gone. A ref never
+- **Memory refs:** saves and recall results for facts confirmed through Pi
+  Continuity carry a ref naming the backend, stable id, and a mandatory
+  96-bit target digest: `local:cg-…@…`, `mnemopi:cg-…@…`,
+  `hindsight:cg-…@…`. The target is the local graph file, Mnemopi database
+  path, or Hindsight server+bank respectively. Hindsight additionally binds
+  the project and document id: a copied ref or a document id combined with
+  another project's target cannot delete across projects. Unsuffixed or
+  altered refs are rejected; there is no legacy retargeting path.
+  Compaction-derived graph items and unrelated remote documents have no
+  actionable ref. Resolving (`smart_save_memory` with `status: "resolved"`)
+  requires the ref; recall renders truncated previews, so exact-text matching
+  is gone. A ref never
   embeds a URL, bank, or path: the destination is re-derived from current
   configuration and compared against the digest, so after a config switch an
   old ref cannot silently act on another server, bank, or data root.
 - **Refs are exclusive to their backend:** resolving requires
   `memoryBackend` to match the ref's own backend. A `local:` or `mnemopi:` ref
   presented while Hindsight is selected (or any other mismatch) is refused
-  with an explicit "switch Memory backend to …" message — the inactive store
+  with an explicit "Switch Memory store to …" message — the inactive store
   is not contacted, and nothing is migrated, copied, or deleted anywhere.
   Switch back to that backend to act on the ref; its data is unchanged.
   Saving the same fact to two backends (by switching between two saves) yields
@@ -210,20 +237,39 @@ graph file is even created). "Queued" is never reported as "completed".
 
 ## Readiness
 
-The `/smart-compact` Home (**Status & help** → **Readiness & details**) reports
-memory readiness from one shared readonly helper that probes only the selected
-backend: for Hindsight it
-verifies that the existing server URL, explicit bank, and the named key
-environment variable are configured — server reachability, authentication and
-server-side models are explicitly **not** verified, and no server is installed,
-started, or configured. Local-backend readiness reflects `contextGraphEnabled`.
-Mnemopi readiness checks the optional component, the worker file, and a usable
-Bun executable — the optional `bun` component installed beside the extension
-first (resolved from package metadata and the installed layout, never
-downloaded or self-installed at runtime), then a supported Bun (>= 1.3.14) on
-`PATH`. A missing component is reported with its install command.
+Home → **Status & help** → **Readiness & details** reports memory readiness
+for the selected store only. It is read-only and sends nothing:
+
+- **Hindsight:** checks that the server URL and an explicit bank are
+  configured and, when `hindsightApiKeyEnv` is set, that the variable is
+  present. Server reachability, authentication and server-side models are
+  **not** verified, and no server is installed, started, or configured.
+- **Local:** reflects `contextGraphEnabled`.
+- **Mnemopi:** checks the optional component, the worker file, and a usable
+  Bun executable: first the optional `bun` component installed beside the
+  extension (resolved from package metadata and the installed layout, never
+  downloaded or self-installed at runtime), then a supported Bun (>= 1.3.14)
+  on `PATH`. A missing component is reported with its install command.
+
+## Troubleshooting
+
+| Symptom | Cause and action |
+| --- | --- |
+| "Project memory not changed: Hindsight is not usable (…)" or "Hindsight recall not contacted: …" | The reason names the problem: missing or invalid URL, missing bank, or a named key variable that is not set in Pi's environment. Fix the setting, or export the variable and restart Pi. |
+| URL rejected | Use HTTPS. Plain `http` works only for `localhost`, `127.x` and `::1`; credentials, query and fragment are not allowed, and redirects are refused. |
+| Save reports "accepted, NOT yet searchable" | Hindsight extracts asynchronously. The next `smart_recall` refreshes up to 3 open receipts and reports when the document is searchable. |
+| Save reports "outcome unknown … safe to retry" | A timeout or network error after sending. Retrying the same confirmed save is idempotent (the server answers 409 for an operation it already accepted). |
+| New saves refused, naming the receipts file | 500 receipts are open. Run `smart_recall` so open receipts are refreshed; receipts the server has reported missing for 24 hours are marked `failed` and free their slot. |
+| Resolve refused because a retain is still open | A submitted, accepted or unknown save of that document could recreate it. Retry later; verify the operation on the server if its status was lost. |
+| Resolve refused with "Switch Memory store to …" | The ref belongs to another store. Select that store to act on it. |
+| `scope: "session"` recall returns nothing | Not supported on Hindsight; use project scope. |
+| Readiness says complete, but requests fail | Readiness does not contact the server. Check reachability, the key and the server logs. |
 
 ## Tests
+
+For maintainers. The test files live in the
+[source repository](https://github.com/alpertarhan/pi-smart-compact/tree/main/test),
+not in the npm package.
 
 - `test/hindsight-client.test.ts`: HTTP contract against a loopback fake —
   payload shapes, auth, strict tags, path encoding, conflict, redirect refusal,

@@ -39,6 +39,7 @@ release evidence, see [evaluation](./evaluation.md).
 - [Agent tools](#agent-tools)
 - [Memory: what is stored where](#memory-what-is-stored-where)
 - [Working with other extensions and features](#working-with-other-extensions-and-features)
+- [Experimental features](#experimental-features)
 - [Recovery](#recovery)
 - [Storage and privacy](#storage-and-privacy)
 - [Troubleshooting](#troubleshooting)
@@ -46,21 +47,33 @@ release evidence, see [evaluation](./evaluation.md).
 
 ## How it works in one minute
 
-Pi Continuity acts in four layers, from cheapest to most invasive:
+Pi Continuity works in four layers. Prefer the cheaper, recoverable ones
+before a lossy compaction when they fit the task; each can be used on its own.
 
-| Layer | What happens | Model call? | Default |
-| --- | --- | --- | --- |
-| 1. Avoid noise | The optional RTK companion shortens a few shell outputs | No | Not loaded |
-| 2. Offload | Very large read-only tool outputs are saved to disk; the model sees a preview and an ID | No | Off |
-| 3. Trim, checkpoint, rewind | Old read-only and shell output is replaced by short digests with references; research can be rewound to a report | No | Manual; automatic trimming off |
-| 4. Compact | Older history becomes a verified summary; recent turns stay raw | Usually (Fast may use none) | Replaces Pi's summary when Pi compacts |
+| Layer | What you use | Model call? |
+| --- | --- | --- |
+| 1. Context hygiene | [Clean up tool output](#clean-up-tool-output), [offload of huge outputs](#automatic-offload-of-large-outputs), the [RTK companion](#rtk-companion-optional-experimental) | No |
+| 2. Recoverable continuity | [Retrieve archived output](#retrieve-archived-output), [checkpoint and rewind](#checkpoint-and-rewind), [session navigation](#session-navigation), [hand-off](#hand-off-to-a-new-session) | No |
+| 3. Verified compaction | [Compact now](#compact-now) or [automatic compaction](#let-it-run-automatically): older history becomes a verified summary; recent turns stay raw | Usually (Fast may use none) |
+| 4. Cross-session memory | [Project memory](#memory-what-is-stored-where): facts `smart_recall` finds in later sessions | No (a Hindsight server runs its own models) |
 
-Layers 2 and 3 are recoverable: the original output stays in Pi's session file
+Layers 1 and 2 are recoverable: the original output stays in Pi's session file
 or in a private artifact file, and the agent can search and read it back.
-Layer 4 replaces history with a summary. The summary is checked against facts
+Layer 3 replaces history with a summary. The summary is checked against facts
 extracted from the conversation first, but it is still a summary: some
 incidental details are not kept. A backup of the replaced text is written by
 default.
+
+### What is on by default
+
+| Status | Features |
+| --- | --- |
+| On by default | Replacing Pi's summary when Pi compacts, **Compact now**, `/smart-compact trim`, session navigation, agent tools on demand, local project memory, backups, secret scrubbing |
+| Optional, off until selected | **Automatic cleanup**, **Offload huge outputs**, the `When idle` and `Prepare in background` strategies, the Hindsight and Mnemopi memory stores, personal-data scrubbing |
+| Experimental | [Provider compaction, image snapshots](#summary-format-provider-compaction-and-images) and the [RTK companion](#rtk-companion-optional-experimental) |
+
+Settings and defaults are listed in the
+[configuration reference](./configuration.md#all-settings).
 
 ## Install and first run
 
@@ -171,34 +184,37 @@ them. The marker's subject line says why, e.g.
 normalization (`./src/a.ts` = `src/a.ts`, but not `/repo/src/a.ts`). This
 changes only the order and the note, never which outputs are eligible.
 
+### Automatic cleanup (optional)
+
 Automatic trimming is separate and off by default: turn on
-**Automatic cleanup** (`contextHygieneEnabled`). A batch needs at least 16,384
-characters of net savings and eight assistant turns after the last trim,
-rewind or compaction. It then commits at the turn boundary for one of three
-causes, recorded on the trim entry:
+**Automatic cleanup** (`contextHygieneEnabled`), or pick the `Cleanup only` or
+`Fully automatic` preset. It uses the same eligibility rules as the manual
+command and needs `smart_context` reachable by the model, since the digest
+points it there (any **Agent tools** choice except **Off**).
+
+A batch needs at least 16,384 characters of net savings and eight assistant
+turns after the last trim, rewind or compaction. It then commits at the turn
+boundary for one of three causes, recorded on the trim entry:
 
 - `pressure`: context usage reached the early pressure gate.
 - `break-even`: the model's catalog prices say the trim pays back its prompt
-  cache rewrite within 24 further requests (see
-  [configuration](./configuration.md#context-hygiene-and-archives)).
+  cache rewrite within 24 further requests.
 - `cold`: otherwise the batch is held back until the cache has expired (5
   minutes after the last response, 1 hour when the last response that wrote
   cache reported 1h retention). A refresh from Pi's cache warming keeps the
   entry alive, so the batch also waits one lifetime past the latest refresh.
   The first request after that already sends the trimmed context, every later
   request keeps sending it, and the edits commit at the next completed turn
-  that nothing else claims. Automatic trims also need `smart_context`
-  reachable by the model, since the digest points it there.
+  that nothing else claims.
 
-While a batch is held, Pi Continuity stops Pi's cache warming once a refresh
-no longer pays: Pi warms when `continuationProbability × missCost − warmCost`
-is at least $0.05, and Pi Continuity counts the miss net of the removed
-output's cache write, which the held batch avoids. Home notes the stop on
-**Clean up tool output**, and Pi's `/session` shows it as stopped by an
-extension.
+While a batch is held, Pi Continuity stops Pi's cache warming once another
+refresh no longer pays for itself, because the held batch will rewrite that
+cache anyway. Home notes the stop on **Clean up tool output**, and Pi's
+`/session` shows warming as stopped by an extension.
 
-The rule uses the model's catalog price ratios and estimated token counts, not
-measured cache behavior.
+The timing uses the model's catalog price ratios and estimated token counts,
+not measured cache behavior. The formulas are in
+[configuration](./configuration.md#automatic-trim-timing).
 
 ## Compact now
 
@@ -286,7 +302,10 @@ background strategy and the gate arithmetic.
 The agent retrieves trimmed, rewound, offloaded or image-archived output with
 `smart_context`. You normally do not call it yourself; you can ask the agent to.
 
-```json
+Each line below is a separate example tool input, not one JSON document or a
+batch of calls. Replace `<source-id>` with an ID returned by `status` or `search`.
+
+```jsonl
 {"action":"status"}
 {"action":"search","query":"AUTH_EXPIRED","limit":3}
 {"action":"read","id":"<source-id>","line":120,"limit":20}
@@ -298,14 +317,13 @@ The agent retrieves trimmed, rewound, offloaded or image-archived output with
 | --- | --- |
 | `status` | Checkpoint validity and archived source IDs, newest first. Default 8, maximum 32 per page; continue with `offset` / `nextOffset`. |
 | `search` | Literal, case-sensitive text or source-label match; first match per source with excerpt, line and offset. Default 5 hits, maximum 10; scans at most 32 sources or 4 Mi characters per request. `nextOffset` is a source cursor. No regex or embeddings. |
-| `read` | Character `offset`, or 1-based `line` with `limit` lines (default 40, maximum 200). At most 4,096 characters per call. |
+| `read` | By character `offset` with `limit` characters (default 2,048), or by 1-based `line` with `limit` lines (default 40, maximum 200). At most 4,096 characters per call. |
 
-Retrieval only returns output this extension archived on the active branch,
-or, with `"scope":"lineage"`, on the sessions this one was handed off or
-forked from.
-Text is scrubbed again with the current privacy settings before search or
-paging. You get the originally recorded tool output, not bytes the tool had
-already truncated before Pi recorded it. Each archive records a SHA-256 of the
+By default (`"scope":"session"`), retrieval only returns output this extension
+archived on the active branch and reads no other session file. Text is
+scrubbed again with the current privacy settings before search or paging. You
+get the originally recorded tool output, not bytes the tool had already
+truncated before Pi recorded it. Each archive records a SHA-256 of the
 archived text; `read` and `search` refuse text that no longer matches (for
 example after a hand-edited session file), and a rewind leaves such outputs
 out of recovery. Archives from earlier versions have no hash and are read as
@@ -319,14 +337,15 @@ sources come after the active branch's and carry `session` and `depth`;
 `status` adds a `lineage` count per parent, and `read` of a parent source says
 which session it came from. Each parent's own archive records authorize and
 verify its outputs; checkpoints, rewind and trim stay on the active branch.
-The default `"scope":"session"` does not read other files.
 
 ### Automatic offload of large outputs
 
-With **Offload huge outputs** (`artifactOffloadEnabled`) on and `smart_context`
-active, successful, known read-only text results of at least 16,384 characters
-are saved before their first model request. The model sees the tool/source
-label, size, an `artifact-<hash>` ID and short first/last excerpts.
+Optional and off by default. With **Offload huge outputs**
+(`artifactOffloadEnabled`) on and `smart_context` reachable by the model (any
+**Agent tools** choice except **Off**, and not hidden with `/tools`),
+successful, known read-only text results of at least 16,384 characters are
+saved before their first model request. The model sees the tool/source label,
+size, an `artifact-<hash>` ID and short first/last excerpts.
 
 - Not offloaded: errors, images, shell commands, writes, unknown tools,
   `read`/`read_symbol`/`read_enclosing` deliveries, instruction/skill-file
@@ -344,7 +363,9 @@ label, size, an `artifact-<hash>` ID and short first/last excerpts.
 Use this for bounded research: set a checkpoint, explore, then replace the
 exploration with a short report.
 
-```json
+Example inputs (one JSON object per call; explore between checkpoint and rewind):
+
+```jsonl
 {"action":"checkpoint","label":"Investigate auth expiry"}
 {"action":"rewind","report":"Expiry must use <=. Keep async API. Failed approach: local-time parsing. Next: patch and test."}
 {"action":"plan"}
@@ -624,6 +645,12 @@ tokens. The ledger is session-local: it resets on a new or switched session,
 is not persisted, and covers only Pi's own requests; Pi Continuity's summary
 calls are in `/smart-compact metrics` instead.
 
+## Experimental features
+
+These features are off by default and are not part of the default workflow.
+Each one has narrow support and known costs; read its limits before turning it
+on.
+
 ### RTK companion (optional, experimental)
 
 RTK is not a dependency and is never loaded automatically. Install RTK 0.50 or
@@ -762,18 +789,22 @@ What is not covered:
 
 | Symptom | Cause and action |
 | --- | --- |
-| "Compaction skipped: context 38% ... below the 60% threshold" | Automatic and agent runs wait for `Start at context %` of the **active model's** window. Use Compact now for early compaction. |
-| Nothing compacts automatically | With the default `With Pi`, Pi's auto-compaction must be on (readiness shows `unknown`). Choose `Fully automatic` to start without it. Check `Automatic compaction` and `This branch only`. |
+| Agent reports "Compaction skipped: context 38% (…) below the 60% agent-tool threshold" | `smart_compact` waits for `Start at context %` of the **active model's** window (`tool=XX%` in the footer is the tool-output share, not context fullness). Use **Compact now** for early compaction. |
+| Nothing compacts automatically | With the default `With Pi`, Pi's auto-compaction must be on (readiness shows `unknown`). Choose `Fully automatic` to start without it. Check `Automatic compaction` and `This branch only`. On a large-window model, see `Context cap for start % (tokens)` in [Let it run automatically](#let-it-run-automatically). |
 | Cleanup did nothing on the next reply | Expected: the next request is sent untrimmed; cleanup applies at the next completed turn. |
+| **Clean up tool output** shows `held for a cold cache` | Expected with **Automatic cleanup**: the batch waits for the prompt cache to expire; see [automatic cleanup](#automatic-cleanup-optional). Select the row to apply it at the next completed turn instead. |
+| Automatic cleanup or offload never happens | Both need `smart_context` reachable: **Agent tools** must not be **Off**, and `smart_context` must not be hidden with `/tools`. Offload also needs **Offload huge outputs** on and applies only to read-only text results of 16,384+ characters. |
 | Agent says a summary is staged, but context did not shrink | Run `/compact` within 5 minutes. With automatic compaction off, nothing else consumes it. |
 | `smart_context`, `smart_recall`, `smart_save_memory` or `smart_navigation` missing | With **On demand**, the agent loads a group through `smart_tools`; with **Off**, no context tool is shown; see [agent tools](#agent-tools). Check `/tools`. |
-| Memory tools fail "must run from a project directory" | Start Pi from inside a project, not from your home directory or `/`. |
+| Memory tools say they "must run from a project directory" | Start Pi from inside a project, not from your home directory or `/`. |
 | Recall with `scope: "session"` returns nothing | Not supported on Hindsight or Mnemopi; use project scope. |
+| Hindsight save refused, `FAILED` or "outcome unknown" | See [Hindsight troubleshooting](./hindsight-memory.md#troubleshooting). No other store is used as a fallback. |
 | Mnemopi lock error | Another writer is active. Retry later. Remove `memory.sqlite.lock` only after confirming no process writes that database. |
 | Settings do not save; `settings.json.lock` exists | A Pi process died while writing. Verify no Pi process is writing settings, then remove the lock directory by hand. |
 | Edited `settings.json` by hand, tool list or footer not updated | External edits are read on the next operation; tool and footer state refresh on `/reload` or session restore. |
 | Warning line at the top of Settings | Some `settings.json` values were invalid or converted and are being ignored; the line names them. |
-| Provider compaction was skipped | The chat model's API is not a supported native route; verified text was used. |
+| Provider compaction was skipped | The chat model's API is not a supported native route; verified text was used. In sessions smaller than Pi's `compaction.keepRecentTokens`, Pi refuses the result and the conversation stays unchanged. |
+| `Text + images` produced text only | Expected unless the chat model is direct Anthropic `claude-sonnet-5` and the optional `@resvg/resvg-js` component is installed; see [image snapshots](#summary-format-provider-compaction-and-images). |
 | Timeout or verification failure | A single `Smart Compact: ...` line explains the effect and next step. Details: `/smart-compact metrics`. Stack traces: `DEBUG=smart-compact`. |
 
 Without a UI, warnings and errors go to stderr.

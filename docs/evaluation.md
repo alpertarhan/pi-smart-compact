@@ -13,6 +13,19 @@ Related pages: [user guide](./guide.md) · [configuration](./configuration.md) �
 [architecture](../ARCHITECTURE.md) · [release checklist](./RELEASE.md) ·
 [Hindsight memory backend](./hindsight-memory.md).
 
+**Contents:** [evidence classes](#offline-and-live-evidence) ·
+[release gates](#deterministic-release-gates) ·
+[provider routing](#provider-routing-evidence) ·
+[paired task evaluation](#paired-continuation-and-memory-evaluation) ·
+[telemetry and canary gates](#telemetry-and-canary-gates) ·
+[replay estimates](#replay-estimates) ·
+[pilots and dated reports](#pilots-and-dated-reports)
+
+Prerequisites for a source checkout: Bun 1.4.2 (the `packageManager` pin),
+Node >=22.19 with npm on `PATH` for the Node-host smokes in `release:audit`,
+and `rg` (ripgrep) on `PATH` for offline `task-eval` arms, which set
+`PI_OFFLINE=1` and refuse to let Pi download tools.
+
 ## Offline and live evidence
 
 Every result belongs to exactly one evidence class. Do not promote a claim from
@@ -121,8 +134,8 @@ receives the same three bounded coding-continuity scenarios (`implementation`,
 60-second timeout per call, scored by the deterministic verifier. It reports
 score, latency and reported usage. Apply a route manually, and only after
 representative evidence; one probe is not that evidence. The dated
-[2026-08-06 baseline](./reports/provider-evaluation-2026-08-06.md) is an example of
-this output, not a current ranking.
+[2026-08-06 baseline](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/provider-evaluation-2026-08-06.md)
+(repository only) is an example of this output, not a current ranking.
 
 ## Paired continuation and memory evaluation
 
@@ -369,20 +382,28 @@ no provider request.
 | --- | --- | --- |
 | `bun scripts/session-pilot.ts` | Offline | Real `AgentSession` with scripted model transport, Pi Continuity only: tools, anchor and pivot with carryover, trimming/retrieval, rewind, compaction and reopen |
 | `NODE_PATH="$PWD/node_modules" bun scripts/context-compat-pilot.ts /path/to/pi-lens` | Offline | Real Pi dispatch with an explicit local pi-lens path in both load orders: read-guard coverage and the anchor cached prefix across trim |
-| `PSC_CLAUDE_OAUTH_EXTENSION=<pi-claude-oauth-adapter>/extensions/index.ts bun scripts/native-host-pilot.ts` | Offline fake provider | Provider-native compaction on stock Pi; the Anthropic OAuth route needs the standalone adapter (patched final-payload build for billing on nested requests); `PSC_NATIVE_LIVE=1` sends real, ledger-capped requests and needs explicit approval |
+| `PSC_CLAUDE_OAUTH_EXTENSION=<pi-claude-oauth-adapter>/extensions/index.ts bun scripts/native-host-pilot.ts` | Offline fake provider | Provider-native compaction on stock Pi; the Anthropic OAuth route needs the standalone adapter (patched final-payload build for billing on nested requests). `PSC_NATIVE_ROUTES=codex-oauth,openai-api-key` runs without it and `PSC_PILOT_SHORT=1` shortens each route. `PSC_NATIVE_LIVE=1` sends real, ledger-capped requests and needs explicit approval |
 | `bun run scripts/rtk-pilot.ts /absolute/path/to/rtk` | Local only | Synthetic RTK rewrite contract; characters, not provider tokens |
 | `bun run scripts/visual-pilot.ts --model=provider/id` | Offline planning | Bitmap versus text evidence; `--live` authorizes at most 9 sequential requests and needs explicit approval |
 | `PSC_HINDSIGHT_LIVE=1 … bun run test/hindsight-live.canary.ts` | Not run by `bun test` | Live Hindsight contract with a hard call budget; see [Hindsight memory](./hindsight-memory.md#tests) |
 
 Dated reports record what was measured on their date, with the code and host
 versions stated inside. They are kept for provenance and are not updated
-retroactively. Current behavior is described in the [guide](./guide.md),
-[configuration](./configuration.md) and [architecture](../ARCHITECTURE.md).
+retroactively; later findings are added as dated addenda. Current behavior is
+described in the [guide](./guide.md), [configuration](./configuration.md) and
+[architecture](../ARCHITECTURE.md). Reports live in the repository only; the
+npm package does not include `docs/reports/` or `docs/findings/`. Pilot
+reports have a machine-readable `.json` companion beside them.
 
 | Report | Scope |
 | --- | --- |
-| [Provider evaluation baseline, 2026-08-06](./reports/provider-evaluation-2026-08-06.md) | Live three-scenario probe across five models; advisory |
-| [Context hygiene and continuity, 2026-09-24](./reports/context-hygiene-2026-09-24.md) | Hygiene design and offline experiments |
-| [Hindsight and provider-native compaction research, 2026-09-24](./reports/hindsight-native-compaction-research-2026-09-24.md) | Pre-implementation research plus later measured results |
-| [Full AgentSession offline pilot, 2026-09-24](./reports/session-pilot-2026-09-24.md) | Scripted-transport lifecycle pilot |
-| [Visual evidence pilot, 2026-09-24](./reports/visual-pilot-2026-09-24.md) | Live synthetic bitmap-versus-text reading pilot on one model |
+| [Provider evaluation baseline, 2026-08-06](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/provider-evaluation-2026-08-06.md) | Live three-scenario probe across five models; advisory; 2026-09-25 addendum on route-report token semantics |
+| [Context hygiene and continuity, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/context-hygiene-2026-09-24.md) | Hygiene design and offline experiments |
+| [Hindsight and provider-native compaction research, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/hindsight-native-compaction-research-2026-09-24.md) | Pre-implementation research plus later measured results |
+| [Full AgentSession offline pilot, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/session-pilot-2026-09-24.md) | Scripted-transport lifecycle pilot; 2026-09-25 candidate and `9.8.0-canary.1` follow-ups |
+| [Visual evidence pilot, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/visual-pilot-2026-09-24.md) | Live synthetic bitmap-versus-text reading pilot on one model |
+
+External review findings, one folder per reviewer, are indexed in
+[`docs/findings/`](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/findings/README.md).
+They are advisory analyses of a specific revision range, not release gates or
+evidence of current behavior.

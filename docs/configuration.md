@@ -42,8 +42,9 @@ read for `smartCompact`.
 | Edit `settings.json` | Any key; read on the next operation |
 
 The categorized screen groups settings as: `Compaction`, `Models & thinking`,
-`Memory`, `Tool output cleanup`, `Privacy & safety`, `This branch only`,
-`Advanced` (with `› Limits` and `› Mode budgets`). Labels are for reading;
+`Memory` (with `› Hindsight server`), `Agent tools & navigation`,
+`Tool output cleanup`, `Privacy & safety`, `This branch only` and `Advanced`
+(with `› Limits`, which contains `› Mode budgets`). Labels are for reading;
 stored keys and values are unchanged.
 
 Settings screen behavior:
@@ -74,8 +75,10 @@ means all defaults are used.
 | Mode, models, budgets, privacy, paths, profiles, monitoring | Next compaction or indexing; a running compaction keeps its starting configuration |
 | Hand edits to `settings.json` | Next operation (the file's modification time is checked). Active tools and footer refresh on `/reload` or session restore; no file watcher runs. |
 
-Which agent tools are visible is decided only at session start and after a
-compaction; see [agent tools](./guide.md#agent-tools).
+Changing agent-tool settings from the TUI re-applies the tool list at once.
+Groups the agent loaded through `smart_tools` are forgotten at session start,
+on a branch change and after a compaction; see
+[agent tools](./guide.md#agent-tools).
 
 ## How settings combine
 
@@ -252,8 +255,9 @@ limit) and the mode budgets below.
   the planned tail.
 - The summary and tail sizes come from the profile each mode uses (`fast` →
   `aggressive`, `balanced` → `balanced`, `thorough` → `light`). Change them in
-  `› Mode budgets` (`profiles`), which lists them by mode: `Fast`, `Balanced`,
-  `Thorough`. `auto` uses the budgets of the mode it picks for the run.
+  `Advanced › Limits › Mode budgets` (`profiles`), which lists them by mode:
+  `Fast`, `Balanced`, `Thorough`. `auto` uses the budgets of the mode it picks
+  for the run.
 
 ### How a budget is chosen
 
@@ -350,11 +354,11 @@ choice because a rejected provider request falls back to the smart summary.
 
 ## Context hygiene and archives
 
-All three switches are off by default. Automatic trimming does not depend on
-which tools the agent sees. Offload runs only while the agent can reach
-`smart_context`: active, or loadable through `smart_tools` in On demand mode.
-With agent tools `off`, or `smart_context` hidden with `/tools`, new offloads
-stop; existing archives stay on disk.
+All three switches are off by default. Automatic trimming and offload run only
+while the model can reach `smart_context`: active, or loadable through
+`smart_tools` in On demand mode. With agent tools `off`, or `smart_context`
+hidden with `/tools`, new automatic trims and offloads stop; existing archives
+stay on disk and manual `/smart-compact trim` still works.
 
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
@@ -363,55 +367,57 @@ stop; existing archives stay on disk.
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
 
-Fixed limits (not configurable): trim at most 32 outputs of 4,096+ characters
-per boundary, keep the latest four assistant turns; each trimmed output becomes
-a digest marker of at most 6 lines and 400 characters (retrieval line, call
-subject, first output line, up to three error/warning lines; see
-[Clean up tool output](./guide.md#clean-up-tool-output)). Trimming covers
-successful text from read-only tools, shell (`bash`) output whose call stays
-in context, and `smart_context` `read` pages, which point back at their source
-ID; errors, writes, unknown tools and mixed turns stay whole. Order within the
-32: read-only outputs whose path a later call writes, edits or deletes come
-first, then those read again in full later (a plain `read` without
-`offset`/`limit`), then the rest, each in session order; their markers note
-`(superseded: edited later)` or `(superseded: read again in full later)`.
-Paths compare after `path.normalize` only
-(relative never matches absolute). This changes order and the note, not
-eligibility. Trim and rewind records store a SHA-256 and length of each
-archived output; `smart_context` `read`/`search` refuse text that no longer
-matches, and records from earlier versions have no hash and are read as
-before. Artifacts at most
-2 MiB each and 256 files or 32 MiB per origin session; retrieval at most 4,096
-characters per read. There is no artifact expiry or garbage collection; see
-[storage](./guide.md#storage-and-privacy). `smart_context` with
-`scope: "lineage"` follows `parentSession` headers (handoff or fork) at most 3
-levels, reads only files of at most 64 MiB, stops at a missing file or a
-cycle, and never writes them; the search limits above apply across all
-sessions, active branch first.
+### Fixed hygiene limits
 
-Automatic trim timing. Let `X` be the estimated tokens a batch removes (net of
-its markers) and `T` the estimated tokens of every message from the first
-trimmed output to the end, the part of the prompt cache a trim rewrites. With
-the active model's catalog prices, `r = cacheRead / input` and
-`w = cacheWrite / input` (`w = 1` when no write price is listed), the trim
-pays back after `N* = ((w - r) × T) / (r × X)` further requests (`0` when
-cache reads are free). At a completed turn boundary a ready batch commits with
-cause `pressure` when usage reached the early pressure gate, or `break-even`
-when `N* ≤ 24`. Otherwise it is held (`smart_context` `status` reports it as
-`deferredTrim`); the first request after the cache expired (5 minutes after
-the last response, 1 hour when the last response that wrote cache reported 1h
-retention) sends the trimmed messages, later requests keep them, and the edits
-commit with cause `cold` at the next completed, uncontested turn. A
-Pi cache-warming refresh counts as a response for this expiry; while a batch
-is held, warming stops once `p × (missCost − w' × X / 1e6) − warmCost < $0.05`
-(Pi's own rule, `w'` = cache-write price per million tokens, or input price
-when none is listed). An unknown price only allows `pressure` and `cold`. A
-newer compaction, context
-edit, session change, queued manual/agent request, or turning
-`contextHygieneEnabled` off drops the held batch. Automatic trims need
-`smart_context` reachable by the model (`toolLoading` not `off`).
-Manual and agent trims commit at the next boundary as before (`manual`,
-`agent`). Prices are catalog ratios, not measured cache behavior.
+These limits are not configurable. Behavior and examples are in the guide's
+[Clean up tool output](./guide.md#clean-up-tool-output).
+
+| Item | Limit |
+| --- | --- |
+| Trim per boundary | At most 32 outputs of 4,096+ characters; the latest four assistant turns stay |
+| Trimmed output types | Successful text from read-only tools, shell (`bash`) output whose call stays in context, and `smart_context` `read` pages (their markers point back at the source ID). Errors, writes, unknown tools and mixed turns stay whole. |
+| Digest marker | At most 6 lines and 400 characters: retrieval line, call subject, first output line, up to three error/warning lines |
+| Order within the 32 | Read-only outputs whose path a later call writes, edits or deletes; then those read again in full later (a plain `read` without `offset`/`limit`); then the rest, each in session order. Markers note `(superseded: edited later)` or `(superseded: read again in full later)`. Paths compare after `path.normalize` only (relative never matches absolute). This changes order and the note, not eligibility. |
+| Integrity | Trim and rewind records store a SHA-256 and length of each archived output; `smart_context` `read`/`search` refuse text that no longer matches. Records from earlier versions have no hash and are read as before. |
+| Automatic cleanup batch | At least 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction |
+| Offload | Read-only text results of 16,384+ characters; each artifact at most 2 MiB; at most 256 files or 32 MiB per origin session, after which new offloads stop |
+| Retrieval | At most 4,096 characters per `read` |
+| `scope: "lineage"` | Follows `parentSession` headers (handoff or fork) at most 3 levels, reads only files of at most 64 MiB, stops at a missing file or a cycle, and never writes them. Search limits apply across all sessions, active branch first. |
+| Artifact retention | No expiry or garbage collection; see [storage](./guide.md#storage-and-privacy) |
+
+### Automatic trim timing
+
+Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
+the estimated tokens of every message from the first trimmed output to the
+end, the part of the prompt cache a trim rewrites. With the active model's
+catalog prices, `r = cacheRead / input` and `w = cacheWrite / input` (`w = 1`
+when no write price is listed). The trim pays back after
+`N* = ((w - r) × T) / (r × X)` further requests (`0` when cache reads are
+free).
+
+At a completed turn boundary a ready batch commits with cause:
+
+- `pressure` when usage reached the early pressure gate;
+- `break-even` when `N* ≤ 24`;
+- `cold` otherwise, after waiting. The batch is held (`smart_context`
+  `status` reports it as `deferredTrim`). The first request after the cache
+  expired (5 minutes after the last response, 1 hour when the last response
+  that wrote cache reported 1h retention) sends the trimmed messages, later
+  requests keep them, and the edits commit at the next completed, uncontested
+  turn.
+
+An unknown price only allows `pressure` and `cold`. Manual and agent trims
+commit at the next boundary as before (causes `manual`, `agent`).
+
+A Pi cache-warming refresh counts as a response for this expiry. While a
+batch is held, warming stops once
+`p × (missCost − w' × X / 1e6) − warmCost < $0.05` (Pi's own rule, with the
+miss cost net of the removed output's cache write; `w'` is the cache-write
+price per million tokens, or the input price when none is listed).
+
+A newer compaction, context edit, session change, queued manual/agent request,
+or turning `contextHygieneEnabled` off drops the held batch. Prices are
+catalog ratios, not measured cache behavior.
 
 ## Agent tools and session navigation
 
@@ -439,8 +445,8 @@ with Pi's `/tools` stay hidden until you show them again.
 | `contextGraphEnabled` | `Project memory` | `true` | Local store: index verified compaction state and enable recall/save. Explicit Hindsight/Mnemopi stores keep their tools with this off. |
 | `memoryBackend` | `Memory store` | `local` | `local` (`This machine`), `hindsight` (`Hindsight server`), `mnemopi` (`Mnemopi (local SQLite)`; needs the optional `@oh-my-pi/pi-mnemopi` component and Bun 1.3.14+ on `PATH` or the optional `bun` component — `Readiness & details` shows the install command, see [Optional components](../README.md#optional-components)) |
 | `hindsightBaseUrl` | `Server URL` | `null` | HTTPS, no credentials, query or fragment; plain HTTP only for loopback |
-| `hindsightBankId` | `Memory bank` | `null` | Required; 1–128 of letters, digits, `.`, `_`, `-`; never guessed |
-| `hindsightApiKeyEnv` | `API key variable` | `null` | Name of the environment variable holding the key, not the key |
+| `hindsightBankId` | `Memory bank` | `null` | Required; 1–128 letters, digits, `.`, `_`, `-`, starting with a letter or digit; never guessed |
+| `hindsightApiKeyEnv` | `API key variable` | `null` | Name of the environment variable holding the key, not the key: 1–128 uppercase letters, digits and `_`, not starting with a digit |
 | `hindsightTimeoutMs` | `Request timeout (ms)` | `12000` | 1,000–60,000 |
 | `hindsightRecallMaxTokens` | `Recall size (tokens)` | `2048` | 128–4,096; output is also capped locally |
 | `mnemopiDataDir` | `Mnemopi data folder` | `null` | Absolute or `~/` path; relative paths rejected. Default `~/.pi/agent/smart-compact-memory/mnemopi/<projectId>/` |
@@ -456,7 +462,8 @@ Selection rules:
 - Continuity state, backups and artifacts do not depend on the memory store.
 - Memory readiness never blocks compaction.
 
-Hindsight details: [Hindsight memory backend](./hindsight-memory.md).
+Hindsight setup, data flow and troubleshooting:
+[Hindsight memory backend](./hindsight-memory.md).
 
 ## Privacy and backups
 

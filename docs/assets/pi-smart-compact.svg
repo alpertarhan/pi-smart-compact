@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 320 320" role="img" aria-labelledby="title description">
+  <title id="title">Pi Continuity</title>
+  <desc id="description">An open return path with a gold anchor: useful context kept within reach.</desc>
+  <!-- Generated from banner.svg; regenerate using docs/identity.md. -->
+  <rect width="320" height="320" rx="64" fill="#F3F8F9"/>
+  <g transform="translate(-8 0)"><g id="continuity-mark">
+        <path fill="none" stroke="#183e4b" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M 232 88
+L 143 88
+C 106 88 76 118 76 155
+L 76 165
+C 76 202 106 232 143 232
+L 190 232"/>
+        <path fill="none" stroke="#147d88" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M 190 232
+L 213 232
+C 239 232 260 211 260 185
+C 260 159 239 138 213 138
+L 150 138"/>
+        <path fill="#e8b55b" stroke="none" d="M 166 138
+C 166 146.837 158.837 154 150 154
+C 141.163 154 134 146.837 134 138
+C 134 129.163 141.163 122 150 122
+C 158.837 122 166 129.163 166 138 Z"/>
+    </g></g>
+</svg>

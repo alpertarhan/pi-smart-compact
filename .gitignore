@@ -6,7 +6,6 @@ dist/
 *.v*-backup
 
 # Dependencies
-node_modules
 node_modules/
 
 # Lockfile — this project uses bun (see bun.lock). Ignore npm's lockfile
@@ -15,7 +14,8 @@ package-lock.json
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example
 
 # Coverage
 coverage/
@@ -29,7 +29,7 @@ coverage/
 # OS
 .DS_Store
 
-# Evaluator output stays local; keep dated evidence out of the tree
+# Generated evaluator output stays local; curated evidence lives in docs/reports/
 task-eval-reports/
 replay-eval-reports/
 

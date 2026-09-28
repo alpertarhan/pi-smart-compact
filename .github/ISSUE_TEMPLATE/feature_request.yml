@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement to pi-smart-compact
+description: Suggest an improvement to Pi Continuity (pi-smart-compact)
 title: "feat: "
 labels: [enhancement]
 body:
@@ -28,11 +28,13 @@ body:
     attributes:
       label: Area
       options:
-        - extraction
-        - exploration
-        - synthesis
-        - verification
-        - auto-trigger integration
+        - context hygiene (cleanup, tool-output archives, RTK)
+        - recovery and session navigation
+        - compaction pipeline (extract, explore, synthesize, verify)
+        - automatic compaction strategies
+        - provider-native compaction
+        - cross-session memory
+        - Home, settings and other UI
         - dashboard/metrics
         - configuration
         - documentation
