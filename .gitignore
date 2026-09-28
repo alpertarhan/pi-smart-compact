@@ -29,9 +29,8 @@ coverage/
 # OS
 .DS_Store
 
-# Evaluator output: local by default; dated evidence is added deliberately
+# Evaluator output stays local; keep dated evidence out of the tree
 task-eval-reports/
-!task-eval-reports/item14-cost-evidence-2026-09-25/
 replay-eval-reports/
 
 # Scratch / progress files used by sub-agents and chains
