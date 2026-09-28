@@ -816,7 +816,7 @@ Auto-trigger rejection logs are debug-only, leaving one content-free notice.
 | Session-log recovery | `utils/session-log.ts` | async bounded-memory JSONL scan; recovers only truncated, unedited messages by entry ID without resurrecting intentional replacements or omissions |
 | Project fingerprint | `utils/fingerprint.ts` | locked read/merge/write; bounded language/framework/key dirs; `sessionCount` tracks distinct hashed sessions |
 | Damage detection | `utils/damage.ts` | best-effort post-compaction regression signals |
-| Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 non-structural nodes per project |
+| Context graph | `infra/context-graph.ts` | SQLite FTS5 facts + file edges; 2,000 active derived nodes and 2,000 resolved/superseded tombstones per project |
 
 Apply-confirmed state is queued, and duplicate updates coalesce only for the
 exact project/session/branch head. Replacing an existing key refreshes that
@@ -848,7 +848,8 @@ its node resolved.
 **Retention limits:** pending in-memory compaction 5 min · exploration
 tool-support cache 1 h / 128 routes · token calibration 128 routes · extraction
 cache 1 h · compaction state 7 d / 64 snapshots · context graph 2,000
-non-structural fact nodes, 64 pending branch-head updates and 500 active manual
+active derived fact nodes, 2,000 tombstones (resolved facts and closed manual
+memories), 64 pending branch-head updates and 500 active manual
 memories per project · remediation hints 7 d · metrics and damage JSONL logs
 5 MiB each · one exploration tool result 12,000 characters. File locations are
 listed in the guide's [storage and privacy](./docs/guide.md#storage-and-privacy)

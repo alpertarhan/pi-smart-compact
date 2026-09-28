@@ -356,7 +356,9 @@ function nativeOverridePlan(
  const tokens = msgs.map((entry) => rc.estimator.message(entry.message as LlmMessage));
  const estimate = tokens.reduce((sum, value) => sum + value, 0);
  const prefix = tokens.slice(0, cut).reduce((sum, value) => sum + value, 0);
- const scale = estimate > 0 && totalTokens > 0 ? totalTokens / estimate : 1;
+ // Same split as the native attempt: measured context beyond the estimate is
+ // fixed, and message estimates only scale down when they overshoot it.
+ const scale = totalTokens > 0 && estimate > totalTokens ? totalTokens / estimate : 1;
  return {
   compactTokens: Math.round(prefix * scale),
   retainedTokens: Math.round((estimate - prefix) * scale),

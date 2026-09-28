@@ -13,6 +13,7 @@ import { localGraphOpsAllowed } from "../app/memory-backend.ts";
 
 const require = createRequire(import.meta.url);
 const MAX_PROJECT_NODES = 2_000;
+const MAX_PROJECT_TOMBSTONES = 2_000;
 const MAX_MANUAL_NODES = 500;
 const MAX_SESSION_NODES = 256;
 const MAX_QUERY_CANDIDATES = 80;
@@ -269,6 +270,7 @@ function createDatabase(fp: string): SqliteDatabase {
       PRIMARY KEY(from_id, to_id, relation)
     );
     CREATE INDEX IF NOT EXISTS context_edges_project ON context_edges(project_id, relation);
+    CREATE INDEX IF NOT EXISTS context_edges_to ON context_edges(to_id);
     CREATE VIRTUAL TABLE IF NOT EXISTS context_nodes_fts USING fts5(
       node_id UNINDEXED, title, content, kind,
       tokenize='unicode61 remove_diacritics 2'
@@ -616,27 +618,27 @@ function addFact(
 }
 
 function pruneProject(db: SqliteDatabase, projectId: string): void {
- const count = db
-  .query(`
-    SELECT count(*) AS count FROM context_nodes
-    WHERE project_id = ? AND kind NOT IN ('project', 'session') AND source <> 'manual'
-  `)
-  .get(projectId) as { count: number } | null;
- const excess = Math.max(0, Number(count?.count ?? 0) - MAX_PROJECT_NODES);
- const victims = excess
-  ? (db
+ // Active derived facts and tombstones are bounded separately. A tombstone
+ // is what keeps a resolved fact from being re-derived as active (#66), so
+ // it is never evicted to make room for active rows. Closed manual memories
+ // are tombstones too; active manual memory is bounded by MAX_MANUAL_NODES.
+ const removeNode = db.query("DELETE FROM context_nodes WHERE id = ?");
+ const classes: Array<[string, number]> = [
+  ["status = 'active' AND source <> 'manual'", MAX_PROJECT_NODES],
+  ["status <> 'active'", MAX_PROJECT_TOMBSTONES],
+ ];
+ for (const [filter, cap] of classes) {
+  const victims = db
    .query(`
     SELECT id FROM context_nodes
-    WHERE project_id = ? AND kind NOT IN ('project', 'session') AND source <> 'manual'
-    ORDER BY CASE WHEN status = 'active' THEN 1 ELSE 0 END, updated_at ASC
-    LIMIT ?
+    WHERE project_id = ? AND kind NOT IN ('project', 'session') AND ${filter}
+    ORDER BY updated_at DESC, rowid DESC LIMIT -1 OFFSET ?
   `)
-   .all(projectId, excess) as Array<{ id: string }>)
-  : [];
- const removeNode = db.query("DELETE FROM context_nodes WHERE id = ?");
- for (const victim of victims) {
-  removeFtsNode(db, victim.id);
-  removeNode.run(victim.id);
+   .all(projectId, cap) as Array<{ id: string }>;
+  for (const victim of victims) {
+   removeFtsNode(db, victim.id);
+   removeNode.run(victim.id);
+  }
  }
 
  // Structural session nodes are retrieval-excluded metadata. Keep only a

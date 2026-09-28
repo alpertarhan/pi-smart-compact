@@ -34,6 +34,8 @@ export interface HindsightReceipt {
   documentId: string;
   revision: string;
   operationId: string;
+  /** Operation id the server acknowledged, when it differs from `operationId`. */
+  serverOperationId?: string;
   kind: string;
   title: string;
   state: HindsightReceiptState;
@@ -55,6 +57,8 @@ interface ReceiptFile {
 }
 
 export const MAX_HINDSIGHT_RECEIPTS = 500;
+/** An operation missing server-side this long is treated as failed so the ledger drains. */
+export const NOT_FOUND_DRAIN_HOURS = 24;
 
 const OPEN_STATES: readonly HindsightReceiptState[] = [
   "submitted",
@@ -153,7 +157,8 @@ function readAll(file: string): HindsightReceipt[] {
       item &&
       typeof item.key === "string" &&
       typeof item.documentId === "string" &&
-      typeof item.operationId === "string",
+      typeof item.operationId === "string" &&
+      (item.serverOperationId === undefined || typeof item.serverOperationId === "string"),
   );
 }
 
@@ -178,11 +183,13 @@ export function listReceipts(
 }
 
 export class ReceiptLedgerFullError extends Error {
-  constructor() {
+  constructor(file = hindsightReceiptsFile()) {
     super(
-      "Hindsight receipt ledger is full of unconfirmed submissions (" +
+      "Hindsight receipt ledger " + file + " is full of unconfirmed submissions (" +
         MAX_HINDSIGHT_RECEIPTS +
-        "); run smart_recall to refresh pending receipts before saving more",
+        "). smart_recall refreshes the oldest few per call and marks a receipt failed once the server has reported its operation missing for " +
+        NOT_FOUND_DRAIN_HOURS +
+        "h; receipts still pending or unreachable stay open until the server reports a terminal status or an operator repairs that file",
     );
     this.name = "ReceiptLedgerFullError";
   }
@@ -210,7 +217,7 @@ export function upsertReceipt(
           .filter(({ item }) => !isOpenReceipt(item))
           .sort((a, b) => a.item.updatedAt - b.item.updatedAt);
         const excess = receipts.length - MAX_HINDSIGHT_RECEIPTS + 1;
-        if (terminal.length < excess) throw new ReceiptLedgerFullError();
+        if (terminal.length < excess) throw new ReceiptLedgerFullError(file);
         const drop = new Set(terminal.slice(0, excess).map(({ position }) => position));
         const kept = receipts.filter((_, position) => !drop.has(position));
         receipts.length = 0;
@@ -229,6 +236,7 @@ export function updateReceiptState(
   key: string,
   state: HindsightReceiptState,
   detail?: string,
+  extra: Pick<HindsightReceipt, "serverOperationId"> = {},
   file = hindsightReceiptsFile(),
 ): HindsightReceipt | null {
   const release = acquireLockSync(file);
@@ -240,6 +248,7 @@ export function updateReceiptState(
     receipt.updatedAt = Date.now();
     if (detail) receipt.detail = detail;
     else delete receipt.detail;
+    if (extra.serverOperationId) receipt.serverOperationId = extra.serverOperationId;
     writeJsonSync(file, { version: 1, receipts } satisfies ReceiptFile, true);
     return receipt;
   } finally {

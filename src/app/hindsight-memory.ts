@@ -9,6 +9,7 @@
  * - remote failure is always surfaced, whatever the local fallback did.
  */
 import { createHash } from "node:crypto";
+import { errorDetail } from "../utils/issues.ts";
 import { hindsightTargetDigest } from "../infra/memory-ref.ts";
 import type { CompactConfig } from "../types.ts";
 import {
@@ -28,6 +29,7 @@ import {
  type HindsightReceiptState,
  isOpenReceipt,
  listReceipts,
+ NOT_FOUND_DRAIN_HOURS,
  operationIdFor,
  ReceiptLedgerFullError,
  ReceiptLedgerUnreadableError,
@@ -193,12 +195,24 @@ function stateForError(error: unknown): {
  return { state: "failed", reason: "unexpected Hindsight client error" };
 }
 
+/** Ledger writes can fail (lock contention, disk); callers report instead of throwing. */
+function tryUpdateReceipt(
+ ...args: Parameters<typeof updateReceiptState>
+): { receipt: HindsightReceipt | null } | { error: string } {
+ try {
+  return { receipt: updateReceiptState(...args) };
+ } catch (error) {
+  return { error: errorDetail(error) };
+ }
+}
+
 async function refreshReceipt(
  target: HindsightTarget,
  receipt: HindsightReceipt,
  signal?: AbortSignal,
+ drainNotFound = false,
 ): Promise<HindsightReceipt> {
- const status = await getOperationStatus(target, receipt.operationId, signal);
+ const status = await getOperationStatus(target, receipt.serverOperationId ?? receipt.operationId, signal);
  let next: HindsightReceiptState = receipt.state;
  let detail: string | undefined;
  if (status.status === "completed") next = "completed";
@@ -207,10 +221,17 @@ async function refreshReceipt(
   detail = "operation " + status.status;
  } else if (status.status === "pending" || status.status === "processing") {
   next = "accepted";
+ } else if (drainNotFound && Date.now() - receipt.updatedAt >= NOT_FOUND_DRAIN_HOURS * 3_600_000) {
+  // Missing since the last state change for the whole drain window: give up so
+  // the ledger drains instead of blocking saves at the cap forever.
+  next = "failed";
+  detail = "not_found: operation missing on the server for " + NOT_FOUND_DRAIN_HOURS + "h";
  } else {
   // not_found: never accepted (lost request) or the record was pruned.
   next = receipt.state === "accepted" ? "unknown" : receipt.state;
   detail = "operation not found on server";
+  // Unchanged: keep updatedAt as the start of the not-found period.
+  if (next === receipt.state && receipt.detail === detail) return receipt;
  }
  return updateReceiptState(receipt.key, next, detail) ?? { ...receipt, state: next, detail };
 }
@@ -296,8 +317,9 @@ export async function saveHindsightMemory(
      : "could not record the local submission receipt; nothing was sent",
   };
  }
+ let serverOperationId: string | undefined;
  try {
-  await retainDocument(
+  const acknowledged = await retainDocument(
    target,
    {
     content,
@@ -315,19 +337,27 @@ export async function saveHindsightMemory(
    operationId,
    signal,
   );
+  // Status checks must use the id the server acknowledged if it assigned its own.
+  if (acknowledged.operationId !== operationId) serverOperationId = acknowledged.operationId.slice(0, 200);
  } catch (error) {
   if (error instanceof HindsightError && error.kind === "conflict") {
    // The operation id already exists server-side: a prior attempt landed.
-   receipt = updateReceiptState(key, "accepted", "operation id already known") ?? receipt;
+   const stamped = tryUpdateReceipt(key, "accepted", "operation id already known");
+   if ("error" in stamped) return ledgerUpdateFailed(receipt, stamped.error);
+   receipt = stamped.receipt ?? receipt;
   } else {
    const mapped = stateForError(error);
-   receipt = updateReceiptState(key, mapped.state, mapped.reason) ?? receipt;
+   const stamped = tryUpdateReceipt(key, mapped.state, mapped.reason);
+   receipt = ("receipt" in stamped ? stamped.receipt : null) ?? receipt;
+   const reason = mapped.reason + ("error" in stamped ? "; " + ledgerNote(stamped.error) : "");
    return mapped.state === "unknown"
-    ? { state: "unknown", receipt, reason: mapped.reason }
-    : { state: "failed", receipt, reason: mapped.reason };
+    ? { state: "unknown", receipt, reason }
+    : { state: "failed", receipt, reason };
   }
  }
- receipt = updateReceiptState(key, "accepted") ?? receipt;
+ const stamped = tryUpdateReceipt(key, "accepted", undefined, { serverOperationId });
+ if ("error" in stamped) return ledgerUpdateFailed(receipt, stamped.error);
+ receipt = stamped.receipt ?? receipt;
  // One bounded status check; completion usually takes longer than this.
  try {
   receipt = await refreshReceipt(target, receipt, signal);
@@ -341,9 +371,18 @@ export async function saveHindsightMemory(
  return { state: "accepted", receipt, operationStatus: receipt.detail ?? "pending" };
 }
 
+function ledgerNote(error: string): string {
+ return "the local receipt could not be updated (" + error + "); the next smart_recall refresh reconciles it";
+}
+
+/** The server accepted the retain, but the ledger still says "submitted". */
+function ledgerUpdateFailed(receipt: HindsightReceipt, error: string): RemoteSaveOutcome {
+ return { state: "unknown", receipt, reason: "the server acknowledged the retain, but " + ledgerNote(error) };
+}
+
 export type RemoteResolveOutcome =
- | { state: "deleted"; documentId: string; memoryUnitsDeleted: number }
- | { state: "not-found"; documentId: string }
+ | { state: "deleted"; documentId: string; memoryUnitsDeleted: number; ledgerWarning?: string }
+ | { state: "not-found"; documentId: string; ledgerWarning?: string }
  | { state: "pending"; documentId: string; operationIds: string[] }
  | { state: "failed"; documentId: string; reason: string };
 
@@ -359,9 +398,11 @@ export async function resolveHindsightMemory(
 ): Promise<RemoteResolveOutcome> {
  const scope = receiptScope(target, projectId);
  const documentId = hindsightDocumentId(memoryId);
+ let observed: HindsightReceipt[];
  let open: HindsightReceipt[];
  try {
-  open = listReceipts(scope, documentId).filter(isOpenReceipt);
+  observed = listReceipts(scope, documentId);
+  open = observed.filter(isOpenReceipt);
  } catch (error) {
   // An unreadable ledger cannot rule out an in-flight retain: never delete.
   if (error instanceof ReceiptLedgerUnreadableError) return { state: "failed", documentId, reason: error.message };
@@ -388,14 +429,17 @@ export async function resolveHindsightMemory(
  }
  try {
   const result = await deleteDocument(target, documentId, signal);
-  for (const receipt of listReceipts(scope, documentId)) {
-   if (receipt.state !== "deleted") {
-    updateReceiptState(receipt.key, "deleted", result.found ? undefined : "document not found");
-   }
+  // Only receipts checked above: a save that landed meanwhile keeps its open state.
+  let ledgerWarning: string | undefined;
+  for (const receipt of observed) {
+   if (receipt.state === "deleted") continue;
+   const stamped = tryUpdateReceipt(receipt.key, "deleted", result.found ? undefined : "document not found");
+   if ("error" in stamped) ledgerWarning = "the local receipts could not be marked deleted (" + stamped.error + ")";
   }
+  const warning = ledgerWarning ? { ledgerWarning } : {};
   return result.found
-   ? { state: "deleted", documentId, memoryUnitsDeleted: result.memoryUnitsDeleted }
-   : { state: "not-found", documentId };
+   ? { state: "deleted", documentId, memoryUnitsDeleted: result.memoryUnitsDeleted, ...warning }
+   : { state: "not-found", documentId, ...warning };
  } catch (error) {
   return {
    state: "failed",
@@ -413,7 +457,8 @@ export async function resolveHindsightMemory(
 /**
  * Refresh a few open receipts for this scope (called from recall). Unknown
  * receipts count as open — they can fill the ledger cap — so they share the
- * same bounded refresh; only a terminal server status frees them.
+ * same bounded refresh; a terminal server status frees them, and so does an
+ * operation the server has reported missing for NOT_FOUND_DRAIN_HOURS.
  */
 export async function refreshPendingReceipts(
  target: HindsightTarget,
@@ -435,7 +480,7 @@ export async function refreshPendingReceipts(
  const refreshed: HindsightReceipt[] = [];
  for (const receipt of open) {
   try {
-   refreshed.push(await refreshReceipt(target, receipt, signal));
+   refreshed.push(await refreshReceipt(target, receipt, signal, true));
   } catch {
    refreshed.push(receipt);
   }
@@ -469,10 +514,12 @@ export async function recallHindsightMemory(
  }
 }
 
+// Control characters and line breaks (incl. NEL/LS/PS) become spaces: remote text
+// must never start its own Provenance:/Ref: line inside the evidence block.
 function clean(value: string): string {
  return value
   .replace(/<\s*\/?\s*(?:smart_recall|untrusted)[^>]*>/gi, "[unsafe tag removed]")
-  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ");
+  .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, " ");
 }
 
 function attr(value: string): string {
@@ -561,16 +608,18 @@ export function describeRemoteResolve(outcome: RemoteResolveOutcome): string {
     outcome.documentId +
     " (" +
     outcome.memoryUnitsDeleted +
-    " memory unit(s)). Server backups are outside this guarantee."
+    " memory unit(s)). Server backups are outside this guarantee." +
+    (outcome.ledgerWarning ? " Warning: " + outcome.ledgerWarning + "." : "")
    );
   case "not-found":
-   return "Hindsight: document " + outcome.documentId + " was not found; nothing deleted remotely.";
+   return "Hindsight: document " + outcome.documentId + " was not found; nothing deleted remotely." +
+    (outcome.ledgerWarning ? " Warning: " + outcome.ledgerWarning + "." : "");
   case "pending":
    return (
     "Hindsight: NOT deleted — retain operation(s) " +
     outcome.operationIds.join(", ") +
     " are pending or unknown; delayed extraction could recreate the fact. Retry after a definitive terminal status. " +
-    "If the server has lost the operation record, verify its state with the server operator; no receipt is automatically cleared."
+    "If the server has lost the operation record, smart_recall marks the receipt failed after " + NOT_FOUND_DRAIN_HOURS + "h missing; verify its state with the server operator first."
    );
   case "failed":
    return "Hindsight: delete FAILED for document " + outcome.documentId + " — " + outcome.reason + ".";

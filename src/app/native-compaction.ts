@@ -21,8 +21,11 @@ import type {
   SmartCompactDetails,
 } from "../types.ts";
 import { VERSION } from "../constants.ts";
-import { cacheHitRateOf } from "../utils/cache.ts";
+import { cacheHitRateOf, effectivePromptInputTokens } from "../utils/cache.ts";
+import { clampCompletionMaxTokens } from "../domain/model-capacity.ts";
 import { runType } from "./steps/metrics.ts";
+import { prepareScrubbedBackup } from "./steps/extract.ts";
+import { recoverSourceMessages } from "./steps/recover.ts";
 import { isRecord } from "../utils/type-guards.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import type { WindowedRc } from "./run-context.ts";
@@ -40,6 +43,10 @@ import {
   type NativeUsage,
 } from "../infra/native-protocol.ts";
 import { usesOAuth } from "../infra/llm-client.ts";
+
+// Provider compaction summaries are not bounded by a request cap we set: reserve a
+// typical summary allowance pre-flight and reconcile to the reported output.
+const NATIVE_EXPECTED_OUTPUT_TOKENS = 8_192;
 
 const PRIOR_REPLAY_FAILED = "Prior native compaction state could not be replayed; no request was sent";
 
@@ -155,8 +162,12 @@ export async function attemptNativeCompaction(
   );
   const retainedTailTokens = Math.max(0, totalEstimate - prefixTokens);
 
+  // One whole-prefix request; the per-mode input allowance sizes EESV chunks and
+  // cannot apply pre-flight here, so the spend is reconciled after the fact.
+  const budget = rc.services.budget;
+  let outputReservation: number;
   try {
-    rc.services.budget.reserveCall(0, 0);
+    outputReservation = budget.reserveCall(0, clampCompletionMaxTokens(model, NATIVE_EXPECTED_OUTPUT_TOKENS) ?? 0);
   } catch (error) {
     return { outcome: "failed", reason: "provider-call budget exhausted: " + engineErrorText(error) };
   }
@@ -212,8 +223,18 @@ export async function attemptNativeCompaction(
   } finally {
     nestedRequests--;
   }
-  if (rc.cancellation.signal.aborted) return { outcome: "failed", reason: "cancelled" };
   const outcome = wrapper.result();
+  if (outcome === undefined || outcome instanceof Error || rc.cancellation.signal.aborted) {
+    // Like trackedComplete: a failed stream may have emitted unreported output.
+    budget.commitFailedOutput(outputReservation);
+  } else {
+    const usage = outcome.usage;
+    const reportedInput = typeof usage?.input === "number" && Number.isFinite(usage.input);
+    const reportedOutput = typeof usage?.output === "number" && Number.isFinite(usage.output);
+    budget.reconcileInput(0, reportedInput ? effectivePromptInputTokens(usage.input, usage.cacheRead, usage.cacheWrite) : 0);
+    budget.reconcileOutput(outputReservation, reportedOutput ? usage.output : outputReservation);
+  }
+  if (rc.cancellation.signal.aborted) return { outcome: "failed", reason: "cancelled" };
   // No request left Pi (auth, config): the nested stream's own error is the reason.
   if (outcome === undefined) {
     if (priorReplayFailed) return { outcome: "failed", reason: PRIOR_REPLAY_FAILED };
@@ -255,10 +276,19 @@ export async function attemptNativeCompaction(
   if (!originBranchHeadId) {
     return { outcome: "failed", reason: "branch head is not identifiable" };
   }
+  // The EESV restore point, over the untruncated native prefix; written by
+  // persist only after Pi confirms the compaction.
+  const preparedBackup = rc.config.backupEnabled
+    ? prepareScrubbedBackup(rc, (await recoverSourceMessages(rc.sessionId, prefix, rc.ctx.cwd)).messages.map((item) => item.message))
+    : undefined;
   const tokensBefore = rc.totalTokens;
-  // Normalize the local estimate to Pi's measured context like the planner does.
-  const scale = totalEstimate > 0 && tokensBefore > 0 ? tokensBefore / totalEstimate : 1;
-  const after = Math.round((retainedTailTokens + nativeTokens) * scale);
+  // Same split as the planner (steps/window.ts, domain/yield-gate.ts): Pi's measured
+  // context beyond the message estimate is fixed context (system prompt, tool
+  // schemas) that compaction cannot remove, and message estimates are only scaled
+  // down when they overshoot the measurement. after = fixed + retained + native.
+  const fixedContextTokens = Math.max(0, tokensBefore - totalEstimate);
+  const scale = tokensBefore > 0 && totalEstimate > tokensBefore ? tokensBefore / totalEstimate : 1;
+  const after = fixedContextTokens + Math.round((retainedTailTokens + nativeTokens) * scale);
   const saved = Math.max(0, tokensBefore - after);
   const routeLabel = nativeRouteLabel(model);
   const attempts: EngineAttempt[] = [
@@ -277,7 +307,7 @@ export async function attemptNativeCompaction(
     llmCalls: 1,
     profile: rc.profile,
     mode: rc.mode,
-    backupPath: null,
+    backupPath: preparedBackup?.path ?? null,
     tokensSaved: saved,
     verified: false,
     gaps: [],
@@ -308,6 +338,7 @@ export async function attemptNativeCompaction(
     tokensBefore,
     details,
     sessionId: rc.sessionId,
+    ...(preparedBackup ? { preparedBackup } : {}),
     metricsSnapshot: {
       runId: rc.runId,
       metricsSchemaVersion: 2,

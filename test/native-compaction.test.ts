@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { runSmartCompact } from "../src/app/run-smart-compact.ts";
 import {
+ attemptNativeCompaction,
  CLAUDE_OAUTH_ADAPTER_HINT,
  createNativeReplayHook,
  nativeCompactionCut,
@@ -21,6 +22,10 @@ import { formatCompactErrorForUi } from "../src/ui/error-format.ts";
 import { notifyNativeText } from "../src/ui/overlays.ts";
 import { recentIssues, resetIssuesForTests } from "../src/utils/issues.ts";
 import type { NativeState } from "../src/infra/native-protocol.ts";
+import { BudgetGuard } from "../src/infra/services.ts";
+import { SecretScrubber } from "../src/domain/scrub.ts";
+import { commitAppliedCompaction } from "../src/app/steps/persist.ts";
+import { resetConfigCache } from "../src/utils/config.ts";
 
 const originalHome = process.env.HOME;
 const READ_TOOL = { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } } as any;
@@ -872,5 +877,80 @@ describe("late run notices", () => {
   }));
   await run(branch, ["native"], { ctx: harness }).catch(() => undefined);
   expect(harness.notices.filter((notice) => notice.message.startsWith("Native compaction failed"))).toEqual([]);
+ });
+});
+
+describe("native attempt accounting", () => {
+ const estimator = { message: (message: unknown) => Math.ceil(JSON.stringify(message).length / 4) };
+ /** A windowed run context around the fake Pi, with Pi's measured context set explicitly. */
+ function windowed(branch: any[], budget: BudgetGuard, extraTokens = 0) {
+  const harness = makeCtx(branch);
+  const msgs = branch.map((entry) => ({ type: "message", id: entry.id, message: entry.message }));
+  const totalEstimate = msgs.reduce((sum, entry) => sum + estimator.message(entry.message), 0);
+  const rc = {
+   ctx: harness.ctx, msgs, branch, keepFrom: msgs.length - 4, estimator,
+   services: { budget, scrubber: new SecretScrubber() },
+   cancellation: { signal: new AbortController().signal },
+   sessionId: "native-session", totalTokens: totalEstimate + extraTokens, runId: "run-direct",
+   profile: "aggressive", mode: "fast", readerSignature: "sig", config: config(),
+   pipelineStart: Date.now(), flags: { skipCompact: true }, contextPercent: 30, notify: () => { },
+  } as any;
+  return { rc, totalEstimate };
+ }
+
+ it("refuses without sending when the provider-call budget is exhausted", async () => {
+  const fake = useProvider(fakeProvider());
+  const budget = new BudgetGuard(1);
+  budget.reserveCall();
+  const result = await attemptNativeCompaction(windowed(conversation(), budget).rc, []);
+  expect(result).toMatchObject({ outcome: "failed", reason: expect.stringContaining("provider-call budget exhausted") });
+  expect(fake.streamCalls).toHaveLength(0);
+  expect(fake.wire).toHaveLength(0);
+ });
+
+ it("reconciles the budget to the provider's reported usage", async () => {
+  useProvider(fakeProvider());
+  const budget = new BudgetGuard(3, 0, undefined, 100_000, 20_000);
+  const result = await attemptNativeCompaction(windowed(conversation(), budget).rc, []);
+  expect(result.outcome).toBe("staged");
+  expect(budget.callCount()).toBe(1);
+  expect(budget.inputTokenCount()).toBe(50_000);
+  expect(budget.outputTokenCount()).toBe(900);
+  expect(budget.remainingOutputTokens()).toBe(20_000 - 900);
+ });
+
+ it("estimates the after-context as fixed context + retained tail + native state", async () => {
+  useProvider(fakeProvider());
+  const fixed = 10_000;
+  const { rc, totalEstimate } = windowed(conversation(), new BudgetGuard(), fixed);
+  const result = await attemptNativeCompaction(rc, []);
+  if (result.outcome !== "staged") throw new Error(result.reason);
+  const details = result.pending.details;
+  const kept = details.retainedTailTokens! + details.summaryTokens!;
+  expect(details.estimatedAfterTokens).toBe(fixed + kept);
+  // The proportional scale spreads fixed context over messages and understates the rest.
+  expect(details.estimatedAfterTokens!).toBeGreaterThan(Math.round(kept * (totalEstimate + fixed) / totalEstimate));
+ });
+
+ it("stages the EESV conversation backup and writes it once the compaction is committed", async () => {
+  const backupDir = path.join(process.env.HOME!, "backups");
+  fs.mkdirSync(path.join(process.env.HOME!, ".pi", "agent"), { recursive: true });
+  fs.writeFileSync(path.join(process.env.HOME!, ".pi", "agent", "settings.json"), JSON.stringify({ smartCompact: { backupEnabled: true, backupDir } }));
+  resetConfigCache();
+  try {
+   useProvider(fakeProvider());
+   const { outcome } = await run(conversation(), ["native"], { extraConfig: { backupEnabled: true } });
+   const pending = (outcome as { pending: PendingCompaction }).pending;
+   expect(pending.details.backupPath).toStartWith(backupDir);
+   expect(fs.existsSync(pending.details.backupPath!)).toBe(false);
+   expect(await commitAppliedCompaction(pending)).toEqual([]);
+   const backup = fs.readFileSync(pending.details.backupPath!, "utf8");
+   expect(backup).toStartWith("# Smart Compact Backup\n");
+   expect(backup).toContain("question 0");
+   // Only the compacted prefix: the kept tail is still in the conversation.
+   expect(backup).not.toContain("question 9");
+  } finally {
+   resetConfigCache();
+  }
  });
 });

@@ -195,6 +195,45 @@
 - A failed apply (native or EESV) clears only its own staged candidate, and
   the once-per-route native skip notice no longer repeats for every session
   after 500 sessions.
+- A resolved or superseded project-memory fact could come back as active in a
+  project with more than 2,000 facts: pruning removed the resolved markers
+  first, so a later compaction that still saw the old text re-added it. Active
+  facts and resolved markers now have separate 2,000-entry limits, each
+  trimmed oldest first.
+- Resolved saved project memories count toward the resolved-marker limit
+  instead of piling up until an explicit forget; active saved memories are
+  still never trimmed.
+- Deleting project-memory facts no longer scans every graph edge: edge
+  targets are indexed, including in existing memory databases.
+- The native continuity handoff no longer stops working for a directory after
+  a crash while staging: a lock whose process is gone, or which is older than
+  one minute, is taken over. Replacing a handoff keeps the previous one until
+  the new one is written, and a handoff recorded for another scope is left in
+  place instead of being deleted.
+- Native compaction now counts against the run's output budget and records
+  its real prompt and output tokens in the run budget (it used to spend
+  nothing); an exhausted call or output budget fails the native attempt
+  without sending a request.
+- Native compaction's after-compaction estimate counts the system prompt and
+  tool schemas as fixed context, like the smart summary planner, instead of
+  shrinking them with the compacted messages; the estimate was optimistic.
+- Native compaction now prepares the same scrubbed conversation backup as the
+  smart summary (`backupEnabled`), written after Pi confirms the compaction;
+  it used to write none.
+- Hindsight: a resolve marks only the receipts it checked as deleted, so a
+  save that lands during the delete stays open; a completed save or delete
+  whose local receipt cannot be updated (e.g. ledger locked) is reported
+  (`unknown`, or a warning on delete) instead of failing the tool, and the
+  next `smart_recall` reconciles it.
+- Hindsight status checks use the operation id the server acknowledged when
+  it differs from the one sent; they used to stay `unknown` forever.
+- Hindsight: `smart_recall` marks a receipt `failed` (`not_found`) once the
+  server has reported its operation missing for 24 hours, so a full receipt
+  ledger drains; the ledger-full message names the ledger file and no longer
+  claims `smart_recall` alone clears it.
+- Hindsight recall evidence turns line breaks and other control characters
+  from the server into spaces, so remote text cannot forge `Ref:` or
+  provenance lines.
 
 ## [9.8.0-canary.7] - 2026-09-27
 
