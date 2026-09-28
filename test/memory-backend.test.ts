@@ -151,9 +151,14 @@ describe("describeMemoryBackendReadiness", () => {
     const selected = await describeMemoryBackendReadiness({ ...DEFAULT_CONFIG, memoryBackend: "mnemopi" }, {});
     expect(selected).toMatchObject({ backend: "mnemopi", ready: true, localOpsAllowed: false });
     expect(selected.reason).toContain("worker/database operation not verified");
-    // Resolving from a directory without node_modules: the optional package is absent.
+    // Resolving from a directory without node_modules: the optional component is absent,
+    // and the reason carries the install command for that location.
+    writeFileSync(path.join(dir, "package.json"), "{}");
     const missing = await describeMnemopiRuntime(pathToFileURL(path.join(dir, "probe.js")).href);
-    expect(missing).toEqual({ ready: false, reason: "unavailable: optional @oh-my-pi/pi-mnemopi package is not locally resolvable" });
+    expect(missing).toEqual({
+      ready: false,
+      reason: "unavailable: the optional @oh-my-pi/pi-mnemopi component is not installed. Install it with: npm install @oh-my-pi/pi-mnemopi@18.3.1 --prefix " + dir + " --legacy-peer-deps",
+    });
   });
 
 });

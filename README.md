@@ -72,6 +72,31 @@ then review the result. **A** applies it; **C** or **Esc** cancels. Pressing
 **Enter** on the review screen does not apply a summary. The default requires
 this approval; explicitly disabling `requireApproval` changes that behavior.
 
+### Optional components
+
+The install above downloads nothing beyond the extension. Three opt-in
+features need a component you install yourself, once, into Pi's package
+directory. Nothing is downloaded, started or configured on your behalf.
+
+| Feature (off by default) | Component | Size on disk (macOS arm64) |
+| --- | --- | --- |
+| Memory store `Mnemopi` | `@oh-my-pi/pi-mnemopi@18.3.1` (with its `@oh-my-pi/*` engine packages) | about 195 MB |
+| Mnemopi without a Bun 1.3.14+ on `PATH` | `bun@1.4.2` | about 60 MB |
+| Image snapshots (`visualArchiveEnabled`) | `@resvg/resvg-js@2.6.2` | about 3.5 MB |
+
+Pi installs extensions with `npm install --prefix ~/.pi/agent/npm
+--legacy-peer-deps`, so these optional peers are never pulled in. When a
+selected feature is missing its component, **Status & help → Readiness &
+details** shows the exact command for your install root, for example:
+
+```bash
+npm install @oh-my-pi/pi-mnemopi@18.3.1 bun@1.4.2 --prefix ~/.pi/agent/npm --legacy-peer-deps
+```
+
+The component stays in that directory across `pi update` because npm records
+it there. With Pi configured for bun or pnpm, use the equivalent add command
+for the same directory.
+
 ## One Home, five choices
 
 ```text

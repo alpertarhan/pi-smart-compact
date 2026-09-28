@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { getNpmPackFilename } from "./release-audit-lib.ts";
+import { OPTIONAL_COMPONENTS } from "../src/constants.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspace = mkdtempSync(join(tmpdir(), "pi-smart-compact-release-"));
@@ -26,7 +27,7 @@ function run(command: string[], cwd = workspace, env: Record<string, string> = {
 
 // The installed package must not depend on a globally installed Bun: the
 // smokes below run with a PATH that offers none, so the packed host can only
-// run the Mnemopi worker on its own package-owned optional dependency.
+// run the Mnemopi worker on the optional bun component installed beside it.
 function bunFreePath(): string {
   const kept = (process.env.PATH ?? "").split(delimiter)
     .filter(entry => entry !== "" && !existsSync(join(entry, "bun")) && !existsSync(join(entry, "bunx")));
@@ -56,6 +57,7 @@ function bunPlatformPackage(): string {
 try {
   const sourceManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
     name: string; version: string; type?: string; peerDependencies: Record<string, string>;
+    peerDependenciesMeta?: Record<string, { optional?: boolean }>;
     optionalDependencies?: Record<string, string>;
   };
   if (sourceManifest.type !== "module") {
@@ -78,6 +80,17 @@ try {
     const required = peer === "typebox" ? "*" : ">=0.87.1";
     if (sourceManifest.peerDependencies[peer] !== required) throw new Error(peer + " must remain a host peer with range " + required);
   }
+  // Opt-in components are optional peers pinned to the audited versions, never
+  // optionalDependencies: Pi installs with --legacy-peer-deps, so nothing here
+  // is downloaded for everyone, and Readiness hands the user the install command.
+  if (sourceManifest.optionalDependencies) throw new Error("optional components must be optional peers, not optionalDependencies");
+  for (const { name, version } of Object.values(OPTIONAL_COMPONENTS)) {
+    if (sourceManifest.peerDependencies[name] !== version) throw new Error(name + " must be pinned as peer " + version + " (src/constants.ts OPTIONAL_COMPONENTS)");
+    if (sourceManifest.peerDependenciesMeta?.[name]?.optional !== true) throw new Error(name + " must be an optional peer");
+  }
+  // Host peers arrive through Pi's loader aliases; the smokes link them in.
+  const hostPeers = Object.keys(sourceManifest.peerDependencies)
+    .filter(peer => !sourceManifest.peerDependenciesMeta?.[peer]?.optional);
 
   const packResult: unknown = JSON.parse(run([
     "npm", "pack", "--json", "--ignore-scripts", "--pack-destination", workspace,
@@ -118,7 +131,7 @@ try {
   }
 
   const peerPaths: Record<string, string> = {};
-  for (const peer of Object.keys(sourceManifest.peerDependencies)) {
+  for (const peer of hostPeers) {
     // Bun >=1.4 refuses file: folder deps whose serialized path escapes the
     // workspace, so expose each peer as an in-workspace symlink (issue #52).
     const link = join(workspace, "vendor", peer);
@@ -137,30 +150,10 @@ try {
   run(["bun", "install", "--ignore-scripts"]);
   run(["bun", "install", "--frozen-lockfile", "--ignore-scripts"]);
 
-  // The packed manifest owns its Bun runtime: the optional dependency must
-  // be pinned and actually install. The frozen install ignores scripts, so
-  // the wrapper's bin stays the postinstall placeholder and only the
-  // platform package ships a runnable binary — exactly the fallback the
-  // packed host's resolver uses.
-  const bunPin = packedManifest.optionalDependencies?.["bun"];
-  if (!bunPin) throw new Error("packed manifest must pin optionalDependencies.bun for the package-owned runtime");
-  const packageBunPath = [
-    join(workspace, "node_modules", "bun", "bin", "bun.exe"),
-    join(workspace, "node_modules", "@oven", bunPlatformPackage(), "bin", "bun"),
-  ].find(file => {
-    try {
-      const stat = statSync(file);
-      return stat.isFile() && stat.size > 4_096;
-    } catch {
-      return false;
-    }
-  });
-  if (!packageBunPath) {
-    throw new Error("frozen install provided no runnable package-owned Bun binary (wrapper or " + bunPlatformPackage() + ")");
-  }
-  const packageBunVersion = run([packageBunPath, "--version"]).trim();
-  if (packageBunVersion !== bunPin) {
-    throw new Error("package-owned Bun " + packageBunVersion + " differs from pinned " + bunPin);
+  // A plain install must not pull in any optional component.
+  const componentDir = (base: string, name: string) => join(base, "node_modules", ...name.split("/"));
+  for (const { name } of Object.values(OPTIONAL_COMPONENTS)) {
+    if (existsSync(componentDir(workspace, name))) throw new Error("plain install pulled in optional component " + name);
   }
 
   writeFileSync(join(workspace, "smoke.ts"), `
@@ -184,7 +177,7 @@ console.log("installed extension smoke passed");
   const nodeWorkspace = join(workspace, "node-smoke");
   mkdirSync(join(nodeWorkspace, "node_modules", "@earendil-works"), { recursive: true });
   run(["tar", "-xzf", tarball, "-C", nodeWorkspace]);
-  for (const peer of Object.keys(sourceManifest.peerDependencies)) {
+  for (const peer of hostPeers) {
     const target = join(root, "node_modules", peer);
     const link = join(nodeWorkspace, "node_modules", peer);
     mkdirSync(dirname(link), { recursive: true });
@@ -253,33 +246,29 @@ console.log("installed Node SQLite smoke passed (no Bun on PATH)");
     throw new Error("Packaged paired task evaluation failed: " + JSON.stringify(taskEval.arms));
   }
 
-  // Optional Mnemopi engine. Stock Pi executes this extension under Node, so
-  // the Bun-only engine must stay out of the host import path: the packed host
-  // spawns dist/mnemopi-worker.js — resolved relative to the installed
-  // dist/index.js — as a real Bun subprocess that owns an isolated SQLite
-  // store under HOME. The engine ships as a pinned optional dependency.
-  const mnemopiPin = packedManifest.optionalDependencies?.["@oh-my-pi/pi-mnemopi"];
-  if (!mnemopiPin) {
-    throw new Error("packed manifest must pin optionalDependencies.@oh-my-pi/pi-mnemopi");
-  }
-  const mnemopiWorkspace = join(workspace, "node-mnemopi");
-  mkdirSync(join(mnemopiWorkspace, "node_modules"), { recursive: true });
-  run(["tar", "-xzf", tarball, "-C", mnemopiWorkspace]);
-  for (const peer of Object.keys(sourceManifest.peerDependencies)) {
-    const link = join(mnemopiWorkspace, "node_modules", peer);
-    mkdirSync(dirname(link), { recursive: true });
-    symlinkSync(join(root, "node_modules", peer), link, "dir");
-  }
-  symlinkSync(
-    join(root, "node_modules", "@oh-my-pi"),
-    join(mnemopiWorkspace, "node_modules", "@oh-my-pi"),
-    "dir",
-  );
-  const engine = JSON.parse(readFileSync(
-    join(mnemopiWorkspace, "node_modules", "@oh-my-pi", "pi-mnemopi", "package.json"), "utf8",
-  )) as { version?: string };
-  if (engine.version !== mnemopiPin) {
-    throw new Error("installed Mnemopi engine " + engine.version + " differs from pinned " + mnemopiPin);
+  // Optional Mnemopi engine. Stock Pi executes this extension under Node and
+  // installs it with `npm install <spec> --prefix <root> --legacy-peer-deps`
+  // (package-manager.js getNpmInstallArgs), so optional peers never ride
+  // along: the user runs the command Readiness shows, into Pi's install root.
+  // The packed host then spawns dist/mnemopi-worker.js — resolved relative to
+  // the installed dist/index.js — as a real Bun subprocess on the bun
+  // component beside it, owning an isolated SQLite store under HOME.
+  const mnemopiPin = OPTIONAL_COMPONENTS.mnemopi.version;
+  const bunPin = OPTIONAL_COMPONENTS.bun.version;
+  // Real path: Node resolves module URLs through symlinks (macOS /tmp), and the
+  // command must match what the installed extension derives for itself.
+  mkdirSync(join(workspace, "pi-npm"), { recursive: true });
+  const piRoot = realpathSync(join(workspace, "pi-npm"));
+  // Pi's ensureNpmProject skeleton; the host peers Pi aliases are file: links here.
+  writeFileSync(join(piRoot, "package.json"), JSON.stringify({
+    name: "pi-extensions",
+    private: true,
+    dependencies: Object.fromEntries(hostPeers.map(peer => [peer, "file:" + join(root, "node_modules", peer)])),
+  }, null, 2) + "\n");
+  const piInstall = (specs: string[]) => run(["npm", "install", ...specs, "--prefix", piRoot, "--legacy-peer-deps"], piRoot);
+  piInstall([tarball]);
+  for (const { name } of Object.values(OPTIONAL_COMPONENTS)) {
+    if (existsSync(componentDir(piRoot, name))) throw new Error("Pi-style install pulled in optional component " + name);
   }
   // A HOME no other audit stage touches: the local-backend smoke and the
   // packaged evaluator share `home`, so a pristine tree here proves the
@@ -291,31 +280,83 @@ console.log("installed Node SQLite smoke passed (no Bun on PATH)");
     smartCompact: { memoryBackend: "mnemopi", contextGraphEnabled: false },
   }));
   const memoryRoot = join(mnemopiHome, ".pi", "agent", "smart-compact-memory", "mnemopi");
-  writeFileSync(join(mnemopiWorkspace, "smoke-mnemopi.mjs"), `
+  const extensionEntry = "./node_modules/pi-smart-compact/dist/index.js";
+
+  // Before the user installs anything: the failure must hand over the exact
+  // command for this install root, derived from the installed layout.
+  const expectedBunCommand = "npm install bun@" + bunPin + " --prefix " + piRoot + " --legacy-peer-deps";
+  writeFileSync(join(piRoot, "smoke-mnemopi-command.mjs"), `
+import extension from ${JSON.stringify(extensionEntry)};
+const tools = new Map();
+extension({ registerTool: (tool) => tools.set(tool.name, tool), registerCommand() {}, on() {}, getActiveTools: () => [...tools.keys()], setActiveTools() {} });
+const ctx = {
+  cwd: process.cwd(),
+  hasUI: true,
+  ui: { confirm: async () => true },
+  sessionManager: {
+    getSessionId: () => "node-mnemopi-command",
+    getSessionFile: () => process.cwd() + "/node-mnemopi-command.jsonl",
+    getBranch: () => [{ id: "branch-head" }],
+  },
+};
+const outcome = await tools.get("smart_save_memory").execute("save", {
+  kind: "decision", title: "Missing components", content: "Violet quartz missing-components fact",
+}, new AbortController().signal, undefined, ctx);
+const evidence = outcome.content[0].text + " " + JSON.stringify(outcome.details.mnemopi);
+if (outcome.details.mnemopi.state !== "failed" || !evidence.includes(${JSON.stringify(expectedBunCommand)})) {
+  throw new Error("missing components must fail closed naming the install command for this root, got: " + evidence);
+}
+console.log("missing components fail closed with the install command for " + ${JSON.stringify(piRoot)});
+`);
+  run(["node", "smoke-mnemopi-command.mjs"], piRoot, { PATH: bunFreePath(), HOME: mnemopiHome });
+
+  // The user's command from Readiness, then a Pi update of the extension:
+  // the components stay, because npm saved them to the install root.
+  piInstall([OPTIONAL_COMPONENTS.mnemopi.name + "@" + mnemopiPin, "bun@" + bunPin]);
+  piInstall([tarball]);
+  const engine = JSON.parse(readFileSync(join(componentDir(piRoot, OPTIONAL_COMPONENTS.mnemopi.name), "package.json"), "utf8")) as { version?: string };
+  if (engine.version !== mnemopiPin) {
+    throw new Error("installed Mnemopi engine " + engine.version + " differs from pinned " + mnemopiPin + " after the Pi update");
+  }
+  const packageBunPath = [
+    join(componentDir(piRoot, "bun"), "bin", "bun.exe"),
+    join(piRoot, "node_modules", "@oven", bunPlatformPackage(), "bin", "bun"),
+  ].find(file => {
+    try {
+      const stat = statSync(file);
+      return stat.isFile() && stat.size > 4_096;
+    } catch {
+      return false;
+    }
+  });
+  if (!packageBunPath) {
+    throw new Error("the user install provided no runnable bun component (wrapper or " + bunPlatformPackage() + ")");
+  }
+  writeFileSync(join(piRoot, "smoke-mnemopi.mjs"), `
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import path from "node:path";
-// The packed artifact is an extracted tarball, so this smoke resolves the
-// consumer surface the way a real install would: from ./package/dist.
-import extension from "./package/dist/index.js";
+// The extension is resolved the way Pi does it: from the install root's
+// node_modules, with the components the user installed beside it.
+import extension from ${JSON.stringify(extensionEntry)};
 if (process.versions.bun !== undefined || typeof Bun !== "undefined") {
   throw new Error("Mnemopi smoke must execute under stock Node");
 }
-// PATH offers no Bun here, so the worker below can only run on the
-// package-owned optional dependency — never on a globally installed Bun.
+// PATH offers no Bun here, so the worker below can only run on the bun
+// component installed beside the extension — never on a globally installed Bun.
 const strayBun = spawnSync("bun", ["--version"], { encoding: "utf8" });
 if (!(strayBun.error && strayBun.error.code === "ENOENT")) {
-  throw new Error("system Bun is reachable on PATH; the package-owned runtime proof is void");
+  throw new Error("system Bun is reachable on PATH; the installed-component runtime proof is void");
 }
 const packageBun = ${JSON.stringify(packageBunPath)};
 const pinnedBun = ${JSON.stringify(bunPin)};
 if (!existsSync(packageBun) || statSync(packageBun).size <= 4096) {
-  throw new Error("package-owned Bun binary is missing or a placeholder: " + packageBun);
+  throw new Error("installed bun component binary is missing or a placeholder: " + packageBun);
 }
 const ownedBun = spawnSync(packageBun, ["--version"], { encoding: "utf8" });
 if (ownedBun.status !== 0 || ownedBun.stdout.trim() !== pinnedBun) {
-  throw new Error("package-owned Bun is not " + pinnedBun + ": " + (ownedBun.stdout || ownedBun.stderr || String(ownedBun.error)));
+  throw new Error("installed bun component is not " + pinnedBun + ": " + (ownedBun.stdout || ownedBun.stderr || String(ownedBun.error)));
 }
 const memoryRoot = ${JSON.stringify(memoryRoot)};
 const storeDir = path.relative(process.env.HOME, memoryRoot);
@@ -412,21 +453,20 @@ if (modelRequests !== 0) {
 if (existsSync(path.join(process.env.HOME, ".omp", "cache", "fastembed-runtime"))) {
   throw new Error("Mnemopi downloaded an embedding runtime into HOME");
 }
-console.log("installed Node Mnemopi smoke passed on package-owned Bun " + pinnedBun + " with no Bun on PATH: " + dbPath);
+console.log("installed Node Mnemopi smoke passed on the user-installed bun component " + pinnedBun + " with no Bun on PATH: " + dbPath);
 `);
-  run(["node", "smoke-mnemopi.mjs"], mnemopiWorkspace, { PATH: bunFreePath(), HOME: mnemopiHome });
+  run(["node", "smoke-mnemopi.mjs"], piRoot, { PATH: bunFreePath(), HOME: mnemopiHome });
 
   // Negative path: with the optional engine unresolvable the worker dies on
   // import, so the host must fail closed BEFORE sending any memory request —
-  // FAILED, never UNKNOWN — and no store may appear. The frozen workspace's
-  // bun install legitimately provides the packed optional dependency as an
-  // ancestor node_modules, so this runs from a separate temp tree that offers
-  // the peers but no engine anywhere the worker could resolve.
+  // FAILED, never UNKNOWN — and no store may appear. This runs from a separate
+  // temp tree that offers the host peers but no component anywhere the worker
+  // could resolve (the Pi-style root above now has them).
   const missingWorkspace = mkdtempSync(join(tmpdir(), "pi-smart-compact-mnemopi-missing-"));
   try {
     mkdirSync(join(missingWorkspace, "node_modules"), { recursive: true });
     run(["tar", "-xzf", tarball, "-C", missingWorkspace]);
-    for (const peer of Object.keys(sourceManifest.peerDependencies)) {
+    for (const peer of hostPeers) {
       const link = join(missingWorkspace, "node_modules", peer);
       mkdirSync(dirname(link), { recursive: true });
       symlinkSync(join(root, "node_modules", peer), link, "dir");
@@ -463,9 +503,9 @@ console.log("missing engine fails closed without memory filesystem changes");
     mkdirSync(missingCwd, { recursive: true });
     run(["node", join(missingWorkspace, "smoke-mnemopi-missing.mjs")], missingCwd, { HOME: mnemopiHome });
 
-    // Missing runtime, not engine: no package-owned Bun anywhere in this
-    // tree and no Bun on PATH, so the spawn itself must fail closed with
-    // the explicit package-owned-dependency error and touch nothing.
+    // Missing runtime, not engine: no bun component anywhere in this tree
+    // and no Bun on PATH, so the spawn itself must fail closed naming the
+    // component's install command and touch nothing.
     writeFileSync(join(missingWorkspace, "smoke-mnemopi-no-bun.mjs"), `
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
@@ -493,13 +533,13 @@ const outcome = await tools.get("smart_save_memory").execute("save", {
 }, new AbortController().signal, undefined, ctx);
 const mnemopi = outcome.details.mnemopi;
 const evidence = outcome.content[0].text + " " + JSON.stringify(mnemopi);
-if (mnemopi.state !== "failed" || !/package-owned Bun dependency/.test(evidence)) {
-  throw new Error("missing Bun must fail closed naming the package-owned dependency, got " + mnemopi.state + ": " + outcome.content[0].text);
+if (mnemopi.state !== "failed" || !/npm install bun@/.test(evidence)) {
+  throw new Error("missing Bun must fail closed naming the bun component's install command, got " + mnemopi.state + ": " + outcome.content[0].text);
 }
 if (readdirSync(storeRoot, { recursive: true }).sort().join("\\n") !== before.join("\\n")) {
   throw new Error("missing-Bun failure created memory files or locks");
 }
-console.log("missing package-owned Bun fails closed with the explicit dependency error");
+console.log("missing bun component fails closed with its install command");
 `);
     run(["node", join(missingWorkspace, "smoke-mnemopi-no-bun.mjs")], missingCwd, { PATH: bunFreePath(), HOME: mnemopiHome });
   } finally {
@@ -510,8 +550,8 @@ console.log("missing package-owned Bun fails closed with the explicit dependency
   run(["bun", "run", join(root, "scripts", "telemetry-report.ts"), "--min-canary-runs=5"]);
 
   console.log("Release artifact audit passed: " + sourceManifest.name + "@" + sourceManifest.version +
-    " (" + files.length + " packed files, runtime-only dist; frozen install, source eval CLIs, Node Mnemopi worker on package-owned Bun " +
-    bunPin + " with no Bun on PATH, missing-engine and missing-Bun negatives verified)");
+    " (" + files.length + " packed files, runtime-only dist; frozen install without optional components, source eval CLIs, Node Mnemopi worker on the user-installed bun " +
+    bunPin + " component under a Pi-style npm root with no Bun on PATH, install-command, missing-engine and missing-Bun negatives verified)");
 } finally {
   rmSync(workspace, { recursive: true, force: true });
 }

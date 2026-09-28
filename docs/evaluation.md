@@ -57,7 +57,8 @@ bun run compat:pi latest   # latest Pi host, isolated workspace
 `release:audit` packs the tarball, installs it in an isolated frozen
 workspace, checks the manifest, peers and packed file list, registers the
 extension and its tools under stock Node, exercises Node SQLite and the
-optional Mnemopi worker on the package-owned Bun with no Bun on `PATH`, and
+optional Mnemopi worker on the user-installed `bun` component with no Bun on
+`PATH`, and
 runs the offline source CLIs (`provider-eval`, `telemetry-report`, and all four
 offline `task-eval` arms) under a temporary `HOME`. Apart from package
 installation and a local loopback tripwire, it makes no network or model

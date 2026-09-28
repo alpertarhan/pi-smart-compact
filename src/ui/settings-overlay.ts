@@ -354,7 +354,7 @@ const CATEGORIES: ReadonlyArray<{
             id: "memoryBackend",
             label: "Memory store",
             description:
-              "This machine: local project memory. Hindsight server: uses only your existing server; nothing is stored or searched locally. Mnemopi: separate local SQLite store per project, text search only (no embeddings or model calls); needs Bun 1.3.14+.",
+              "This machine: local project memory. Hindsight server: uses only your existing server; nothing is stored or searched locally. Mnemopi: separate local SQLite store per project, text search only (no embeddings or model calls); needs the optional Mnemopi component and Bun 1.3.14+ (Readiness & details shows the install command).",
             values: ["local", "hindsight", "mnemopi"],
             labels: { local: "This machine", hindsight: "Hindsight server", mnemopi: "Mnemopi (local SQLite)" },
           },
@@ -478,7 +478,7 @@ const CATEGORIES: ReadonlyArray<{
           setting: {
             id: "visualArchiveEnabled",
             label: "Image snapshots",
-            description: "Experimental. Adds image snapshots of old output to summaries. Costs image tokens; needs a vision model.",
+            description: "Experimental. Adds image snapshots of old output to summaries. Costs image tokens; needs a vision model and the optional @resvg/resvg-js component (Readiness & details shows the install command).",
             values: BOOLEAN_VALUES,
           },
         },

@@ -4,6 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AUTO_TRIGGER_TIMEOUT_CAP_MS, LARGE_CONTEXT_WINDOW_TOKENS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS, FIVE_MINUTES_MS } from "../constants.ts";
 import { isChatGptCodex } from "../infra/llm-client.ts";
 import { isNativeApi } from "../infra/native-protocol.ts";
+import { componentInstalled, installCommand } from "../infra/optional-components.ts";
 import { contextGraphFile, home } from "../infra/paths.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
@@ -72,6 +73,9 @@ export async function describeReadiness(
   }
   const memory = await describeMemoryBackendReadiness(config);
   if (!memory.ready) warnings.push("Memory: " + memory.reason + " Compaction can still run.");
+  if (config.visualArchiveEnabled && !componentInstalled("resvg")) {
+    warnings.push("Image snapshots: the optional @resvg/resvg-js component is not installed, so snapshots fall back to text. Install it with: " + installCommand(["resvg"]));
+  }
   return { canCompact: blockers.length === 0, blockers, warnings, memory };
 }
 
@@ -177,6 +181,9 @@ export async function describeEffectiveState(
     lines.push("Store: " + displayPath(contextGraphFile()));
   }
   lines.push("Local graph: " + (memory.localOpsAllowed ? "active" : "inactive") + "; changing backend leaves other stores untouched and inactive");
+  if (config.visualArchiveEnabled) {
+    lines.push("Image snapshots: renderer @resvg/resvg-js " + (componentInstalled("resvg") ? "installed" : "not installed (text fallback; install it with: " + installCommand(["resvg"]) + ")"));
+  }
   const last = isUnresolvedSessionId(sessionId) ? undefined : readMetricsLog(200).findLast(entry => entry?.sessionId === sessionId);
   lines.push(last ? "Last session record: " + label(last.ts) + " · " + label(last.status) + " · " + label(last.method)
     : "Last session record: none in the recent local log");
