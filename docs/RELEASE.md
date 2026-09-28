@@ -26,7 +26,8 @@ checkout version and the version currently on npm distinct in every note.
       rewriting them.
 - [ ] For Claude subscription routes, pair the fresh candidate with the exact
       `pi-claude-oauth-adapter` build used in the proofs (published `0.2.2`
-      plus the final-payload patch until it is released upstream) and record
+      plus the final-payload patch, [upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10),
+      until it is released) and record
       the paired archive paths and hashes at final packaging — do not
       reconstruct them from memory. pi-toolkit's auto-context must not be
       loaded with the candidate.

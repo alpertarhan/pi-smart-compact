@@ -671,7 +671,8 @@ Provider (native) compaction:
   The published adapter `0.2.2` rewrites the request body only inside Pi's
   `before_provider_request` hook, which Pi does not run for these requests; a
   build that normalizes the final payload inside its provider is required for
-  full parity. Anthropic may bill the compaction as extra usage.
+  full parity ([upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
+  Anthropic may bill the compaction as extra usage.
 - A native boundary changes the request prefix, so the provider's prompt cache
   is not reused across it.
 - In sessions smaller than Pi's `compaction.keepRecentTokens`, Pi refuses to
