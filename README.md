@@ -20,7 +20,7 @@ job—not the whole product.
 > or data migration is needed. [Naming and scope](./docs/identity.md).
 >
 > **Source documentation.** This checkout is the local, unpublished
-> `9.8.0-canary.7` candidate. The npm install below selects the published package,
+> `9.8.0-canary.8` candidate. The npm install below selects the published package,
 > which may not contain everything shown here. See the [changelog](./CHANGELOG.md).
 
 ## What it does

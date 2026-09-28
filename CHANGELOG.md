@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [9.8.0-canary.8] - 2026-09-28
+
+Integration candidate for the maintainer's daily Pi (real-session data
+collection on the cold-cache trim and the host cache ledger); not published.
+Offline receipts, CI and the release audit are not a live evaluation or a
+canary promotion.
+
 ### Changed
 
 - The Mnemopi engine (`@oh-my-pi/pi-mnemopi`), its `bun` runtime and the
