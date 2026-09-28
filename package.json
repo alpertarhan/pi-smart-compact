@@ -48,6 +48,7 @@
 	"files": [
 		"dist",
 		"docs",
+		"!docs/findings",
 		"assets",
 		"README.md",
 		"ARCHITECTURE.md",
