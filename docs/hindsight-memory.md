@@ -154,12 +154,15 @@ What to save follows the bank's retain mission:
   after an unknown outcome is idempotent: the server answers 409, which is
   treated as "already accepted". After a confirmed deletion or a definite
   failure, the generation advances, so a later save gets a new operation id.
+  If the server acknowledges a different operation id, the receipt stores it
+  and status checks use the server's id.
 - **Receipts:** stored at `~/.pi/agent/.cache/smart-compact/hindsight-receipts.json`
   (next to the context graph). They are keyed by origin, bank, project,
   document and revision, so changing the target can never resolve or report
   another server's state. There are at most 500 receipts. Completed, failed
   and deleted receipts are pruned oldest-first. Open receipts are never
-  evicted: new remote saves are refused until they are refreshed.
+  evicted: new remote saves are refused until they are refreshed, and the
+  refusal names the receipts file.
 
 Receipt states and how the tools report them:
 
@@ -178,9 +181,14 @@ Status checks are bounded:
 - `smart_recall` refreshes at most 3 open receipts per call — including
   `unknown` ones, which also count against the ledger cap — and lists
   documents that are not yet searchable. An `unknown` receipt stays `unknown`
-  on `not_found` (delayed acceptance or pruned status record); only a
-  definitive terminal status (`completed`/`failed`) frees it. Uncertain
-  receipts are never dropped and never auto-retried as writes.
+  on `not_found` (delayed acceptance or pruned status record); a definitive
+  terminal status (`completed`/`failed`) frees it. A receipt whose operation
+  the server has reported missing for 24 hours since its last state change is
+  marked `failed` (`not_found`) so the ledger drains. Uncertain receipts are
+  never auto-retried as writes.
+- If a retain completed but the local receipt could not be updated (for
+  example, another process held the ledger lock), the save reports `unknown`
+  and the next `smart_recall` refresh reconciles the receipt.
 
 **Resolve safety:**
 
@@ -189,8 +197,11 @@ Status checks are bounded:
   submitted, accepted or unknown outcome blocks deletion: delayed completion
   could recreate the fact. A missing operation status is not proof of absence.
   The tool reports operation ids and asks for a later retry; if status was
-  permanently lost, verify the operation on the server before recovery. The
-  extension never drops an uncertain receipt or removes a lock automatically.
+  permanently lost, verify the operation on the server before recovery.
+  `smart_recall` marks such a receipt `failed` after 24 hours missing, which
+  then unblocks deletion. A deletion marks only the receipts it checked, so a
+  save that lands meanwhile stays open. The extension never removes a lock
+  automatically.
 
 **Failure honesty:** remote failure is never silent and never triggers a
 fallback. The tool text and `details.remote` always carry the remote state;

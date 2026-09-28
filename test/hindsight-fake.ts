@@ -30,6 +30,10 @@ export interface HindsightFake {
   /** Extra untagged facts the server (wrongly) returns from recall. */
   leakFacts: any[];
   token: string | null;
+  /** The server ignores the caller's operation id and assigns its own. */
+  assignOperationIds: boolean;
+  /** Runs once, after the request is recorded and before the route is handled. */
+  beforeNext: Map<string, () => void>;
   stop(): void;
 }
 
@@ -42,6 +46,8 @@ export function startHindsightFake(options: { token?: string | null } = {}): Hin
     failNext: new Map(),
     leakFacts: [],
     token: options.token === undefined ? "test-token" : options.token,
+    assignOperationIds: false,
+    beforeNext: new Map(),
   };
   const json = (value: unknown, status = 200) =>
     new Response(JSON.stringify(value), {
@@ -67,6 +73,9 @@ export function startHindsightFake(options: { token?: string | null } = {}): Hin
       const match = url.pathname.match(/^\/v1\/default\/banks\/([^/]+)\/(.+)$/);
       if (!match) return json({ detail: "not found" }, 404);
       const route = request.method + " " + match[2].replace(/^(operations|documents)\/.+$/, "$1/:id");
+      const hook = fake.beforeNext.get(route);
+      fake.beforeNext.delete(route);
+      hook?.();
       const forced = fake.failNext.get(route);
       // -3: process the request normally but deliver the response too late.
       const lateResponse = forced === -3;
@@ -87,13 +96,14 @@ export function startHindsightFake(options: { token?: string | null } = {}): Hin
       if (route === "POST memories") {
         const item = body.items[0];
         if (fake.operations.has(body.operation_id)) return json({ detail: "conflict" }, 409);
-        fake.operations.set(body.operation_id, fake.retainStatus);
+        const operationId = fake.assignOperationIds ? "server-" + body.operation_id : body.operation_id;
+        fake.operations.set(operationId, fake.retainStatus);
         fake.docs.set(bank + "/" + item.document_id, {
           documentId: item.document_id,
           content: item.content,
           tags: item.tags,
           metadata: item.metadata,
-          operationId: body.operation_id,
+          operationId,
         });
         if (lateResponse) await Bun.sleep(1_500);
         return json({
@@ -101,7 +111,7 @@ export function startHindsightFake(options: { token?: string | null } = {}): Hin
           bank_id: decodeURIComponent(match[1]),
           items_count: 1,
           async: true,
-          operation_id: body.operation_id,
+          operation_id: operationId,
         });
       }
       if (route === "GET operations/:id") {

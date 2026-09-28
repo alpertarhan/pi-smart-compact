@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -62,5 +63,56 @@ describe("NativeContinuityBridge", () => {
     const bridge = createNativeContinuityBridge({ dir });
     expect(bridge.size()).toBe(0);
     expect(fs.existsSync(orphan)).toBe(false);
+  });
+
+  it("reclaims a lock left by a dead owner", () => {
+    const dir = tempDir();
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+    fs.mkdirSync(path.join(dir, "bridge.lock"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "bridge.lock", "owner"), deadPid + ":deadbeef");
+    const bridge = createNativeContinuityBridge({ dir });
+    bridge.stage(scope("head-a"), "after crash");
+    expect(bridge.take(scope("head-a"))).toBe("after crash");
+    expect(fs.existsSync(path.join(dir, "bridge.lock"))).toBe(false);
+  });
+
+  it("reclaims an expired lock but refuses a fresh live one", () => {
+    const dir = tempDir();
+    const lockDir = path.join(dir, "bridge.lock");
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, "owner"), process.pid + ":cafebabe");
+    const bridge = createNativeContinuityBridge({ dir });
+    bridge.stage(scope("head-a"), "blocked");
+    expect(fs.readdirSync(dir).filter(name => name.endsWith(".json"))).toEqual([]);
+    expect(fs.readFileSync(path.join(lockDir, "owner"), "utf8")).toBe(process.pid + ":cafebabe");
+
+    const expired = (Date.now() - 2 * 60 * 1000) / 1000;
+    fs.utimesSync(path.join(lockDir, "owner"), expired, expired);
+    bridge.stage(scope("head-a"), "after expiry");
+    expect(bridge.take(scope("head-a"))).toBe("after expiry");
+  });
+
+  it("keeps the previous handoff when replacing it fails", () => {
+    const dir = tempDir();
+    const bridge = createNativeContinuityBridge({ dir });
+    bridge.stage(scope("head-a"), "previous");
+    const rename = spyOn(fs, "renameSync").mockImplementation(() => { throw new Error("disk full"); });
+    try { bridge.stage(scope("head-a"), "replacement"); }
+    finally { rename.mockRestore(); }
+    expect(bridge.take(scope("head-a"))).toBe("previous");
+  });
+
+  it("leaves a handoff whose recorded scope does not match in place", () => {
+    const dir = tempDir();
+    const bridge = createNativeContinuityBridge({ dir });
+    bridge.stage(scope("head-a"), "A");
+    bridge.stage(scope("head-b"), "B");
+    const [fileA, fileB] = ["head-a", "head-b"].map(head => fs.readdirSync(dir)
+      .map(name => path.join(dir, name))
+      .find(file => file.endsWith(".json") && fs.readFileSync(file, "utf8").includes('"' + head + '"'))!);
+    fs.copyFileSync(fileA, fileB);
+    expect(bridge.take(scope("head-b"))).toBeNull();
+    expect(fs.existsSync(fileB)).toBe(true);
+    expect(bridge.take(scope("head-a"))).toBe("A");
   });
 });

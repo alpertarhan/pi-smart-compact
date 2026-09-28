@@ -1200,6 +1200,94 @@ describe("persistent context graph", () => {
     expect(getContextGraphStats("project-a").totalNodes).toBeGreaterThan(2_000);
   });
 
+  it("keeps tombstones when active facts exceed the project cap (#66)", () => {
+    const error = { id: "error", message: "Capped resurrection port conflict", tool: "bash", files: [] };
+    indexCompactionState("project-a", state("project-a", "session-a", "branch-a", { unresolvedErrors: [error] }));
+    indexCompactionState("project-a", state("project-a", "session-a", "branch-a", { resolvedErrors: [error] }));
+    const db = new Database(contextGraphFile());
+    const insert = db.query(`
+      INSERT INTO context_nodes(
+        id, project_id, session_id, branch_head_id, kind, fact_key, title, content,
+        status, source, confidence, related_paths, created_at, updated_at
+      ) VALUES (?, 'project-a', 'session-x', 'branch-x', 'decision', ?, 'Filler', ?, 'active', 'compaction', 1, '[]', ?, ?)
+    `);
+    const later = Date.now() + 1_000;
+    for (let index = 0; index < 2_100; index++) {
+      insert.run("filler-" + index, "filler " + index, "filler " + index, later + index, later + index);
+    }
+    // An unrelated pass triggers the project prune.
+    indexCompactionState("project-a", state("project-a", "session-b", "branch-b"));
+    const tombstones = () => db
+      .query("SELECT count(*) AS n FROM context_nodes WHERE source = 'compaction' AND status = 'resolved' AND content LIKE ?")
+      .get("%Capped resurrection%") as { n: number };
+    const active = db
+      .query("SELECT count(*) AS n FROM context_nodes WHERE project_id = 'project-a' AND status = 'active' AND source <> 'manual' AND kind NOT IN ('project', 'session')")
+      .get() as { n: number };
+    expect(tombstones().n).toBe(1);
+    expect(active.n).toBe(2_000);
+
+    indexCompactionState("project-a", state("project-a", "session-a", "branch-a", { unresolvedErrors: [error] }));
+    db.close();
+    expect(recallContext(scope(), "capped resurrection port conflict", { sessionOnly: true, kinds: ["error"] })).toEqual([]);
+  });
+
+  it("bounds tombstones and closed manual memories oldest-first", () => {
+    const kept = saveContextMemory(scope(), { kind: "procedure", title: "Kept", content: "active manual keeper" });
+    const db = new Database(contextGraphFile());
+    db.query("UPDATE context_nodes SET updated_at = 0 WHERE id = ?").run(kept.id);
+    const insert = db.query(`
+      INSERT INTO context_nodes(
+        id, project_id, session_id, branch_head_id, kind, fact_key, title, content,
+        status, source, confidence, related_paths, created_at, updated_at
+      ) VALUES (?, 'project-a', ?, NULL, 'context', ?, 'Closed', ?, 'resolved', ?, 1, '[]', ?, ?)
+    `);
+    insert.run("closed-manual", "*", "closed manual", "closed manual", "manual", 1, 1);
+    for (let index = 0; index <= 2_000; index++) {
+      insert.run("tomb-" + index, "session-x", "tomb " + index, "tomb " + index, "compaction", 2 + index, 2 + index);
+    }
+    indexCompactionState("project-a", state("project-a", "session-b", "branch-b"));
+    const ids = new Set((db.query("SELECT id FROM context_nodes WHERE status <> 'active'").all() as Array<{ id: string }>).map(row => row.id));
+    db.close();
+    expect(ids.size).toBe(2_000);
+    expect(ids.has("closed-manual")).toBe(false);
+    expect(ids.has("tomb-0")).toBe(false);
+    expect(ids.has("tomb-1")).toBe(true);
+    expect(ids.has("tomb-2000")).toBe(true);
+    expect(recallContext(scope(), "active manual keeper")[0]).toMatchObject({ id: kept.id, source: "manual" });
+  });
+
+  it("indexes edge targets when opening a pre-index database", () => {
+    const file = contextGraphFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const legacy = new Database(file);
+    legacy.exec(`
+      CREATE TABLE context_nodes (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL,
+        branch_head_id TEXT, kind TEXT NOT NULL, fact_key TEXT NOT NULL,
+        title TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+        source TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.8,
+        related_paths TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE context_edges (
+        project_id TEXT NOT NULL,
+        from_id TEXT NOT NULL REFERENCES context_nodes(id) ON DELETE CASCADE,
+        to_id TEXT NOT NULL REFERENCES context_nodes(id) ON DELETE CASCADE,
+        relation TEXT NOT NULL, weight REAL NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL,
+        PRIMARY KEY(from_id, to_id, relation)
+      );
+      PRAGMA user_version = 2;
+    `);
+    legacy.close();
+
+    getContextGraphStats("project-a");
+    const db = new Database(file, { readonly: true });
+    const indexed = db
+      .query("SELECT count(*) AS n FROM pragma_index_list('context_edges') AS l JOIN pragma_index_info(l.name) AS i WHERE i.name = 'to_id' AND i.seqno = 0")
+      .get() as { n: number };
+    db.close();
+    expect(indexed.n).toBe(1);
+  });
+
   it("delimits recalled content as untrusted and prevents tag breakout", () => {
     const text = formatRecallResults([
       {

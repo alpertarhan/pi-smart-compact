@@ -17,7 +17,7 @@
  * the metrics dashboard can show the hit-rate alongside the failure mode.
  */
 
-import type { TieredRc, ExtractedRc } from "../run-context.ts";
+import type { TieredRc, ExtractedRc, WindowedRc } from "../run-context.ts";
 import { advance, markMeasuredPhase } from "../run-context.ts";
 import type {
  PreparedConversationBackup,
@@ -140,6 +140,43 @@ export function selectCachedExtraction(input: {
  return { extraction: mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx), cache: "incremental" };
 }
 
+/**
+ * Deferred conversation backup of the compacted messages, shared by the EESV
+ * and native engines. Nothing is serialized until Pi confirms compaction;
+ * structured redaction and the text scrubber run before serialization, and
+ * redactions are surfaced because a restore brings back the redacted text.
+ * `scrubbedText` reuses an already scrubbed serialization of `messages`.
+ */
+export function prepareScrubbedBackup(
+ rc: Pick<WindowedRc, "config" | "services" | "notify" | "sessionId" | "branch" | "totalTokens">,
+ messages: LlmMessage[],
+ scrubbedText?: string,
+): PreparedConversationBackup | undefined {
+ if (!rc.config.backupEnabled) return undefined;
+ const materializeBackup = () => {
+  if (scrubbedText !== undefined) return scrubbedText;
+  const safeMessages = scrubLlmMessages(
+   messages,
+   rc.services.scrubber,
+  );
+  const backupText = serializeConversationText(safeMessages);
+  const scrubbed = rc.services.scrubber.scrubText(backupText);
+  if (scrubbed.findings.length > 0) {
+   rc.notify(
+    "Backup written with redactions (" +
+    scrubbed.findings.map((f) => f.count + "x " + f.kind).join(", ") +
+    ") — restore will lack that data",
+    "info",
+   );
+  }
+  return scrubbed.value;
+ };
+ return prepareConversationBackup(materializeBackup, rc.sessionId, {
+  branchLeafId: branchEntryIds(rc.branch as Array<{ id?: string }>).at(-1),
+  contextTokens: rc.totalTokens,
+ }) ?? undefined;
+}
+
 export function extractWithCache(rc: TieredRc): ExtractedRc {
  const extractStepStart = Date.now();
  const currentEntryIds = rc.toCompact.map((e) => e.id);
@@ -184,39 +221,11 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   serializeConversationText(rc.llmMessages),
  ).value;
  const convTokens = rc.estimator.text(convText);
- let preparedBackup: PreparedConversationBackup | undefined;
- if (rc.config.backupEnabled) {
-  // Keep only a deferred source while the candidate awaits native apply.
-  // Large unpruned conversations are serialized only after Pi confirms
-  // compaction; structured redaction still runs before that serialization.
-  const materializeBackup = () => {
-   if (pruningUnchanged) return convText;
-   const safeMessages = scrubLlmMessages(
-    selectedMessages,
-    rc.services.scrubber,
-   );
-   const backupText = serializeConversationText(safeMessages);
-   const scrubbed = rc.services.scrubber.scrubText(backupText);
-   // Scrub false-positives permanently damage the backup (a restore brings
-   // back redacted text) — surface redactions so the user can review.
-   if (scrubbed.findings.length > 0) {
-    rc.notify(
-     "Backup written with redactions (" +
-     scrubbed.findings.map((f) => f.count + "x " + f.kind).join(", ") +
-     ") — restore will lack that data",
-     "info",
-    );
-   }
-   return scrubbed.value;
-  };
-  preparedBackup =
-   prepareConversationBackup(materializeBackup, rc.sessionId, {
-    branchLeafId: branchEntryIds(rc.branch as Array<{ id?: string }>).at(
-     -1,
-    ),
-    contextTokens: rc.totalTokens,
-   }) ?? undefined;
- }
+ const preparedBackup = prepareScrubbedBackup(
+  rc,
+  selectedMessages,
+  pruningUnchanged ? convText : undefined,
+ );
  const backupPath = preparedBackup?.path ?? null;
  const prevContext = getPreviousCompactionContext(rc.branch);
 
