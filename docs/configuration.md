@@ -399,14 +399,17 @@ cache reads are free). At a completed turn boundary a ready batch commits with
 cause `pressure` when usage reached the early pressure gate, or `break-even`
 when `N* ≤ 24`. Otherwise it is held (`smart_context` `status` reports it as
 `deferredTrim`); the first request after the cache expired (5 minutes after
-the last response, 1 hour when it reported 1h cache writes) sends the trimmed
-messages, and the edits commit with cause `cold` when that turn completes. A
+the last response, 1 hour when the last response that wrote cache reported 1h
+retention) sends the trimmed messages, later requests keep them, and the edits
+commit with cause `cold` at the next completed, uncontested turn. A
 Pi cache-warming refresh counts as a response for this expiry; while a batch
 is held, warming stops once `p × (missCost − w' × X / 1e6) − warmCost < $0.05`
 (Pi's own rule, `w'` = cache-write price per million tokens, or input price
 when none is listed). An unknown price only allows `pressure` and `cold`. A
 newer compaction, context
-edit, session change or queued manual/agent request drops the held batch.
+edit, session change, queued manual/agent request, or turning
+`contextHygieneEnabled` off drops the held batch. Automatic trims need
+`smart_context` reachable by the model (`toolLoading` not `off`).
 Manual and agent trims commit at the next boundary as before (`manual`,
 `agent`). Prices are catalog ratios, not measured cache behavior.
 

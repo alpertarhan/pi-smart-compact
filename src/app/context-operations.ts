@@ -338,9 +338,10 @@ export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft
 }
 
 /**
- * Further requests after which a warm-cache trim pays back its prefix rewrite:
- * N* = ((w - r) * T) / (r * X), r = cacheRead/input, w = cacheWrite/input (1 when the
- * catalog lists no write surcharge). 0 when cache reads are free; null when the price is unknown.
+ * Requests, counting the trimmed one, after which a warm-cache trim pays back its
+ * prefix rewrite: N* = ((w - r) * T) / (r * X), r = cacheRead/input, w = cacheWrite/input
+ * (1 when the catalog lists no write surcharge). 0 when cache reads are free; null when
+ * the price is unknown.
  */
 export function trimBreakEvenRequests(cost: Partial<ModelCostRates> | undefined, savedTokens: number, tailTokens: number): number | null {
   const input = cost?.input;

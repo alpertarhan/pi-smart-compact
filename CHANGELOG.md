@@ -123,6 +123,29 @@
   when `rg` is missing: offline arms set `PI_OFFLINE=1` and fail before the
   first round without ripgrep; CI installs it. The offline guard now names the
   first blocked request and its caller.
+- A trim that a cold request already carried was dropped at the end of an
+  aborted or failed turn, at a boundary busy with preparation or compaction,
+  and after a queued manual change: Pi records the interrupted response with a
+  fresh timestamp, so the next request looked warm, went out untrimmed and
+  rewrote the prefix the interrupted request had just cached. The carried trim
+  now stays in every request until a boundary commits it, a newer context
+  rewrite invalidates it, or the session changes. Turning automatic cleanup off
+  forgets a held or carried trim.
+- The cold-cache check took the prompt-cache lifetime from the last response
+  only; a fully cached or interrupted response after a 1-hour write made a
+  1-hour prefix look 5 minutes old, so the trim could be applied while the
+  entry was still warm. The lifetime now comes from the last response that
+  wrote cache, as the host cache ledger keeps it.
+- Automatic trims need a reachable `smart_context`, as artifact offload does:
+  digests point the model at that tool, so with agent tools off nothing is
+  trimmed automatically. `Readiness & details` says so on the
+  `Context hygiene` line. Manual cleanup from Home is unaffected.
+- A queued context change (manual cleanup, agent checkpoint, rewind or trim)
+  that met an aborted or failed turn vanished silently; it now leaves the usual
+  "Context operation not applied" note.
+- A committed rewind was counted as a `trim` in the host prompt-cache ledger;
+  it is now `rewind`.
+- Review reports under `docs/findings` stay out of the npm package.
 
 ## [9.8.0-canary.7] - 2026-09-27
 

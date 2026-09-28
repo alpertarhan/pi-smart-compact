@@ -182,11 +182,13 @@ causes, recorded on the trim entry:
   cache rewrite within 24 further requests (see
   [configuration](./configuration.md#context-hygiene-and-archives)).
 - `cold`: otherwise the batch is held back until the cache has expired (5
-  minutes after the last response, 1 hour when that response wrote 1h
-  cache). A refresh from Pi's cache warming keeps the entry alive, so the
-  batch also waits one lifetime past the latest refresh. The first request
-  after that already sends the trimmed context, and the edits commit when that
-  turn completes.
+  minutes after the last response, 1 hour when the last response that wrote
+  cache reported 1h retention). A refresh from Pi's cache warming keeps the
+  entry alive, so the batch also waits one lifetime past the latest refresh.
+  The first request after that already sends the trimmed context, every later
+  request keeps sending it, and the edits commit at the next completed turn
+  that nothing else claims. Automatic trims also need `smart_context`
+  reachable by the model, since the digest points it there.
 
 While a batch is held, Pi Continuity stops Pi's cache warming once a refresh
 no longer pays: Pi warms when `continuationProbability × missCost − warmCost`

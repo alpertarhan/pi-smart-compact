@@ -218,7 +218,8 @@ Trimming protects four recent assistant turns and the active checkpoint prefix,
 replacing up to 32 old read-only results of at least 4096 characters with a
 bounded reference marker. Already-edited entries are not rewritten. Automatic
 trimming runs with `contextHygieneEnabled` independently of compaction, or with
-the effective `background` strategy, and requires active `smart_context`.
+the effective `background` strategy, and requires `smart_context` reachable
+by the model (`canAutoTrim` checks it like artifact offload does).
 `plan` gives an on-demand non-mutating preview. Automatic edits require at
 least 16,384 net saved characters and eight assistant turns since the last
 owned trim/rewind/compaction; branch history supplies that cooldown across

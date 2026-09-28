@@ -20,7 +20,7 @@ import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 import { serializeConversationText } from "../src/infra/ai-messages.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { planContextTrim } from "../src/app/context-operations.ts";
+import { planContextTrim, trimTokens } from "../src/app/context-operations.ts";
 
 const fullConversation: LlmMessage[] = Array.from(
   { length: 2_500 },
@@ -112,6 +112,7 @@ const trimBranch = (() => {
   }
   return session.getBranch();
 })();
+const trimPlan = planContextTrim(trimBranch);
 
 interface Benchmark {
   name: string;
@@ -142,6 +143,7 @@ const P95_LIMIT_MS: Record<string, number> = {
   "verify 500 grounded paths": 50,
   "resolve provider watchdog profile": 0.1,
   "plan trim over 120 archived reads": 25,
+  "price a held trim over 120 archived reads": 25,
 };
 
 const benchmarks: Benchmark[] = [
@@ -262,6 +264,16 @@ const benchmarks: Benchmark[] = [
       const plan = planContextTrim(trimBranch);
       if (plan.entries.length !== 33 || plan.superseded !== 32) throw new Error("Trim plan changed shape: " + plan.entries.length + "/" + plan.superseded);
       sink += plan.savedChars;
+    },
+  },
+  // Below pressure, every enabled turn_end also estimates the saved and rebuilt tail tokens.
+  {
+    name: "price a held trim over 120 archived reads",
+    iterations: 5,
+    run: () => {
+      const economics = trimTokens(trimBranch, trimPlan.entries, "anthropic", "claude-bench");
+      if (!economics || economics.savedTokens <= 0) throw new Error("Trim economics unavailable");
+      sink += economics.tailTokens;
     },
   },
 ];
