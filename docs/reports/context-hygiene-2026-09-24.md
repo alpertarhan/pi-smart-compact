@@ -495,6 +495,10 @@ run-B preparation+idle-warming overlay, run-C streaming-warming, run-D
 compaction-in-flight trace; commands in `COMMANDS.txt`, per-request ledgers in
 each `task-eval-report.json`, raw causal traces in `compaction-trace-*.json`).
 
+> Addendum (2026-09-28): the raw artifacts (584 KB, about 19,600 lines of
+> JSON) were removed from the working tree; they remain in history at
+> `39c09ad` (`git show 39c09ad:task-eval-reports/item14-cost-evidence-2026-09-25/COMMANDS.txt`).
+
 Controlled fixtures, fresh scratch HOME per arm, network denied at the fetch
 seam (zero attempts, asserted): Toolkit cooperation with
 `piToolkit.context.thinningEnabled: false` (Smart Compact owns pruning);
