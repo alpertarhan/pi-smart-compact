@@ -2,8 +2,8 @@
 
 > **Scope:** Historical pilot report, dated 2026-09-24. One model, synthetic scenarios, one sample each; not production or cross-model evidence. Results are kept as recorded.
 > Current documentation for Pi Continuity (the `pi-smart-compact` package):
-> [guide](./guide.md) · [configuration](./configuration.md) ·
-> [evaluation](./evaluation.md) · [documentation index](./README.md).
+> [guide](../guide.md) · [configuration](../configuration.md) ·
+> [evaluation](../evaluation.md) · [documentation index](../README.md).
 
 ## Decision
 

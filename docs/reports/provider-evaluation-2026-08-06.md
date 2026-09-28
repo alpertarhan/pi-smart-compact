@@ -2,8 +2,8 @@
 
 > **Scope:** Historical snapshot, dated 2026-08-06, with a 2026-09-25 reporting addendum. Scores, models and latencies reflect that date only and are not a current ranking.
 > Current documentation for Pi Continuity (the `pi-smart-compact` package):
-> [guide](./guide.md) · [configuration](./configuration.md) ·
-> [evaluation](./evaluation.md) · [documentation index](./README.md).
+> [guide](../guide.md) · [configuration](../configuration.md) ·
+> [evaluation](../evaluation.md) · [documentation index](../README.md).
 
 This is a local, advisory snapshot for Smart Compact's provider-routing work. It
 does **not** change the selected Pi model or any route.

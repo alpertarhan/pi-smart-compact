@@ -7,6 +7,7 @@
 - [ ] `bun run typecheck`
 - [ ] `bun test`
 - [ ] `bun run gate`
+- [ ] `bun run bench`
 - [ ] `bun run build`
 - [ ] `bun run release:audit`
 

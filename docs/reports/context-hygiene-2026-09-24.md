@@ -2,8 +2,8 @@
 
 > **Scope:** Historical report, dated 2026-09-24. It records the hygiene design and offline experiments as measured then; values, file names and wording are kept unchanged.
 > Current documentation for Pi Continuity (the `pi-smart-compact` package):
-> [guide](./guide.md) · [configuration](./configuration.md) ·
-> [evaluation](./evaluation.md) · [documentation index](./README.md).
+> [guide](../guide.md) · [configuration](../configuration.md) ·
+> [evaluation](../evaluation.md) · [documentation index](../README.md).
 
 Date: 2026-09-24. Pi/host baseline: **0.87.1**. No provider requests were made
 for this work. No global extension settings, installation, commit or publication.
@@ -354,7 +354,7 @@ remain untouched while source repositories are tested.
   (`memoryBackend: "hindsight"`). Confirmed saves and strict project-scoped recall
   only; no auto-ingestion or reflect. Redaction, receipts, idempotent operation ids
   and honest accepted/completed/unknown states. One live canary against the user's
-  server passed. See [hindsight-memory.md](./hindsight-memory.md).
+  server passed. See [hindsight-memory.md](../hindsight-memory.md).
 - [x] **Provider-native selection:** `native` engine in the ordered
   `compactionEngines` list, on stock Pi through one nested request and
   `before_provider_request` replay, on the current route only (Anthropic Messages API key/Claude subscription, OpenAI Codex
@@ -440,7 +440,7 @@ model loop or live task-quality measurement. The later
 [full offline AgentSession pilot](./session-pilot-2026-09-24.md) covers the model-loop
 integration seam; live quality measurement and the Toolkit PR remain open.
 The optional confirmed Hindsight integration is now implemented and its separate
-live canary passed; see [hindsight-memory.md](./hindsight-memory.md).
+live canary passed; see [hindsight-memory.md](../hindsight-memory.md).
 
 ### P2 verification record
 

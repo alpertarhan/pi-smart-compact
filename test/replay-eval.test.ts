@@ -138,3 +138,27 @@ it("treats a cache_warm refresh inside the idle gap as keeping the prefix cached
   // Request 8 reads the refreshed prefix instead of rebuilding it.
   expect(policy("0f1e2d3c-replay-warmed", "none").rebuilds).toBe(policy("0f1e2d3c-replay-fixture", "none").rebuilds - 1);
 });
+
+it("selects files by --since and reports per-file progress on stderr", () => {
+  const sessions = path.join(root, "since-sessions");
+  fs.mkdirSync(sessions);
+  const old = path.join(sessions, "old.jsonl");
+  fs.writeFileSync(old, fixture().text);
+  fs.utimesSync(old, new Date(T0), new Date(T0));
+  const recent = path.join(sessions, "recent.jsonl");
+  fs.writeFileSync(recent, fixture(true).text);
+  const home = path.join(root, "since-home");
+  fs.mkdirSync(home);
+  const run = (args: string[]) => Bun.spawnSync(["bun", "run", "scripts/replay-eval.ts", `--sessions=${sessions}`, `--out=${path.join(root, "since-out")}`, "--json", "--break-even=24", ...args], {
+    cwd: path.join(import.meta.dir, ".."), env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
+  });
+
+  const since = run(["--since=1", "--progress"]);
+  expect(since.exitCode).toBe(0);
+  expect(since.stdout.toString()).toContain("1 session(s) replayed, 0 skipped without a valid header, 0 skipped because they changed");
+  expect(since.stderr.toString()).toMatch(/^\[1\/1\] recent\.jsonl 9 requests \d+ ms\n$/);
+
+  const all = run([]);
+  expect(all.stderr.toString()).toBe("");
+  expect(all.stdout.toString()).toContain("2 session(s) replayed, 0 skipped without a valid header, 0 skipped because they changed");
+});
