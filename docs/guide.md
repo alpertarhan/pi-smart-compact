@@ -15,7 +15,7 @@ This guide is task oriented. For every setting, default and range, see the
 release evidence, see [evaluation](./evaluation.md).
 
 > [!NOTE]
-> **Which version this describes.** This guide targets Pi Continuity `10.0.0`,
+> **Which version this describes.** This guide targets Pi Continuity `10.0.1`,
 > the stable release of the context-hygiene and continuity rework. The earlier
 > `9.8.0-canary.*` entries in the changelog are historical local candidates,
 > not npm releases. See [upgrade notes](#upgrade-from-9x) when coming from 9.x
@@ -35,7 +35,7 @@ release evidence, see [evaluation](./evaluation.md).
 - [Session navigation](#session-navigation)
 - [Agent tools](#agent-tools)
 - [Memory: what is stored where](#memory-what-is-stored-where)
-- [Working with other extensions and features](#working-with-other-extensions-and-features)
+- [Pi host integration](#pi-host-integration)
 - [Experimental features](#experimental-features)
 - [Recovery](#recovery)
 - [Storage and privacy](#storage-and-privacy)
@@ -97,17 +97,14 @@ speculative background preparation are off until selected.
 and stored paths keep their names; do not rename existing data directories.
 
 1. Update Pi to **0.87.1+** and use **Node.js 22.19+**. Install the release with
-   `pi install npm:pi-smart-compact@10.0.0`, then reload or restart Pi.
+   `pi install npm:pi-smart-compact@10.0.1`, then reload or restart Pi.
 2. Open `/smart-compact` in the TUI. The bare command now opens Home; **Compact
    now** starts the interactive compaction flow. Print/RPC/SDK use still runs
    compaction directly. Review requires **A** to apply, not Enter.
 3. Expect the agent to see `smart_tools` first. It loads navigation, history,
    memory and compaction tools on demand. Choose **Always available** only if
    you want all permitted tools exposed from the start.
-4. Keep one context-editing owner. Disable pi-toolkit auto-context or another
-   overlapping cleanup/compaction extension before using these features; see
-   [extension compatibility](#working-with-other-extensions-and-features).
-5. Review **Memory store** if you use project memory. Exactly one backend is
+4. Review **Memory store** if you use project memory. Exactly one backend is
    used, with no silent fallback. Mnemopi and image snapshots now require
    [separately installed optional components](../README.md#optional-components);
    the default local memory store does not.
@@ -374,7 +371,7 @@ size, an `artifact-<hash>` ID and short first/last excerpts.
 - Not offloaded: errors, images, shell commands, writes, unknown tools,
   `read`/`read_symbol`/`read_enclosing` deliveries, instruction/skill-file
   reads and `smart_context` itself. File reads stay inline on first delivery,
-  so read-before-edit guards such as pi-lens see what was actually read.
+  so read-before-edit guards see what was actually read.
 - This is not a summary. The agent has to search or read the omitted parts
   when it needs them. Total savings depend on how much it reads back.
 - Each file is at most 2 MiB. A session holds at most 256 files or 32 MiB; at
@@ -449,8 +446,8 @@ other switches are kept), **Search other sessions**, **Return to an anchor**,
 newest anchor, so the context before it is read from cache while later turns
 change), **Anchor status** (footer, display only) and **Navigation guide**.
 
-Anchors recorded by pi-toolkit's `context` tool in earlier sessions stay
-readable in browse and search.
+Legacy `context` tool anchors recorded in earlier sessions stay readable in
+browse and search.
 
 ### Hand off to a new session
 
@@ -595,25 +592,9 @@ memory**) needs the TUI and applies only to the local store. It offers:
 It shows counts and asks for confirmation. Mnemopi, Hindsight, continuity
 state, backups and artifacts are not affected.
 
-## Working with other extensions and features
+## Pi host integration
 
-At session start Pi Continuity checks the loaded commands and tools for known
-compaction or context-editing extensions (pi-openai-toolkit, context-fold,
-pi-fold, pi-context-prune, pi-dcp, pi-toolkit's `context` tool) and shows one
-notice naming them. The check is name-based evidence, not proof, and finds
-nothing for unknown extensions; the runtime notices below (foreign compaction
-applied, foreign cache rebuilds) still cover those.
-
-### pi-toolkit
-
-Session navigation replaces the anchor, recall and pivot features of
-pi-toolkit's `context` tool, and Pi Continuity is the only owner of trimming.
-Do not load pi-toolkit's context-management extension together with Pi
-Continuity: two extensions recording anchors and pruning the same branch are
-not safe in any load order. The `piToolkit.context.thinningEnabled` key is not
-read by Pi Continuity. Anchors recorded earlier by pi-toolkit stay readable.
-
-### Other compaction extensions and Pi's built-in compaction
+### Pi compaction lifecycle
 
 Pi applies one compaction per request: the last extension to answer
 `session_before_compact` wins, and with no answer Pi's built-in summarizer
@@ -625,7 +606,7 @@ runs. When something other than Pi Continuity applies the compaction:
   the winner and the model calls that were wasted.
 - Another extension's compaction shows a once-per-session notice even when
   nothing was prepared, because Pi Continuity recorded no state or metrics
-  for it. Keep only one compaction extension loaded.
+  for it.
 - Pi's built-in compaction shows a notice only while automatic compaction is
   on (nothing was ready when Pi asked); earlier continuity state still carries
   over through the capsule.

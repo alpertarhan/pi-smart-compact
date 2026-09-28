@@ -19,7 +19,7 @@ this extension adds context hygiene and continuity policies around it.
 > The TUI still says **Smart Compact**. No data or configuration migration is
 > needed. [Identity and naming](./docs/identity.md).
 >
-> **Pi Continuity 10.0.0:** upgrading from 9.x? Update Pi to 0.87.1 or newer
+> **Pi Continuity 10.0.1:** upgrading from 9.x? Update Pi to 0.87.1 or newer
 > and read the [upgrade notes](./docs/guide.md#upgrade-from-9x). Optional memory
 > engines and image rendering are installed separately. The
 > [changelog](./CHANGELOG.md) records the full release and its evidence limits.
@@ -149,8 +149,6 @@ session backups or archived tool output.
   model-runtime calls. Full coverage needs final-payload normalization
   ([upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
   [Compatibility details](./docs/guide.md#summary-format-provider-compaction-and-images).
-- **Use one context-editing owner.** Do not load pi-toolkit's auto-context
-  alongside session navigation. See [extension compatibility](./docs/guide.md#working-with-other-extensions-and-features).
 - **Cost and quality need live evidence.** Cancelled or discarded preparation
   still costs. Offline pilots do not establish billed savings, model fidelity
   or production readiness. [Evaluation limits](./docs/evaluation.md).
