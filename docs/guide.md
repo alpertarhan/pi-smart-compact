@@ -16,7 +16,7 @@ release evidence, see [evaluation](./evaluation.md).
 
 > [!NOTE]
 > **Which version this describes.** This guide describes the current source
-> checkout: `9.8.0-canary.7`, including the Home/settings UI changes, session
+> checkout: `9.8.0-canary.8`, including the Home/settings UI changes, session
 > navigation and on-demand agent tools. The 9.8.0 canaries are local-only and
 > not published. The most recent stable changelog entry is `9.7.1`, which
 > predates most features here: the Home screen, the `trim`, `storage` and
