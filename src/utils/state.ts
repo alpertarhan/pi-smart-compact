@@ -31,6 +31,7 @@ import {
  isNonLiveConstraintText,
  isTransientToolDiagnostic,
  extractText,
+ collapseDecisionsByQuestion,
 } from "./extraction.ts";
 import { releasesConstraint } from "../phases/verify.ts";
 import { errorDetail, recordIssue, reportIssue } from "./issues.ts";
@@ -572,7 +573,15 @@ export function mergeCompactionStates(
    current,
    current.factOverrides ?? [],
   );
-  return { ...active, openLoops: mergeOpenLoops(active.openLoops, []) };
+  return {
+   ...active,
+   // Same active-answer contract as the merged branch: a first compaction
+   // of a window that re-asked a question carries one answer, not both.
+   decisions: collapseDecisionsByQuestion(active.decisions).map(
+    (item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }),
+   ),
+   openLoops: mergeOpenLoops(active.openLoops, []),
+  };
  }
  const factOverrides = mergeBy(
   current.factOverrides ?? [],
@@ -614,12 +623,33 @@ export function mergeCompactionStates(
   }
   return false;
  };
- const decisions = mergeBy(
-  activeCurrent.decisions,
+ // Decisions: one authoritative record per question across BOTH windows.
+ // Chronological collapse (previous is older) selects the latest ANSWERED
+ // record wholesale — its answer AND its provenance (type, index) — so an
+ // answered explicit record is never re-typed by a later answer-less
+ // re-ask, and an answer is never grafted onto unrelated metadata. Display
+ // keeps the current-first bounded ordering afterwards.
+ const collapsedCurrent = collapseDecisionsByQuestion(activeCurrent.decisions);
+ const collapsedPrevious = collapseDecisionsByQuestion(
   activePrevious.decisions,
-  (item) => normalizeFactKey(item.summary),
-  30,
- ).map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
+ );
+ const authoritative = collapseDecisionsByQuestion([
+  ...collapsedPrevious,
+  ...collapsedCurrent,
+ ]);
+ const currentKeys = new Set(
+  collapsedCurrent.map((item) => normalizeFactKey(item.summary)),
+ );
+ const decisions = [
+  ...authoritative.filter((item) =>
+   currentKeys.has(normalizeFactKey(item.summary)),
+  ),
+  ...authoritative.filter(
+   (item) => !currentKeys.has(normalizeFactKey(item.summary)),
+  ),
+ ]
+  .slice(0, 30)
+  .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
  const constraints = mergeBy(
   activeCurrent.constraints,
   activePrevious.constraints,
@@ -739,19 +769,26 @@ export function renderContinuityCapsule(
 ): string {
  const haystack = normalizeFactKey(existing);
  const lines: string[] = ["## Continuity Ledger"];
- const add = (label: string, value: string) => {
-  const text = summaryEvidenceLine(value, TRUNC.MESSAGE);
+ const add = (label: string, value: string, maxLength: number = TRUNC.MESSAGE) => {
+  const text = summaryEvidenceLine(value, maxLength);
   if (!text || haystack.includes(normalizeFactKey(text))) return;
   const line = "- " + label + ": " + text;
   if (lines.join("\n").length + line.length + 1 <= maxChars) lines.push(line);
  };
  if (state.goal) add("Goal", state.goal);
  for (const item of state.constraints) add("Constraint", item.text);
- for (const item of state.decisions)
-  add(
-   "Decision",
-   item.summary + (item.userResponse ? " → " + item.userResponse : ""),
-  );
+ for (const item of state.decisions) {
+  // Preserve each bounded source field separately: slicing the composite
+  // (question + arrow + answer) at MESSAGE length would cut a 300-char
+  // answer mid-sentence, and verification's answer pairing then sees a
+  // partial answer that conflicts with the real one.
+  const question = summaryEvidenceLine(item.summary, TRUNC.DECISION_SUMMARY);
+  const answer = item.userResponse
+   ? summaryEvidenceLine(item.userResponse, TRUNC.USER_RESPONSE)
+   : "";
+  const decisionLine = question + (answer ? " → " + answer : "");
+  if (decisionLine) add("Decision", decisionLine, decisionLine.length);
+ }
  for (const item of state.unresolvedErrors)
   add("Unresolved error", item.message);
  for (const item of state.resolvedErrors.slice(-5))

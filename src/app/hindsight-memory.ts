@@ -560,7 +560,9 @@ export function formatHindsightFacts(
    memoryId
     ? "Ref: hindsight:" + memoryId + "@" + hindsightTargetDigest(target.baseUrl, target.bankId, projectId, memoryId)
     : "",
-   clean(fact.text.slice(0, RECALL_ITEM_CAP)),
+   // Marked excerpt: the slice must never read as the complete memory.
+   clean(fact.text.slice(0, RECALL_ITEM_CAP)) +
+   (fact.text.length > RECALL_ITEM_CAP ? " (excerpt; full memory not shown)" : ""),
    "</smart_recall_evidence>",
   ].filter(Boolean).join("\n");
   if (lines.join("\n").length + item.length + 1 > maxChars) break;

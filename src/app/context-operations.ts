@@ -258,10 +258,31 @@ function supersededResults(projection: ProjectedSessionEntry[], candidates: Map<
   return result;
 }
 
-export function planContextTrim(branch: SessionEntry[], afterId?: string) {
+/** Signed Anthropic thinking may bind the entire preceding history, not only its own bytes. */
+export function thinkingEditReason(branch: SessionEntry[], entries: SessionBoundaryDraft[], readerApi?: string): string | undefined {
+  if (readerApi && readerApi !== "anthropic-messages") return;
+  const edits = new Map(entries.flatMap(entry => entry.type === "context_edit" ? [[entry.targetId, entry.replacement] as const] : []));
+  let changed = false;
+  for (const { sourceEntry, messages } of buildSessionProjection(branch).entries) {
+    if (edits.has(sourceEntry.id)) {
+      changed = true;
+      if (edits.get(sourceEntry.id) === null) continue;
+    }
+    if (changed && messages.some(message => message.role === "assistant" && message.api === "anthropic-messages"
+      && message.content.some(block => block.type === "thinking" && Boolean(block.thinkingSignature)))) {
+      // ponytail: conservatively protect all signed Anthropic thinking; narrow only with a public binding capability.
+      return "Cleanup would invalidate retained signed Anthropic thinking. Use provider-native compaction instead.";
+    }
+  }
+}
+
+export function planContextTrim(branch: SessionEntry[], afterId?: string, options: { anchorBoundary?: string | null; readerApi?: string } = {}) {
   if (afterId && !branch.some(entry => entry.id === afterId)) throw new Error("Trim boundary is not on the active branch.");
   const candidates = archivableResults(branch);
-  const boundaries = [afterId, lastAnchorBoundary(branch)].filter((id): id is string => Boolean(id));
+  // A newly-created anchor may seal only its new region, once, before its first replay.
+  const anchorBoundary = options.anchorBoundary === undefined ? lastAnchorBoundary(branch) : options.anchorBoundary;
+  if (anchorBoundary && !branch.some(entry => entry.id === anchorBoundary)) throw new Error("Anchor boundary is not on the active branch.");
+  const boundaries = [afterId, anchorBoundary].filter((id): id is string => Boolean(id));
   // Keep an active checkpoint's or foreign anchor's prefix stable, including earlier archived outputs.
   const protectedIds = new Set(boundaries.flatMap(id => branch.slice(0, branch.findIndex(entry => entry.id === id) + 1).map(entry => entry.id)));
   const edited = new Set(branch.flatMap(entry => entry.type === "context_edit" ? [entry.targetId] : []));
@@ -294,6 +315,9 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
     archives.push({ id, sha256: digest(text), chars: text.length });
     savedChars += text.length - marker.length;
   }
+  const blockedReason = thinkingEditReason(branch, entries, options.readerApi);
+  if (blockedReason) return { entries: [] as SessionBoundaryDraft[], references: [] as string[], archives: [] as ArchiveRecord[], savedChars: 0,
+    automatic: "signed-thinking", cooldownTurns: 0, superseded: 0, blockedReason };
   const supersededCount = eligible.filter(item => superseded.has(item.id)).length;
   if (entries.length) entries.push(contextControlEntry({ version: 1, action: "trim", references, archives }));
   // Branch-persisted cooldown survives reload/fork; never rewrite a cached prefix every turn.
@@ -304,7 +328,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string) {
   const turnsSinceChange = branch.slice(lastChange + 1).filter(entry => entry.type === "message" && entry.message.role === "assistant").length;
   const cooldownTurns = lastChange < 0 ? 0 : Math.max(0, AUTO_TRIM_COOLDOWN_TURNS - turnsSinceChange);
   const automatic = savedChars < MIN_AUTO_TRIM_SAVING_CHARS ? "insufficient-savings" : cooldownTurns > 0 ? "cooldown" : "ready";
-  return { entries, references, archives, savedChars, automatic, cooldownTurns, superseded: supersededCount };
+  return { entries, references, archives, savedChars, automatic, cooldownTurns, superseded: supersededCount, blockedReason };
 }
 
 /** The plan's context edits followed by a trim control entry recording `cause`. */
@@ -354,7 +378,7 @@ export function trimBreakEvenRequests(cost: Partial<ModelCostRates> | undefined,
   return r <= 0 ? 0 : ((w - r) * tailTokens) / (r * savedTokens);
 }
 
-export function planContextRewind(branch: SessionEntry[], sessionId: string, checkpointId: string, report: string) {
+export function planContextRewind(branch: SessionEntry[], sessionId: string, checkpointId: string, report: string, readerApi?: string) {
   const state = inspectContext(branch, sessionId);
   if (!state.checkpoint || state.checkpoint.id !== checkpointId) {
     throw new Error(state.invalidReason ?? "No matching active checkpoint; create one before research.");
@@ -379,6 +403,8 @@ export function planContextRewind(branch: SessionEntry[], sessionId: string, che
     archives.push({ id: entry.id, sha256, chars: text.length });
   }
   const entries: SessionBoundaryDraft[] = targets.map(targetId => ({ type: "context_edit", targetId, replacement: null }));
+  const blockedReason = thinkingEditReason(branch, entries, readerApi);
+  if (blockedReason) throw new Error(blockedReason);
   const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed; errors and potentially side-effecting tool batches kept. Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.${mismatched ? ` ${mismatched} archived outputs no longer match their records and are not offered for recovery.` : ""}`;
   entries.push({ type: "custom_message", customType: CONTEXT_REPORT_TYPE, content, display: true });
   entries.push(contextControlEntry({ version: 1, action: "rewind", references, archives }));

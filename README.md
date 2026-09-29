@@ -19,10 +19,12 @@ this extension adds context hygiene and continuity policies around it.
 > The TUI still says **Smart Compact**. No data or configuration migration is
 > needed. [Identity and naming](./docs/identity.md).
 >
-> **Pi Continuity 10.0.1:** upgrading from 9.x? Update Pi to 0.87.1 or newer
+> **Pi Continuity 10.1.0:** upgrading from 9.x? Update Pi to 0.87.1 or newer
 > and read the [upgrade notes](./docs/guide.md#upgrade-from-9x). Optional memory
 > engines and image rendering are installed separately. The
 > [changelog](./CHANGELOG.md) records the full release and its evidence limits.
+> These defaults (pressure-first cleanup, eager tool exposure, native tool
+> rows) ship with 10.1.0.
 
 ## What it does
 
@@ -66,9 +68,10 @@ Open **Settings → How it runs** to choose your level of control:
 | **Cleanup only** | Local, recoverable cleanup; no automatic summary generation. |
 | **Fully automatic** | Cleanup plus compaction requests when idle at the configured context threshold. |
 
-Pi's own compaction setting is separate. **With Pi (default)** participates when
-Pi starts compaction; it does not independently schedule it. A threshold alone
-is not an automatic trigger. [Trigger settings](./docs/configuration.md).
+Pi's own compaction setting is separate. **Pressure-first (default)** keeps
+roomy history unchanged, allows cleanup at an early pressure gate, then requests
+compaction when idle at 80% if still needed. The optional `native-hook` strategy
+participates only when Pi starts compaction. [Trigger settings](./docs/configuration.md).
 
 For your first run, choose **Compact now**, inspect the plan, then review the
 result. **A** applies it; **C** or **Esc** cancels. **Enter does not apply** on
@@ -118,9 +121,11 @@ actions explain why.
 | `/smart-compact handoff dry-run` | Previews a new-session seed without opening one. Use `handoff [-- note]` to proceed. |
 | `/smart-compact metrics` | Shows effective state, run outcomes, recent issues and the host prompt-cache ledger. |
 
-By default the agent sees only the `smart_tools` loader, then loads the groups
-it needs. The context guide is read on request, not injected. Tool availability
-and compaction permission are separate controls.
+By default permitted agent tools stay visible from session start, avoiding late
+schema changes to cached prefixes. Actions, not visibility, are pressure-gated;
+read-only recovery and metadata checkpoints remain available while roomy.
+Optional lazy loading uses `smart_tools`. The context guide is read on request,
+not injected. Tool availability and compaction permission are separate controls.
 [Agent tools](./docs/guide.md#agent-tools) · [All commands](./docs/guide.md#command-reference)
 
 ## Memory is optional; continuity is the core

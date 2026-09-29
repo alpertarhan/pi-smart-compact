@@ -1,5 +1,15 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import {
+ expandedRow,
+ firstTextContent,
+ rawFallbackRow,
+ safeArg,
+ statusLabel,
+ summarizeLine,
+ tryRow,
+} from "../ui/tool-rows.ts";
 import { Type } from "typebox";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
@@ -148,18 +158,90 @@ export function registerContextToolLoader(pi: ExtensionAPI, exposure: ContextToo
    if (signal?.aborted) throw new Error("Tool loading cancelled.");
    if (loadConfig().toolLoading === "off" || !pi.getActiveTools().includes(LOADER)) throw new Error("Context tools are disabled in Pi settings or /tools.");
    let text: string;
+   let details: unknown = undefined;
    if (params.action === "guide") text = await readContextGuide();
-   else if (params.action === "status") text = JSON.stringify(exposure.status());
-   else {
+   else if (params.action === "status") {
+    const status = exposure.status();
+    text = JSON.stringify(status);
+    details = { display: { kind: "tool-groups" }, status };
+   } else {
     if (!params.group) throw new Error(`${params.action} requires a group.`);
-    if (params.action === "load") text = `Loaded: ${exposure.load(params.group).join(", ")}. Available on the next model turn; no feature instructions were injected.`;
-    else {
+    if (params.action === "load") {
+     const names = exposure.load(params.group);
+     text = `Loaded: ${names.join(", ")}. Available on the next model turn; no feature instructions were injected.`;
+     details = { display: { state: "loaded", group: params.group, tools: names } };
+    } else {
      if (loadConfig().toolLoading === "eager") throw new Error("Eager mode keeps tools loaded. Select On demand or Off in /smart-compact settings before unloading a group.");
      exposure.unload(params.group);
      text = `Unloaded ${params.group}. No files or session history changed.`;
+     details = { display: { state: "unloaded", group: params.group } };
     }
    }
-   return { content: [{ type: "text", text }], details: undefined };
+   return { content: [{ type: "text", text }], details };
+  },
+  renderCall(args, theme) {
+   const label = theme.fg("toolTitle", "smart_tools ");
+   const action = safeArg(args.action, 20);
+   const group = safeArg(args.group, 40);
+   return new Text(label + theme.fg("accent", action) + (group ? " " + theme.fg("dim", group) : ""), 0, 0);
+  },
+  renderResult(result, options, theme, context) {
+   return tryRow(theme, () => renderToolsRow(result, theme, context, options.expanded), result, options.expanded);
   },
  });
+}
+
+interface RenderableResult {
+  content?: ReadonlyArray<{ type: string; text?: string }>;
+  details?: unknown;
+}
+
+interface RenderContext {
+  isError: boolean;
+}
+
+function renderToolsRow(
+  result: RenderableResult,
+  theme: import("@earendil-works/pi-coding-agent").Theme,
+  context: RenderContext,
+  expanded: boolean,
+): Text {
+  if (context.isError) {
+    const head = theme.fg("error", "smart_tools failed:");
+    return expanded
+      ? expandedRow(theme, result, [head])
+      : new Text(head + " " + summarizeLine(firstTextContent(result.content), 140), 0, 0);
+  }
+  const details = result.details as { display?: { state?: string; kind?: string; group?: string; tools?: string[] }; status?: { mode?: string; groups?: Array<{ group: string; available: boolean; active: string[] }> } } | undefined;
+  if (!details) return rawFallbackRow(theme, result, expanded);
+  const lines: string[] = [];
+  if (details.display?.state === "loaded") {
+   lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "loaded " + String(details.display.group)));
+   if (details.display.tools?.length) {
+    lines.push(theme.fg("dim", details.display.tools.join(", ")));
+   }
+   return new Text(lines.join("\n"), 0, 0);
+  }
+  if (details.display?.state === "unloaded") {
+   lines.push(statusLabel(theme, "info") + " " + theme.fg("muted", "unloaded " + String(details.display.group)));
+   return new Text(lines.join("\n"), 0, 0);
+  }
+  if (details.display?.kind === "tool-groups" && details.status) {
+   lines.push(theme.fg("muted", "mode: ") + theme.fg("accent", String(details.status.mode ?? "")));
+   for (const group of details.status.groups ?? []) {
+    const marker = group.active.length
+     ? theme.fg("success", "●")
+     : group.available
+      ? theme.fg("dim", "○")
+      : theme.fg("error", "✕");
+    const state = group.active.length
+     ? group.active.length + " active"
+     : group.available
+      ? "available"
+      : "disabled";
+    lines.push(marker + " " + group.group + " " + theme.fg("dim", state));
+   }
+   return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+  }
+  return rawFallbackRow(theme, result, expanded);
 }

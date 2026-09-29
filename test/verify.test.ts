@@ -5,8 +5,11 @@ import {
 	patchDeterministic,
 	repairSummaryDeterministically,
 	formatVerificationGap,
+	hasSemanticContradiction,
 	patchSummary,
+	releasesConstraint,
 } from "../src/phases/verify.ts";
+import { renderContinuityCapsule, retireSupersededConstraints } from "../src/utils/state.ts";
 import { verifyAndPatch as runVerificationStep } from "../src/app/steps/verify.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
@@ -68,6 +71,16 @@ function verifyAndPatch(
 }
 
 describe("verifySummary", () => {
+	it.each(["Constraint: ", "Goal: ", "Decision: "])("ignores display labels without ignoring changed semantics: %s", (label) => {
+		const rule = "Don't compact when room exists; only compact under pressure";
+		expect(hasSemanticContradiction(rule, label + rule)).toBe(false);
+		expect(hasSemanticContradiction(label + rule, rule)).toBe(false);
+		expect(hasSemanticContradiction(
+			"Deploy only after approval",
+			label + "Deploy only after approval\n- Deploy without approval",
+		)).toBe(true);
+	});
+
 	it.each([
 		"HOME was a temporary directory during the run, so no user files were touched; the token was never printed.",
 		"The standalone compaction endpoint returns the complete canonical next output window, potentially retained items plus encrypted state. Replay all returned items, avoid duplicate tails, and never pretend opaque content is a verified text summary.",
@@ -1081,6 +1094,26 @@ Build
 });
 
 describe("verifyAndPatch", () => {
+	it("accepts a carried constraint repeated with its continuity display label", async () => {
+		const text = "Don't trigger compaction/pruning/anchor when room exists; only enable anchor-tool or context pruning under context pressure";
+		const extraction = makeExtraction({ constraints: [
+			{ index: 0, text: "Constraint: " + text, category: "prohibition", confidence: 1 },
+		] });
+		const previousState = makeState({ constraints: [
+			{ id: "pressure-only", text, category: "prohibition", confidence: 1 },
+		] });
+		const result = await verifyAndPatch({
+			finalSummary: assembleFallback([], extraction, {}, 6_000, previousState),
+			extraction, previousState, summaries: [], mode: "fast",
+			flags: { autoTriggered: true }, services: createServices(),
+			notify: () => {}, vlog: () => {},
+		});
+		expect(result.verified).toBe(true);
+		expect(result.verificationScore).toBe(100);
+		expect(result.finalSummary).toContain(text);
+		expect(result.llmCalls).toBe(0);
+	});
+
 	it("accepts the deterministic fallback after bounded repair on adversarial evidence", async () => {
 		const extraction = makeExtraction({
 			mainGoal: "## Goal\nRelease safely",
@@ -1533,5 +1566,385 @@ describe("patchDeterministic", () => {
 		);
 		expect(patched).not.toContain("Verification Note");
 		expect(patched.match(/src\/fake\.ts/g)).toHaveLength(1);
+	});
+});
+
+describe("EESV audit regressions: verification evidence contract (A01-A04)", () => {
+	const constraint = (
+		text: string,
+		category: "requirement" | "prohibition" | "preference" = "requirement",
+	) => ({ text, index: 0, category, confidence: 1 });
+
+	it("accepts verbatim constraint evidence instead of failing on anchor heuristics (A01)", () => {
+		const text = "Stop without applying a summary.";
+		const extraction = makeExtraction({ constraints: [constraint(text)] });
+		const summary = assembleFallback([], extraction);
+		expect(summary.includes(text)).toBe(true);
+		const result = verifySummary(summary, extraction);
+		expect(result.ok).toBe(true);
+		expect(result.gaps).toEqual([]);
+	});
+
+	it("keeps rejecting reversed and appended contradictions beside verbatim rules (A01)", () => {
+		const rule = "Do not deploy without approval";
+		const extraction = makeExtraction({ constraints: [constraint(rule, "prohibition")] });
+		const good = assembleFallback([], extraction);
+		expect(verifySummary(good, extraction).ok).toBe(true);
+		const reversed = good.replace(rule, "Deploy without approval");
+		expect(verifySummary(reversed, extraction).ok).toBe(false);
+		const appended = good.replace(rule, rule + "\n- Deploy without approval");
+		expect(verifySummary(appended, extraction).ok).toBe(false);
+	});
+
+	it("does not accept contraction-reversed constraint restatements, straight or curly (A02)", () => {
+		const rule = "Must use PostgreSQL.";
+		for (const reversal of ["Don't use PostgreSQL.", "Don\u2019t use PostgreSQL.", "Cannot use PostgreSQL."]) {
+			const extraction = makeExtraction({ constraints: [constraint(rule)] });
+			const summary = assembleFallback([], extraction).replace(rule, reversal);
+			const result = verifySummary(summary, extraction);
+			expect(result.ok).toBe(false);
+			expect(
+				result.gaps.some(
+					(gap) =>
+						gap.kind === "missing-constraint" ||
+						gap.kind === "inconsistency",
+					),
+			).toBe(true);
+		}
+	});
+
+	it("does not accept a positive restatement of a contracted negative rule (A02)", () => {
+		const rule = "Don't use MongoDB.";
+		const extraction = makeExtraction({ constraints: [constraint(rule, "prohibition")] });
+		const summary = assembleFallback([], extraction).replace(rule, "Must use MongoDB.");
+		expect(verifySummary(summary, extraction).ok).toBe(false);
+	});
+
+	it("verifies the decision's user answer, not just the question (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{
+					index: 0,
+					type: "explicit",
+					summary: "Which database should we use?",
+					userResponse: "PostgreSQL",
+				},
+			],
+		});
+		const good = assembleFallback([], extraction);
+		expect(verifySummary(good, extraction).ok).toBe(true);
+		const wrong = good.replace("PostgreSQL", "MongoDB");
+		const wrongResult = verifySummary(wrong, extraction);
+		expect(wrongResult.ok).toBe(false);
+		expect(wrongResult.gaps.some((gap) => gap.kind === "missing-decision")).toBe(true);
+		const missing = good.replace(" \u2192 PostgreSQL", "");
+		expect(verifySummary(missing, extraction).ok).toBe(false);
+	});
+
+	it("binds each answer to its own question, not to any answer slot (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Which database should we use?", userResponse: "PostgreSQL" },
+				{ index: 1, type: "explicit", summary: "Which search engine should we use?", userResponse: "Elasticsearch" },
+			],
+		});
+		const good = assembleFallback([], extraction);
+		expect(verifySummary(good, extraction).ok).toBe(true);
+		const swapped = assembleFallback([], makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Which database should we use?", userResponse: "Elasticsearch" },
+				{ index: 1, type: "explicit", summary: "Which search engine should we use?", userResponse: "PostgreSQL" },
+			],
+		}));
+		const result = verifySummary(swapped, extraction);
+		expect(result.ok).toBe(false);
+		expect(result.gaps.filter((gap) => gap.kind === "missing-decision").length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("deterministic repair cannot launder a conflicting answer into acceptance (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Which database should we use?", userResponse: "PostgreSQL" },
+			],
+		});
+		const wrong = assembleFallback([], extraction).replace("PostgreSQL", "MongoDB");
+		const initial = verifySummary(wrong, extraction);
+		expect(initial.ok).toBe(false);
+		const repaired = repairSummaryDeterministically(wrong, initial, extraction);
+		expect(repaired.result.ok).toBe(false);
+		expect(
+				repaired.result.gaps.some((gap) => gap.kind === "inconsistency"),
+		).toBe(true);
+		expect(repaired.summary).toContain("MongoDB");
+	});
+
+	it("rejects a wrong answer even when the continuity capsule carries the right one (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{
+					index: 0,
+					type: "explicit",
+					summary: "Which database should we use?",
+					userResponse: "PostgreSQL",
+				},
+			],
+		});
+		const state = makeState({
+			decisions: [
+				{
+					id: "decision-1",
+					summary: "Which database should we use?",
+					userResponse: "PostgreSQL",
+					type: "explicit",
+				},
+			],
+		});
+		const wrong = assembleFallback([], extraction).replace("PostgreSQL", "MongoDB");
+		const afterState = wrong + "\n\n" + renderContinuityCapsule(state, undefined, wrong);
+		expect(afterState.includes("MongoDB") && afterState.includes("PostgreSQL")).toBe(true);
+		expect(verifySummary(afterState, extraction, state).ok).toBe(false);
+	});
+
+	it("requires the latest answer for a re-asked question without demanding both (A03+A08)", () => {
+		const question = "Which database should we use?";
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: question, userResponse: "PostgreSQL" },
+				{ index: 2, type: "explicit", summary: question, userResponse: "SQLite" },
+			],
+		});
+		const latest = assembleFallback([], makeExtraction({
+			decisions: [{ index: 2, type: "explicit", summary: question, userResponse: "SQLite" }],
+		}));
+		const latestResult = verifySummary(latest, extraction);
+		expect(latestResult.ok).toBe(true);
+		const stale = assembleFallback([], makeExtraction({
+			decisions: [{ index: 0, type: "explicit", summary: question, userResponse: "PostgreSQL" }],
+		}));
+		const staleResult = verifySummary(stale, extraction);
+		expect(staleResult.ok).toBe(false);
+		expect(staleResult.gaps.some((gap) => gap.kind === "missing-decision")).toBe(true);
+	});
+
+	it("verifies short and symbolic answers by identity, not vacuous overlap (A03)", () => {
+		for (const [question, answer, wrong] of [
+			["Which language should we rewrite it in?", "Go", "Rust"],
+			["Which language is the legacy module in?", "C++", "Python"],
+			["How many replicas should we run?", "4", "8"],
+		] as const) {
+			const extraction = makeExtraction({
+				decisions: [{ index: 0, type: "explicit", summary: question, userResponse: answer }],
+			});
+			const good = assembleFallback([], extraction);
+			expect(verifySummary(good, extraction).ok).toBe(true);
+			const wrongSummary = good.replace(" \u2192 " + answer, " \u2192 " + wrong);
+			expect(verifySummary(wrongSummary, extraction).ok).toBe(false);
+		}
+	});
+
+	it("a faithful negative answer is not read as question-level negation (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Should we enable the telemetry flag?", userResponse: "No" },
+			],
+		});
+		const good = assembleFallback([], extraction);
+		expect(verifySummary(good, extraction).gaps).toEqual([]);
+		const flipped = good.replace(" \u2192 No", " \u2192 Yes");
+		expect(verifySummary(flipped, extraction).ok).toBe(false);
+	});
+
+	it("a faithful negative answer to an auxiliary-lead question is not question negation (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "May we publish the release notes?", userResponse: "No" },
+			],
+		});
+		const good = assembleFallback([], extraction);
+		expect(verifySummary(good, extraction).gaps).toEqual([]);
+	});
+
+	it("exact question identity pairs answers even when sibling questions overlap (A03)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Which database should we use?", userResponse: "PostgreSQL" },
+			{ index: 1, type: "explicit", summary: "Which database should we use for tests?", userResponse: "SQLite" },
+			],
+		});
+		const good = assembleFallback([], extraction);
+		expect(verifySummary(good, extraction).ok).toBe(true);
+		const swapped = assembleFallback([], makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Which database should we use?", userResponse: "SQLite" },
+				{ index: 1, type: "explicit", summary: "Which database should we use for tests?", userResponse: "PostgreSQL" },
+			],
+		}));
+		expect(verifySummary(swapped, extraction).ok).toBe(false);
+	});
+
+	it("the deterministic fallback with a re-asked question passes its own gate (A03+A08)", () => {
+		const extraction = makeExtraction({
+			decisions: [
+				{ index: 0, type: "explicit", summary: "Which database should we use?", userResponse: "PostgreSQL" },
+				{ index: 2, type: "explicit", summary: "Which database should we use?", userResponse: "SQLite" },
+			],
+		});
+		const fallback = assembleFallback([], extraction);
+		expect(fallback.includes("PostgreSQL")).toBe(false);
+		const result = verifySummary(fallback, extraction);
+		expect(result.ok).toBe(true);
+		expect(result.gaps).toEqual([]);
+	});
+
+	it("reports, quotes, and criticism never release; explicit grants do (A04)", () => {
+		const rule = "Do not deploy until tests pass.";
+		expect(releasesConstraint(rule, "Explain why you deployed before tests passed.")).toBe(false);
+		expect(releasesConstraint(rule, "The log says: deploy before tests pass.")).toBe(false);
+		expect(releasesConstraint(rule, "I did not ask you to deploy before tests passed.")).toBe(false);
+		expect(releasesConstraint(rule, "The log says: deploy before tests pass now.")).toBe(false);
+		expect(releasesConstraint(rule, "I did not ask you to deploy before tests passed now.")).toBe(false);
+		expect(releasesConstraint(rule, "Permission was denied to deploy before tests pass.")).toBe(false);
+		expect(releasesConstraint(rule, "You actually deployed before tests passed.")).toBe(false);
+		expect(releasesConstraint(rule, "The code can deploy before tests pass.")).toBe(false);
+		expect(releasesConstraint(rule, "Now you deployed before tests passed.")).toBe(false);
+		// Acknowledgements and bare copula/permission leads are not grants;
+		// the remainder must still carry a real directive or grant.
+		expect(releasesConstraint(rule, "You are deploying before tests pass.")).toBe(false);
+		expect(releasesConstraint(rule, "OK, you deployed before tests passed.")).toBe(false);
+		expect(releasesConstraint(rule, "OK, deploy it now.")).toBe(true);
+		expect(releasesConstraint(rule, "You may deploy the fix now")).toBe(true);
+		expect(releasesConstraint(rule, "You are allowed to deploy now")).toBe(true);
+		// A softener is not a directive by itself, but "Now deploy it" still is.
+		expect(releasesConstraint(rule, "Now deploy it")).toBe(true);
+		expect(
+			releasesConstraint("No new dependencies.", "New dependencies were added before approval."),
+		).toBe(false);
+		expect(
+			releasesConstraint("No new dependencies.", "Actually, new dependencies are allowed now."),
+		).toBe(true);
+		expect(releasesConstraint(rule, "Do deploy now.")).toBe(true);
+		expect(releasesConstraint(rule, "You can deploy now, tests passed")).toBe(true);
+		expect(releasesConstraint(rule, "Ok as I said, you can deploy now")).toBe(true);
+	});
+
+	it("long freeform continuity answers survive capsule rendering and bounded repair (A03)", () => {
+		const question = "Anchor sonras\u0131 temizli\u011fi hangi kapsamda uygulayal\u0131m?";
+		const answer = (
+			"Tam kapsaml\u0131 bir temizlik uygulayal\u0131m: s\u00fcresi ge\u00e7mi\u015f continuity kay\u0131tlar\u0131n\u0131, " +
+			"\u00e7\u00f6z\u00fclm\u00fc\u015f hata giri\u015flerini ve yinelenen etiketleri kald\u0131r; ancak g\u00fcncel karar " +
+			"cevaplar\u0131n\u0131, a\u00e7\u0131k d\u00f6ng\u00fcleri ve t\u00fcm kullan\u0131c\u0131 k\u0131s\u0131tlar\u0131n\u0131 oldu\u011fu gibi koru; " +
+			"hi\u00e7bir kan\u0131t\u0131 yeni bir do\u011frulama turu olmadan d\u00fc\u015f\u00fcrme ve \u00f6l\u00e7\u00fcm kay\u0131tlar\u0131n\u0131 " +
+			"aynen sakla; ard\u0131ndan kapsam d\u0131\u015f\u0131 kalan b\u00f6l\u00fcmleri ar\u015fivleme klas\u00f6r\u00fcne ta\u015f\u0131."
+		).slice(0, 300);
+		expect(answer.length).toBe(300);
+		const extraction = makeExtraction();
+		const state = makeState({
+			decisions: [
+				{ id: "decision-1", summary: question, userResponse: answer, type: "explicit" },
+			],
+		});
+		const fallback = assembleFallback([], extraction, {}, 6_000, state);
+		const capsule = renderContinuityCapsule(state, undefined, fallback);
+		// The capsule carries the FULL bounded answer, not a composite slice.
+		expect(capsule.includes(answer)).toBe(true);
+		const withCapsule = fallback + "\n\n" + capsule;
+		const initial = verifySummary(withCapsule, extraction, state);
+		const repaired = repairSummaryDeterministically(withCapsule, initial, extraction, state);
+		expect(repaired.result.ok).toBe(true);
+		expect(
+				repaired.result.gaps.filter(
+					(gap) =>
+						gap.kind === "inconsistency" &&
+						gap.detail.includes("decision-answer-conflict"),
+				),
+		).toEqual([]);
+		// The repaired decisions line preserves the full bounded answer.
+		expect(repaired.summary.includes(answer)).toBe(true);
+	});
+
+	it("preserves structured fields when the question or the answer contains an arrow (A03)", () => {
+		const longAnswer = (
+			"Tam kapsam uygula: eski continuity kayıtlarını ve çözülmüş hata girişlerini " +
+			"arşiv klasörüne taşı, yinelenen etiketleri tekilleştir; güncel karar cevaplarını, " +
+			"açık döngüleri ve tüm kullanıcı kısıtlarını aynen koru; hiçbir kanıtı yeni bir " +
+			"doğrulama turu olmadan düşürme, ölçüm kayıtlarını değiştirme ve kapsam dışını arşivle."
+		).slice(0, 285);
+		expect(longAnswer.length).toBe(285);
+		const roundtrip = (
+			question: string,
+			answer: string,
+		): ReturnType<typeof repairSummaryDeterministically> => {
+			const extraction = makeExtraction();
+			const state = makeState({
+				decisions: [
+					{ id: "decision-1", summary: question, userResponse: answer, type: "explicit" },
+				],
+			});
+			const fallback = assembleFallback([], extraction, {}, 6_000, state);
+			const withCapsule =
+				fallback + "\n\n" + renderContinuityCapsule(state, undefined, fallback);
+			const initial = verifySummary(withCapsule, extraction, state);
+			return repairSummaryDeterministically(withCapsule, initial, extraction, state);
+		};
+		const arrowQuestion =
+			"PostgreSQL → SQLite geçişi mi sıfırdan kurulum mu tercih edilir?";
+		const repaired = roundtrip(arrowQuestion, longAnswer);
+		expect(repaired.result.ok).toBe(true);
+		expect(repaired.summary.includes(longAnswer)).toBe(true);
+		const arrowAnswer =
+			"Kapsam kararı: eski kayıtlar → arşiv deposu, güncel kararlar → aynen korunacak, ölçümler → dokunulmaz kalacak.";
+		const repairedAnswer = roundtrip("Temizlik kapsamını nasıl belirleyelim?", arrowAnswer);
+		expect(repairedAnswer.result.ok).toBe(true);
+		expect(repairedAnswer.summary.includes(arrowAnswer)).toBe(true);
+		// A negative answer with its own arrow must not leak back into the
+		// question's polarity through any of the three slot consumers.
+		const repairedNoArrow = roundtrip("May we publish?", "No → wait for approval");
+		expect(repairedNoArrow.result.ok).toBe(true);
+		expect(repairedNoArrow.summary.includes("No → wait for approval")).toBe(true);
+		for (const result of [repaired.result, repairedAnswer.result, repairedNoArrow.result]) {
+			expect(
+				result.gaps.filter(
+					(gap) =>
+						gap.kind === "inconsistency" &&
+						gap.detail.includes("decision-answer-conflict"),
+				),
+		).toEqual([]);
+		}
+	});
+
+	it("a question does not release a constraint, an explicit release does (A04)", () => {
+		const rule = "Do not deploy until tests pass.";
+		expect(releasesConstraint(rule, "Why did you deploy?")).toBe(false);
+		expect(releasesConstraint(rule, "Why did you deploy")).toBe(false);
+		expect(releasesConstraint(rule, "Explain why you deployed.")).toBe(false);
+		expect(releasesConstraint(rule, "Tell me why you deployed")).toBe(false);
+		expect(releasesConstraint(rule, "Describe the deployment you already did")).toBe(false);
+		expect(releasesConstraint(rule, "Neden deploy ettin?")).toBe(false);
+		// Genuine releases keep working: rich reversal, terse temporal release,
+		// and a positive imperative on the constrained action.
+		expect(releasesConstraint(rule, "Tests pass now \u2014 deploy it")).toBe(true);
+		expect(releasesConstraint(rule, "Tests pass now - deploy it")).toBe(true);
+		expect(releasesConstraint(rule, "ok deploy it now")).toBe(true);
+		expect(releasesConstraint(rule, "Deploy it now")).toBe(true);
+		// Standing rules stay strict, question or not.
+		expect(
+			releasesConstraint("Never commit directly to main", "commit the fix now"),
+		).toBe(false);
+	});
+
+	it("a question does not retire a constraint the summary must still satisfy (A04)", () => {
+		const rule = "Do not deploy until tests pass.";
+		const constraints = [constraint(rule, "prohibition")];
+		const messages = [
+			{ role: "user", content: "Do not deploy until tests pass." },
+			{ role: "user", content: "Why did you deploy?" },
+		] as never;
+		const overrides = retireSupersededConstraints(constraints, messages, []);
+		expect(overrides.find((item) => item.status === "superseded")).toBeUndefined();
+		const withoutRule = assembleFallback([], makeExtraction());
+		const extraction = makeExtraction({ constraints });
+		const result = verifySummary(withoutRule, extraction, null, { factOverrides: overrides });
+		expect(result.ok).toBe(false);
+		expect(result.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
 	});
 });

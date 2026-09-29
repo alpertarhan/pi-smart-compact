@@ -5,7 +5,7 @@ import path from "node:path";
 import { readMetricsLog } from "../src/utils/cache.ts";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG } from "../src/constants.ts";
-import { createBackgroundPreparation, preparationStartTokens, preparationWindow } from "../src/app/background-preparation.ts";
+import { createBackgroundPreparation, contextPressure, preparationStartTokens, preparationWindow } from "../src/app/background-preparation.ts";
 import { createSettledAutoTrigger } from "../src/app/settled-auto-trigger.ts";
 import { MIN_TOKEN_THRESHOLD } from "../src/constants.ts";
 import { fingerprintContext, pendingMatchesBranch, readerSignature } from "../src/app/pending-slot.ts";
@@ -39,6 +39,78 @@ function fixture() {
 }
 
 describe("background preparation", () => {
+  it("shares the 400k pressure window and fails closed for unknown usage", () => {
+    const f = fixture();
+    f.ctx.model = { ...f.ctx.model!, contextWindow: 1_000_000 };
+    f.setTokens(288_000);
+    const cfg = { ...config, maxContextTokens: 400_000 };
+    expect(contextPressure(f.ctx, cfg)).toMatchObject({ percent: 72, cleanupTokens: 288_000, compactionTokens: 320_000,
+      cleanup: true, compaction: false, modelWindow: 1_000_000, policyWindow: 400_000 });
+    f.setTokens(320_000);
+    expect(contextPressure(f.ctx, cfg).compaction).toBe(true);
+    f.setTokens(Number.NaN);
+    expect(contextPressure(f.ctx, cfg)).toMatchObject({ tokens: null, percent: null, cleanup: false, compaction: false });
+  });
+
+  it("follows Pi's current model window when the optional policy cap is off", () => {
+    const f = fixture();
+    const cfg = { ...config, maxContextTokens: 0 };
+    expect(DEFAULT_CONFIG.maxContextTokens).toBe(0);
+    f.setTokens(320_000);
+    for (const [window, cleanupTokens, compactionTokens] of [
+      [200_000, 140_000, 160_000], [400_000, 288_000, 320_000],
+      [512_000, 377_600, 409_600], [1_000_000, 768_000, 800_000],
+      [200_000, 140_000, 160_000],
+    ] as const) {
+      f.ctx.model = { ...f.ctx.model!, contextWindow: window };
+      expect(contextPressure(f.ctx, cfg)).toMatchObject({ modelWindow: window, policyWindow: window,
+        cleanupTokens, compactionTokens, cleanup: 320_000 >= cleanupTokens, compaction: 320_000 >= compactionTokens });
+    }
+  });
+
+  it.each(["system", "tools"])("discards prepared work when the effective %s prefix changes", async kind => {
+    const f = fixture();
+    let prompt = "original prompt";
+    let tools = "read:original-schema";
+    f.ctx.getSystemPrompt = () => prompt;
+    f.pending.readerSignature = readerSignature(f.ctx);
+    let snapshot!: ExtensionContext;
+    const worker = createBackgroundPreparation({ toolSignature: () => tools, prepare: async ctx => { snapshot = ctx; return f.pending; } });
+    worker.observe(f.ctx, config);
+    await flush();
+    if (kind === "system") prompt = "changed prompt";
+    else tools = "read:changed-schema";
+    expect(snapshot.getSystemPrompt()).toBe("original prompt");
+    expect(worker.take(f.ctx, config)).toBeNull();
+  });
+
+  it("does not start superseded work or cancel its replacement before preparation", async () => {
+    const f = fixture();
+    let calls = 0;
+    const worker = createBackgroundPreparation({ cooldownMs: 0, prepare: async () => { calls++; return f.pending; } });
+    worker.observe(f.ctx, config);
+    worker.cancel("config");
+    f.ctx.model = { ...f.ctx.model!, id: "replacement" };
+    f.pending.readerSignature = readerSignature(f.ctx);
+    worker.observe(f.ctx, config);
+    await flush();
+    expect(calls).toBe(1);
+    expect(worker.take(f.ctx, config)?.runId).toBe(f.pending.runId);
+  });
+
+  it("honors configured TTL and permits append-only anchor metadata", async () => {
+    const f = fixture();
+    let now = 0;
+    const cfg = { ...config, pendingTtlMs: 600_000 };
+    const worker = createBackgroundPreparation({ now: () => now, prepare: async () => f.pending });
+    worker.observe(f.ctx, cfg);
+    await flush();
+    f.manager.appendCustomMessageEntry("smart-context-anchor", "Completed milestone", true,
+      { anchor: { name: "milestone", summary: "Completed milestone", targetId: f.pending.originBranchHeadId } });
+    now = 300_001;
+    expect(worker.take(f.ctx, cfg)?.runId).toBe(f.pending.runId);
+  });
+
   it("derives bounded lead tokens and leaves existing strategies unchanged", async () => {
     expect(preparationStartTokens(160_000)).toBe(140_000);
     expect(preparationStartTokens(1_000_000)).toBe(968_000);
@@ -92,7 +164,7 @@ describe("background preparation", () => {
     expect(f.status).toEqual([]);
   });
 
-  it.each(["edit", "compaction", "branch", "session", "model", "config", "disabled"])("discards a ready snapshot after %s changes", async kind => {
+  it.each(["edit", "compaction", "branch", "session", "model", "window", "config", "disabled"])("discards a ready snapshot after %s changes", async kind => {
     const f = fixture();
     const worker = createBackgroundPreparation({ prepare: async () => f.pending });
     worker.observe(f.ctx, config);
@@ -103,6 +175,7 @@ describe("background preparation", () => {
     if (kind === "branch") f.manager.branch(f.first);
     if (kind === "session") f.ctx.sessionManager = SessionManager.inMemory();
     if (kind === "model") f.ctx.model = { ...f.ctx.model!, id: "different" };
+    if (kind === "window") f.ctx.model = { ...f.ctx.model!, contextWindow: 400_000 };
     if (kind === "config") currentConfig = { ...config, scrubPii: !config.scrubPii };
     if (kind === "disabled") currentConfig = { ...config, autoTrigger: false };
     expect(worker.take(f.ctx, currentConfig)).toBeNull();

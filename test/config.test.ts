@@ -86,8 +86,15 @@ describe("validateSmartCompactConfig", () => {
     expect(invalid.agentToolAccess).toBeUndefined();
   });
 
-  it("keeps context hygiene opt-in and independent of compaction", () => {
-    expect(DEFAULT_CONFIG.contextHygieneEnabled).toBe(false);
+  it("defaults to pressure-only hygiene, independent of compaction", () => {
+    expect(DEFAULT_CONFIG.contextHygieneEnabled).toBe(true);
+    expect(DEFAULT_CONFIG.contextPressureOnly).toBe(true);
+    const timing: Record<string, unknown> = { contextPressureOnly: false };
+    validateSmartCompactConfig(timing);
+    expect(timing.contextPressureOnly).toBe(false);
+    timing.contextPressureOnly = "false";
+    validateSmartCompactConfig(timing);
+    expect(timing.contextPressureOnly).toBeUndefined();
     const config: Record<string, unknown> = { contextHygieneEnabled: true, autoTrigger: false };
     validateSmartCompactConfig(config);
     expect(config).toEqual({ contextHygieneEnabled: true, autoTrigger: false });
@@ -112,8 +119,8 @@ describe("validateSmartCompactConfig", () => {
     expect("autoTrigger" in sc).toBe(false);
   });
 
-  it("validates the opt-in automatic strategies", () => {
-    expect(DEFAULT_CONFIG.autoTriggerStrategy).toBe("native-hook");
+  it("defaults to idle pressure compaction and validates alternate strategies", () => {
+    expect(DEFAULT_CONFIG.autoTriggerStrategy).toBe("settled");
     for (const strategy of ["native-hook", "settled", "background"]) {
       const valid: Record<string, unknown> = { autoTriggerStrategy: strategy };
       validateSmartCompactConfig(valid);
@@ -276,18 +283,18 @@ describe("validateSmartCompactConfig", () => {
 
   it("discards prepare percentages that are not below the effective apply gate", () => {
     for (const sc of [
-      { prepareContextPercent: 60 }, // equals default apply gate 60
+      { prepareContextPercent: 80 }, // equals default apply gate 80
       { prepareContextPercent: 70, minContextPercent: 65 },
       { prepareContextPercent: 65, minContextPercent: 65 },
-      { prepareContextPercent: 61, minContextPercent: 150 }, // invalid apply → default 60
+      { prepareContextPercent: 81, minContextPercent: 150 }, // invalid apply → default 80
     ] as Record<string, unknown>[]) {
       validateSmartCompactConfig(sc);
       expect("prepareContextPercent" in sc).toBe(false);
     }
   });
 
-  it("has default minContextPercent of 60", () => {
-    expect(DEFAULT_CONFIG.minContextPercent).toBe(60);
+  it("has default minContextPercent of 80", () => {
+    expect(DEFAULT_CONFIG.minContextPercent).toBe(80);
   });
 
   it("deletes invalid backupDir (number)", () => {

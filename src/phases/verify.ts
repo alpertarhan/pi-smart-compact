@@ -29,6 +29,7 @@ import {
  buildToolCallIndex,
  extractText,
  isNonLiveConstraintText,
+ collapseDecisionsByQuestion,
 } from "../utils/extraction.ts";
 import { normalizeFactKey } from "../utils/helpers.ts";
 import {
@@ -387,7 +388,11 @@ export function formatVerificationGap(gap: VerificationGap): string {
   case "missing-constraint":
    return "Missing constraint: " + gap.text.slice(0, TRUNC.TOPIC_LABEL);
   case "missing-decision":
-   return "Missing decision: " + gap.summary.slice(0, TRUNC.TOPIC_LABEL);
+   return (
+    "Missing decision: " +
+    gap.summary.slice(0, TRUNC.TOPIC_LABEL) +
+    (gap.answer ? " \u2192 " + gap.answer.slice(0, TRUNC.TOPIC_LABEL) : "")
+   );
   case "missing-goal":
    return "Main goal may be missing from summary";
   case "fabricated-file":
@@ -593,7 +598,18 @@ function stemToken(token: string): string {
 }
 
 function semanticTokens(text: string): string[] {
- return (text.normalize("NFKC").match(/[\p{L}\p{N}_-]+/gu) ?? [])
+ // Continuity labels are display metadata, not changes to a carried fact's polarity.
+ // Apostrophes are unified before tokenization so curly typographic quotes
+ // (Don\u{2019}t) cannot hide a negation the straight form would expose, and
+ // negative contractions (don't, doesn't, can't...) expand to their polarity
+ // token "not" before the word tokenizer can drop the apostrophe fragment.
+ const normalized = text
+  .normalize("NFKC")
+  .replace(/[\u{2018}\u{2019}\u{02BC}`\u{00B4}]/gu, "'")
+  .replace(/\bcannot\b/gi, "can not")
+  .replace(/\b(\w+)n't\b/gi, "$1 not")
+  .replace(/^\s*(?:Constraint|Goal|Decision):\s*/i, "");
+ return (normalized.match(/[\p{L}\p{N}_-]+/gu) ?? [])
   .map(stemToken)
   .filter((token) => token.length > 2 || NEGATION_MARKERS.has(token));
 }
@@ -720,7 +736,13 @@ function hasSemanticEvidence(source: string, target: string): boolean {
   concepts.length,
   Math.max(1, Math.ceil(concepts.length * 0.6)),
  );
+ const verbatim = sourceTokens.join(" ");
  return semanticFragments(target).some((tokens) => {
+  // A fragment that normalizes to the exact source token sequence is
+  // faithful evidence by definition; anchor/negation heuristics must not
+  // reject a verbatim rule. The separate contradiction scan still checks
+  // every OTHER fragment beside the verbatim copy.
+  if (tokens.join(" ") === verbatim) return true;
   const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
   if (overlap < required) return false;
   const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
@@ -787,24 +809,248 @@ const TEMPORAL_CONSTRAINT_RE =
  /\b(?:yet|until|before|first|for now|hold off|wait|henüz|şimdilik|önce)\b/iu;
 
 /**
+ * Questions, criticism, and quotations are not permissions. A user asking
+ * "Why did you deploy?" is questioning a rule, not releasing it; ambiguity
+ * keeps the rule. Only explicit statements and imperatives can release.
+ */
+const WH_QUESTION_LEAD_RE =
+ /^(?:why|what|how|when|where|who|whom|which|whose|neden|ni\u00e7in|niye|nas\u0131l|hangi|kim)\b/iu;
+const AUX_QUESTION_LEAD_RE =
+ /^(?:do|does|did|can|could|should|would|will|has|have|had|is|are|was|were|am)\b/i;
+const QUESTION_SUBJECT_RE =
+ /^(?:you|u|i|we|it|they|he|she|this|that|these|those|there)\b/i;
+
+function looksLikeQuestion(text: string): boolean {
+ return text.split(/\r?\n/).some((line) => {
+  const trimmed = line.trim();
+  if (trimmed.endsWith("?")) return true;
+  if (WH_QUESTION_LEAD_RE.test(trimmed)) return true;
+  // Auxiliary inversion ("Did you deploy?") asks; an emphatic imperative
+  // ("Do deploy now.") commands. The auxiliary must be followed by a
+  // subject for the line to be a question.
+  const rest = trimmed.replace(AUX_QUESTION_LEAD_RE, "").trim();
+  return AUX_QUESTION_LEAD_RE.test(trimmed) && QUESTION_SUBJECT_RE.test(rest);
+ });
+}
+
+/** Directed positive evidence of intent, not permission vocabulary
+ * anywhere in the text: a first-person grant ("I approve", "we've allowed")
+ * tied to the actor. Go-ahead leads and anchor-led imperative clauses are
+ * covered by addressee-modal/policy predicates in positiveImperativeEvidence.
+ * Free-floating
+ * words like "actually" or "can" in reports ("The code can deploy…") are
+ * deliberately NOT grants. */
+const FIRST_PERSON_GRANT_RE =
+ /\b(?:i|we)(?:'ve|\s+have)?\s+(?:approv\w+|allow\w+|permitt?\w*|ok(?:ay(?:ed)?)?|confirm\w+|green[- ]?light\w*|sanction\w*)\b/iu;
+
+/** Attributed third-party text (quotes of logs, output, other tools) is a
+ * report, not the user granting anything. Self-reference ("as I said") is
+ * deliberately not listed. */
+const QUOTATION_RE =
+ /\b(?:the log|logs?\b|the (?:output|console|error|diff|dashboard)|according to|it says|it said|they said|reported that|quoted?)\b/iu;
+
+/** A denial of permission is the opposite of a grant: "Permission was
+ * denied", "I did not ask you to" — even when the constrained action and
+ * its opposite polarity appear verbatim. */
+const DENIAL_RE =
+ /\b(?:denied|deny|refus\w*|forbid\w*|retract\w+|did not ask|didn't ask|never asked|never said|not allowed|not permitted|no permission|without permission|wasn't asked|weren't asked)\b/iu;
+
+/**
+ * Criticism, demands for explanation, and quotations are not permissions:
+ * "Explain why you deployed." names the constrained action but questions the
+ * rule instead of lifting it.
+ */
+const CRITICISM_RE =
+ /\b(?:why|how come|explain(?:ing|ed)?|tell me|show me|describe|justify|what were you|supposed to|weren't you|shouldn't you|neden|ni\u00e7in|niye|a\u00e7\u0131kla|anlat|nas\u0131l)\b/iu;
+
+/**
+ * A terse release needs positive go-ahead evidence: an acknowledgement or
+ * permission lead ("ok push it now", "you can…"), or the constrained action
+ * led as a real directive ("deploy it now"). Softeners like "now" or
+ * "actually" alone are not evidence — "Now you deployed…" is a report.
+ */
+/** Acknowledgements and softeners stripped (bounded) before directive
+ * analysis: they set tone, not permission — "OK, you deployed…" is still a
+ * report, while "OK, deploy it now" carries a real directive in the
+ * remainder. Bare copula/permission leads ("you are", "you can") are NOT
+ * strippable and NOT evidence alone; they must participate in a grant
+ * predicate or addressee-modal form. */
+const ACK_STRIP_RE =
+ /^(?:ok(?:ay)?|okey|yes|yep|sure|alright|right|now|actually|please|just|go ahead|go for it|proceed|do it|ship it|approved?|alright then|tamam|olur|onay(?:l\u0131yorum|lanm\u0131\u015ft\u0131r| ver)?|devam(?:\s+et)?|ba\u015fla)[,;:.!\s]+/i;
+
+/** Copula/adjective policy grants ("are allowed", "is permitted", "no longer
+ * required", "can be"). */
+const POLICY_GRANT_PREDICATE_RE =
+ /\b(?:are|is|was|were|be|been|remain(?:s|ed)?)\s+(?:now\s+|hereby\s+|officially\s+)?(?:allowed|permitted|approved|authorized|acceptable|optional|fine|okay|ok|enabled|lifted)|\bno longer\s+(?:required|needed|banned|prohibited|forbidden|necessary)|\bcan\s+be\b|\bmay\s+be\b/i;
+
+/** Addressee-modal grants: the actor is told they can/may act ("you can
+ * deploy", "we may push") — third-party reports ("the code can deploy") do
+ * not authorize anyone. */
+function addresseeModalGrant(anchor: string): RegExp {
+ return new RegExp(
+  "\\b(?:you|y'?all|we|i)\\s+(?:can|could|may|might)\\s+(?:now\\s+|also\\s+|please\\s+|just\\s+)*(?:[\\p{L}]+\\s+){0,2}" +
+   anchor.replace(/[^\p{L}\p{N}_-]/gu, "\\$&") +
+   "\\b",
+  "iu",
+ );
+}
+
+/** Emphatic/softening leads whose NEXT word may be the commanded anchor
+ * ("Do deploy now.", "Please push it"). */
+const IMPERATIVE_LEAD_TOKENS = new Set([
+ "do",
+ "does",
+ "did",
+ "please",
+ "now",
+ "just",
+ "go",
+]);
+
+/** Directive complements: an anchor-led clause is a command only when the
+ * action takes a direct object or adverbial right after it ("deploy it",
+ * "push this", "push the branch", "ship now"). Anchor-led noun statements
+ * ("New dependencies were added…") are reports. Determiners are complements
+ * only for deferral releases; see positiveImperativeEvidence. */
+const DIRECTIVE_COMPLEMENTS = new Set([
+ "it",
+ "them",
+ "this",
+ "that",
+ "these",
+ "those",
+ "everything",
+ "now",
+ "again",
+ "please",
+ "immediately",
+ "today",
+ "tonight",
+ "away",
+ "ahead",
+ "the",
+ "a",
+ "an",
+ "our",
+ "your",
+ "my",
+ "his",
+ "her",
+ "their",
+]);
+
+/** Directive complements checked on the RAW next word: two-letter objects
+ * like "it" are filtered out of semantic tokens, so "deploy it" would
+ * otherwise lose its complement. */
+function anchorFollowedByComplement(
+ clause: string,
+ anchor: string,
+): boolean {
+ const words = clause
+  .split(/\s+/)
+  .map((word) => word.replace(/(^\W+|\W+$)/g, "").toLowerCase())
+  .filter(Boolean);
+ for (let i = 0; i < words.length; i++) {
+  if (stemToken(words[i]) !== anchor) continue;
+  const next = words[i + 1];
+  return next !== undefined && DIRECTIVE_COMPLEMENTS.has(stemToken(next));
+ }
+ return false;
+}
+
+/** Clause-level positive command/grant of the anchor. Acknowledgements and
+ * softeners are stripped first — they are never evidence by themselves —
+ * and the remainder must carry a real directive or grant: an
+ * auxiliary+anchor imperative ("Do deploy now."), an anchor-led command
+ * with a directive complement ("deploy it", "push the branch"), a policy
+ * predicate ("are allowed now"), or an addressee-modal grant ("you can
+ * deploy"). Imperative complements count only for deferral releases; a
+ * standing rule releases on explicit grants alone. Reports, quotes,
+ * denials, and criticism are excluded before this runs. */
+function positiveImperativeEvidence(
+ release: string,
+ anchor: string,
+ allowImperative: boolean,
+): boolean {
+ let rest = release.trim();
+ for (
+  let round = 0;
+  round < 3 && ACK_STRIP_RE.test(rest);
+  round++
+ )
+  rest = rest.replace(ACK_STRIP_RE, "").trim();
+ const modalGrant = addresseeModalGrant(anchor);
+ const clauses = rest
+  .split(/\r?\n|[.;]/)
+  .flatMap((fragment) =>
+   fragment.split(/\s(?:[\u2014\u2013]|-)\s|,\s|;\s|:\s/),
+  )
+  .map((clause) => clause.trim())
+  .filter(Boolean);
+ return clauses.some((clause) => {
+  const tokens = semanticTokens(clause);
+  if (
+   !tokens.includes(anchor) ||
+   hasEffectiveTargetNegation(tokens, anchor)
+  )
+   return false;
+  // Softener/auxiliary + anchor ("Do deploy now.", "Please push it").
+  if (
+   allowImperative &&
+   IMPERATIVE_LEAD_TOKENS.has(tokens[0] ?? "") &&
+   tokens[1] === anchor
+  )
+   return true;
+  // Explicit policy-grant predicate ("are allowed now", "no longer
+  // required") or addressee-modal grant ("you can deploy").
+  if (POLICY_GRANT_PREDICATE_RE.test(clause)) return true;
+  if (modalGrant.test(clause)) return true;
+  // Anchor-led command with a directive complement right after the action.
+  if (
+   allowImperative &&
+   tokens[0] === anchor &&
+   anchorFollowedByComplement(clause, anchor)
+  )
+   return true;
+  return false;
+ });
+}
+
+/**
  * True when `release` (a later user message) frees `constraint`.
  *
  * Two safe paths: a rich release trips the full contradiction check, and a
  * terse release ("ok push it now") flips the polarity of the constrained
- * action — but only for deferral constraints. Standing rules ("never commit
- * directly to main") keep the strict check: a terse imperative sharing one
- * verb must not silently drop a live rule the summary is still checked
- * against.
+ * action — but only for deferral constraints, only with positive go-ahead
+ * evidence, and never for questions or criticism. Standing rules ("never
+ * commit directly to main") keep the strict check: a terse imperative
+ * sharing one verb must not silently drop a live rule the summary is still
+ * checked against.
  */
 export function releasesConstraint(constraint: string, release: string): boolean {
- if (hasSemanticContradiction(constraint, release)) return true;
- if (!TEMPORAL_CONSTRAINT_RE.test(constraint)) return false;
+ if (looksLikeQuestion(release)) return false;
+ if (CRITICISM_RE.test(release)) return false;
+ if (QUOTATION_RE.test(release)) return false;
+ if (DENIAL_RE.test(release)) return false;
  const { anchor, negative } = semanticShape(constraint);
+ const deferral = TEMPORAL_CONSTRAINT_RE.test(constraint);
+ if (hasSemanticContradiction(constraint, release)) {
+  // The polarity flip must itself be a directed grant or command — a
+  // policy predicate, an addressee-modal grant, a first-person grant, or
+  // (for deferrals) a real imperative — never the opposite polarity merely
+  // restated in a report, quote, or complaint. Standing rules release on
+  // explicit grants alone.
+  return (
+   FIRST_PERSON_GRANT_RE.test(release) ||
+   (Boolean(anchor) &&
+    positiveImperativeEvidence(release, anchor, deferral))
+  );
+ }
+ if (!deferral) return false;
  if (!anchor || !negative) return false;
- return semanticFragments(release).some(
-  (tokens) =>
-   tokens.includes(anchor) && !hasEffectiveTargetNegation(tokens, anchor),
- );
+ // One grammar for both paths: after acknowledgement stripping, a real
+ // directive or grant in the remainder.
+ return positiveImperativeEvidence(release, anchor, true);
 }
 
 export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
@@ -858,7 +1104,7 @@ interface CollectedVerificationEvidence {
  unresolved: Array<{ message: string }>;
  resolved: Array<{ message: string }>;
  constraints: Array<{ text: string }>;
- decisions: Array<{ summary: string }>;
+ decisions: Array<{ summary: string; answer: string | null }>;
  goal: string | null;
 }
 
@@ -867,6 +1113,206 @@ interface PathVerificationData {
  read: string[];
  deleted: string[];
  rendered: ReadonlyMap<string, string>;
+}
+
+/**
+ * The question and its answer are one unit: the answer counts as verified
+ * only on a line whose own question it restates. Section-global answer
+ * presence would let swapped answers between two decisions verify 100/100.
+ * Ownership is decided by exact structured identity first (the longest
+ * question key contained in the line's question slot), then fuzzy overlap —
+ * sibling questions share scaffolding like "which … use", so only exact
+ * identity or the discriminating concepts can break ties.
+ */
+function questionOverlapOnLine(question: string, line: string): number {
+ const { concepts } = semanticShape(question);
+ if (!concepts.length) return 0;
+ const required = Math.min(
+  concepts.length,
+  Math.max(1, Math.ceil(concepts.length * 0.6)),
+ );
+ const tokens = semanticTokens(line);
+ const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
+ return overlap >= required ? overlap : 0;
+}
+
+function exactQuestionOwner(
+ head: string,
+ questions: readonly string[],
+): string | null {
+ const headKey = normalizeFactKey(head);
+ if (!headKey) return null;
+ let owner: string | null = null;
+ let ownerLength = -1;
+ for (const question of questions) {
+  const key = normalizeFactKey(question);
+  if (key && headKey.includes(key) && key.length > ownerLength) {
+   owner = question;
+   ownerLength = key.length;
+  }
+ }
+ return owner;
+}
+
+function lineBelongsToQuestion(
+ question: string,
+ head: string,
+ questions: readonly string[],
+): boolean {
+ if (exactQuestionOwner(head, questions) === question) return true;
+ const own = questionOverlapOnLine(question, head);
+ if (!own) return false;
+ return questions.every(
+  (other) =>
+   other === question || questionOverlapOnLine(other, head) < own,
+ );
+}
+
+/** Boundary-guarded containment: "No" must not match "now", "Go" not "Golang". */
+function containsAnswerText(haystack: string, answer: string): boolean {
+ const needle = answer.trim().toLowerCase();
+ if (!needle) return false;
+ const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+ return new RegExp(
+  "(?<![\\p{L}\\p{N}])" + escaped + "(?![\\p{L}\\p{N}])",
+  "iu",
+ ).test(haystack);
+}
+
+/**
+ * An answer verifies a line through exact structured identity first, then
+ * fuzzy semantic evidence. Short or symbolic answers ("Go", "C++", "4")
+ * have no semantic concepts, and an empty concept set vacuously matches
+ * anything — so containment, not overlap, is the primary contract.
+ */
+function lineCarriesAnswer(haystack: string, answer: string): boolean {
+ if (containsAnswerText(haystack, answer)) return true;
+ // Fuzzy evidence only when the answer has concepts: a concept-less
+ // answer ("4", "C++") would vacuously match any fragment.
+ const { concepts } = semanticShape(answer);
+ return concepts.length > 0 && hasSemanticEvidence(answer, haystack);
+}
+
+/** Question+answer slot boundary of one decision line, bound to the KNOWN
+ * question: the arrow whose left side owns that question — exact key
+ * identity preferred over fuzzy overlap, because a partial head before an
+ * arrow that lives inside the question or the answer can fuzzy-match. All
+ * decision consumers (question coverage, answer presence, answer conflict)
+ * share this one parser so the same line can never be re-split differently
+ * by one of them. */
+interface DecisionLineSlots {
+ head: string;
+ tail: string;
+}
+
+function decisionLineSlots(
+ line: string,
+ question: string,
+ questions: readonly string[],
+): DecisionLineSlots | null {
+ let fuzzy: DecisionLineSlots | null = null;
+ for (
+  let index = line.indexOf("\u2192");
+  index >= 0;
+  index = line.indexOf("\u2192", index + 1)
+ ) {
+  const candidateHead = line
+   .slice(0, index)
+   .replace(/\*+/g, "")
+   .trim();
+  const tail = line.slice(index + 1).replace(/\*+/g, "").trim();
+  if (!candidateHead || !tail) continue;
+  if (exactQuestionOwner(candidateHead, questions) === question) {
+   return { head: candidateHead, tail };
+  }
+  if (
+   !fuzzy &&
+   lineBelongsToQuestion(question, candidateHead, questions)
+  ) {
+   fuzzy = { head: candidateHead, tail };
+  }
+ }
+ return fuzzy;
+}
+
+/** Body-level answer-slot stripping for the question coverage scan: cut
+ * each line at the first arrow whose head owns any collected question
+ * (exact owner first, fuzzy owner as fallback), leaving paraphrased lines
+ * uncut when no head owns them. */
+function stripDecisionAnswerTails(
+ decisionBody: string,
+ questions: readonly string[],
+): string {
+ return decisionBody
+  .split(/\r?\n/)
+  .map((line) => {
+   let fuzzyCut = -1;
+   for (
+    let index = line.indexOf("\u2192");
+    index >= 0;
+    index = line.indexOf("\u2192", index + 1)
+   ) {
+    const candidateHead = line
+     .slice(0, index)
+     .replace(/\*+/g, "")
+     .trim();
+    if (!candidateHead) continue;
+    if (exactQuestionOwner(candidateHead, questions) !== null) {
+     return line.slice(0, index);
+    }
+    if (
+     fuzzyCut < 0 &&
+     questions.some((question) =>
+      lineBelongsToQuestion(question, candidateHead, questions),
+     )
+    ) {
+     fuzzyCut = index;
+    }
+   }
+   return fuzzyCut >= 0 ? line.slice(0, fuzzyCut) : line;
+  })
+  .join("\n");
+}
+
+function decisionAnswerPresent(
+ question: string,
+ answer: string,
+ decisionBody: string,
+ questions: readonly string[],
+): boolean {
+ return decisionBody.split(/\r?\n/).some((rawLine) => {
+  const line = rawLine.replace(/^\s*(?:[-*+]\s+)?/, "").trim();
+  return (
+   decisionLineSlots(line, question, questions) !== null &&
+   lineCarriesAnswer(line, answer)
+  );
+ });
+}
+
+/**
+ * A decision line owned by the question but whose arrow slot carries a
+ * DIFFERENT answer ("Q → MongoDB" while the active answer is PostgreSQL) is
+ * an unresolved conflict, not extra evidence. Presence checks alone would
+ * let deterministic repair append the right answer beside the wrong one and
+ * pass. The gap this produces is deliberately unpatchable: removing the
+ * wrong line needs an edit, not an append.
+ */
+function decisionAnswerConflict(
+ question: string,
+ answer: string,
+ decisionBody: string,
+ questions: readonly string[],
+): boolean {
+ for (const rawLine of decisionBody.split(/\r?\n/)) {
+  const line = rawLine.replace(/^\s*(?:[-*+]\s+)?/, "").trim();
+  const slots = decisionLineSlots(line, question, questions);
+  if (!slots || !slots.tail) continue;
+  // A tail that restates the question is a label form, not an answer slot.
+  if (hasSemanticEvidence(question, slots.tail)) continue;
+  if (lineCarriesAnswer(slots.tail, answer)) continue;
+  return true;
+ }
+ return false;
 }
 
 function addGap(
@@ -948,17 +1394,24 @@ function collectVerificationEvidence(
    !isNonLiveConstraintText(item.text) &&
    !retired.has(normalizeFactKey(item.text)),
  );
- const decisions = uniqueByText(
-  [
-   ...extraction.decisions.flatMap((item) =>
-    item.type === "explicit" ? [{ summary: item.summary }] : [],
-   ),
-   ...(continuity?.decisions ?? []).flatMap((item) =>
-    item.type === "explicit" ? [{ summary: item.summary }] : [],
-   ),
-  ],
-  (item) => item.summary,
+ // Decision evidence is the whole question→answer unit, not the bare
+ // question. The shared collapse keeps one active answer per question
+ // (latest non-empty wins) across fallback rendering, state merge, and this
+ // verification — keying on the answer itself would keep both conflicting
+ // answers live.
+ const decisionEntries: Array<{ summary: string; userResponse?: string }> = [
+  ...(continuity?.decisions ?? []),
+  ...extraction.decisions,
+ ].flatMap((item) =>
+  item.type === "explicit"
+   ? [{ summary: item.summary, userResponse: item.userResponse }]
+   : [],
  );
+ const decisions: Array<{ summary: string; answer: string | null }> =
+  collapseDecisionsByQuestion(decisionEntries).map((item) => ({
+   summary: item.summary,
+   answer: item.userResponse?.trim() || null,
+  }));
  return {
   unresolved,
   resolved,
@@ -1111,11 +1564,65 @@ function verifySemanticCoverage(
   }
  }
  const decisionBody = findSection(parsed, "decisions")?.body ?? "";
+ const questions = collected.decisions.map((decision) => decision.summary);
+ // The answer slot is not part of the question: an answer like "No" — or
+ // "No → wait for approval" — must not read as question-level text in the
+ // coverage and contradiction scans.
+ const decisionQuestionBody = stripDecisionAnswerTails(
+  decisionBody,
+  questions,
+ );
  for (const decision of collected.decisions) {
-  if (!hasSemanticEvidence(decision.summary, decisionBody)) {
-   addGap(accumulator, { kind: "missing-decision", summary: decision.summary }, 8);
+  // The question and the answer are separate evidence requirements: a
+  // single composite would let the question's concept overlap satisfy the
+  // check while a wrong or missing answer rides along unverified.
+  const questionVerified = hasSemanticEvidence(
+   decision.summary,
+   decisionQuestionBody,
+  );
+  const answerVerified =
+   !decision.answer ||
+   decisionAnswerPresent(
+    decision.summary,
+    decision.answer,
+    decisionBody,
+    questions,
+   );
+  if (!questionVerified || !answerVerified) {
+   addGap(
+    accumulator,
+    {
+     kind: "missing-decision",
+     summary: decision.summary,
+     // Structured, already-bounded fields: a display composite would have
+     // to be re-split on arrows, which breaks when the question or the
+     // answer itself contains " → ".
+     ...(decision.answer ? { answer: decision.answer } : {}),
+    },
+    8,
+   );
   }
-  if (hasSemanticContradiction(decision.summary, decisionBody)) {
+  if (
+   decision.answer &&
+   decisionAnswerConflict(
+    decision.summary,
+    decision.answer,
+    decisionBody,
+    questions,
+   )
+  ) {
+   addGap(
+    accumulator,
+    {
+     kind: "inconsistency",
+     detail:
+      "decision-answer-conflict: summary carries a different active answer for " +
+      decision.summary.slice(0, TRUNC.SNIPPET),
+    },
+    20,
+   );
+  }
+  if (hasSemanticContradiction(decision.summary, decisionQuestionBody)) {
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: decision contradicts "
@@ -1138,7 +1645,9 @@ function verifyFileReferences(
   ...collected.unresolved.map((item) => item.message),
   ...collected.resolved.map((item) => item.message),
   ...collected.constraints.map((item) => item.text),
-  ...collected.decisions.map((item) => item.summary),
+  ...collected.decisions.map((item) =>
+   item.answer ? item.summary + " \u2192 " + item.answer : item.summary,
+  ),
   ...(collected.goal ? [collected.goal] : []),
   ...extraction.lastUserMessages,
   ...extraction.timeline.map((item) => item.summary),
@@ -1432,13 +1941,25 @@ export function patchDeterministic(
      "- " + safe(gap.text, TRUNC.CONSTRAINT_TEXT),
     );
     break;
-   case "missing-decision":
+   case "missing-decision": {
+    // Structured fields survive the roundtrip: question (≤ DECISION_SUMMARY)
+    // and answer (≤ USER_RESPONSE) are bounded separately — a composite
+    // slice truncated long answers mid-sentence (and re-splitting display
+    // text on arrows breaks when the fields themselves contain " → ").
+    const question = safe(gap.summary, TRUNC.DECISION_SUMMARY);
+    const answer = gap.answer
+     ? safe(gap.answer, TRUNC.USER_RESPONSE)
+     : "";
     canonical = appendToSection(
      canonical,
      "decisions",
-     "- **" + safe(gap.summary, TRUNC.DECISION_SUMMARY) + "**",
+     "- **" +
+     question +
+     "**" +
+     (answer ? " \u2192 " + answer : ""),
     );
     break;
+   }
    case "missing-goal":
     canonical = upsertSection(
      canonical,
@@ -1528,15 +2049,26 @@ function hasUnclosedMarkdownFence(markdown: string): boolean {
  return open !== null;
 }
 
-function patchResponseIsTruncated(
+/** Terminal stop reasons for a complete text response: current pi-ai
+ * normalizes ordinary completion to "stop"; "endTurn" is retained for older
+ * pi-ai/provider fixtures (same contract as assertCompleteBatchResponse). */
+const TERMINAL_STOP_REASON_RE = /^(?:stop|endturn)$/i;
+
+/** Shared completion contract for every LLM-produced text: a terminal stop
+ * reason (any non-terminal reason — "length", "toolUse", "error", "aborted",
+ * "pending", "deferred" — means the response never finished), no truncation
+ * marker, and no dangling Markdown fence. Used by the LLM patch path,
+ * single-pass, and final assembly; the batch path layers its section
+ * contract on top via assertCompleteBatchResponse. */
+export function patchResponseIsTruncated(
  patched: string,
  stopReason: unknown,
 ): boolean {
- const reason = String(stopReason ?? "");
+ const reason = String(stopReason ?? "").trim();
+ // Legacy fixtures may omit the reason; a concrete non-terminal string is
+ // always incomplete regardless of how plausible the text looks.
+ if (reason && !TERMINAL_STOP_REASON_RE.test(reason)) return true;
  return (
-  /(?:length|truncat|max(?:imum)?[_ -]?(?:output[_ -]?)?tokens?|token[_ -]?limit)/i.test(
-   reason,
-  ) ||
   /…✂\d+\s*$/.test(patched) ||
   hasUnclosedMarkdownFence(patched)
  );

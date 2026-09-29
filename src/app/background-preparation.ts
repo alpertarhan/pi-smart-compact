@@ -1,6 +1,6 @@
 /** Opt-in speculative preparation. Application stays in Pi's native compaction lifecycle. */
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { FIVE_MINUTES_MS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
+import { MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig, MetricsSnapshot, PendingCompaction, PreparationDiscardReason } from "../types.ts";
 import { pendingMatchesBranch, revalidatePending } from "./pending-slot.ts";
@@ -51,12 +51,34 @@ export function preparationWindow(
  return { startTokens, applyTokens };
 }
 
+/** Shared execution/status gates; unknown usage fails closed, never means zero pressure. */
+export function contextPressure(
+ ctx: Pick<ExtensionContext, "model" | "getContextUsage">,
+ config: Pick<CompactConfig, "minContextPercent" | "prepareContextPercent" | "maxContextTokens">,
+) {
+ const raw = ctx.getContextUsage?.()?.tokens;
+ const tokens = typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
+ const rawWindow = effectiveContextWindow(ctx.model, config);
+ const policyWindow = typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : null;
+ const gates = policyWindow === null ? null : preparationWindow(config, policyWindow);
+ const cleanupTokens = gates ? Math.ceil(gates.startTokens) : null;
+ const compactionTokens = gates ? Math.ceil(Math.max(MIN_TOKEN_THRESHOLD, gates.applyTokens)) : null;
+ return {
+  tokens, modelWindow: ctx.model?.contextWindow ?? null, policyWindow,
+  percent: tokens !== null && policyWindow !== null ? tokens / policyWindow * 100 : null,
+  cleanupTokens, compactionTokens,
+  cleanup: tokens !== null && cleanupTokens !== null && tokens >= cleanupTokens,
+  compaction: tokens !== null && compactionTokens !== null && tokens >= compactionTokens,
+ };
+}
+
 /** Keep the pipeline on one immutable branch/usage snapshot while the agent continues. */
 function snapshotContext(ctx: ExtensionContext): ExtensionContext {
  const branch = structuredClone(ctx.sessionManager.getBranch());
  const sessionId = resolveSessionId(ctx);
  const sessionFile = ctx.sessionManager.getSessionFile?.();
  const usage = structuredClone(ctx.getContextUsage());
+ const systemPrompt = ctx.getSystemPrompt?.() ?? "";
  const sessionManager = new Proxy(ctx.sessionManager, {
   get(target, key) {
    if (key === "getBranch") return () => branch;
@@ -69,6 +91,7 @@ function snapshotContext(ctx: ExtensionContext): ExtensionContext {
  const snapshot: ExtensionContext = {
   ...ctx, sessionManager, model: ctx.model && { ...ctx.model }, hasUI: false,
   getContextUsage: () => usage,
+  getSystemPrompt: () => systemPrompt,
   ui: { ...ctx.ui, notify() { }, setStatus() { }, setWidget() { } },
  };
  // Silent while healthy; failures are queued and shown at the next real event.
@@ -77,7 +100,7 @@ function snapshotContext(ctx: ExtensionContext): ExtensionContext {
 
 function signature(ctx: ExtensionContext, config: CompactConfig): string {
  const model = ctx.model;
- return JSON.stringify([model?.provider, model?.id, model?.api, model?.contextWindow, model?.maxTokens, config]);
+ return JSON.stringify([model?.provider, model?.id, model?.api, model?.baseUrl, model?.contextWindow, model?.maxTokens, ctx.getSystemPrompt?.(), config]);
 }
 
 function enabled(config: CompactConfig): boolean {
@@ -101,12 +124,14 @@ export function createBackgroundPreparation(options: {
  prepare(ctx: ExtensionContext, config: CompactConfig, signal: AbortSignal): Promise<PendingCompaction | null>;
  now?: () => number;
  ttlMs?: number;
+ /** Effective active-tool definitions, not just names. Never inject this into the model context. */
+ toolSignature?: () => string;
  cooldownMs?: number;
  /** Test seam for the bounded local discard metrics entry. */
  discardRecorder?: (sessionId: string, snapshot: MetricsSnapshot, reason: PreparationDiscardReason) => void | Promise<boolean>;
 }) {
  const now = options.now ?? Date.now;
- const ttlMs = options.ttlMs ?? FIVE_MINUTES_MS;
+ const signatureOf = (ctx: ExtensionContext, config: CompactConfig) => signature(ctx, config) + (options.toolSignature?.() ?? "");
  const cooldownMs = options.cooldownMs ?? SETTLED_TRIGGER_COOLDOWN_MS;
  // ponytail: one speculative task per extension; per-session scheduling only if concurrent servers need it.
  let current: Preparation | null = null;
@@ -157,8 +182,8 @@ export function createBackgroundPreparation(options: {
  ): PreparationDiscardReason | null => {
   if (!enabled(config)) return "config";
   if (task.sessionId !== resolveSessionId(ctx)) return "session";
-  if (task.signature !== signature(ctx, config)) return "config";
-  if (now() - (task.readyAt ?? task.createdAt) > ttlMs) return "ttl";
+  if (task.signature !== signatureOf(ctx, config)) return "config";
+  if (now() - (task.readyAt ?? task.createdAt) > (options.ttlMs ?? config.pendingTtlMs)) return "ttl";
   const branch = ctx.sessionManager.getBranch();
   const origin = branch.findIndex(entry => entry.id === task.originId);
   // New messages are fine; a new projection/compaction requires a new snapshot.
@@ -189,14 +214,18 @@ export function createBackgroundPreparation(options: {
   const originId = snapshot.sessionManager.getBranch().at(-1)?.id;
   if (!originId) return;
   const task: Preparation = {
-   sessionId, originId, signature: signature(ctx, config),
+   sessionId, originId, signature: signatureOf(ctx, config),
    controller: new AbortController(), createdAt: now(), ctx,
   };
   current = task;
   lastAttempt = { sessionId, at: now() };
   // Only lower the admission gate, not retention policy or reduction targets.
   const preparationConfig = { ...config, minContextPercent: startTokens / window * 100 };
-  track(Promise.resolve().then(() => options.prepare(snapshot, preparationConfig, task.controller.signal))
+  track(Promise.resolve().then(() => {
+   if (current !== task || task.controller.signal.aborted) return null;
+   if (!valid(task, ctx, config)) { cancel("config"); return null; }
+   return options.prepare(snapshot, preparationConfig, task.controller.signal);
+  })
    .then(pending => {
     if (pending) { task.pending = pending; task.readyAt = now(); }
     if (current !== task || task.controller.signal.aborted) {

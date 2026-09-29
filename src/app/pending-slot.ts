@@ -24,9 +24,11 @@ export function pendingMatchesBranch(pending: PendingCompaction, branch: readonl
 }
 
 /** Capture before preparation starts, not after a possibly long-running provider call. */
-export function readerSignature(ctx: Pick<ExtensionContext, "model">): string | undefined {
+export function readerSignature(ctx: Pick<ExtensionContext, "model"> & Partial<Pick<ExtensionContext, "getSystemPrompt">>): string | undefined {
   const model = ctx.model;
-  return model && JSON.stringify([model.provider, model.id, model.api, model.baseUrl, model.contextWindow, model.maxTokens]);
+  const prompt = ctx.getSystemPrompt?.();
+  return model && JSON.stringify([model.provider, model.id, model.api, model.baseUrl, model.contextWindow, model.maxTokens,
+    prompt === undefined ? null : createHash("sha256").update(prompt).digest("hex")]);
 }
 
 /** Shared final gate for foreground and background candidates. Missing proof fails closed. */
@@ -78,7 +80,7 @@ export interface PendingSlot {
 }
 
 export interface PendingSlotOptions {
-  ttlMs: number;
+  ttlMs: number | (() => number);
   now?: () => number;
   maxEntries?: number;
 }
@@ -89,7 +91,7 @@ interface PendingEntry {
 }
 
 export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
-  const ttlMs = opts.ttlMs;
+  const ttlMs = () => typeof opts.ttlMs === "function" ? opts.ttlMs() : opts.ttlMs;
   const now = opts.now ?? Date.now;
   const maxEntries = Math.max(1, opts.maxEntries ?? 64);
   const entries = new Map<string, PendingEntry>();
@@ -107,7 +109,7 @@ export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
     const current = now();
     let removedNewest = false;
     for (const [sessionId, entry] of entries) {
-      if (current - entry.createdAt <= ttlMs) continue;
+      if (current - entry.createdAt <= ttlMs()) continue;
       entries.delete(sessionId);
       if (newestSessionId === sessionId) removedNewest = true;
     }
@@ -133,7 +135,7 @@ export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
       const entry = entries.get(currentSessionId);
       if (entry) {
         const ageMs = now() - entry.createdAt;
-        if (ageMs > ttlMs) {
+        if (ageMs > ttlMs()) {
           deleteEntry(currentSessionId);
           prune();
           return { kind: "expired", ageMs };

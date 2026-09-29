@@ -7,9 +7,9 @@ Pi Continuity is the product name only. Settings keep their technical names:
 everything lives under the `smartCompact` key, and the settings screen is opened
 with `/smart-compact settings`.
 
-Defaults on this page were checked against Pi Continuity `10.0.1`. For an older
-installation, use [the changelog](../CHANGELOG.md) and the
-[upgrade notes](./guide.md#upgrade-from-9x) before adopting these settings.
+Defaults describe the shipped `10.1.0` working tree, including the pressure-first
+changes. See [the changelog](../CHANGELOG.md) for the release scope and
+evidence limits before adopting these settings.
 
 ## Contents
 
@@ -75,8 +75,8 @@ means all defaults are used.
 | Hand edits to `settings.json` | Next operation (the file's modification time is checked). Active tools and footer refresh on `/reload` or session restore; no file watcher runs. |
 
 Changing agent-tool settings from the TUI re-applies the tool list at once.
-Groups the agent loaded through `smart_tools` are forgotten at session start,
-on a branch change and after a compaction; see
+In optional lazy mode, loaded groups are forgotten at session start and branch
+changes, but retained across compaction to preserve the tool prefix; see
 [agent tools](./guide.md#agent-tools).
 
 ## How settings combine
@@ -114,14 +114,14 @@ nothing new is stored.
 
 | Preset | `autoTrigger` | `autoTriggerStrategy` | `contextHygieneEnabled` | `agentToolAccess` |
 | --- | --- | --- | --- | --- |
-| `With Pi (default)` | `true` | `native-hook` | `false` | `inherit` |
+| `Pressure-first (default)` | `true` | `settled` | `true` | `inherit` |
 | `Manual only` | `false` | unchanged | `false` | `disabled` |
 | `Manual + agent` | `false` | unchanged | `false` | `enabled` |
 | `Cleanup only` | `false` | unchanged | `true` | `disabled` |
 | `Fully automatic` | `true` | `settled` | `true` | `disabled` |
 
-`With Pi (default)` is the unchanged built-in default, not a preset you pick.
-Any other combination is shown as `Custom` with a one-line description. Existing
+`Pressure-first (default)` is the built-in default, not a preset you pick.
+Cleanup timing defaults to pressure-only. Other combinations are shown as `Custom`. Existing
 `native-hook` configurations are not migrated to `settled`.
 
 ### Summary format
@@ -151,8 +151,8 @@ compaction. `autoTriggerStrategy` chooses how it starts.
 
 | `autoTriggerStrategy` | TUI label (`Start when`) | Who decides when | Needs Pi auto-compaction |
 | --- | --- | --- | --- |
-| `native-hook` (default) | `Before Pi's compaction` | Pi | Yes |
-| `settled` | `When idle` | Smart Compact, at an idle boundary | No |
+| `native-hook` | `Before Pi's compaction` | Pi | Yes |
+| `settled` (default) | `When idle` | Smart Compact, at an idle boundary | No |
 | `background` | `Prepare in background` | Smart Compact; also prepares early | No |
 
 Rules that hold for all strategies:
@@ -176,9 +176,11 @@ not as on. If it is off, nothing compacts automatically.
 
 At the next idle, queue-empty boundary where context is at least
 `minContextPercent` of the active model's window (and at least 5,000 tokens),
-Smart Compact asks Pi to compact. A running tool loop is not interrupted. After
-any confirmed compaction there is a 10-minute cooldown. Pi's own threshold and
-overflow triggers stay active.
+Smart Compact asks Pi to compact. A running tool loop is not interrupted. Every
+finished attempt starts a 10-minute cooldown, including errors, synchronous
+host failures and missing-callback timeouts, so repeated idle events do not
+spend another compaction budget. Confirmed compactions also start the cooldown.
+Manual requests and Pi's own threshold and overflow triggers stay available.
 
 ### background: early preparation
 
@@ -192,15 +194,15 @@ hides latency, not cost: an unused summary still spends its model budget.
 | `prepareContextPercent: null` (Auto) | Starts 12.5% of the apply-token threshold earlier, bounded to 8,192–32,000 tokens |
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
-| Ready result lifetime | 5 minutes |
-| Context hygiene | Pressure-gated trims run under this strategy even if `contextHygieneEnabled` is off (needs active `smart_context`); break-even and cold-cache trims need `contextHygieneEnabled` |
+| Ready result lifetime | `pendingTtlMs` (default 5 minutes) |
+| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off; economic/cold-cache timing additionally requires `contextPressureOnly: false` |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
 window, preparation starts at 120k and applies at 140k. With Auto and an 80%
 apply gate in a 200k window, preparation starts at 140k (160k minus a 20k lead).
 
 At apply, the prepared summary is revalidated against session, branch,
-projected content, model, configuration, target and response headroom. A
+projected content, model, effective system/tool definitions, configuration, target and response headroom. A
 changed, expired or unfinished preparation is discarded, and Smart Compact
 falls back to a normal run or Pi's own compactor. New messages after the
 snapshot stay verbatim. When cleanup changes the context first, preparation
@@ -280,6 +282,11 @@ Per-run options accept narrower ranges than the settings:
 | Prompt tokens | `--max-input-tokens` / `max_input_tokens`: 10,000–1,000,000 | `maxLlmInputTokens`: 0–1,000,000 |
 | Deadline (ms) | `--max-latency` / `max_latency_ms`: 5,000–600,000 | `maxLatencyMs`: 0 or 5,000–7,200,000 |
 
+Optional exploration leaves two calls for batch synthesis and final assembly;
+with two or fewer calls remaining it is skipped. Batch retries and queued work
+also preserve the final assembly call. This does not raise call, token or time
+limits, and cannot guarantee provider success.
+
 Running out of calls or tokens falls back to a deterministic summary. A deadline
 or cancellation stops the run: no staged summary, no apply, and a manual
 timeout does not start Pi's compactor.
@@ -353,7 +360,8 @@ choice because a rejected provider request falls back to the smart summary.
 
 ## Context hygiene and archives
 
-All three switches are off by default. Automatic trimming and offload run only
+Pressure-gated automatic trimming is on by default; offload and image snapshots
+remain opt-in. Automatic trimming and offload run only
 while the model can reach `smart_context`: active, or loadable through
 `smart_tools` in On demand mode. With agent tools `off`, or `smart_context`
 hidden with `/tools`, new automatic trims and offloads stop; existing archives
@@ -361,7 +369,8 @@ stay on disk and manual `/smart-compact trim` still works.
 
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
-| `contextHygieneEnabled` | `Automatic cleanup` | `false` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction; commits under pressure, at break-even, or once the prompt cache is cold (below). Works with `autoTrigger: false`. |
+| `contextHygieneEnabled` | `Automatic cleanup` | `true` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction. Works with `autoTrigger: false`. |
+| `contextPressureOnly` | `Cleanup timing` | `true` | Automatic cleanup and agent trim/rewind/anchor requests require the early pressure gate. `false` opts into the legacy economic/cold-cache timing below. Human commands bypass pressure, never safety checks. |
 | `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
@@ -386,6 +395,13 @@ These limits are not configurable. Behavior and examples are in the guide's
 
 ### Automatic trim timing
 
+Default: only `pressure` can trigger automatic cleanup. The shared early gate is
+`prepareContextPercent`, or the adaptive lead when null. A 400k policy window
+with the default 80% apply gate cleans from 288k and compacts from 320k.
+Unknown usage does not authorize cleanup. First-delivery offload and metadata
+checkpoints do not rewrite cached history and remain independent of pressure.
+
+The following economics apply **only with `contextPressureOnly: false`**.
 Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
 the estimated tokens of every message from the first trimmed output to the
 end, the part of the prompt cache a trim rewrites. With the active model's
@@ -405,8 +421,8 @@ At a completed turn boundary a ready batch commits with cause:
   requests keep them, and the edits commit at the next completed, uncontested
   turn.
 
-An unknown price only allows `pressure` and `cold`. Manual and agent trims
-commit at the next boundary as before (causes `manual`, `agent`).
+An unknown price only allows `pressure` and `cold`. Manual and permitted agent trims
+commit at the next boundary (causes `manual`, `agent`).
 
 A Pi cache-warming refresh counts as a response for this expiry. While a
 batch is held, warming stops once
@@ -415,8 +431,16 @@ miss cost net of the removed output's cache write; `w'` is the cache-write
 price per million tokens, or the input price when none is listed).
 
 A newer compaction, context edit, session change, queued manual/agent request,
-or turning `contextHygieneEnabled` off drops the held batch. Prices are
-catalog ratios, not measured cache behavior.
+or turning `contextHygieneEnabled` off drops the held batch. Re-enabling
+pressure-only cancels unconsumed economic plans. Prices and cache lifetimes
+here are heuristics, not measured provider cache behavior.
+
+Trim/rewind refuse edits that would invalidate retained signed Anthropic
+thinking. Keeping thinking bytes unchanged alone is insufficient. Use a
+supported provider-native compaction route instead; native support remains opt-in.
+A new anchor can request one safe cleanup of its new region before first replay;
+previous anchor prefixes and recent turns remain protected. Anchor creation alone
+does not invalidate an append-only background snapshot.
 
 ## Agent tools and session navigation
 
@@ -424,7 +448,7 @@ Settings → **Agent tools & navigation**.
 
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
-| `toolLoading` | `Agent tools` | `lazy` | `lazy` (On demand): the agent sees the `smart_tools` loader and loads the `navigation`, `history`, `memory` or `compaction` group when needed; loaded groups reset at session start, branch change and compaction. `eager` (Always available): every permitted tool is active from the start. `off`: no context tools; Home, `/smart-compact` and the navigation panel keep working. |
+| `toolLoading` | `Agent tools` | `eager` | `eager` (Always available): permitted tools are present from the start, keeping their prefix stable. `lazy` (On demand): load groups through `smart_tools`; late loading can rebuild the cache. Loaded groups reset at session start/branch change, not compaction. `off`: no agent context tools; human commands and navigation keep working. |
 | `contextNavigationEnabled` | `Session navigation` | `true` | Anchors, search and returning to an anchor. Off hides the panel and `smart_navigation`; recorded anchors and the keys below are kept. |
 | `contextRecallEnabled` | `Search other sessions` | `true` | Read-only search of anchors saved by earlier sessions, this project by default. |
 | `contextPivotEnabled` | `Return to an anchor` | `true` | Returning to an anchor on a new branch with a required carryover. |
@@ -487,11 +511,11 @@ Hindsight setup, data flow and troubleshooting:
 | `summaryThinkingLevel` | level \| `null` | `minimal` | `Summary thinking` |
 | `segmentationThinkingLevel` | level \| `null` | `minimal` | `Topic split thinking` |
 | `agentToolAccess` | `inherit` \| `enabled` \| `disabled` | `inherit` | `Agent can compact` |
-| `toolLoading` | `lazy` \| `eager` \| `off` | `lazy` | `Agent tools` |
+| `toolLoading` | `lazy` \| `eager` \| `off` | `eager` | `Agent tools` |
 | `autoTrigger` | boolean | `true` | `Automatic compaction` |
-| `autoTriggerStrategy` | `native-hook` \| `settled` \| `background` | `native-hook` | `Start when` |
-| `minContextPercent` | 0–100 | `60` | `Start at context %` |
-| `prepareContextPercent` | `null` or 0–100, below `minContextPercent` | `null` | `Prepare at context %` |
+| `autoTriggerStrategy` | `native-hook` \| `settled` \| `background` | `settled` | `Start when` |
+| `minContextPercent` | 0–100 | `80` | `Start at context %` |
+| `prepareContextPercent` | `null` or 0–100, below `minContextPercent` | `null` | `Cleanup / prepare at context %` |
 | `maxContextTokens` | `0` (off) or integer 16,384–2,000,000 | `0` | `Context cap for start % (tokens)` |
 | `autoTriggerTimeoutMs` | integer 1,000–300,000 | `120000` | `Automatic run time limit (ms)`; capped at 60 s |
 | `compactionEngines` | ordered list of `eesv`, `native` | `["eesv"]` | `Engine` |
@@ -502,7 +526,8 @@ Hindsight setup, data flow and troubleshooting:
 | `maxLatencyMs` | `0` or integer 5,000–7,200,000 | `0` (no limit) | `Run time limit (ms)` |
 | `codexMaxCallMs` | `0` or integer 5,000–3,600,000 | `0` (auto 15–90 s) | `Stuck-call timeout (ms)` |
 | `pendingTtlMs` | integer 1,000–3,600,000 | `300000` | `Prepared summary lifetime (ms)` |
-| `contextHygieneEnabled` | boolean | `false` | `Automatic cleanup` |
+| `contextHygieneEnabled` | boolean | `true` | `Automatic cleanup` |
+| `contextPressureOnly` | boolean | `true` | `Cleanup timing` |
 | `artifactOffloadEnabled` | boolean | `false` | `Offload huge outputs` |
 | `visualArchiveEnabled` | boolean | `false` | `Image snapshots` |
 | `pinPaths` | string array | `[]` | `Always-kept files` |
@@ -537,10 +562,9 @@ Notes on specific keys:
   apply gate for automatic and agent runs and the replacement gate for
   `native-hook`. Manual `/smart-compact` shows a warning and ignores it. A
   5,000-token floor always applies.
-- `pendingTtlMs` is how long a summary returned to Pi waits for Pi's matching
-  compaction confirmation. It does not change the fixed 5-minute window in
-  which a summary staged by the `smart_compact` tool must be applied with
-  `/compact`, or the 5-minute lifetime of a background preparation.
+- `pendingTtlMs` governs staged and ready background summaries (default five
+  minutes), as well as the host-confirmation retention budget. Changing it
+  never permits reuse of a changed prefix or an unsafe retained tail.
 - `showStatus` adds a footer note only when compaction is manual-only or
   disabled. Nothing is shown while healthy, and background preparation is not
   shown in the footer.
@@ -569,6 +593,45 @@ Notes on specific keys:
 | `hindsightLocalFallback` | Removed; reported as stale and ignored |
 
 ## Examples
+
+### Cache-first automatic compaction
+
+Keep roomy cached history stable, clean under pressure, and avoid paying for
+speculative summaries that may expire unused:
+
+```json
+{
+  "smartCompact": {
+    "autoTrigger": true,
+    "autoTriggerStrategy": "settled",
+    "toolLoading": "eager",
+    "contextHygieneEnabled": true,
+    "contextPressureOnly": true,
+    "minContextPercent": 80,
+    "maxContextTokens": 0,
+    "artifactOffloadEnabled": true
+  }
+}
+```
+
+With the optional cap off, thresholds follow Pi's active model `contextWindow`,
+including `models.json` overrides: a 400k window cleans at 288k and compacts at
+320k; a 1M window cleans at 768k and compacts at 800k. The adaptive lead is bounded,
+not a fixed 72% cleanup threshold. After editing model metadata, reselect the
+model through Pi so its active model reflects the override. Overrides are scoped
+to a provider/model pair and cannot enlarge the backend's actual capacity.
+
+Existing summary budgets remain unchanged. Compaction waits
+for an idle, queue-empty boundary; long tool loops can still grow before that
+boundary, and preparing the summary adds latency when it is needed. Offload
+shortens eligible large search/web results before their first model request,
+not cached history; file reads and shell output stay inline. Bound those at
+the tool call with ranges, symbols or concise command output. Retrieval can
+spend tokens too, so smaller context alone is not proof of lower billed cost.
+For a lower automatic trigger threshold on large-window models, set
+`maxContextTokens`; it is not a hard per-request token limit.
+
+### Other configurations
 
 Cleanup and offload without automatic compaction, with every permitted tool
 visible to the agent from the start:

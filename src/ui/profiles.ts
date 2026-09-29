@@ -60,7 +60,7 @@ export const BEHAVIOR_PROFILES: readonly ProfileOption<BehaviorProfileId>[] = [
   {
     id: "cleanup",
     label: "Cleanup only",
-    summary: "Moves old tool output out of the context when it pays off, when the prompt cache is cold, or when context gets full. Local, no model calls; never compacts by itself.",
+    summary: "Archives safe old output using Cleanup timing (pressure-only by default). No model call, but history edits can rebuild the cache; never compacts by itself.",
     patch: { autoTrigger: false, contextHygieneEnabled: true, agentToolAccess: "disabled" },
   },
   {
@@ -71,7 +71,7 @@ export const BEHAVIOR_PROFILES: readonly ProfileOption<BehaviorProfileId>[] = [
   },
 ];
 
-type BehaviorFlags = Pick<CompactConfig, "autoTrigger" | "autoTriggerStrategy" | "contextHygieneEnabled" | "agentToolAccess">;
+type BehaviorFlags = Pick<CompactConfig, "autoTrigger" | "autoTriggerStrategy" | "contextHygieneEnabled" | "contextPressureOnly" | "agentToolAccess">;
 
 const STRATEGY_WORDS: Record<CompactConfig["autoTriggerStrategy"], string> = {
   "native-hook": "with Pi",
@@ -90,11 +90,12 @@ export function deriveBehaviorProfile(config: BehaviorFlags): DerivedProfile<Beh
   if (config.autoTrigger === DEFAULT_CONFIG.autoTrigger &&
       config.autoTriggerStrategy === DEFAULT_CONFIG.autoTriggerStrategy &&
       config.contextHygieneEnabled === DEFAULT_CONFIG.contextHygieneEnabled &&
+      config.contextPressureOnly === DEFAULT_CONFIG.contextPressureOnly &&
       config.agentToolAccess === DEFAULT_CONFIG.agentToolAccess) {
     return {
       id: "custom",
-      label: "With Pi (default)",
-      detail: "Replaces Pi's summary when Pi's own auto-compaction fires; agent access follows Pi.",
+      label: "Pressure-first (default)",
+      detail: "Batched cleanup under early pressure, then idle compaction at the apply gate; agent access follows Pi.",
     };
   }
   // Presets that leave the trigger off do not pin its timing.

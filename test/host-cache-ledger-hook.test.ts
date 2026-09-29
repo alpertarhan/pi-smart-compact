@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import smartCompactExtension from "../src/index.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
-import { resetIssuesForTests } from "../src/utils/issues.ts";
+import { recentIssues, resetIssuesForTests } from "../src/utils/issues.ts";
 
 const originalHome = process.env.HOME;
 let home: string;
@@ -63,7 +63,7 @@ const assistant = (usage: { input: number; cacheRead: number; cacheWrite: number
 });
 
 describe("host prompt-cache ledger through the extension hooks", () => {
-  it("warns once at the third prompt-cache rebuild that no Continuity edit preceded", async () => {
+  it("records foreign rebuilds without duplicating Pi's cache-miss notification", async () => {
     const { dispatch } = extension();
     const notifications: string[] = [];
     const ctx = context("ledger-session", notifications);
@@ -78,9 +78,10 @@ describe("host prompt-cache ledger through the extension hooks", () => {
     // User and tool messages carry no usage and never count.
     await dispatch("message_end", { type: "message_end", message: { role: "user", content: "next", timestamp: 7_000 } }, ctx);
     await dispatch("message_end", { type: "message_end", message: assistant({ input: 1_000, cacheRead: 0, cacheWrite: 105_000 }, 8_000) }, ctx);
-    const warnings = notifications.filter((message) => message.includes("prompt cache was rebuilt 3 times this session with no Continuity edit"));
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("318,000 uncached prompt tokens");
+    expect(notifications.filter(message => message.includes("prompt cache was rebuilt"))).toHaveLength(0);
+    const issue = recentIssues().find(item => item.key === "cache.foreign-rebuilds");
+    expect(issue?.message).toContain("318,000 uncached prompt tokens");
+    expect(issue?.count).toBe(1);
   });
 
   it("attributes a rebuild after Continuity's own compaction and stays silent", async () => {

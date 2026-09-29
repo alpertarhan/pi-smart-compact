@@ -630,6 +630,9 @@ export function explorationToolSupportKey(model: Model<Api>): string {
  return [model.provider, model.api, model.baseUrl ?? "", model.id].join("\0");
 }
 
+// Optional exploration must leave one batch call and one final assembly call.
+const SYNTHESIS_CALL_RESERVE = 2;
+
 export async function exploreConversation(
  llmMessages: LlmMessage[], extraction: StructuredExtraction, model: Model<Api>,
  auth: { apiKey: string; headers?: ProviderHeaders },
@@ -650,6 +653,10 @@ export async function exploreConversation(
  const cachedSupport = toolSupport.get(cacheKey, now);
 
  let supportsTools = cachedSupport === true;
+ if (svc.budget.remainingCalls() <= SYNTHESIS_CALL_RESERVE) {
+  notify?.("Explore skipped · remaining calls reserved for synthesis", "info");
+  return { report: fallbackExplorationReport(llmMessages), rounds: 0, toolSupported: supportsTools };
+ }
  try {
   if (cachedSupport === false) {
    // Provider known to not support tools — skip probe
@@ -733,7 +740,7 @@ export async function exploreConversation(
    }
 
    let rounds = 1;
-   while (rounds < maxRounds) {
+   while (rounds < maxRounds && svc.budget.remainingCalls() > SYNTHESIS_CALL_RESERVE) {
     rounds++;
     let response: Awaited<ReturnType<typeof trackedComplete>>;
     try {
@@ -803,7 +810,7 @@ export async function exploreConversation(
     }
    }
 
-   // Tool-call loop hit `maxRounds` without producing a parseable report.
+   // Tool-call loop hit its round/call allowance without a parseable report.
    // Try the last assistant message anyway; otherwise fall through to the
    // direct-exploration fallback below. Provider IS tool-capable here
    // (we did see toolCalls in the probe), so `supportsTools` stays true.
@@ -910,6 +917,8 @@ async function explorationRetry(
  signal?: AbortSignal,
  services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
+ const svc = services ?? getDefaultServices();
+ if (svc.budget.remainingCalls() <= SYNTHESIS_CALL_RESERVE) return fallbackExplorationReport(llmMessages);
  const last5 = llmMessages
   .slice(-5)
   .map(
@@ -955,7 +964,7 @@ async function explorationRetry(
     ),
     signal,
    },
-   services,
+   svc,
   );
   const text = resp.content
    .filter(
@@ -1024,11 +1033,13 @@ async function directExploration(
  prevSummary: string | undefined, userNote: string | undefined, signal?: AbortSignal,
  services?: SmartCompactServices,
 ): Promise<ExplorationReport> {
+ const svc = services ?? getDefaultServices();
+ if (svc.budget.remainingCalls() <= SYNTHESIS_CALL_RESERVE) return fallbackExplorationReport(llmMessages);
  const request = buildDirectExplorationRequest(llmMessages, extraction, model, prevSummary, userNote);
  try {
   const resp = await trackedComplete("explore-direct", model, request.context, {
    apiKey: auth.apiKey, headers: auth.headers, maxTokens: request.maxTokens, signal,
-  }, services);
+  }, svc);
   const text = resp.content
    .filter(
     (c): c is import("@earendil-works/pi-ai").TextContent =>

@@ -11,6 +11,7 @@ import {
   extractMediaAttachments,
   extractStructured,
   nestedToolCallId,
+  collapseDecisionsByQuestion,
 } from "../src/utils/extraction.ts";
 import type { LlmMessage, ProfileConfig } from "../src/types.ts";
 import { EXTRACTION_LIMITS } from "../src/constants.ts";
@@ -532,6 +533,123 @@ describe("extractDecisions", () => {
     expect(dec.length).toBe(1);
     expect(dec[0].type).toBe("implicit");
   });
+
+  it("binds the ask_user result by tool-call id past interleaved parallel results (A06)", () => {
+    const assistant = {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "decision", name: "ask_user", arguments: { question: "Which database should we use?" } },
+        ...Array.from({ length: 3 }, (_, i) => ({
+          type: "toolCall",
+          id: "other-" + i,
+          name: "read",
+          arguments: { path: "file-" + i + ".ts" },
+        })),
+      ],
+    };
+    const msgs = [
+      assistant,
+      ...Array.from({ length: 3 }, (_, i) => ({
+        role: "toolResult",
+        toolCallId: "other-" + i,
+        content: "Read completed",
+      })),
+      { role: "toolResult", toolCallId: "decision", content: "User answered: PostgreSQL" },
+    ];
+    const decisions = extractDecisions(msgs as unknown as LlmMessage[]);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].type).toBe("explicit");
+    expect(decisions[0].summary).toContain("Which database should we use?");
+    expect(decisions[0].userResponse).toContain("PostgreSQL");
+  });
+
+  it("keeps each ask_user answer bound to its own call id (A06)", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "a", name: "ask_user", arguments: { question: "First question?" } },
+          { type: "toolCall", id: "b", name: "ask_user", arguments: { question: "Second question?" } },
+        ],
+      },
+      { role: "toolResult", toolCallId: "b", content: "Answer two" },
+      { role: "toolResult", toolCallId: "a", content: "Answer one" },
+    ];
+    const decisions = extractDecisions(msgs as unknown as LlmMessage[]);
+    expect(decisions).toHaveLength(2);
+    const first = decisions.find((d) => d.summary.includes("First"));
+    const second = decisions.find((d) => d.summary.includes("Second"));
+    expect(first?.userResponse).toContain("Answer one");
+    expect(second?.userResponse).toContain("Answer two");
+  });
+
+  it("leaves the decision open when no matching result ever arrives (A06)", () => {
+    const msgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "decision", name: "ask_user", arguments: { question: "Which database?" } },
+          { type: "toolCall", id: "other", name: "read", arguments: { path: "x.ts" } },
+        ],
+      },
+      { role: "toolResult", toolCallId: "other", content: "Read completed" },
+    ];
+    expect(extractDecisions(msgs as unknown as LlmMessage[])).toEqual([]);
+  });
+});
+
+describe("catalogErrors retry resolution (A07)", () => {
+  const exec = (id: string, command = "bun test") =>
+    ({
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+    }) as unknown as LlmMessage;
+  const execResult = (id: string, text: string, isError = false) =>
+    ({
+      role: "toolResult",
+      toolCallId: id,
+      isError,
+      content: text,
+    }) as unknown as LlmMessage;
+
+  it("does not resolve an error when the retry result text still fails (A07)", () => {
+    const failure = "Error: assertion failed\nCommand exited with code 1";
+    const errors = catalogErrors([
+      exec("1"),
+      execResult("1", failure),
+      exec("2"),
+      execResult("2", failure),
+    ]);
+    expect(errors).toHaveLength(2);
+    expect(errors[0].retryAttempted).toBe(true);
+    expect(errors[0].resolved).toBe(false);
+    expect(errors[1].resolved).toBe(false);
+  });
+
+  it("resolves every related earlier error when a later retry succeeds (A07)", () => {
+    const errors = catalogErrors([
+      exec("1"),
+      execResult("1", "Error: assertion failed", true),
+      exec("2"),
+      execResult("2", "Error: assertion failed", true),
+      exec("3"),
+      execResult("3", "3 pass\n0 fail"),
+    ]);
+    expect(errors).toHaveLength(2);
+    expect(errors.map((error) => error.resolved)).toEqual([true, true]);
+    expect(errors.map((error) => error.retryAttempted)).toEqual([true, true]);
+  });
+
+  it("keeps an unrelated command's success from resolving an error (A07)", () => {
+    const errors = catalogErrors([
+      exec("1", "bun test"),
+      execResult("1", "Error: assertion failed", true),
+      exec("2", "rg pattern"),
+      execResult("2", "3 matches"),
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].resolved).toBe(false);
+  });
 });
 
 describe("mineConstraints", () => {
@@ -575,6 +693,28 @@ describe("mineConstraints", () => {
     ];
     const cons = mineConstraints(msgs);
     expect(cons.length).toBe(0);
+  });
+});
+
+describe("collapseDecisionsByQuestion (A08 edges)", () => {
+  it("treats whitespace-only responses as absent, not new answers", () => {
+    const collapsed = collapseDecisionsByQuestion([
+      { summary: "Which database should we use?", userResponse: "PostgreSQL" },
+      { summary: "Which database should we use?", userResponse: "   " },
+    ]);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0].userResponse).toBe("PostgreSQL");
+  });
+
+  it("keeps the latest ANSWERED record's provenance, not the earliest entry's", () => {
+    const collapsed = collapseDecisionsByQuestion([
+      { summary: "Which database should we use?", type: "implicit" as const, index: 0 },
+      { summary: "Which database should we use?", type: "explicit" as const, index: 2, userResponse: "SQLite" },
+    ]);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0].userResponse).toBe("SQLite");
+    expect(collapsed[0].type).toBe("explicit");
+    expect(collapsed[0].index).toBe(2);
   });
 });
 

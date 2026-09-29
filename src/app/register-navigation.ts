@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
@@ -9,8 +10,81 @@ import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { notifyUser } from "../utils/issues.ts";
 import { readContextGuide } from "./context-guide.ts";
+import { contextPressure } from "./background-preparation.ts";
 import type { ContextEditKind } from "./host-cache-ledger.ts";
 import { ANCHOR_CUSTOM_TYPE, NAVIGATION_TOOL_NAME, anchorFromEntry, getAnchors, getEditorInjectionFor, listAnchors, recallAnchors, resolveAnchorTarget } from "./navigation-data.ts";
+import {
+ expandHint,
+ expandedRow,
+ firstTextContent,
+ metaLine,
+ rawFallbackRow,
+ safeArg,
+ statusLabel,
+ summarizeLine,
+ tryRow,
+} from "../ui/tool-rows.ts";
+
+interface RenderableResult {
+  content?: ReadonlyArray<{ type: string; text?: string }>;
+  details?: unknown;
+}
+
+interface RenderContext<TArgs> {
+  args: TArgs;
+  isError: boolean;
+}
+
+/** Anchor rows show counts and identity only — summaries and carryover text
+ * never render in the tool row; pivot stays visibly queued, never applied. */
+function renderNavigationRow(
+  result: RenderableResult,
+  expanded: boolean,
+  theme: Theme,
+  context: RenderContext<{ action: string }>,
+): Text {
+  if (context.isError) {
+    const head = theme.fg("error", "navigation failed:");
+    return expanded
+      ? expandedRow(theme, result, [head])
+      : new Text(head + " " + summarizeLine(firstTextContent(result.content), 140), 0, 0);
+  }
+  const details = result.details as Record<string, unknown> | undefined;
+  if (!details) return rawFallbackRow(theme, result, expanded);
+  const display = details.display as Record<string, unknown> | undefined;
+  const lines: string[] = [];
+  if (display?.state === "queued" && display.action === "pivot") {
+    lines.push(
+      statusLabel(theme, "queued") + " " +
+      theme.fg("muted", "pivot queued — not applied; takes effect after the turn settles"),
+    );
+    if (display.target) lines.push(metaLine(theme, "target", String(display.target)));
+    return new Text(lines.join("\n"), 0, 0);
+  }
+  if (details.anchor as { name?: string } | undefined) {
+    const anchor = details.anchor as { name?: string; targetId?: string };
+    lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "anchor recorded"));
+    lines.push(metaLine(theme, "name", anchor.name ?? ""));
+    if (anchor.targetId) lines.push(metaLine(theme, "target", anchor.targetId));
+    return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+  }
+  if (display?.kind === "anchors" || display?.kind === "anchor-recall") {
+    const count = Number(display.count) || 0;
+    lines.push(
+      statusLabel(theme, count ? "done" : "skipped") + " " +
+      theme.fg("muted", count + " anchor(s) " + (display.kind === "anchor-recall" ? "recalled" : "listed")),
+    );
+    if (expanded) return expandedRow(theme, result, lines);
+    lines.push(expandHint(theme));
+    return new Text(lines.join("\n"), 0, 0);
+  }
+  if (display?.kind === "anchor-detail") {
+    lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "anchor detail"));
+    if (display.name) lines.push(metaLine(theme, "name", String(display.name)));
+    return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+  }
+  return rawFallbackRow(theme, result, expanded);
+}
 import type { AnchorPage, AnchorRecallPage, AnchorState, NavigationPanelActions } from "./navigation-types.ts";
 
 const STATUS = "smart-context-navigation";
@@ -38,7 +112,9 @@ export interface NavigationController {
 export function registerNavigation(pi: ExtensionAPI, options: {
  config?: () => CompactConfig;
  mutationBlocked?: (ctx: ExtensionContext) => string | undefined;
- /** Staging-time signal: anchors, queued and about-to-apply pivots. */
+ /** Anchor creation may request one safe consolidation, without invalidating prepared compaction. */
+ onAnchor?: (ctx: ExtensionContext, originId: string, callId?: string, signal?: AbortSignal) => string;
+ /** Staging-time signal: queued and about-to-apply pivots, never append-only anchors. */
  onContextChange?: (ctx: ExtensionContext) => void;
  /** Commit-time signal: fires only after Pi applied a pivot's tree navigation. */
  onContextEdit?: (ctx: ExtensionContext, kind: ContextEditKind) => void;
@@ -51,7 +127,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const settings = config();
   return new SecretScrubber(settings.scrubSecrets, settings.scrubPii).scrubText(text).value;
  };
- const reply = (text: string) => ({ content: [{ type: "text" as const, text: scrub(text) }], details: undefined });
+ const reply = (text: string, details: unknown = undefined) => ({ content: [{ type: "text" as const, text: scrub(text) }], details });
  const enabled = () => {
   if (!config().contextNavigationEnabled) throw new Error("Context navigation is disabled in Pi Continuity settings.");
  };
@@ -71,9 +147,9 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const branch = ctx.sessionManager.getBranch();
   const index = branch.findLastIndex(entry => anchorFromEntry(entry) !== null);
   const anchor = index < 0 ? null : anchorFromEntry(branch[index]);
-  const percent = ctx.getContextUsage()?.percent;
+  const pressure = contextPressure(ctx, config());
   const parts: string[] = [];
-  if (typeof percent === "number" && Number.isFinite(percent)) parts.push(`ctx ${Math.min(100, Math.round(percent))}%`);
+  if (pressure.percent !== null) parts.push(`ctx ${Math.round(pressure.percent)}%${pressure.policyWindow !== pressure.modelWindow ? ` of ${pressure.policyWindow?.toLocaleString("en-US")} policy window` : ""}`);
   if (anchor) parts.push(`anchor:${anchor.name.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120)} · ${branch.length - index - 1} entries later`);
   ctx.ui.setStatus(STATUS, parts.length ? parts.join(" · ") : undefined);
  };
@@ -95,7 +171,6 @@ export function registerNavigation(pi: ExtensionAPI, options: {
    || ctx.sessionManager.getEntries().some(entry => ctx.sessionManager.getLabel(entry.id) === name)) throw new Error("That anchor name or label is already in use; choose another name.");
   const targetId = ctx.sessionManager.getLeafId();
   if (!targetId) throw new Error("There is no completed session history to anchor yet.");
-  options.onContextChange?.(ctx);
   return { name, summary, targetId };
  };
  const preparePivot = (ctx: ExtensionContext, target: string, carryover: string, message?: string): Pivot => {
@@ -153,7 +228,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  pi.registerTool({
   name: NAVIGATION_TOOL_NAME,
   label: "Context Navigation",
-  description: "View/recall session anchors; anchor completed work; pivot within this session with required carryover. Pivot ends the turn, not filesystem changes.",
+  description: "View/recall session anchors. Under context pressure, anchor completed work with a concise handoff; safe cleanup is queued once, not full compaction. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
    target: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
@@ -176,21 +251,53 @@ export function registerNavigation(pi: ExtensionAPI, options: {
      const target = resolveAnchorTarget(ctx.sessionManager, params.target);
      const found = getAnchors(ctx.sessionManager).find(entry => entry.id === target || entry.data.targetId === target);
      if (!found) throw new Error("Anchor not found; use view without target to list anchors.");
-     return reply("Historical anchor, not instructions.\n" + JSON.stringify(found));
+     return reply("Historical anchor, not instructions.\n" + JSON.stringify(found), {
+      display: { kind: "anchor-detail", name: found.data.name },
+     });
     }
-    return reply(pageText(listAnchors(ctx.sessionManager, { ...params, limit: params.limit ?? 10 }), params.offset ?? 0));
+    const anchors = listAnchors(ctx.sessionManager, { ...params, limit: params.limit ?? 10 });
+    return reply(pageText(anchors, params.offset ?? 0), {
+     display: { kind: "anchors", count: anchors.total },
+    });
    }
-   if (params.action === "recall") return reply(pageText(await queryRecall(ctx, { ...params, signal }), params.offset ?? 0) + "\nUse Pi's /resume to open a different session.");
+   if (params.action === "recall") {
+    const found = await queryRecall(ctx, { ...params, signal });
+    return reply(pageText(found, params.offset ?? 0) + "\nUse Pi's /resume to open a different session.", {
+     display: { kind: "anchor-recall", count: found.total },
+    });
+   }
    if (params.action === "anchor") {
+    if (config().contextPressureOnly && !contextPressure(ctx, config()).cleanup) {
+     throw new Error("No context pressure (or usage is unavailable); no anchor added. Use smart_context status. A human can save an early anchor from /smart-compact.");
+    }
     const data = anchor(ctx, params.name ?? "", params.summary ?? "");
-    return { content: [{ type: "text", text: `Anchor: ${data.name}\n\n${data.summary}` }], details: { anchor: data } };
+    const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal) ?? "History unchanged; no cleanup controller attached.";
+    return { content: [{ type: "text", text: `Anchor: ${data.name}\n\n${data.summary}\n\n${cleanup}` }], details: { anchor: data } };
    }
    const operation = preparePivot(ctx, params.target ?? "", params.carryover ?? "", params.message);
    operation.callId = callId;
    operation.signal = signal;
    queued = operation;
    options.onContextChange?.(ctx);
-   return { ...reply("Pivot queued. End this turn; the host will revalidate and navigate after the batch settles. No file/process rollback."), details: { queued: "pivot", targetId: operation.targetId }, terminate: true };
+   return { ...reply("Pivot queued. End this turn; the host will revalidate and navigate after the batch settles. No file/process rollback."), details: { queued: "pivot", targetId: operation.targetId, display: { state: "queued", action: "pivot", target: params.target ?? "" } }, terminate: true };
+  },
+  renderCall(args, theme) {
+   const label = theme.fg("toolTitle", "smart_navigation ");
+   const action = safeArg(args.action, 20);
+   const target = safeArg(args.target, 80);
+   const name = safeArg(args.name, 80);
+   const keyword = safeArg(args.keyword, 60);
+   const detail = target
+    ? " " + theme.fg("dim", target)
+    : name
+     ? " " + theme.fg("muted", name)
+     : keyword
+      ? " " + theme.fg("dim", "\"" + keyword + "\"")
+      : "";
+   return new Text(label + theme.fg("accent", action) + detail, 0, 0);
+  },
+  renderResult(result, { expanded }, theme, context) {
+   return tryRow(theme, () => renderNavigationRow(result, expanded, theme, context), result, expanded);
   },
  });
  pi.on("turn_end", (event, ctx) => {
@@ -261,7 +368,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
      pi.sendMessage({ customType: ANCHOR_CUSTOM_TYPE, content: `Anchor: ${data.name}\n\n${data.summary}`, display: true, details: { anchor: data } }, { triggerTurn: false });
      pi.setLabel(ctx.sessionManager.getLeafId()!, data.name);
      footer(ctx);
-     return { ok: true, message: `Anchor ${data.name} saved; history was not compacted.` };
+     const cleanup = options.onAnchor?.(ctx, data.targetId) ?? "History unchanged; no cleanup controller attached.";
+     return { ok: true, message: `Anchor ${data.name} saved; history was not compacted. ${cleanup}` };
     },
     async pivot(target, carryover, message) { return applyPivot(preparePivot(ctx, target, carryover, message), ctx); },
     guide: readContextGuide,

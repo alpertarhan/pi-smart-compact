@@ -100,12 +100,12 @@ describe("prepare threshold row", () => {
   });
 
   it("refuses to lower the apply gate below an explicit prepare value", async () => {
-    await writeGlobalConfigValue("minContextPercent", 70);
-    await writeGlobalConfigValue("prepareContextPercent", 60);
-    await expect(writeGlobalConfigValue("minContextPercent", 60)).rejects.toThrow();
-    // Resetting the apply gate to its default (60) is refused for the same reason.
+    await writeGlobalConfigValue("minContextPercent", 90);
+    await writeGlobalConfigValue("prepareContextPercent", 80);
+    await expect(writeGlobalConfigValue("minContextPercent", 80)).rejects.toThrow();
+    // Resetting the apply gate to its default (80) is refused for the same reason.
     await expect(writeGlobalConfigValue("minContextPercent", undefined)).rejects.toThrow();
-    expect(readGlobalConfigValue("minContextPercent")).toBe(70);
+    expect(readGlobalConfigValue("minContextPercent")).toBe(90);
     // A refused write never reaches disk, so it must not be reported as a settings.json problem.
     expect(recentIssues().filter((issue) => issue.key.startsWith("config."))).toEqual([]);
   });

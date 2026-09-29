@@ -5,6 +5,10 @@ import { clearSynthesisCache } from "../src/infra/synthesis-cache.ts";
 import {
 	BatchSummaryFormatError,
 	summarizeBatch,
+	assembleFallback,
+	assembleLLM,
+	buildSinglePassRequest,
+	singlePassCompact,
 } from "../src/phases/synthesize.ts";
 import type {
 	LlmChunk,
@@ -305,5 +309,72 @@ describe("summarizeBatch response validation", () => {
 			summarizeBatch([chunk, second], extraction, model, { apiKey: "test" }, undefined, services),
 		);
 		expect(calls).toBe(1);
+	});
+});
+
+describe("final output completion contract (A09)", () => {
+	const truncatedText =
+		assembleFallback([], extraction) + "\n\n```ts\nconst unfinished =";
+	const validText = assembleFallback([], extraction);
+
+	it("rejects a length-truncated single-pass summary instead of returning it", async () => {
+		const services = createServices({
+			llm: { complete: async () => response(truncatedText, "length") },
+		});
+		const request = buildSinglePassRequest("Conversation", extraction, null, "", model, 6_000);
+		await expect(
+			singlePassCompact(request, model, { apiKey: "test" }, undefined, services),
+		).rejects.toThrow(/truncat/i);
+	});
+
+	it("rejects a length-truncated assembly summary instead of returning it", async () => {
+		const services = createServices({
+			llm: { complete: async () => response(truncatedText, "length") },
+		});
+		await expect(
+			assembleLLM([], extraction, null, model, { apiKey: "test" }, 512, "", undefined, services),
+		).rejects.toThrow(/truncat/i);
+	});
+
+	it("rejects an unclosed Markdown fence even with a terminal stop reason", async () => {
+		const services = createServices({
+			llm: { complete: async () => response(truncatedText, "stop") },
+		});
+		const request = buildSinglePassRequest("Conversation", extraction, null, "", model, 6_000);
+		await expect(
+			singlePassCompact(request, model, { apiKey: "test" }, undefined, services),
+		).rejects.toThrow(/truncat/i);
+		await expect(
+			assembleLLM([], extraction, null, model, { apiKey: "test" }, 512, "", undefined, services),
+		).rejects.toThrow(/truncat/i);
+	});
+
+	it("rejects every nonterminal stop reason in both final paths (A09)", async () => {
+		for (const stopReason of ["length", "toolUse", "error", "aborted", "pending", "deferred"]) {
+			const services = createServices({
+				llm: { complete: async () => response(validText, stopReason) },
+			});
+			const request = buildSinglePassRequest("Conversation", extraction, null, "", model, 6_000);
+			await expect(
+				singlePassCompact(request, model, { apiKey: "test" }, undefined, services),
+			).rejects.toThrow(/truncat/i);
+			await expect(
+				assembleLLM([], extraction, null, model, { apiKey: "test" }, 512, "", undefined, services),
+			).rejects.toThrow(/truncat/i);
+		}
+	});
+
+	it("retains valid terminal single-pass and assembly outputs", async () => {
+		for (const stopReason of ["stop", "endTurn"]) {
+			const services = createServices({
+				llm: { complete: async () => response(validText, stopReason) },
+			});
+			const request = buildSinglePassRequest("Conversation", extraction, null, "", model, 6_000);
+			const single = await singlePassCompact(request, model, { apiKey: "test" }, undefined, services);
+			expect(single.summary).toBe(validText);
+			expect(
+				await assembleLLM([], extraction, null, model, { apiKey: "test" }, 512, "", undefined, services),
+			).toBe(validText);
+		}
 	});
 });

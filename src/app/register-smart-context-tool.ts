@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { StringEnum, type AssistantMessage } from "@earendil-works/pi-ai";
-import type { CacheWarmingDecisionEvent, ContextWithSystemEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEvent, ContextWithSystemEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, Theme, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
@@ -8,15 +9,24 @@ import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identi
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD, FIVE_MINUTES_MS } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
-import { effectiveContextWindow } from "../utils/tokens.ts";
-import { preparationWindow } from "./background-preparation.ts";
+import { contextPressure } from "./background-preparation.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { contextEvidence, evidencePage, MAX_READ_CHARS } from "./context-evidence.ts";
 import { loadLineage } from "./session-lineage.ts";
 import { cacheLifetimeMs, type ContextEditKind } from "./host-cache-ledger.ts";
 import {
-  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, planContextRewind, planContextTrim,
-  trimBreakEvenRequests, trimEntries, trimTokens,
+ expandedRow,
+ firstTextContent,
+ metaLine,
+ rawFallbackRow,
+ safeArg,
+ statusLabel,
+ summarizeLine,
+ tryRow,
+} from "../ui/tool-rows.ts";
+import {
+  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim,
+  thinkingEditReason, trimBreakEvenRequests, trimEntries, trimTokens,
 } from "./context-operations.ts";
 
 const TOOL_NAME = "smart_context";
@@ -31,6 +41,8 @@ interface QueuedChange {
   text: string;
   signal?: AbortSignal;
   manual?: boolean;
+  /** Previous anchor: seal only the new region before the new anchor's first replay. */
+  anchorBoundary?: string | null;
 }
 
 /** Explicit result of a user-requested manual trim; no immediate-apply claim. */
@@ -96,6 +108,7 @@ export function unchangedSince(branch: SessionEntry[], leafId: string): boolean 
 export type SmartContextController = {
   /** Queue a user-requested trim; it applies at the next natural turn boundary. */
   requestManualTrim(ctx: ExtensionContext): ManualTrimRequest;
+  requestAnchorTrim(ctx: ExtensionContext, originId: string, callId?: string, signal?: AbortSignal): ManualTrimRequest;
   /** Automatic trim waiting for a cold prompt cache in this session, if any. */
   deferredTrim(sessionId: string): DeferredTrim | null;
 };
@@ -147,12 +160,12 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     const current = config();
     return new SecretScrubber(current.scrubSecrets, current.scrubPii).scrubText(text).value;
   };
-  const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined });
+  const reply = (text: string, details: unknown = undefined) => ({ content: [{ type: "text" as const, text }], details });
 
   pi.registerTool({
     name: TOOL_NAME,
     label: "Session Context",
-    description: "Context hygiene: status/search/read archived output (scope=lineage adds parent sessions); plan/trim old output; checkpoint, then rewind(report) drops research. Applies after the batch; no file/process rollback.",
+    description: "Check status for context pressure/gates. Before a large read-only detour, checkpoint; when finished, rewind(report) keeps findings and drops safe research under pressure. plan/trim old output; search/read archived evidence (scope=lineage includes parents). Changes apply after the batch, never roll back files/processes.",
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
@@ -173,12 +186,24 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const branch = ctx.sessionManager.getBranch();
       const state = inspectContext(branch, sessionId);
       if (params.action === "plan") {
-        const plan = planContextTrim(branch, state.checkpoint?.originId);
-        return reply(JSON.stringify({
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api });
+        const payload = {
+          pressure: contextPressure(ctx, config()), blockedReason: plan.blockedReason,
           outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
           batch: plan.automatic, cooldownTurns: plan.cooldownTurns,
-          note: "No changes applied. Automatic hygiene also requires enablement and an uncontested boundary; it commits under pressure, at price break-even, or once the prompt cache is cold. Estimates are not billed-token savings."
-        }));
+          note: "No changes applied. Automatic cleanup requires enablement, a safe batch and an uncontested boundary. Pressure-only is the default; cache economics is opt-in. Estimates are not billed-token savings."
+        };
+        return reply(JSON.stringify(payload), {
+          display: {
+            kind: "plan",
+            pressurePercent: payload.pressure?.percent == null ? null : Math.round(payload.pressure.percent),
+            outputs: payload.outputs,
+            superseded: payload.superseded,
+            savedChars: payload.savedChars,
+            batchReady: payload.batch === "ready",
+            batchReason: payload.blockedReason ?? payload.batch ?? null,
+          },
+        });
       }
       const offset = params.offset ?? 0;
       if (params.action === "status" || params.action === "read" || params.action === "search") {
@@ -194,7 +219,17 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         const evidence = contextEvidence(branch, sessionId, new SecretScrubber(settings.scrubSecrets, settings.scrubPii), lineage);
         if (params.action === "status") {
           const sources = evidence.list.slice(offset, offset + limit);
-          return reply(scrub(JSON.stringify({
+          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api });
+          const pressure = contextPressure(ctx, settings);
+          const cleanup = {
+            enabled: settings.contextHygieneEnabled || (settings.autoTrigger && settings.autoTriggerStrategy === "background"),
+            pressureOnly: settings.contextPressureOnly, maintenanceAvailable: options.canAutoTrim?.(ctx) !== false,
+            batch: plan.automatic, savedChars: plan.savedChars, blockedReason: plan.blockedReason,
+            agentAllowed: options.canAgentMutate?.(ctx) !== false,
+          };
+          const payload = {
+            pressure,
+            cleanup,
             checkpoint: state.checkpoint ? { id: state.checkpoint.id, label: state.checkpoint.label } : null,
             rewind: Boolean(state.checkpoint), reason: state.invalidReason,
             pending: queued?.sessionId === sessionId ? queued.action : undefined,
@@ -204,7 +239,21 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             ...(params.scope === "lineage" ? { lineage: lineage.map(parent => ({ session: parent.sessionId, depth: parent.depth,
               sources: evidence.list.filter(source => source.session === parent.sessionId).length })) } : {}),
             nextOffset: offset + limit < evidence.list.length ? offset + limit : null,
-          })));
+          };
+          return reply(scrub(JSON.stringify(payload)), {
+            display: {
+              kind: "status",
+              pressurePercent: pressure.percent == null ? null : Math.round(pressure.percent),
+              cleanupEnabled: cleanup.enabled,
+              cleanupBatchReady: plan.automatic === "ready",
+              cleanupBatchReason: plan.automatic === "ready" ? null : plan.automatic,
+              cleanupBlockedReason: cleanup.blockedReason ?? null,
+              checkpoint: payload.checkpoint?.label ?? null,
+              pending: payload.pending ?? null,
+              archivedOutputs: payload.archivedOutputs,
+              nextOffset: payload.nextOffset,
+            },
+          });
         }
         if (params.action === "search") {
           if (!params.query) throw new Error("search requires query.");
@@ -221,6 +270,12 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       }
       if (options.canAgentMutate?.(ctx) === false) {
         throw new Error("Agent-requested context changes are disabled by policy; status, plan, search and read stay available.");
+      }
+      if (params.action !== "checkpoint" && config().contextPressureOnly && !contextPressure(ctx, config()).cleanup) {
+        throw new Error("No context pressure (or usage is unavailable); history left unchanged. Check status. Human commands can request early cleanup.");
+      }
+      if (params.action !== "checkpoint" && options.canAutoTrim?.(ctx) === false) {
+        throw new Error("Prepared/running compaction or unavailable recovery tools take priority; history left unchanged.");
       }
       if (options.isPaused?.(ctx)) throw new Error("Context changes are paused while a navigation pivot is pending.");
       if (queued) throw new Error("A context change is already queued; wait for the next turn boundary.");
@@ -239,7 +294,27 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         checkpointId: params.action === "checkpoint" ? randomUUID() : state.checkpoint?.id ?? "",
         text: params.action === "rewind" ? text : text.slice(0, 120), signal,
       };
-      return reply(`${params.action} queued for the completed tool batch. ${params.action === "rewind" ? "Stop research here; files and processes stay unchanged." : "Use status to inspect the committed state."}`);
+      return reply(`${params.action} queued for the completed tool batch. ${params.action === "rewind" ? "Stop research here; files and processes stay unchanged." : "Use status to inspect the committed state."}`, {
+        display: { state: "queued", action: params.action, label: text.slice(0, 120) },
+      });
+    },
+    renderCall(args, theme) {
+      const label = theme.fg("toolTitle", "smart_context ");
+      const action = safeArg(args.action, 20);
+      const id = safeArg(args.id, 80);
+      const query = safeArg(args.query, 80);
+      const labelArg = safeArg(args.label, 80);
+      const detail = id
+        ? " " + theme.fg("dim", id)
+        : query
+         ? " " + theme.fg("dim", query)
+         : labelArg
+          ? " " + theme.fg("muted", labelArg)
+          : "";
+      return new Text(label + theme.fg("accent", action) + detail, 0, 0);
+    },
+    renderResult(result, { expanded }, theme, context) {
+      return tryRow(theme, () => renderSmartContextRow(result, expanded, theme, context), result, expanded);
     },
   });
 
@@ -279,7 +354,11 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     if (current && !unchangedSince(branch, current.leafId)) current = applied = null;
     if (!current) {
       if (mark?.sessionId !== sessionId) return;
-      if (!unchangedSince(branch, mark.leafId)) { mark = null; return; }
+      const settings = config();
+      if (!settings.contextHygieneEnabled || settings.contextPressureOnly || options.canAutoTrim?.(ctx) === false
+        || !unchangedSince(branch, mark.leafId)
+        || lastAnchorBoundary(branch) !== lastAnchorBoundary(branch.slice(0, branch.findIndex(entry => entry.id === mark!.leafId) + 1))
+        || thinkingEditReason(branch, mark.entries, ctx.model?.api)) { mark = null; return; }
       const prefix = cachedPrefix(branch);
       const since = Math.max(prefix?.since ?? 0, warm?.sessionId === sessionId ? warm.at : 0);
       if (!prefix || now() - since <= prefix.lifetimeMs) return;
@@ -308,7 +387,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
    * savings `r·X` are ignored (conservative: fewer vetoes).
    */
   const vetoWarming = (event: CacheWarmingDecisionEvent, ctx: ExtensionContext, sessionId: string): boolean => {
-    if (mark?.sessionId !== sessionId || !unchangedSince(ctx.sessionManager.getBranch(), mark.leafId)) return false;
+    if (config().contextPressureOnly || mark?.sessionId !== sessionId || !unchangedSince(ctx.sessionManager.getBranch(), mark.leafId)
+      || thinkingEditReason(ctx.sessionManager.getBranch(), mark.entries, ctx.model?.api)) return false;
     const cost = ctx.model?.cost;
     const price = cost ? (cost.cacheWrite > 0 ? cost.cacheWrite : cost.input) : NaN;
     const { warmCost, missCost, continuationProbability } = event;
@@ -324,14 +404,23 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     if (event.outcome !== "completed" || request?.signal?.aborted) {
       return request ? cancelled(event, "The turn did not complete.") : undefined;
     }
-    if (request && !request.manual && (config().toolLoading === "off" || !active())) return cancelled(event, "Agent tool access was revoked.");
+    const requestTool = request?.anchorBoundary !== undefined ? "smart_navigation" : TOOL_NAME;
+    if (request && !request.manual && (config().toolLoading === "off" || !pi.getActiveTools().includes(requestTool))) return cancelled(event, "Agent tool access was revoked.");
+    if (request?.anchorBoundary !== undefined && !config().contextNavigationEnabled) return cancelled(event, "Navigation was disabled.");
     if (options.isPaused?.(ctx)) {
       return request ? cancelled(event, "A pending navigation pivot takes priority.") : undefined;
     }
     if (request && !request.manual && options.canAgentMutate?.(ctx) === false) {
       return cancelled(event, "Agent-requested context changes are disabled by policy.");
     }
-    let pressure = false;
+    if (request && !request.manual && request.action !== "checkpoint" && options.canAutoTrim?.(ctx) === false) {
+      return cancelled(event, "Prepared/running compaction or unavailable recovery tools take priority.");
+    }
+    const settings = config();
+    const pressure = contextPressure(ctx, settings).cleanup;
+    if (request && !request.manual && request.action !== "checkpoint" && settings.contextPressureOnly && !pressure) {
+      return cancelled(event, "Context pressure cleared; history left unchanged.");
+    }
     if (!request) {
       const configNow = config();
       const hygiene = configNow.contextHygieneEnabled;
@@ -340,13 +429,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (!hygiene) mark = applied = null;
       const enabled = hygiene || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
       if (!enabled || options.canAutoTrim?.(ctx) === false) return;
-      const usage = ctx.getContextUsage()?.tokens;
-      const window = effectiveContextWindow(ctx.model, configNow);
-      pressure = typeof usage === "number" && Number.isFinite(usage) && typeof window === "number" && Number.isFinite(window) && window > 0
-        && usage >= preparationWindow(configNow, window).startTokens;
-      // Background preparation alone trims only under pressure, as before the
-      // break-even rule; break-even and cold-cache timing are the opt-in cleanup.
-      if (!hygiene && !pressure) return;
+      // Legacy economics are explicit opt-in, never a reason to shrink a roomy default session.
+      if ((configNow.contextPressureOnly || !hygiene) && !pressure) { mark = null; if (!applied) return; }
     }
     const branch = ctx.sessionManager.getBranch();
     const sessionId = resolveSessionId(ctx);
@@ -379,14 +463,15 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           }
         })];
       } else if (request?.action === "rewind") {
-        entries = planContextRewind(branch, sessionId, request.checkpointId, request.text).entries;
+        entries = planContextRewind(branch, sessionId, request.checkpointId, request.text, ctx.model?.api).entries;
       } else if (!request && applied?.sessionId === sessionId && unchangedSince(branch, applied.leafId)) {
         // The cold request already carried these edits; commit them regardless of pressure or cooldown.
         mark = null;
         entries = applied.entries;
         applied = null;
       } else {
-        const plan = planContextTrim(branch, state.checkpoint?.originId);
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api });
+        if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
           entries = trimEntries(plan, request.manual ? "manual" : "agent");
         } else {
@@ -422,8 +507,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     }
     return { entries: [...event.entries, ...entries] };
   });
-  const controller: SmartContextController = {
-    requestManualTrim(ctx: ExtensionContext): ManualTrimRequest {
+  const requestTrim = (ctx: ExtensionContext, anchor?: { originId: string; callId?: string; signal?: AbortSignal }): ManualTrimRequest => {
       const sessionId = resolveSessionId(ctx);
       if (isUnresolvedSessionId(sessionId)) {
         return { state: "unavailable", notice: "Context control needs an identifiable session." };
@@ -434,24 +518,37 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (queued) {
         return { state: "busy", notice: "Another context change is already queued; it applies at the next turn boundary." };
       }
+      if (anchor && options.canAutoTrim?.(ctx) === false) {
+        return { state: "busy", notice: "Cleanup deferred: prepared/running compaction or unavailable recovery tools take priority." };
+      }
+      if (anchor?.callId && (options.canAgentMutate?.(ctx) === false || (config().contextPressureOnly && !contextPressure(ctx, config()).cleanup))) {
+        return { state: "unavailable", notice: "Cleanup not requested: no context pressure or agent changes are disabled." };
+      }
       const branch = ctx.sessionManager.getBranch();
-      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId);
-      if (!plan.entries.length) {
-        return { state: "no-eligible", notice: "No eligible archived output to trim." };
+      const origin = anchor ? branch.findIndex(entry => entry.id === anchor.originId) : -1;
+      if (anchor && origin < 0) return { state: "unavailable", notice: "Anchor origin is no longer on this branch." };
+      const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
+      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api });
+      if (!plan.entries.length || (anchor?.callId && plan.automatic !== "ready")) {
+        return { state: "no-eligible", notice: plan.blockedReason ?? (anchor ? "No safe cleanup batch ready; recent turns and protected prefixes stay unchanged." : "No eligible archived output to trim.") };
       }
       mark = null;
       queued = {
-        action: "trim", callId: "", sessionId, originId: branch.at(-1)?.id ?? "",
-        checkpointId: "", text: "", manual: true,
+        action: "trim", callId: anchor?.callId ?? "", sessionId, originId: anchor?.originId ?? branch.at(-1)?.id ?? "",
+        checkpointId: "", text: "", manual: !anchor?.callId, anchorBoundary, signal: anchor?.signal,
       };
       return {
         state: "queued",
-        notice: "Manual trim queued. The first next provider request is not yet trimmed; the change applies at the next completed turn boundary. A pending navigation pivot or newer boundary change cancels it.",
+        notice: anchor?.callId
+          ? "Anchor cleanup queued for the completed tool batch; prior anchor prefixes and recent turns stay protected. Use status to confirm the committed state."
+          : "Manual trim queued. The first next provider request is not yet trimmed; the change applies at the next completed turn boundary. A pending navigation pivot or newer boundary change cancels it.",
       };
-    },
+  };
+  return {
+    requestManualTrim: ctx => requestTrim(ctx),
+    requestAnchorTrim: (ctx, originId, callId, signal) => requestTrim(ctx, { originId, callId, signal }),
     deferredTrim: deferred,
   };
-  return controller;
 }
 
 function cancelled(event: TurnEndEvent, reason: string) {
@@ -461,4 +558,70 @@ function cancelled(event: TurnEndEvent, reason: string) {
       content: "Context operation not applied: " + reason,
     }]
   };
+}
+
+interface RenderableResult {
+  content?: ReadonlyArray<{ type: string; text?: string }>;
+  details?: unknown;
+}
+
+interface RenderContext<TArgs> {
+  args: TArgs;
+  isError: boolean;
+}
+
+/** Readable summaries for status/plan/queued; raw evidence (read/search),
+ * errors, and unknown shapes degrade to the visible raw fallback with the
+ * model content intact. */
+function renderSmartContextRow(
+  result: RenderableResult,
+  expanded: boolean,
+  theme: Theme,
+  context: RenderContext<{ action: string }>,
+): Text {
+  if (context.isError) {
+    const head = theme.fg("error", "smart_context failed:");
+    return expanded
+      ? expandedRow(theme, result, [head])
+      : new Text(head + " " + summarizeLine(firstTextContent(result.content), 140), 0, 0);
+  }
+  const display = (result.details as { display?: Record<string, unknown> } | undefined)?.display;
+  if (!display) return rawFallbackRow(theme, result, expanded);
+  const lines: string[] = [];
+  if (display.state === "queued") {
+    // Queued edits apply at the turn boundary — never show them as applied.
+    lines.push(
+      statusLabel(theme, "queued") + " " +
+      theme.fg("muted", String(display.action ?? "change") + " queued — applies at the turn boundary, not yet applied"),
+    );
+    if (typeof display.label === "string" && display.label) {
+      lines.push(theme.fg("dim", summarizeLine(display.label, 120)));
+    }
+    return new Text(lines.join("\n"), 0, 0);
+  }
+  if (display.kind === "status") {
+    const percent = display.pressurePercent;
+    lines.push(
+    theme.fg("muted", "context " + (percent == null ? "unknown" : percent + "%")) +
+      " " + statusLabel(theme, display.cleanupBatchReady ? "pending" : "info") + " " +
+      theme.fg("dim", display.cleanupBatchReady ? "cleanup batch ready" : (display.cleanupBatchReason ? "cleanup: " + String(display.cleanupBatchReason) : "no cleanup batch")),
+    );
+    lines.push(metaLine(theme, "archived outputs", String(display.archivedOutputs ?? 0)));
+    if (display.checkpoint) lines.push(metaLine(theme, "checkpoint", String(display.checkpoint)));
+    if (display.pending) lines.push(metaLine(theme, "pending", String(display.pending)));
+    if (display.cleanupBlockedReason) lines.push(theme.fg("dim", summarizeLine(String(display.cleanupBlockedReason), 120)));
+    return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+  }
+  if (display.kind === "plan") {
+    const percent = display.pressurePercent;
+    lines.push(
+    theme.fg("muted", "context " + (percent == null ? "unknown" : percent + "%")) +
+      " " +
+      theme.fg("dim", "trim plan: " + (Number(display.outputs) || 0) + " output(s) ≈" + (Number(display.savedChars) || 0).toLocaleString() + " chars"),
+    );
+    if (display.batchReady) lines.push(metaLine(theme, "batch", "ready"));
+    else if (display.batchReason) lines.push(metaLine(theme, "batch", String(display.batchReason)));
+    return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+  }
+  return rawFallbackRow(theme, result, expanded);
 }

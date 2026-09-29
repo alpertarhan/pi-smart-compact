@@ -475,6 +475,7 @@ describe("extension lifecycle end to end", () => {
           tools.set(tool.name, tool);
         },
         getActiveTools: () => [...activeTools],
+        getAllTools: () => [...tools.values()],
         setActiveTools: (names: string[]) => {
           activeTools = names.filter(name => tools.has(name));
         },
@@ -544,6 +545,7 @@ describe("extension lifecycle end to end", () => {
         contextWindow: model.contextWindow,
         percent: (usageTokens / model.contextWindow) * 100,
       }),
+      getSystemPrompt: () => "Stable lifecycle system prompt",
       isIdle: () => true,
       hasPendingMessages: () => false,
       waitForIdle: async () => {},

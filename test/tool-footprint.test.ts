@@ -32,6 +32,21 @@ function harness(options: { initial?: string[]; settings?: Partial<CompactConfig
 function selected(...names: string[]): string[] { return [...base, ...names].sort(); }
 
 describe("context tool exposure", () => {
+  it("defaults to stable eager declarations across loads and boundaries", () => {
+    expect(DEFAULT_CONFIG.toolLoading).toBe("eager");
+    const h = harness({ settings: { toolLoading: DEFAULT_CONFIG.toolLoading } });
+    const before = h.active();
+    expect(before).toEqual(selected(...details));
+    h.exposure.load("navigation");
+    h.exposure.load("history");
+    h.exposure.atBoundary();
+    h.exposure.apply();
+    expect(h.active()).toEqual(before);
+    h.select(base);
+    h.exposure.apply();
+    expect(h.active()).toEqual(selected()); // explicit /tools removal still wins
+  });
+
   it("limits lazy requests to their groups and releases requests at branch boundaries", () => {
     const h = harness();
     expect(h.active()).toEqual(selected());

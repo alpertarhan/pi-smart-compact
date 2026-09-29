@@ -21,7 +21,7 @@ describe("describeReadiness large-window warning", () => {
     const config = (overrides: Partial<CompactConfig> = {}): CompactConfig => ({ ...DEFAULT_CONFIG, ...overrides });
     const off = await describeReadiness(ctx(1_000_000), config());
     expect(largeWindowWarning(off.warnings)).toEqual([
-      "Model window 1,000,000 tokens; maxContextTokens is off, so automatic compaction waits for 60% of the full window. Set maxContextTokens to trigger earlier.",
+      "Model window 1,000,000 tokens; maxContextTokens is off, so automatic compaction waits for 80% of the full window. Set maxContextTokens to trigger earlier.",
     ]);
     // A cap at or above the window does not change the trigger, so the warning stays.
     expect(largeWindowWarning((await describeReadiness(ctx(1_000_000), config({ maxContextTokens: 1_000_000 }))).warnings)).toHaveLength(1);

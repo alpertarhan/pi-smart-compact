@@ -62,7 +62,7 @@ export interface CompactConfig {
  backupDir: string;
  minContextPercent: number; // Don't compact below this threshold
  /**
-  * Background timing only: context % at which speculative preparation starts.
+  * Early cleanup / optional background preparation threshold.
   * null = Auto (adaptive lead before minContextPercent). An explicit value must
   * be below the effective minContextPercent, which stays the apply gate.
   */
@@ -112,8 +112,10 @@ export interface CompactConfig {
  visualArchiveEnabled: boolean;
  /** Spill oversized safe tool results before they enter model context. */
  artifactOffloadEnabled: boolean;
- /** Pressure-gated, recoverable context hygiene, independent of automatic compaction. */
+ /** Recoverable context hygiene, independent of automatic compaction. */
  contextHygieneEnabled: boolean;
+ /** Require pressure for automatic cleanup and agent-requested history reduction; human commands bypass it. */
+ contextPressureOnly: boolean;
  /** Session anchors and context navigation; independent of recoverable cleanup. */
  contextNavigationEnabled: boolean;
  contextRecallEnabled: boolean;
@@ -499,7 +501,7 @@ export type VerificationGap =
  | { kind: "missing-deleted-file"; path: string }
  | { kind: "missing-error"; message: string; resolved?: boolean }
  | { kind: "missing-constraint"; text: string }
- | { kind: "missing-decision"; summary: string }
+ | { kind: "missing-decision"; summary: string; answer?: string }
  | { kind: "missing-goal"; goal: string }
  | { kind: "fabricated-file"; ref: string }
  | { kind: "inconsistency"; detail: string }

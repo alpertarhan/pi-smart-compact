@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { mineConstraints, isNonLiveConstraintText } from "../src/utils/extraction.ts";
-import { retireSupersededConstraints } from "../src/utils/state.ts";
+import { retireSupersededConstraints, buildCompactionState } from "../src/utils/state.ts";
 import { verifySummary, releasesConstraint } from "../src/phases/verify.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
 import { buildState } from "../src/app/steps/state.ts";
@@ -106,6 +106,48 @@ describe("mineConstraints skips non-live text (issue #72 poison classes)", () =>
 		expect(isNonLiveConstraintText("EESV Compact completed at 12:00")).toBe(true);
 		expect(isNonLiveConstraintText("Do not deploy on Fridays")).toBe(false);
 	});
+
+	it("keeps a genuine standalone user rule that shares words with this extension's prose (A05)", () => {
+		const mined = mineConstraints([user("Do not bypass verification.")]);
+		expect(mined.length).toBe(1);
+		expect(mined[0].category).toBe("prohibition");
+		expect(isNonLiveConstraintText("Do not bypass verification.")).toBe(false);
+	});
+
+	it("still excludes the shared phrase when own-output context is in the same text (A05)", () => {
+		expect(
+			isNonLiveConstraintText(
+				"Review /smart-compact metrics; do not bypass verification.",
+			),
+		).toBe(true);
+		expect(isNonLiveConstraintText(OWN_ERROR_TAIL)).toBe(true);
+	});
+
+	it("uses whole-message provenance so a wrapped own-output paste cannot reseed rules (A05)", () => {
+		const recap = [
+			"Smart compact failed.",
+			"do not bypass verification.",
+			"- Do not run migrations on production without approval",
+		].join("\n");
+		const mined = mineConstraints([user(recap)]);
+		expect(mined.map((item) => item.text)).toEqual([
+			"Do not run migrations on production without approval",
+		]);
+	});
+
+	it("a genuine user rule gates the summary end to end even though it matches extension prose (A05)", () => {
+		const text = "Do not bypass verification.";
+		const extraction = makeExtraction({
+			constraints: [{ text, index: 0, category: "prohibition", confidence: 1 }],
+		});
+		const state = buildCompactionState(extraction, [], null, [], []);
+		// sanitizeCompactionStateEvidence must keep the genuine rule.
+		expect(state.constraints.map((item) => item.text)).toContain(text);
+		const withoutRule = assembleFallback([], makeExtraction());
+		const result = verifySummary(withoutRule, extraction, state);
+		expect(result.ok).toBe(false);
+		expect(result.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
+	});
 });
 
 describe("retireSupersededConstraints", () => {
@@ -197,6 +239,27 @@ describe("retireSupersededConstraints", () => {
 			releasesConstraint("Never commit directly to main", "commit the fix now"),
 		).toBe(false);
 		expect(releasesConstraint("Do not push yet", "what is the plan for tomorrow?")).toBe(false);
+	});
+
+	it("does not retire a constraint because of a later question mentioning the action (A04)", () => {
+		const rule = "Do not deploy until tests pass.";
+		const msgs = [user(rule), user("Why did you deploy?")];
+		expect(retireSupersededConstraints([{ text: rule, index: 0 }], msgs, [])).toEqual([]);
+		// The question form itself is the gate: no "?" but an interrogative lead.
+		const noMark = [user(rule), user("why did you deploy at all")];
+		expect(retireSupersededConstraints([{ text: rule, index: 0 }], noMark, [])).toEqual([]);
+	});
+
+	it("still retires on a genuine explicit release after a question was asked (A04)", () => {
+		const rule = "Do not deploy until tests pass.";
+		const msgs = [
+			user(rule),
+			user("Why did you deploy?"),
+			user("Tests pass now \u2014 deploy it"),
+		];
+		const overrides = retireSupersededConstraints([{ text: rule, index: 0 }], msgs, []);
+		expect(overrides.length).toBe(1);
+		expect(overrides[0].status).toBe("superseded");
 	});
 });
 

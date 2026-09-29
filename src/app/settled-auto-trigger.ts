@@ -2,9 +2,9 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactConfig } from "../types.ts";
-import { AUTO_TRIGGER_TIMEOUT_CAP_MS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
+import { AUTO_TRIGGER_TIMEOUT_CAP_MS, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
-import { effectiveContextWindow, safeContextPercent } from "../utils/tokens.ts";
+import { contextPressure } from "./background-preparation.ts";
 import { errorDetail, reportIssue } from "../utils/issues.ts";
 
 export interface SettledAutoTrigger {
@@ -32,15 +32,15 @@ export function createSettledAutoTrigger(
   const now = options.now ?? Date.now;
   const cooldownMs = Math.max(0, options.cooldownMs ?? SETTLED_TRIGGER_COOLDOWN_MS);
   const active = new Map<string, symbol>();
-  const lastCompactionAt = new Map<string, number>();
+  const cooldownStartedAt = new Map<string, number>();
 
   const noteCompaction = (sessionId: string): void => {
-    if (!isUnresolvedSessionId(sessionId)) lastCompactionAt.set(sessionId, now());
+    if (!isUnresolvedSessionId(sessionId)) cooldownStartedAt.set(sessionId, now());
   };
 
   const clear = (sessionId: string): void => {
     active.delete(sessionId);
-    lastCompactionAt.delete(sessionId);
+    cooldownStartedAt.delete(sessionId);
   };
 
   const request = async (ctx: ExtensionContext, config: CompactConfig): Promise<void> => {
@@ -49,16 +49,10 @@ export function createSettledAutoTrigger(
     const sessionId = resolveSessionId(ctx);
     if (isUnresolvedSessionId(sessionId) || active.has(sessionId)) return;
 
-    const usage = ctx.getContextUsage();
-    const totalTokens = usage?.tokens;
-    if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens)
-      || totalTokens < MIN_TOKEN_THRESHOLD || !ctx.model) return;
+    if (!contextPressure(ctx, config).compaction) return;
 
-    const contextPercent = safeContextPercent(totalTokens, effectiveContextWindow(ctx.model, config));
-    if (contextPercent < config.minContextPercent) return;
-
-    const lastCompaction = lastCompactionAt.get(sessionId);
-    if (lastCompaction !== undefined && now() - lastCompaction < cooldownMs) return;
+    const cooldownStart = cooldownStartedAt.get(sessionId);
+    if (cooldownStart !== undefined && now() - cooldownStart < cooldownMs) return;
     if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
 
     const requestToken = Symbol(sessionId);
@@ -70,9 +64,21 @@ export function createSettledAutoTrigger(
       // plus Pi's own summary after a fallback.
       const watchdogMs = options.watchdogMs ?? AUTO_TRIGGER_TIMEOUT_CAP_MS + config.autoTriggerTimeoutMs;
       const watchdog = setTimeout(() => {
+        // The callback can legitimately arrive after the watchdog (Pi may
+        // still be busy) and the summary can still be applied late. Report
+        // the pending state accurately; manual retry is suggested only when
+        // the host is actually idle, never while it is still working.
+        const hostBusy =
+          typeof ctx.isIdle === "function" ? !ctx.isIdle() : false;
         reportIssue({
           key: "auto.settled-no-callback",
-          message: "Pi did not report the automatic compaction result within " + Math.round(watchdogMs / 1000) + "s. The next settled turn may request it again.",
+          message: hostBusy
+            ? "Pi is still busy after " +
+              Math.round(watchdogMs / 1000) +
+              "s; the automatic compaction result may still arrive and be applied late. No action needed; automatic retries wait for the cooldown."
+            : "Pi did not report the automatic compaction result within " +
+              Math.round(watchdogMs / 1000) +
+              "s. Automatic retries wait for the cooldown. Run /smart-compact manually if needed.",
         }, ctx);
         finish();
       }, watchdogMs);
@@ -81,15 +87,16 @@ export function createSettledAutoTrigger(
         if (finished) return;
         finished = true;
         clearTimeout(watchdog);
-        if (active.get(sessionId) === requestToken) active.delete(sessionId);
+        if (active.get(sessionId) === requestToken) {
+          active.delete(sessionId);
+          // Failed or timed-out work may already have spent provider tokens.
+          cooldownStartedAt.set(sessionId, now());
+        }
         resolve();
       };
       try {
         ctx.compact({
-          onComplete: () => {
-            if (active.get(sessionId) === requestToken) noteCompaction(sessionId);
-            finish();
-          },
+          onComplete: finish,
           onError: error => {
             reportIssue({
               key: "auto.settled-apply",

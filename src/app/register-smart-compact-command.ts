@@ -25,7 +25,7 @@ import {
  loadScopedCompactionState,
  saveCompactionState,
 } from "../utils/state.ts";
-import { estimateTokens, safeContextPercent } from "../utils/tokens.ts";
+import { effectiveContextWindow, estimateTokens, safeContextPercent } from "../utils/tokens.ts";
 import { scheduleCompactionStateIndex } from "../infra/context-graph.ts";
 import {
  forgetProjectGraph,
@@ -413,8 +413,10 @@ async function showStorage(ctx: ExtensionCommandContext): Promise<void> {
 function compactNowState(ctx: ExtensionCommandContext, dependencies: SmartCompactCommandDependencies): { value: string; blocked?: string } {
  const config = loadConfig();
  const tokens = ctx.getContextUsage()?.tokens;
+ const window = effectiveContextWindow(ctx.model, config);
  const value = tokens == null ? "not measured yet"
-  : Math.round(tokens / 1000) + "k tokens · " + Math.round(safeContextPercent(tokens, ctx.model?.contextWindow)) + "%";
+  : Math.round(tokens / 1000) + "k tokens · " + Math.round(safeContextPercent(tokens, window)) + "%"
+    + (window !== ctx.model?.contextWindow ? " of " + window?.toLocaleString("en-US") + " policy window" : "");
  const runtime = dependencies.getRuntimeState?.(ctx);
  if (runtime?.running) return { value, blocked: "Compaction is already running. Wait for it to finish." };
  if (runtime?.paused) return { value, blocked: "A context change is pending. Finish or cancel it before compacting." };

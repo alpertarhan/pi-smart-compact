@@ -43,10 +43,11 @@ describe("CompactionCommitStore", () => {
     expect(() => store.stage(pending("run-123456"))).toThrow("Duplicate");
   });
 
-  it("expires and bounds unconfirmed candidates with a failure callback", () => {
+  it("bounds candidates and expires them using the latest configured TTL", () => {
     const discarded: string[] = [];
+    let ttlMs = 300_000;
     const store = createCompactionCommitStore({
-      ttlMs: 5,
+      ttlMs: () => ttlMs,
       maxEntries: 2,
       onDiscard: (item, reason) => discarded.push(item.runId + ":" + reason),
     });
@@ -55,6 +56,8 @@ describe("CompactionCommitStore", () => {
     store.stage(pending("run-three"));
     expect(discarded).toEqual(["run-one-1:evicted"]);
     Bun.sleepSync(7);
+    expect(store.size()).toBe(2);
+    ttlMs = 5;
     expect(store.size()).toBe(0);
     expect(discarded).toEqual([
       "run-one-1:evicted",

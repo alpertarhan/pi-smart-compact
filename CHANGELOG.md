@@ -2,6 +2,81 @@
 
 ## [Unreleased]
 
+## [10.1.0] - 2026-09-29
+
+### Release approval
+
+- The release owner explicitly approved shipping `10.1.0` to stable without
+  a new version-specific applied-canary cohort or a `PROMOTE` result for this
+  version. Deterministic release gates and protected PR CI still apply. This
+  is an approval and evidence limit, not a claim that live quality or savings
+  were measured for `10.1.0`, and not a claim that final release checks have
+  already passed.
+
+### Added
+
+- Native tool rows for all six agent tools (`smart_tools`, `smart_context`,
+  `smart_navigation`, `smart_recall`, `smart_save_memory`, `smart_compact`):
+  compact status lines with honest states (queued, staged, dry-run, skipped,
+  pending, failed, cancelled are never shown as done/applied/saved), bounded
+  previews when collapsed, and the full original result text when expanded
+  via the configured native expansion key. Rows are call-time snapshots with
+  no polling.
+- Memory saves surface stable refs and titles: completed saves are marked
+  searchable, accepted saves are clearly not yet searchable, and uncertain
+  outcomes keep their operation identity. Recall shows prior-save receipt
+  states (completed/pending/failed/unknown) from the refresh it already runs,
+  and long recalled facts are marked as excerpts rather than complete memory.
+- Shared usage/pressure gates in `smart_context status`, navigation footer and TUI.
+- `task-eval --tool-loading=eager|lazy`, with tool schemas included in normalized
+  prefix comparisons. Offline results remain lifecycle evidence, not billing proof.
+- A documented cache-first configuration using idle compaction and initial
+  output offload, pressure-only cleanup and no speculative preparation.
+
+### Changed
+
+- Intermediate synthesis fallbacks stay in progress/metrics instead of warning
+  toasts; applied results still disclose fallback use. Prompt-cache attribution
+  stays in Readiness/metrics without duplicating Pi's cache-miss notice.
+- Pressure-first defaults: stable eager tool exposure, early batched cleanup,
+  and idle compaction at 80%. `contextPressureOnly: false` explicitly opts into
+  earlier economic/cold-cache cleanup. Human commands keep early-operation access.
+- Agent anchors now request one safe cleanup of their new region through the
+  existing trim controller. Prior anchor prefixes and recent work stay protected;
+  append-only anchors no longer discard paid background preparation.
+
+### Fixed
+
+- EESV preserves verbatim constraints and negative contractions, verifies explicit
+  question–answer pairs (including short and numeric choices), and keeps the
+  latest answered decision across fallback, verification and continuity state.
+  Repair cannot certify a wrong answer by merely appending the correct one.
+- Constraint retirement requires directed release evidence instead of treating
+  questions, criticism, reported behavior or denied permission as authorization.
+  Genuine user rules are no longer discarded merely for saying “do not bypass
+  verification.” Dialog results are paired by tool-call ID, and fresh/cached
+  extraction use consistent retry-result classification, including sibling retries.
+- Single-pass and final assembly reject known nonterminal or fence-truncated
+  responses before synthesis caching and use the existing deterministic fallback.
+- Credential availability checks honor run cancellation without holding the run
+  lock until auth finishes. Late auth results cannot resume the cancelled run.
+  The settled watchdog distinguishes a busy host from an idle missing result
+  instead of suggesting a conflicting manual retry while Pi is busy.
+- Exploration now leaves two calls for batch synthesis and final assembly,
+  including probe/direct/retry paths. Batch retries and queued workers also
+  preserve the final assembly call instead of exhausting the shared budget.
+- Continuity display labels (`Constraint:`, `Goal:`, `Decision:`) no longer make
+  an unchanged carried fact fail semantic verification. Actual contradictions
+  still block apply.
+- Automatic idle compaction now cools down after failed and timed-out attempts,
+  not only successful compactions, preventing repeated idle events from spending
+  another model budget. Manual compaction and Pi's own recovery stay available.
+
+- Client trim/rewind refuse edits that would invalidate retained signed Anthropic
+  thinking. Background candidates validate system/tool changes; configured
+  `pendingTtlMs` now governs both staged and background summaries. Loaded tools
+  remain stable across compaction.
+
 ## [10.0.1] - 2026-09-28
 
 ### Removed

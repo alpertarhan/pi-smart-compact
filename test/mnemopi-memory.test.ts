@@ -73,8 +73,14 @@ function setup() {
       getBranch: () => [{ id: "root" }],
     },
   };
+  // Nested tool execution is unexpected in these tests; the stub fails loudly.
+  const hostContext = Object.assign(ctx as unknown as ExtensionContext, {
+    tools: [],
+    executeTool: async () => {
+      throw new Error("unexpected nested executeTool in mnemopi memory tests");
+    },
+  });
   // Other host context fields are unreachable in the memory tool path.
-  const hostContext = ctx as unknown as ExtensionContext;
   for (const handler of handlers.get("session_start") ?? []) handler({}, hostContext);
   const run = async (name: string, params: Record<string, unknown>, signal?: AbortSignal) => {
     if (!active.includes(name)) throw new Error(name + " is unavailable to the model");
