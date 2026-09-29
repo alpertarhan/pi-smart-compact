@@ -37,7 +37,7 @@ import type {
  TranscriptContext,
  Usage,
 } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentTools, resolveTranscript } from "@earendil-works/pi-ai";
 import type {
  AgentSession,
  CompactionResult,
@@ -103,6 +103,7 @@ import {
 
 interface Args {
  arms: ArmId[];
+ toolLoading: "eager" | "lazy";
  repeats: number;
  round1History: number;
  historyPerRound: number;
@@ -150,8 +151,10 @@ function parseArgs(): Args {
    "task-eval-reports",
    new Date().toISOString().replace(/[:.]/g, "-"),
   );
+ const toolLoading = flag("tool-loading") ?? "eager";
+ if (toolLoading !== "eager" && toolLoading !== "lazy") throw new Error("--tool-loading must be eager or lazy");
  const args: Args = {
-  arms,
+  arms, toolLoading,
   repeats,
   round1History: numberFlag("round1-history") ?? 32,
   historyPerRound: numberFlag("history-per-round") ?? 32,
@@ -217,6 +220,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
  
  Default: offline scripted transport, all four arms, five rounds.
    --arms=all|${ARMS.join(",")}
+   --tool-loading=eager|lazy       Matched tool-exposure comparison (default eager)
    --repeats=1..8                  Compaction rounds per applicable arm
    --out=/absolute/directory       Reports (default: ./task-eval-reports/TIMESTAMP)
    --json                         Print the JSON report
@@ -283,6 +287,7 @@ interface ArmReport {
 /** The host shares its global Theme via a registered symbol; the runner
  * initializes it once so extension UI contexts can spread a real value. */
 const sharedTheme = (): Theme => {
+ // SAFETY: Pi publishes the initialized Theme at this shared symbol; presence is checked below.
  const value = (globalThis as unknown as Record<symbol, unknown>)[
   Symbol.for("@earendil-works/pi-coding-agent:theme")
  ];
@@ -469,7 +474,10 @@ function offlineStream(
     { messages: context.messages },
     model as Model<Api>,
    );
-   const input = text(context.messages);
+   // Model the SDK fallback for providers without in-place system/tool additions.
+   // Include tool schemas: conversation-only prefix metrics hide late-loading churn.
+   const activeTools = getCurrentTools(context.messages);
+   const input = JSON.stringify(activeTools) + "\n" + text(resolveTranscript(context, false).messages);
    const usageClass: "main" | "summary" | "warm" = isWarm
     ? "warm"
     : model.id === "summary"
@@ -532,6 +540,18 @@ function offlineStream(
     const next = state.frames.shift();
     assert(next, "Unexpected provider continuation in " + state.currentPhase);
     content = next(context);
+    const groups: Record<string, string> = { smart_context: "history", smart_navigation: "navigation",
+     smart_compact: "compaction", smart_recall: "memory", smart_save_memory: "memory" };
+    const names = new Set(activeTools.map(tool => tool.name));
+    const missing = content.find(block => block.type === "toolCall" && groups[block.name] && !names.has(block.name));
+    if (missing?.type === "toolCall") {
+     assert(names.has("smart_tools"), "Required tool and its loader are both unavailable");
+     // Preserve the scripted action without evaluating its capture side effects twice.
+     const deferred = content;
+     state.frames.unshift(() => deferred);
+     content = [{ type: "toolCall", id: "load-" + state.capture.mainRequests, name: "smart_tools",
+      arguments: { action: "load", group: groups[missing.name] } }];
+    }
    }
    if (usageClass !== "warm") {
     if (usageClass === "main") {
@@ -612,7 +632,10 @@ function offlineStream(
 
 
 function hostAllowListFor(model: Model<Api>): string[] {
- if (model.baseUrl) return [new URL(model.baseUrl).origin];
+ if (model.baseUrl) {
+  try { return [new URL(model.baseUrl).origin]; }
+  catch { throw new Error("Invalid provider base URL; live evaluation refused."); }
+ }
  switch (model.provider) {
   case "anthropic":
    return ["https://api.anthropic.com"];
@@ -737,7 +760,7 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
   }
   fs.mkdirSync(cwd, { recursive: true });
   fs.mkdirSync(agentDir, { recursive: true });
-  const settings = armSmartCompactSettings(arm, { backgroundPrep: args.backgroundPrep });
+  const settings = armSmartCompactSettings(arm, { backgroundPrep: args.backgroundPrep, toolLoading: args.toolLoading });
   if (args.live) settings.summaryModel = args.summaryModel || args.models;
   fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({
    smartCompact: settings,
@@ -748,6 +771,7 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
    assert(liveGuardParam, "Live mode requires the whole-run budget guard");
    liveGuard = liveGuardParam;
    globalThis.fetch = liveGuard.fetch;
+   // SAFETY: fail-closed constructor blocks every WebSocket attempt; the original is restored in finally.
    globalThis.WebSocket = class {
     constructor() {
      throw new Error("WebSocket transport is disabled in live task-eval");
@@ -952,6 +976,7 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
      "grep",
      "write",
      "bash",
+     "smart_tools",
      "smart_context",
      "smart_compact",
      "smart_recall",
@@ -1416,6 +1441,8 @@ async function runArm(arm: ArmId, liveGuardParam?: BudgetedFetch): Promise<ArmRe
       },
      },
      cachePrefix: {
+      representation: "SDK-collapsed system prompt + active tool schemas + message text; not provider wire or cache-hit measurement",
+      toolLoading: args.toolLoading,
       mainRequestPairs: prefixPairs.length,
       prefixCharsTotal,
       previousCharsTotal,
@@ -1591,6 +1618,7 @@ const summary = {
   contextWindow: args.live ? args.contextWindow || "native" : 200_000,
   cacheWarming: args.cacheWarming,
   backgroundPrep: args.backgroundPrep,
+  toolLoading: args.toolLoading,
  },
  generatedAt: new Date().toISOString(),
  labels: args.live

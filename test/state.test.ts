@@ -887,6 +887,116 @@ describe("continuity state", () => {
   });
 });
 
+describe("mergeCompactionStates — repeated decision answers (A08)", () => {
+  const stateFrom = (decisions: Array<{ summary: string; userResponse?: string }>) =>
+    buildCompactionState(
+      makeExtraction({
+        decisions: decisions.map((d, i) => ({
+          index: i * 2,
+          type: "explicit" as const,
+          summary: d.summary,
+          ...(d.userResponse ? { userResponse: d.userResponse } : {}),
+        })),
+      }),
+      [],
+      null,
+      [],
+      [],
+    );
+
+  it("keeps only the latest answer for a re-asked question in one window (A08)", () => {
+    const merged = mergeCompactionStates(
+      stateFrom([]),
+      stateFrom([
+        { summary: "Which database should we use?", userResponse: "PostgreSQL" },
+        { summary: "Which database should we use?", userResponse: "SQLite" },
+      ]),
+    );
+    expect(merged.decisions).toHaveLength(1);
+    expect(merged.decisions[0].summary).toBe("Which database should we use?");
+    expect(merged.decisions[0].userResponse).toBe("SQLite");
+  });
+
+  it("prefers the current window's answer over the carried one (A08)", () => {
+    const merged = mergeCompactionStates(
+      stateFrom([{ summary: "Which database should we use?", userResponse: "PostgreSQL" }]),
+      stateFrom([{ summary: "Which database should we use?", userResponse: "SQLite" }]),
+    );
+    expect(merged.decisions).toHaveLength(1);
+    expect(merged.decisions[0].userResponse).toBe("SQLite");
+  });
+
+  it("keeps the carried answer when the current window re-asks without an answer (A08)", () => {
+    const merged = mergeCompactionStates(
+      stateFrom([{ summary: "Which database should we use?", userResponse: "PostgreSQL" }]),
+      stateFrom([{ summary: "Which database should we use?" }]),
+    );
+    expect(merged.decisions).toHaveLength(1);
+    expect(merged.decisions[0].userResponse).toBe("PostgreSQL");
+  });
+
+  it("does not keep both conflicting historical answers active (A08)", () => {
+    const merged = mergeCompactionStates(
+      stateFrom([]),
+      stateFrom([
+        { summary: "Which database should we use?", userResponse: "PostgreSQL" },
+        { summary: "Which database should we use?", userResponse: "SQLite" },
+      ]),
+    );
+    const forQuestion = merged.decisions.filter(
+      (d) => d.summary === "Which database should we use?",
+    );
+    expect(forQuestion).toHaveLength(1);
+    expect(
+      merged.decisions.map((d) => d.userResponse).join("|"),
+    ).not.toContain("PostgreSQL");
+  });
+
+  it("collapses a re-asked question on the first compaction too (A08)", () => {
+    const merged = mergeCompactionStates(
+      null,
+      stateFrom([
+        { summary: "Which database should we use?", userResponse: "PostgreSQL" },
+        { summary: "Which database should we use?", userResponse: "SQLite" },
+      ]),
+    );
+    expect(merged.decisions).toHaveLength(1);
+    expect(merged.decisions[0].userResponse).toBe("SQLite");
+  });
+
+  it("keeps an answered explicit record's provenance when the current window re-asks implicitly (A08)", () => {
+    const previous = stateFrom([
+      { summary: "Which database should we use?", userResponse: "PostgreSQL" },
+    ]);
+    // The current window restates the question without a dialog answer and
+    // extraction types it implicit: the carried ANSWERED record stays
+    // authoritative, answer and provenance together.
+    const currentExtraction = makeExtraction({
+      decisions: [
+        { index: 4, type: "implicit" as const, summary: "Which database should we use?" },
+      ],
+    });
+    const merged = mergeCompactionStates(
+      previous,
+      buildCompactionState(currentExtraction, [], null, [], []),
+    );
+    expect(merged.decisions).toHaveLength(1);
+    expect(merged.decisions[0].userResponse).toBe("PostgreSQL");
+    expect(merged.decisions[0].type).toBe("explicit");
+  });
+
+  it("keeps different questions' answers side by side (A08 control)", () => {
+    const merged = mergeCompactionStates(
+      stateFrom([]),
+      stateFrom([
+        { summary: "Which database should we use?", userResponse: "PostgreSQL" },
+        { summary: "Which search engine should we use?", userResponse: "Elasticsearch" },
+      ]),
+    );
+    expect(merged.decisions).toHaveLength(2);
+  });
+});
+
 describe("computeDelta", () => {
   it("detects new decisions", () => {
     const prev = makeFullState();

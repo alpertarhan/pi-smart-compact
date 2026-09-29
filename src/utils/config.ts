@@ -44,6 +44,7 @@ const BOOLEAN_KEYS = [
  "visualArchiveEnabled",
  "artifactOffloadEnabled",
  "contextHygieneEnabled",
+ "contextPressureOnly",
  "contextNavigationEnabled",
  "contextRecallEnabled",
  "contextPivotEnabled",

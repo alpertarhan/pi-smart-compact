@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "10.0.1";
+export const VERSION = "10.1.0";
 /**
  * Opt-in components that are not installed with the extension: optional peer
  * dependencies in package.json, pinned to the versions the release audit
@@ -140,14 +140,14 @@ export const DEFAULT_CONFIG = {
  summaryThinkingLevel: "minimal" as const,
  segmentationThinkingLevel: "minimal" as const,
  agentToolAccess: "inherit" as const,
- toolLoading: "lazy" as const,
+ toolLoading: "eager" as const,
  autoTrigger: true,
  showStatus: true,
- autoTriggerStrategy: "native-hook" as const,
+ autoTriggerStrategy: "settled" as const,
  autoTriggerTimeoutMs: 120000,
  backupEnabled: true,
  backupDir: "",
- minContextPercent: 60, // Don't compact below this context threshold (tool=97% ≠ context full)
+ minContextPercent: 80, // Two phases: early cleanup, then compaction; tool share is not fullness.
  prepareContextPercent: null as number | null, // Auto: adaptive lead before minContextPercent
  maxContextTokens: 0, // 0 = off; else caps the window used by automatic trigger/preparation percentages
  requireApproval: true,
@@ -171,7 +171,8 @@ export const DEFAULT_CONFIG = {
  mnemopiDataDir: null as string | null,
  visualArchiveEnabled: false,
  artifactOffloadEnabled: false,
- contextHygieneEnabled: false,
+ contextHygieneEnabled: true,
+ contextPressureOnly: true, // false opts into legacy break-even/cold-cache cleanup.
  contextNavigationEnabled: true,
  contextRecallEnabled: true,
  contextPivotEnabled: true,

@@ -160,8 +160,21 @@ Options (from `--help`): `--arms`, `--repeats=1..8` (default five rounds, probes
 after rounds two and five), `--out` (absolute directory; defaults to
 `./task-eval-reports/<timestamp>`), `--json`, and two offline-only
 cost-accounting fixtures, `--cache-warming=off|streaming|idle` and
-`--background-prep`. Every arm runs with `toolLoading: "eager"`, so the arms
-differ only in hygiene/offload knobs, not in on-demand tool discovery. With
+`--background-prep`. `--tool-loading=eager|lazy` selects the same exposure mode
+for every arm (default eager). Offline lazy frames explicitly load missing groups;
+this measures host/discovery mechanics, not autonomous tool choice. Prefix
+comparisons include active tool schemas and the SDK-collapsed system prompt,
+not just conversation text. They model providers without in-place additions,
+not an exact provider wire payload or billed cache-hit rate.
+
+For a paired exposure comparison:
+
+```bash
+bun run task-eval --arms=hybrid --repeats=2 --tool-loading=eager --out=/tmp/psc-eager
+bun run task-eval --arms=hybrid --repeats=2 --tool-loading=lazy --out=/tmp/psc-lazy
+```
+
+With
 `--cache-warming=idle`, arms that have automatic cleanup on may commit a
 break-even trim at an idle boundary; the rebuilt context ends Pi's warming for
 that entry, so zero warm replays there is expected, while the `no-compaction`

@@ -40,12 +40,13 @@ import { assembleFallback } from "../src/phases/synthesize.ts";
 import { AUTO_TRIGGER_MAX_LLM_CALLS, DEFAULT_CONFIG, PROFILES } from "../src/constants.ts";
 import { aggregateProviderRoutes } from "../src/domain/provider-evaluation.ts";
 import { summarizeConversation } from "../src/app/steps/synthesize.ts";
+import { explorationToolSupportKey } from "../src/phases/explore.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
 import type { LlmClient } from "../src/infra/llm-client.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { TieredRc } from "../src/app/run-context.ts";
 import type { LlmMessage } from "../src/types.ts";
-import { createServices } from "../src/infra/services.ts";
+import { BudgetGuard, createServices } from "../src/infra/services.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/constants.ts";
@@ -162,6 +163,100 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     await prepareRun(rc);
     for (let i = 0; i < AUTO_TRIGGER_MAX_LLM_CALLS; i++) rc.services.budget.reserveCall(1, 1);
     expect(() => rc.services.budget.reserveCall(1, 1)).toThrow("budget");
+  });
+
+  it.each([
+    { route: "tool-loop", limit: AUTO_TRIGGER_MAX_LLM_CALLS, phases: ["explore", "explore-loop", "batch", "assemble"] },
+    { route: "direct", limit: 3, phases: ["explore", "batch", "assemble"] },
+    { route: "unsupported", limit: 3, phases: ["explore-direct", "batch", "assemble"] },
+    { route: "rejected", limit: AUTO_TRIGGER_MAX_LLM_CALLS, phases: ["explore", "explore-direct", "batch", "assemble"] },
+    { route: "truncated-batch", limit: AUTO_TRIGGER_MAX_LLM_CALLS, phases: ["explore", "explore-loop", "batch", "assemble"] },
+    { route: "tool-loop", limit: 2, phases: ["batch", "assemble"] },
+    { route: "tool-loop", limit: 1, phases: ["assemble"] },
+  ])("keeps synthesis available with exploration route $route and call limit $limit", async ({ route, limit, phases }) => {
+    let calls = 0;
+    setLlmClient({ complete: async (_model, body) => {
+      calls++;
+      if (body.tools?.length && route === "rejected") throw Object.assign(new Error("tools are not supported"), { status: 400 });
+      if (body.tools?.length && (route === "tool-loop" || route === "truncated-batch")) {
+        return { ...makeSummaryResponse(""), stopReason: "toolUse", content: [
+          { type: "toolCall", id: "explore-" + calls, name: "get_context_around", arguments: { index: 0, radius: 1 } },
+        ] };
+      }
+      if (JSON.stringify(body.messages).includes("--- CHUNK 1:")) {
+        const batch = makeSummaryResponse([
+          "### CHUNK 1: Release plan", "**Priority**: normal",
+          "**Summary**: Preserve the release plan.", "**Decisions**: None",
+          "**Modified**: None", "**Deleted**: None", "**Read**: None",
+        ].join("\n"));
+        return route === "truncated-batch" ? { ...batch, stopReason: "length" } : batch;
+      }
+      return makeSummaryResponse("## Goal\nPreserve the release plan\n## Critical Context\nLLM_ASSEMBLY_SENTINEL");
+    } });
+    const tiered = makeTieredRc([userMsg("Preserve the release plan"), assistantMsg("Inspect the release blockers")]);
+    tiered.mode = "thorough";
+    tiered.requestedMode = "thorough";
+    tiered.flags.autoTriggered = true;
+    tiered.services.budget = new BudgetGuard(limit);
+    if (route === "truncated-batch") tiered.services.thinkingLevels.summaryThinkingLevel = "high";
+    const toolKey = explorationToolSupportKey(tiered.segModel);
+    if (route === "unsupported") tiered.services.toolSupport.set(toolKey, false, Date.now());
+    tiered.profileCfg.singlePassMaxTokens = 1;
+    tiered.profileCfg.batchMaxTokens = 100_000;
+    tiered.profileCfg.maxChunkTokens = 100_000;
+    const extracted = extractWithCache(tiered);
+    extracted.convTokens = 60_000;
+    extracted.extraction.errors = [0, 1].map(index => ({
+      index, tool: "bash", message: "release blocker " + index, retryAttempted: false, resolved: false,
+    }));
+
+    const synthesized = await summarizeConversation(extracted);
+
+    expect(tiered.services.metrics.snapshot().map(metric => metric.phase)).toEqual([...phases]);
+    expect(calls).toBe(limit);
+    expect(tiered.services.budget.callCount()).toBe(calls);
+    expect(synthesized.llmCalls).toBe(calls);
+    expect(synthesized.finalSummary).toContain("LLM_ASSEMBLY_SENTINEL");
+    expect(synthesized.generationFallbacks).toEqual(limit === 1
+      ? ["call budget reserved for final assembly"]
+      : route === "truncated-batch" ? ["1 synthesis batch fallback"] : []);
+    if (route === "tool-loop" && limit > 2) expect(tiered.services.toolSupport.get(toolKey, Date.now())).toBe(true);
+    if (route === "direct" || limit <= 2) expect(tiered.services.toolSupport.get(toolKey, Date.now())).toBeUndefined();
+  });
+
+  it.each([1, 2, 4])("keeps the assembly call with retries and queued batches (%i workers)", async (concurrency) => {
+    let batches = 0;
+    setLlmClient({ complete: async (_model, body) => {
+      if (JSON.stringify(body.messages).includes("--- CHUNK 1:")) {
+        batches++;
+        const batch = makeSummaryResponse([
+          "### CHUNK 1: Evidence", "**Priority**: normal", "**Summary**: Preserve the evidence.",
+          "**Decisions**: None", "**Modified**: None", "**Deleted**: None", "**Read**: None",
+        ].join("\n"));
+        return batches <= 2 ? { ...batch, stopReason: "length" } : batch;
+      }
+      return makeSummaryResponse("## Goal\nPreserve evidence\n## Critical Context\nLLM_ASSEMBLY_SENTINEL");
+    } });
+    const messages = Array.from({ length: 6 }, (_, index) => {
+      const text = "Detail " + index + ": " + "evidence ".repeat(40);
+      return index % 2 ? assistantMsg(text) : userMsg(text);
+    });
+    const tiered = makeTieredRc(messages);
+    tiered.mode = "balanced";
+    tiered.requestedMode = "balanced";
+    tiered.services.budget = new BudgetGuard(4);
+    tiered.services.thinkingLevels.summaryThinkingLevel = "high";
+    tiered.providerCaps.concurrencyLimit = concurrency;
+    Object.assign(tiered.profileCfg, {
+      singlePassMaxTokens: 1, batchMaxTokens: 40, maxChunkTokens: 40, minChunkTokens: 1,
+    });
+    const extracted = extractWithCache(tiered);
+    const synthesized = await summarizeConversation(extracted);
+
+    expect(synthesized.chunkCount).toBeGreaterThan(2);
+    expect(tiered.services.metrics.snapshot().map(metric => metric.phase)).toEqual(["batch", "batch", "batch", "assemble"]);
+    expect(tiered.services.budget.callCount()).toBe(4);
+    expect(synthesized.finalSummary).toContain("LLM_ASSEMBLY_SENTINEL");
   });
 
   it("keeps Fast path encoding stable through post-state verification", async () => {
@@ -370,6 +465,30 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(callCount).toBeGreaterThan(0);
   });
 
+  it("falls back deterministically and does not cache a truncated single-pass summary (A09)", async () => {
+    const messages = [userMsg("Refactor the auth module"), assistantMsg("Working on it")];
+    const truncatedBody =
+      "## Goal\nRefactor the auth module.\n\n## Critical Context\nKeep the plan.\n\n```ts\nconst unfinished =";
+    let calls = 0;
+    setLlmClient({ complete: async () => {
+      calls++;
+      return { ...makeSummaryResponse(truncatedBody), stopReason: "length" };
+    } });
+    const tiered = makeTieredRc(messages);
+    const extracted = extractWithCache(tiered);
+
+    const synthesized = await summarizeConversation(extracted);
+
+    expect(synthesized.method).toBe("heuristic");
+    expect(synthesized.finalSummary).not.toContain("const unfinished");
+    expect(synthesized.generationFallbacks).toContain("single-pass generation failed");
+    // Reject-before-cache: a later identical run must still call the model
+    // instead of replaying the rejected truncated output from the cache.
+    const second = await summarizeConversation(extractWithCache(tiered));
+    expect(calls).toBeGreaterThan(1);
+    expect(second.finalSummary).not.toContain("const unfinished");
+  });
+
   it("uses zero LLM calls for high-confidence fast-mode extraction", async () => {
     const messages = [userMsg("Update src/auth.ts"), assistantMsg("Updated it")];
     let callCount = 0;
@@ -452,8 +571,9 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     setLlmClient(fakeClient);
 
     const notices: string[] = [];
+    const warnings: string[] = [];
     const tiered = makeTieredRc(messages);
-    tiered.notify = (message: string) => { notices.push(message); };
+    tiered.notify = (message, type) => { notices.push(message); if (type === "warning") warnings.push(message); };
     const extracted = extractWithCache(tiered);
     const synthesized = await summarizeConversation(extracted);
 
@@ -468,6 +588,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(notices.join("\n")).toContain("Single-pass generation stopped");
     expect(notices.join("\n")).toContain("provider");
     expect(notices.join("\n")).toContain("provider (simulated provider outage)");
+    expect(warnings).toEqual([]); // Outcome feedback belongs to verification/apply, not recovery attempts.
     expect(aggregateProviderRoutes(tiered.services.metrics.snapshot())[0]?.failures).toEqual({ provider: 1 });
     expect(JSON.stringify(tiered.services.metrics.snapshot())).not.toContain("simulated provider outage");
   });
@@ -485,10 +606,11 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
       },
     });
     const notices: string[] = [];
+    const warnings: string[] = [];
     const makeExtracted = () => {
       const tiered = makeTieredRc(messages);
       tiered.sessionId = "one-batch-fallback-session";
-      tiered.notify = message => { notices.push(message); };
+      tiered.notify = (message, type) => { notices.push(message); if (type === "warning") warnings.push(message); };
       tiered.profileCfg.singlePassMaxTokens = 1;
       tiered.profileCfg.batchMaxTokens = 100_000;
       tiered.profileCfg.maxChunkTokens = 100_000;
@@ -500,6 +622,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     const first = await summarizeConversation(makeExtracted());
     expect(first.generationFallbacks).toContain("1 synthesis batch fallback");
     expect(notices.join("\n")).toContain("Synthesis batch stopped · deterministic evidence fallback preserved coverage");
+    expect(warnings).toEqual([]);
     expect(calls).toBe(2);
 
     await summarizeConversation(makeExtracted());

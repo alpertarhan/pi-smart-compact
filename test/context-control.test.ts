@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "bun:test";
-import { SessionManager, buildSessionProjection, type ExtensionContext, type SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+  buildSessionProjection, type AgentSession, type ExtensionContext, type SessionBoundaryDraft,
+} from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, DEFAULT_CONFIG, FIVE_MINUTES_MS, ONE_HOUR_MS, TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES } from "../src/constants.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
@@ -13,6 +19,9 @@ import {
   lastAnchorBoundary, MAX_CONTEXT_EDITS, buildTrimMarker,
 } from "../src/app/context-operations.ts";
 import { contextEvidence } from "../src/app/context-evidence.ts";
+import { registerNavigation } from "../src/app/register-navigation.ts";
+import { createSettledAutoTrigger } from "../src/app/settled-auto-trigger.ts";
+import { contextPressure } from "../src/app/background-preparation.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
 function assistant(content: AssistantMessage["content"] = [], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
@@ -73,14 +82,14 @@ function harness(options: { background?: boolean; canTrim?: boolean; session?: S
   let paused = false;
   let canMutate = options.canMutate !== false;
   let canTrim = options.canTrim !== false;
-  const cfg = { ...DEFAULT_CONFIG, autoTrigger: true, autoTriggerStrategy: options.background ? "background" as const : "native-hook" as const, minContextPercent: 80 };
+  const cfg = { ...DEFAULT_CONFIG, contextHygieneEnabled: false, autoTrigger: true, autoTriggerStrategy: options.background ? "background" as const : "native-hook" as const, minContextPercent: 80 };
   const ctx = {
-    sessionManager: session, cwd: process.cwd(), hasUI: false,
+    sessionManager: session, cwd: process.cwd(), hasUI: false, ui: { setStatus() {} },
     model: { contextWindow: 200_000, ...options.model }, getContextUsage: () => ({ tokens }),
   } as unknown as ExtensionContext;
   const controller = registerSmartContextTool({
     registerTool: (definition: any) => { tool = definition; },
-    getActiveTools: () => active ? ["smart_context"] : [],
+    getActiveTools: () => active ? ["smart_context", "smart_navigation"] : ["smart_navigation"],
     on: (name: string, fn: any) => handlers.set(name, [...handlers.get(name) ?? [], fn]),
   } as any, { config: () => cfg, isPaused: () => paused, canAutoTrim: () => canTrim, canAgentMutate: () => canMutate, onContextChange: () => { changed++; }, onContextEdit: (_ctx, kind) => { edits.push(kind); }, now: () => clock });
 
@@ -691,10 +700,173 @@ function anchorBatch(manager: SessionManager, name: string) {
   return { call, result };
 }
 
+describe("pressure-first policy", () => {
+  it("leaves roomy history unchanged even with favorable prices or a cold cache", async () => {
+    const h = harness({ model: { cost: { input: 1, cacheRead: 0, cacheWrite: 1 } } });
+    h.cfg.contextHygieneEnabled = true;
+    h.setTokens(100_000);
+    toolBatch(h.session, "read", "roomy history".repeat(3_000));
+    tail(h.session);
+    expect(h.turn()).toBeUndefined();
+    h.setNow(ONE_HOUR_MS * 2);
+    expect(h.request().result).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    const status = JSON.parse((await h.tool.execute("status", { action: "status" }, undefined, undefined, h.ctx)).content[0].text);
+    expect(status.pressure).toMatchObject({ percent: 50, cleanupTokens: 140_000, compactionTokens: 160_000, cleanup: false });
+    await expect(h.tool.execute("trim", { action: "trim" }, undefined, undefined, h.ctx)).rejects.toThrow("No context pressure");
+    const cp = await h.execute({ action: "checkpoint" });
+    h.boundary(cp); // metadata is cheap and permitted before the detour
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint).not.toBeNull();
+    await expect(h.tool.execute("rewind", { action: "rewind", report: "done" }, undefined, undefined, h.ctx)).rejects.toThrow("No context pressure");
+  });
+
+  it("allows explicit human cleanup below pressure and rechecks queued agent requests", async () => {
+    const h = harness();
+    const old = toolBatch(h.session, "read", "evidence".repeat(3_000));
+    tail(h.session);
+    const batch = await h.execute({ action: "trim" });
+    h.setTokens(1_000);
+    h.boundary(batch);
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.size).toBe(0);
+    expect(h.controller.requestManualTrim(h.ctx).state).toBe("queued");
+    h.turn();
+    expect(readContextReference(h.session.getBranch(), h.session.getSessionId(), old.result)).toBe("evidence".repeat(3_000));
+  });
+
+  it("does not let agent cleanup discard a prepared compaction", async () => {
+    const h = harness({ canTrim: false });
+    await expect(h.tool.execute("trim", { action: "trim" }, undefined, undefined, h.ctx)).rejects.toThrow("take priority");
+    expect(h.changes()).toBe(0);
+  });
+
+  it("rejects a deferred edit if signed thinking arrived after planning", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    h.turn();
+    h.session.appendMessage({ ...assistant([{ type: "thinking", thinking: "depends on old output", thinkingSignature: "signed" }]), api: "anthropic-messages" });
+    h.setNow(ONE_HOUR_MS);
+    expect(h.request().result).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+  });
+});
+
+/** A real offline AgentSession for genuine getContextUsage accounting on a
+ * shared session manager, following the offline navigation-lifecycle pattern:
+ * isolated runtime/settings/loader, no model or network calls. */
+async function offlineUsageHarness(
+  sessionManager: SessionManager,
+  contextWindow: number,
+): Promise<{ session: AgentSession; cleanup(): void }> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "psc-usage-"));
+  const authPath = path.join(root, "auth.json");
+  fs.writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "SYNTHETIC-NO-REQUEST" } }));
+  const runtime = await ModelRuntime.create({
+    authPath,
+    modelsPath: path.join(root, "models.json"),
+    modelsStorePath: path.join(root, "models-cache.json"),
+    allowModelNetwork: false,
+    refreshOnCreate: false,
+  });
+  // Any accidental model request fails locally, never at a provider.
+  const model = { ...runtime.getModel("anthropic", "claude-opus-5-5")!, baseUrl: "http://127.0.0.1:1", contextWindow };
+  const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
+  const loader = new DefaultResourceLoader({
+    cwd: root, agentDir: root, settingsManager: settings,
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+  });
+  await loader.reload();
+  const created = await createAgentSession({
+    cwd: root, agentDir: root, model, modelRuntime: runtime,
+    settingsManager: settings, resourceLoader: loader,
+    sessionManager, thinkingLevel: "off",
+  });
+  const session = created.session;
+  return {
+    session,
+    cleanup() {
+      session.dispose();
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("cleanup before compaction", () => {
+  it.each([false, true])("rechecks Pi's committed projection before idle compaction (pressure remains=%s)", async remains => {
+    const h = harness({ model: { contextWindow: 1_000_000 } });
+    Object.assign(h.cfg, { contextHygieneEnabled: true, autoTriggerStrategy: "settled", maxContextTokens: 400_000 });
+    const old = toolBatch(h.session, "read", "evidence ".repeat(150_000));
+    tail(h.session, 8);
+    if (remains) h.session.appendMessage(assistant([{ type: "text", text: "protected ".repeat(140_000) }]));
+    let compactions = 0;
+    // Real hosts compute usage through AgentSession internals (latest Pi
+    // routes model limits there); a borrowed prototype method on a plain
+    // object cannot. Use a REAL offline AgentSession sharing this session
+    // manager with the same 1,000,000-token window.
+    const usage = await offlineUsageHarness(h.session, 1_000_000);
+    try {
+      h.ctx.getContextUsage = () => usage.session.getContextUsage();
+      Object.assign(h.ctx, {
+        isIdle: () => true, hasPendingMessages: () => false,
+        compact: ({ onComplete }: { onComplete(): void }) => { compactions++; onComplete(); },
+      });
+      expect(contextPressure(h.ctx, h.cfg).compaction).toBe(true);
+      h.turn(); // Pi commits boundary edits before agent_settled.
+      expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(true);
+      expect(contextPressure(h.ctx, h.cfg).compaction).toBe(remains);
+      await createSettledAutoTrigger().request(h.ctx, h.cfg);
+      expect(compactions).toBe(remains ? 1 : 0);
+    } finally {
+      usage.cleanup();
+    }
+  });
+});
+
+describe("anchor consolidation", () => {
+  it("seals only the new anchor region once and preserves exact recovery", async () => {
+    const h = harness();
+    const pinned = toolBatch(h.session, "read", "PINNED".repeat(4_000));
+    anchorBatch(h.session, "previous");
+    const research = toolBatch(h.session, "read", "RECOVERABLE".repeat(3_000));
+    tail(h.session);
+    let navigationTool: any;
+    let invalidations = 0;
+    registerNavigation({
+      registerTool: (tool: any) => { navigationTool = tool; },
+      getActiveTools: () => ["smart_navigation", "smart_context"],
+      on() {},
+    } as any, {
+      config: () => h.cfg,
+      onContextChange: () => { invalidations++; },
+      onAnchor: (ctx, origin, id, signal) => h.controller.requestAnchorTrim(ctx, origin, id, signal).notice,
+    });
+    h.setTokens(1_000);
+    await expect(navigationTool.execute("early", { action: "anchor", name: "early", summary: "Too early" }, undefined, undefined, h.ctx)).rejects.toThrow("No context pressure");
+    h.setTokens(140_000);
+    const callId = "new-anchor";
+    const params = { action: "anchor", name: "completed", summary: "Keep the conclusion" };
+    const message = assistant([{ type: "toolCall", name: "smart_navigation", id: callId, arguments: params }], "toolUse");
+    const messageEntryId = h.session.appendMessage(message);
+    h.setActive(false); // optional lazy mode: history is reachable but not active yet
+    const response = await navigationTool.execute(callId, params, undefined, undefined, h.ctx);
+    expect(response.content[0].text).toContain("Anchor cleanup queued for the completed tool batch");
+    expect(invalidations).toBe(0); // append-only anchor does not cancel paid preparation
+    const result: ToolResultMessage = { role: "toolResult", toolCallId: callId, toolName: "smart_navigation",
+      content: response.content, details: response.details, isError: false, timestamp: 1 };
+    const resultId = h.session.appendMessage(result);
+    h.boundary({ response, message, messageEntryId, toolResults: [result], toolResultEntryIds: [resultId] });
+    const state = inspectContext(h.session.getBranch(), h.session.getSessionId());
+    expect([...state.references]).toEqual([research.result]);
+    expect(readContextReference(h.session.getBranch(), h.session.getSessionId(), research.result)).toBe("RECOVERABLE".repeat(3_000));
+    expect(JSON.stringify(buildSessionProjection(h.session.getBranch()).messages)).toContain("PINNED".repeat(4_000));
+    expect(state.references.has(pinned.result)).toBe(false);
+    expect(planContextTrim(h.session.getBranch()).entries).toEqual([]);
+    expect(h.changes()).toBe(1);
+  });
+});
+
 describe("toolkit anchor coexistence", () => {
   it("trims only research after the active Toolkit anchor and keeps the anchor pair raw", () => {
     const session = manager();
-    const preAnchor = toolBatch(session, "read", "anchor-prefix-evidence".repeat(600));
+    toolBatch(session, "read", "anchor-prefix-evidence".repeat(600));
     const anchor = anchorBatch(session, "research-done");
     const postAnchor = toolBatch(session, "read", "post-anchor-evidence".repeat(600));
     tail(session);
@@ -725,7 +897,7 @@ describe("toolkit anchor coexistence", () => {
 
   it("ignores context tool results that carry no anchor metadata", () => {
     const session = manager();
-    const plain = toolBatch(session, "context", "view output".repeat(600), false, { action: "view" });
+    toolBatch(session, "context", "view output".repeat(600), false, { action: "view" });
     const later = toolBatch(session, "read", "ordinary research".repeat(600));
     tail(session);
     expect(lastAnchorBoundary(session.getBranch())).toBeUndefined();
@@ -961,7 +1133,8 @@ function expectedTrim(session: SessionManager, model: PricedModel) {
 /** An old read-only batch, optionally followed by a large non-trimmable tail, then protected recent turns. */
 function deferredFixture(model: PricedModel | undefined, largeTail: boolean, hygiene = true) {
   const h = harness({ background: true, model });
-  h.cfg.contextHygieneEnabled = hygiene; // break-even and cold-cache timing are the opt-in cleanup
+  h.cfg.contextHygieneEnabled = hygiene;
+  h.cfg.contextPressureOnly = false; // Explicit legacy economics; pressure-only defaults are tested separately.
   h.setTokens(100_000); // below the 140k start gate
   const old = toolBatch(h.session, "read", "old research".repeat(2_000));
   if (largeTail) h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });

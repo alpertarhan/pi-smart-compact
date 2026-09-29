@@ -217,7 +217,7 @@ export function createHomeList(
     id: "trim",
     label: "Clean up tool output",
     currentValue: "no model call",
-    description: "Queue cleanup for the next completed turn. Older output stays retrievable; the next model request is still sent untrimmed.",
+    description: "Queue cleanup for the next completed turn. Older output stays retrievable; the next model request is still sent untrimmed. No summarizer call, but a history rewrite can incur cache cost.",
   };
   const setup: SettingItem = {
     id: "setup",

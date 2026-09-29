@@ -15,8 +15,8 @@ This guide is task oriented. For every setting, default and range, see the
 release evidence, see [evaluation](./evaluation.md).
 
 > [!NOTE]
-> **Which version this describes.** This guide targets Pi Continuity `10.0.1`,
-> the stable release of the context-hygiene and continuity rework. The earlier
+> **Which version this describes.** This guide describes the `10.1.0` shipped
+> defaults, including the pressure-first changes and native tool rows. The earlier
 > `9.8.0-canary.*` entries in the changelog are historical local candidates,
 > not npm releases. See [upgrade notes](#upgrade-from-9x) when coming from 9.x
 > and [the changelog](../CHANGELOG.md) for the release scope and evidence limits.
@@ -65,8 +65,8 @@ default.
 
 | Status | Features |
 | --- | --- |
-| On by default | Replacing Pi's summary when Pi compacts, **Compact now**, `/smart-compact trim`, session navigation, agent tools on demand, local project memory, backups, secret scrubbing |
-| Optional, off until selected | **Automatic cleanup**, **Offload huge outputs**, the `When idle` and `Prepare in background` strategies, the Hindsight and Mnemopi memory stores, personal-data scrubbing |
+| On by default | Pressure-gated batched cleanup, idle compaction at 80%, stable permitted agent tools, **Compact now**, `/smart-compact trim`, session navigation, local project memory, backups, secret scrubbing |
+| Optional, off until selected | **Offload huge outputs**, economic/cold-cache cleanup, `Prepare in background`, the Hindsight and Mnemopi memory stores, personal-data scrubbing |
 | Experimental | [Provider compaction, image snapshots](#summary-format-provider-compaction-and-images) and the [RTK companion](#rtk-companion-optional-experimental) |
 
 Settings and defaults are listed in the
@@ -86,9 +86,10 @@ Then, inside Pi:
 /smart-compact
 ```
 
-Opening Home changes nothing. With the built-in defaults, automatic compaction
-depends on Pi starting it. Automatic local cleanup, early output offload and
-speculative background preparation are off until selected.
+Opening Home changes nothing. With the new defaults, batched cleanup starts
+under early pressure and compaction starts at an idle 80% boundary. A 400k
+policy window means 288k cleanup / 320k compaction. Offload and speculative
+background preparation remain optional; no extra model calls run while roomy.
 
 ## Upgrade from 9.x
 
@@ -97,20 +98,20 @@ speculative background preparation are off until selected.
 and stored paths keep their names; do not rename existing data directories.
 
 1. Update Pi to **0.87.1+** and use **Node.js 22.19+**. Install the release with
-   `pi install npm:pi-smart-compact@10.0.1`, then reload or restart Pi.
+   `pi install npm:pi-smart-compact@10.1.0`, then reload or restart Pi.
 2. Open `/smart-compact` in the TUI. The bare command now opens Home; **Compact
    now** starts the interactive compaction flow. Print/RPC/SDK use still runs
    compaction directly. Review requires **A** to apply, not Enter.
-3. Expect the agent to see `smart_tools` first. It loads navigation, history,
-   memory and compaction tools on demand. Choose **Always available** only if
-   you want all permitted tools exposed from the start.
+3. 10.1.0 uses the pressure-first default: **Always available** tool exposure
+   to keep tool definitions stable. Existing explicit `toolLoading: "lazy"`
+   settings remain respected.
 4. Review **Memory store** if you use project memory. Exactly one backend is
    used, with no silent fallback. Mnemopi and image snapshots now require
    [separately installed optional components](../README.md#optional-components);
    the default local memory store does not.
 
-Automatic cleanup, early offload, background preparation, provider-native
-compaction and image snapshots remain opt-in. Existing compaction permissions
+In the 10.1.0 defaults, cleanup is pressure-gated and enabled. Early
+offload, background preparation, provider-native compaction and images remain opt-in. Existing compaction permissions
 are preserved. Claude subscription routes still need the compatible separate
 adapter described under [provider compaction](#summary-format-provider-compaction-and-images).
 
@@ -207,15 +208,16 @@ changes only the order and the note, never which outputs are eligible.
 
 ### Automatic cleanup (optional)
 
-Automatic trimming is separate and off by default: turn on
-**Automatic cleanup** (`contextHygieneEnabled`), or pick the `Cleanup only` or
-`Fully automatic` preset. It uses the same eligibility rules as the manual
+Automatic trimming is separate and enabled under pressure by default. Control
+it with **Automatic cleanup** (`contextHygieneEnabled`); **Cleanup timing**
+(`contextPressureOnly`) defaults to pressure-only. It uses the same eligibility rules as the manual
 command and needs `smart_context` reachable by the model, since the digest
 points it there (any **Agent tools** choice except **Off**).
 
 A batch needs at least 16,384 characters of net savings and eight assistant
 turns after the last trim, rewind or compaction. It then commits at the turn
-boundary for one of three causes, recorded on the trim entry:
+boundary under pressure. The other two causes below require the explicit
+**Economic (opt-in)** timing choice (`contextPressureOnly: false`):
 
 - `pressure`: context usage reached the early pressure gate.
 - `break-even`: the model's catalog prices say the trim pays back its prompt
@@ -290,7 +292,7 @@ to existing settings.
 
 | Preset | Automatic compaction | Automatic cleanup | Agent can call `smart_compact` |
 | --- | --- | --- | --- |
-| `With Pi (default)` | Only when Pi's own auto-compaction fires | Off | Follows Pi's tool settings |
+| `Pressure-first (default)` | Starts when idle at the 80% apply gate | Under early pressure | Follows Pi's tool settings |
 | `Manual only` | Off | Off | No |
 | `Manual + agent` | Off | Off | Yes |
 | `Cleanup only` | Off | On | No |
@@ -298,13 +300,13 @@ to existing settings.
 
 Two points matter most:
 
-- **`With Pi (default)` is passive.** It replaces the summary only when Pi
-  starts a compaction. If Pi's auto-compaction is off, nothing compacts
-  automatically. Extensions cannot read Pi's setting, so readiness reports it
-  as `unknown`.
+- **The default is pressure-first.** Roomy history stays unchanged; cleanup
+  and compaction share one policy window. The optional `native-hook` strategy
+  remains passive and requires Pi's auto-compaction to be enabled.
 - **`Fully automatic` works with Pi's auto-compaction off.** It asks Pi to
   compact at the next idle, queue-empty boundary once context reaches
-  `Start at context %`, with a 10-minute cooldown after a compaction.
+  `Start at context %`, with a 10-minute cooldown after every completed
+  attempt, including failures and missing-callback timeouts.
 
 `Start at context %` counts against the model's full window. On a large-window
 model (Home warns above 400k tokens), set `Context cap for start % (tokens)`
@@ -317,6 +319,11 @@ and four model calls, whatever the configured limits are. When they fail, Pi
 may still use its own compactor. See
 [automatic strategies](./configuration.md#automatic-strategies) for the
 background strategy and the gate arithmetic.
+
+For cost-sensitive sessions, use the [cache-first configuration](./configuration.md#cache-first-automatic-compaction):
+stable tools, idle compaction, pressure-only cleanup, no speculative preparation,
+and first-delivery offload for eligible large outputs. Existing mode budgets and
+summary quality checks remain in place.
 
 ## Retrieve archived output
 
@@ -393,6 +400,11 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
 {"action":"trim"}
 ```
 
+- Check `status` for actual usage and gates. Checkpoints are permitted below
+  pressure; agent rewind/trim/anchor requests are not, by default. Human
+  commands can request early work. Unsafe edits before retained signed
+  Anthropic thinking are refused, even when thinking bytes themselves would
+  stay unchanged.
 - `checkpoint`, `rewind` and `trim` return **queued**. Pi commits them at the
   end of the current tool batch.
 - One checkpoint is active at a time; a new one replaces it. It survives reload.
@@ -414,7 +426,11 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
 An anchor is a named point in this conversation with a summary of what was
 true there: the goal, decisions and the state of the work. Anchors are stored
 as messages in the session, so the agent sees them too. Use them to find the
-way back after a long detour.
+way back after a long detour. Under pressure, an agent anchor also queues one
+safe cleanup of its new region through the shared trim controller. Previous
+anchor prefixes stay protected. It is not a full compaction; the response says
+whether cleanup was queued, blocked or unnecessary. A human may mark a milestone
+earlier. Append-only anchors do not discard an already prepared summary.
 
 Home → **History & recovery** → **Session navigation**, or `/smart-compact context`:
 
@@ -488,8 +504,8 @@ decides what the agent sees:
 
 | Choice | What the agent sees |
 | --- | --- |
-| **On demand** (default) | One small loader, `smart_tools`. The agent loads a group when it needs it: `navigation`, `history`, `memory` or `compaction`. Loaded groups are forgotten at the next session start, branch change or compaction. |
-| **Always available** | Every permitted tool from the start. |
+| **Always available** (default) | Every permitted tool from the start, keeping tool definitions stable. |
+| **On demand** | `smart_tools` loads a missing group. Late loading can rebuild the provider cache. Loaded groups reset at session start/branch change, not compaction. |
 | **Off** | No context tools. The human UI keeps working. |
 
 `smart_tools` also answers `status`, `unload` and `guide`. The guide is the
@@ -508,11 +524,19 @@ earlier request bytes disappear.
 | `smart_context` | `history` | Status, search, read, plan, trim, checkpoint, rewind | Queued edits apply at the end of the current tool batch |
 | `smart_recall` | `memory` | Searches this project's memory in the selected store | Immediately; read-only |
 | `smart_save_memory` | `memory` | Saves or resolves one durable fact | Only after **you** approve the host confirmation dialog |
-| `smart_compact` | `compaction` | Prepares a verified summary and stages it | Never mid-turn. Staged for 5 minutes; applied by the next `/compact` or a compaction Pi starts. |
+| `smart_compact` | `compaction` | Prepares a verified summary and stages it | Never mid-turn. Staged for `pendingTtlMs` (default 5 minutes); applied by the next `/compact` or a compaction Pi starts. |
+
+**Tool rows.** Every Smart Compact tool renders a native, compact status row:
+queued, staged, dry-run, skipped, pending, failed and cancelled states are
+labeled as such and never displayed as done, applied or saved. Collapsed rows
+show bounded previews and hide long identifiers behind the native expansion
+key (the configured keybinding, shown as a hint); expanding shows the full
+original result text. Rows are call-time snapshots — they never poll or refresh
+on their own.
 
 Approval and gates:
 
-- `smart_compact` refuses below `Start at context %` (default 60%) or below
+- `smart_compact` refuses below `Start at context %` (default 80%) or below
   5,000 tokens. `tool=XX%` in Pi's footer is the tool-output share, not
   context fullness. If a summary is already staged, it reports that and makes
   no calls. With automatic compaction off, nothing consumes the staged summary
@@ -795,9 +819,9 @@ What is not covered:
 | Symptom | Cause and action |
 | --- | --- |
 | Agent reports "Compaction skipped: context 38% (…) below the 60% agent-tool threshold" | `smart_compact` waits for `Start at context %` of the **active model's** window (`tool=XX%` in the footer is the tool-output share, not context fullness). Use **Compact now** for early compaction. |
-| Nothing compacts automatically | With the default `With Pi`, Pi's auto-compaction must be on (readiness shows `unknown`). Choose `Fully automatic` to start without it. Check `Automatic compaction` and `This branch only`. On a large-window model, see `Context cap for start % (tokens)` in [Let it run automatically](#let-it-run-automatically). |
+| Nothing compacts automatically | Check the idle boundary and pressure gates. Only the optional `native-hook` strategy requires Pi's auto-compaction (readiness shows `unknown`). Check `Automatic compaction` and `This branch only`. On a large-window model, see `Context cap for start % (tokens)` in [Let it run automatically](#let-it-run-automatically). |
 | Cleanup did nothing on the next reply | Expected: the next request is sent untrimmed; cleanup applies at the next completed turn. |
-| **Clean up tool output** shows `held for a cold cache` | Expected with **Automatic cleanup**: the batch waits for the prompt cache to expire; see [automatic cleanup](#automatic-cleanup-optional). Select the row to apply it at the next completed turn instead. |
+| **Clean up tool output** shows `held for a cold cache` | Expected only with **Economic (opt-in)** cleanup timing: the batch waits for the prompt cache to expire; see [automatic cleanup](#automatic-cleanup-optional). Select the row to apply it at the next completed turn instead. |
 | Automatic cleanup or offload never happens | Both need `smart_context` reachable: **Agent tools** must not be **Off**, and `smart_context` must not be hidden with `/tools`. Offload also needs **Offload huge outputs** on and applies only to read-only text results of 16,384+ characters. |
 | Agent says a summary is staged, but context did not shrink | Run `/compact` within 5 minutes. With automatic compaction off, nothing else consumes it. |
 | `smart_context`, `smart_recall`, `smart_save_memory` or `smart_navigation` missing | With **On demand**, the agent loads a group through `smart_tools`; with **Off**, no context tool is shown; see [agent tools](#agent-tools). Check `/tools`. |
@@ -810,7 +834,9 @@ What is not covered:
 | Warning line at the top of Settings | Some `settings.json` values were invalid or converted and are being ignored; the line names them. |
 | Provider compaction was skipped | The chat model's API is not a supported native route; verified text was used. In sessions smaller than Pi's `compaction.keepRecentTokens`, Pi refuses the result and the conversation stays unchanged. |
 | `Text + images` produced text only | Expected unless the chat model is direct Anthropic `claude-sonnet-5` and the optional `@resvg/resvg-js` component is installed; see [image snapshots](#summary-format-provider-compaction-and-images). |
-| Timeout or verification failure | A single `Smart Compact: ...` line explains the effect and next step. Details: `/smart-compact metrics`. Stack traces: `DEBUG=smart-compact`. |
+| Synthesis fallback in progress or metrics | Intermediate recovery, not an apply result. The final `Smart compact applied` notice discloses fallback use. Generation error details remain in `/smart-compact metrics` and verbose output. |
+| Timeout or verification failure | No Smart Compact summary was applied. During host-triggered compaction, Pi may then produce its own summary; that is a separate outcome. A single `Smart Compact: ...` line explains the failure. Details: `/smart-compact metrics`. Stack traces: `DEBUG=smart-compact`. |
+| `Cache miss: … tokens re-billed (~$…)` | Pi's own notice, not a compaction failure. The amount is a token-price estimate, not a verified invoice. Smart Compact records rebuild attribution in Home → Readiness & details and metrics without a duplicate toast. |
 
 Without a UI, warnings and errors go to stderr.
 

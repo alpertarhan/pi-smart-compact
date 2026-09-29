@@ -112,7 +112,7 @@ export const MIN_CONTEXT_SETTING: InputSetting = {
 export const MAX_CONTEXT_SETTING: InputSetting = {
   id: "maxContextTokens",
   label: "Context cap for start % (tokens)",
-  description: "Automatic compaction measures Start at context % against this many tokens instead of the full model window, when smaller. Model requests and safety headroom still use the real window. 0 = off.",
+  description: "Cleanup, agent tools and automatic compaction measure pressure against this cap when smaller than the model window. Model requests and safety headroom still use the real window. 0 = off.",
   placeholder: "0 or 16384–2000000; blank = off",
   parse: numberParser(CONFIG_NUMERIC_LIMITS.maxContextTokens),
   format: (value) => (value === undefined || value === 0 ? "off" : String(value)),
@@ -122,9 +122,9 @@ const parsePreparePercent = numberParser(CONFIG_NUMERIC_LIMITS.prepareContextPer
 
 export const PREPARE_CONTEXT_SETTING: InputSetting = {
   id: "prepareContextPercent",
-  label: "Prepare at context %",
+  label: "Cleanup / prepare at context %",
   description:
-    "Prepare in background only: starts the summary at this %; it is applied at Start at context %, so this must be lower. Auto starts 8k–32k tokens earlier.",
+    "Early pressure gate for cleanup and optional background preparation. Compaction starts at Start at context %, so this must be lower. Auto starts 8k–32k tokens earlier.",
   placeholder: "0–100 below Start at; auto or blank = Auto",
   parse: (input) => (input.trim().toLowerCase() === "auto" ? undefined : parsePreparePercent(input)),
   format: (value) => (value === undefined || value === null ? "Auto" : String(value)),

@@ -10,8 +10,8 @@ import {
 /**
   * Review invariant C9: this extension never rewrites assistant content. A trim
   * replaces tool results only; a rewind removes whole entries (replacement null);
-  * archived-output reads never return assistant text. Provider thinking
-  * signatures therefore survive every operation byte for byte.
+  * archived-output reads never return assistant text. Byte equality alone
+  * does NOT preserve prefix-bound thinking: retained dependencies must also remain.
   */
 const SIGNATURE = "sig-" + "a".repeat(64);
 let sequence = 0;
@@ -45,7 +45,7 @@ const big = (label: string) => (label + " output line\n").repeat(400); // > MIN_
 /** Trim plan as the tool builds it: bounded by the active checkpoint's origin. */
 function trimPlan(s: SessionManager) { return planContextTrim(s.getBranch(), inspectContext(s.getBranch(), s.getSessionId()).checkpoint?.originId); }
 
-function session() {
+function session(signedAnthropic = false) {
   const s = SessionManager.inMemory();
   s.appendMessage({ role: "user", content: "Keep user constraints exactly", timestamp: 1 });
   // Assistant prose and thinking large enough to be trim-sized if they were ever candidates.
@@ -64,10 +64,44 @@ function session() {
   call(s, "edit", { path: "src/b.ts", oldText: "x", newText: "y" }, "ok", [thinking("mutating")]);
   call(s, "read", { path: "src/c.ts" }, big("c"), [thinking("more research")]);
   for (let i = 0; i < 4; i++) s.appendMessage(assistant([thinking("recent " + i), { type: "text", text: "Recent protected turn " + i }]));
+  if (!signedAnthropic) {
+    const branch = s.getBranch();
+    for (const [index, entry] of branch.entries()) {
+      if (entry.type === "message" && entry.message.role === "assistant") entry.message.api = "openai-completions";
+      if (entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE) {
+        (entry.data as { checkpoint: { snapshot: ReturnType<typeof fingerprintContext> } }).checkpoint.snapshot = fingerprintContext(contextMessageEntries(branch.slice(0, index)));
+      }
+    }
+  }
   return s;
 }
 
 describe("assistant content invariant", () => {
+  it("refuses trim and selective rewind that invalidate retained signed thinking", () => {
+    const s = session(true);
+    const before = assistantMessages(s);
+    const plan = trimPlan(s);
+    expect(plan.entries).toEqual([]);
+    expect(plan.blockedReason).toContain("signed Anthropic thinking");
+    expect(() => planContextRewind(s.getBranch(), s.getSessionId(), "cp", "done")).toThrow("signed Anthropic thinking");
+    expect(assistantMessages(s)).toEqual(before);
+  });
+
+  it("allows removing an entire research suffix while preserving the earlier signed prefix", () => {
+    const s = session(true);
+    // Start a fresh checkpoint after the existing signed prefix.
+    s.appendCustomEntry(CONTEXT_CONTROL_TYPE, { version: 1, action: "checkpoint", checkpoint: {
+      id: "pure", label: "Pure research", sessionId: s.getSessionId(), originId: s.getLeafId(),
+      snapshot: fingerprintContext(contextMessageEntries(s.getBranch())),
+    } });
+    const before = assistantMessages(s);
+    call(s, "read", { path: "src/pure.ts" }, big("pure"), [thinking("temporary research")]);
+    const plan = planContextRewind(s.getBranch(), s.getSessionId(), "pure", "The pure finding.");
+    expect(plan.removed).toBe(2);
+    apply(s, plan.entries);
+    expect(assistantMessages(s)).toEqual(before);
+  });
+
   it("trims replace tool results only and leave every assistant message byte-identical", () => {
     const s = session();
     const before = assistantMessages(s);

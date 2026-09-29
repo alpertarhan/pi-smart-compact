@@ -24,11 +24,11 @@ export interface CompactionCommitStore {
  * Nothing durable is written until `take()` confirms both run and session.
  */
 export function createCompactionCommitStore(options: {
-  ttlMs?: number;
+  ttlMs?: number | (() => number);
   maxEntries?: number;
   onDiscard?: (pending: PendingCompaction, reason: CommitDiscardReason) => void;
 } = {}): CompactionCommitStore {
-  const ttlMs = Math.max(1, options.ttlMs ?? 5 * 60_000);
+  const ttlMs = () => Math.max(1, (typeof options.ttlMs === "function" ? options.ttlMs() : options.ttlMs) ?? 5 * 60_000);
   const maxEntries = Math.max(1, options.maxEntries ?? 16);
   const entries = new Map<string, Entry>();
 
@@ -43,7 +43,7 @@ export function createCompactionCommitStore(options: {
   const sweep = (): void => {
     const now = Date.now();
     for (const [runId, entry] of entries) {
-      if (now - entry.createdAt > ttlMs) remove(runId, "expired", true);
+      if (now - entry.createdAt > ttlMs()) remove(runId, "expired", true);
     }
   };
 

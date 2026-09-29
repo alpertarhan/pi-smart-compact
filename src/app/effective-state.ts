@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { AUTO_TRIGGER_TIMEOUT_CAP_MS, LARGE_CONTEXT_WINDOW_TOKENS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS, FIVE_MINUTES_MS } from "../constants.ts";
+import { AUTO_TRIGGER_TIMEOUT_CAP_MS, LARGE_CONTEXT_WINDOW_TOKENS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { isChatGptCodex } from "../infra/llm-client.ts";
 import { isNativeApi } from "../infra/native-protocol.ts";
 import { componentInstalled, installCommand } from "../infra/optional-components.ts";
@@ -11,7 +11,7 @@ import type { CompactConfig } from "../types.ts";
 import { readMetricsLog } from "../utils/cache.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { effectiveContextWindow } from "../utils/tokens.ts";
-import { preparationWindow } from "./background-preparation.ts";
+import { contextPressure } from "./background-preparation.ts";
 import { resolveHindsightTarget } from "./hindsight-memory.ts";
 import { mnemopiTarget } from "./mnemopi-memory.ts";
 import { resolveModels } from "./model-routing.ts";
@@ -141,11 +141,14 @@ export async function describeEffectiveState(
   }
   lines.push("Agent tool: " + (policy.agentToolEnabled ? "exposed" : "not exposed") + " (policy " + policy.agentToolAccess + ")");
   if (ctx.model && !ctx.model.promptCache) lines.push("Reader prompt-cache lifetime: not declared; host cache warming cannot schedule from this metadata. No cache savings are assumed.");
-  const window = ctx.model?.contextWindow;
-  const gateWindow = effectiveContextWindow(ctx.model, config);
-  const tokens = ctx.getContextUsage()?.tokens;
-  if (typeof window === "number" && Number.isFinite(window) && window > 0 && typeof gateWindow === "number") {
-    const gates = preparationWindow(config, gateWindow);
+  const pressure = contextPressure(ctx, config);
+  const window = pressure.modelWindow;
+  const gateWindow = pressure.policyWindow;
+  const tokens = pressure.tokens;
+  if (typeof window === "number" && Number.isFinite(window) && window > 0 && gateWindow !== null) {
+    const gates = { startTokens: pressure.cleanupTokens!, applyTokens: pressure.compactionTokens! };
+    lines.push("Cleanup gate: ≥" + gates.startTokens.toLocaleString("en-US") + " tokens; policy usage "
+      + (pressure.percent === null ? "unknown" : pressure.percent.toFixed(1) + "%"));
     const apply = Math.ceil(Math.max(MIN_TOKEN_THRESHOLD, gates.applyTokens)).toLocaleString("en-US");
     const gate = " (" + config.minContextPercent + "% of " + (gateWindow < window ? "maxContextTokens " : "window ")
       + gateWindow.toLocaleString("en-US") + ", floor " + MIN_TOKEN_THRESHOLD.toLocaleString("en-US") + ")";
@@ -163,9 +166,10 @@ export async function describeEffectiveState(
     + "; candidate reuse is revalidated at apply");
   if (runtime?.cacheLedger?.length) lines.push(...runtime.cacheLedger);
   lines.push("Auto limits: " + Math.min(config.autoTriggerTimeoutMs, AUTO_TRIGGER_TIMEOUT_CAP_MS) / 1_000
-    + " s timeout; " + SETTLED_TRIGGER_COOLDOWN_MS / 60_000 + " min cooldown; " + FIVE_MINUTES_MS / 60_000 + " min preparation TTL");
+    + " s timeout; " + SETTLED_TRIGGER_COOLDOWN_MS / 60_000 + " min cooldown; " + config.pendingTtlMs / 60_000 + " min preparation TTL");
   const backgroundHygiene = policy.autoTrigger && config.autoTriggerStrategy === "background";
-  lines.push("Context hygiene: " + (config.contextHygieneEnabled ? "on (explicit: commits under pressure, at cache break-even, or on a cold cache)"
+  lines.push("Context hygiene: " + (config.contextHygieneEnabled ? (config.contextPressureOnly ? "on (pressure only; roomy cached history stays unchanged)"
+    : "on (economic opt-in: pressure, cache break-even, or cold cache)")
     : backgroundHygiene ? "on (enabled by effective background strategy, pressure-gated)" : "off")
     + ((config.contextHygieneEnabled || backgroundHygiene) && config.toolLoading === "off" ? " — automatic trims inactive: agent tools are off, so archived output could not be read back" : ""));
   const memory = await describeMemoryBackendReadiness(config);

@@ -29,8 +29,9 @@ import {
  type TokenEstimator,
 } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
+import { patchResponseIsTruncated } from "../phases/verify.ts";
 import * as log from "../utils/logger.ts";
-import { extractText } from "../utils/extraction.ts";
+import { extractText, collapseDecisionsByQuestion } from "../utils/extraction.ts";
 import { filterToolCalls } from "../utils/type-guards.ts";
 import {
  buildExtractionContext,
@@ -38,7 +39,7 @@ import {
  preProcessSummaries,
  inferSessionType,
 } from "../utils/helpers.ts";
-import type { SmartCompactServices } from "../infra/services.ts";
+import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
 import {
  batchCacheKey,
  getCachedBatch,
@@ -541,6 +542,11 @@ export async function singlePassCompact(
   .join("\n")
   .trim();
  if (!summary.startsWith("##")) throw new Error("Single-pass malformed output");
+ // Same completion contract as the batch/patch paths: a length-cut or
+ // fence-dangling response is not a summary, and the step's catch must fall
+ // back deterministically instead of caching the partial text.
+ if (patchResponseIsTruncated(summary, resp.stopReason))
+  throw new Error("Single-pass truncated output");
  return { summary, llmCalls: 1 };
 }
 
@@ -680,12 +686,13 @@ export async function summarizeBatch(
   // reasoning tokens share the batch output budget. A `length` stop
   // means thinking starved the batch contract before any text was
   // complete. One retry at minimal reasoning — the configured level
-  // stays untouched for other batches. If the retry also fails, the
-  // caller's deterministic fallback covers it as before.
+  // stays untouched for other batches. Never spend the final assembly call
+  // on a retry; deterministic evidence covers failed/unretried batches.
   if (
    err instanceof BatchSummaryFormatError &&
    /non-terminal stop reason length/.test(err.message) &&
-   services?.thinkingLevels.summaryThinkingLevel !== "minimal"
+   services?.thinkingLevels.summaryThinkingLevel !== "minimal" &&
+   (services ?? getDefaultServices()).budget.remainingCalls() > 1
   ) {
    log.debug(
     "Batch synthesis exhausted the output budget (reasoning shared it); retrying once with minimal reasoning",
@@ -834,13 +841,18 @@ export async function assembleLLM(
   },
   services,
  );
- return resp.content
+ const assembled = resp.content
   .filter(
    (c): c is import("@earendil-works/pi-ai").TextContent => c.type === "text",
   )
   .map((c) => c.text)
   .join("\n")
   .trim();
+ // Final assembly follows the same completion contract as every other
+ // LLM text: reject before the step can cache a truncated summary.
+ if (patchResponseIsTruncated(assembled, resp.stopReason))
+  throw new Error("Assembly truncated output");
+ return assembled;
 }
 
 export function assembleFallback(
@@ -875,7 +887,9 @@ export function assembleFallback(
   );
  if (steering.note?.trim())
   constraints.push("- [note] " + safe(steering.note, TRUNC.CONSTRAINT_TEXT));
- const decisions = extraction.decisions
+ // One active answer per question: the fallback must not render a stale
+ // answer beside the latest one and then fail its own verification gate.
+ const decisions = collapseDecisionsByQuestion(extraction.decisions)
   .map((item) => {
    const summary = safe(item.summary, TRUNC.DECISION_SUMMARY);
    const response = item.userResponse

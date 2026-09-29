@@ -12,7 +12,6 @@ import {
 import type { PendingCompaction, PreparationDiscardReason } from "./types.ts";
 import {
  MIN_TOKEN_THRESHOLD,
- FIVE_MINUTES_MS,
  AUTO_TRIGGER_TIMEOUT_CAP_MS,
 } from "./constants.ts";
 import { loadConfig } from "./utils/config.ts";
@@ -47,7 +46,7 @@ import {
  logDamageReport,
  writeRemediationHints,
 } from "./utils/damage.ts";
-import { errorDetail, flushIssues, notifyUser, reportIssue } from "./utils/issues.ts";
+import { errorDetail, flushIssues, notifyUser, recordIssue, reportIssue } from "./utils/issues.ts";
 import * as log from "./utils/logger.ts";
 import { deriveProjectIdFromCwd } from "./utils/fingerprint.ts";
 import {
@@ -133,11 +132,10 @@ function unwrapConsumed(
 }
 
 export default function smartCompactExtension(pi: ExtensionAPI) {
- const PENDING_TTL_MS = FIVE_MINUTES_MS;
  // Encapsulated slot: producers call `.set(...)`, the event handler calls
  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
  // entirely inside the slot factory — see src/app/pending-slot.ts.
- const pendingRef: PendingSlot = createPendingSlot({ ttlMs: PENDING_TTL_MS });
+ const pendingRef: PendingSlot = createPendingSlot({ ttlMs: () => loadConfig().pendingTtlMs });
  const isRunning = createSessionRunLock();
  let navigation: NavigationController;
  const pivotQueued = (ctx: ExtensionContext) => navigation?.isPending(ctx) ?? false;
@@ -154,13 +152,19 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
    showStatus: policy.branchOverrides().showStatus ?? config.showStatus
   };
  };
+ const activeToolDefinitions = () => {
+  const active = new Set(pi.getActiveTools());
+  return pi.getAllTools().filter(tool => active.has(tool.name))
+   .map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
+ };
  const background = createBackgroundPreparation({
+  toolSignature: () => JSON.stringify(activeToolDefinitions()),
   async prepare(ctx, config, signal) {
    if (signal.aborted || isRunning.isSessionActive(resolveSessionId(ctx))) return null;
    const { sumModel, segModel, verifyModel } = resolveModels(ctx, undefined, config);
    if (!sumModel || !segModel || !verifyModel) return null;
    // A cancelled background run must never clear or replace a foreground payload.
-   const localPending = createPendingSlot({ ttlMs: FIVE_MINUTES_MS });
+   const localPending = createPendingSlot({ ttlMs: config.pendingTtlMs });
    const outcome = await runSmartCompact({
     ctx, config, summaryModel: sumModel, segModel, verifyModel,
     mode: config.mode, profile: config.profile, autoTriggered: true,
@@ -189,12 +193,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // restarts while project/session/branch scope prevents sibling leakage.
  const nativeContinuity = createNativeContinuityBridge();
  // Native engine: tools for the nested request, replay of stored native state.
- setNativeToolSource(() => {
-  const active = new Set(pi.getActiveTools());
-  return pi.getAllTools()
-   .filter((tool) => active.has(tool.name))
-   .map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters }));
- });
+ setNativeToolSource(activeToolDefinitions);
  registerAnchorCache(pi, { config: loadConfig });
  const nativeReplay = createNativeReplayHook();
  pi.on("before_provider_request", (event, ctx) => nativeReplay.handle(event.payload, ctx));
@@ -228,7 +227,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   return write;
  };
  const commitCandidates = createCompactionCommitStore({
-  ttlMs: loadConfig().pendingTtlMs,
+  ttlMs: () => loadConfig().pendingTtlMs,
   onDiscard: (pending, reason) => {
    void recordApplyFailure(pending, reason);
   },
@@ -324,6 +323,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  navigation = registerNavigation(pi, {
   config: automaticConfig,
   mutationBlocked: ctx => isRunning.isSessionActive(resolveSessionId(ctx)) ? "Compaction is running; wait for it to finish." : undefined,
+  onAnchor: (ctx, originId, callId, signal) => smartContext.requestAnchorTrim(ctx, originId, callId, signal).notice,
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
@@ -661,18 +661,18 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  });
 
  // Host prompt-cache ledger: the session's own assistant messages, reported
- // usage only. Rebuilds after a Continuity edit are attributed to it; repeated
- // rebuilds with no edit of ours point at another cause and are said once.
+ // usage only. Keep attribution in Readiness/metrics; Pi already displays
+ // cache-miss notices, so another warning would duplicate host feedback.
  pi.on("message_end", (event, ctx) => {
   if (event.message.role !== "assistant") return;
   const sessionId = resolveSessionId(ctx);
   if (hostCache.sessionId() !== sessionId) hostCache.reset(sessionId);
   if (!hostCache.observe(event.message)?.warn) return;
   const { foreign } = hostCache.summary().rebuilds;
-  reportIssue({
+  recordIssue({
    key: "cache.foreign-rebuilds",
    message: "Pi's prompt cache was rebuilt " + foreign.count + " times this session with no Continuity edit before them (" + foreign.uncached.toLocaleString("en-US") + " uncached prompt tokens re-sent). Other extensions, model or tool changes, or Pi's built-in compaction change the prefix too; Home › Readiness & details lists rebuild causes.",
-  }, ctx);
+  });
  });
 
  pi.on("message_end", async (event, ctx) => {
@@ -730,11 +730,10 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   policy,
  });
 
- // Lazy tool exposure is re-decided only at boundaries; a compaction already
- // invalidates the prompt cache and may have indexed the first graph entries.
+ // Keep loaded declarations stable across compaction: native kept thinking
+ // can still bind the original system/tools, even after the messages were compacted.
  pi.on("session_compact", (_event, ctx) => {
   nativeReplay.refresh(ctx);
-  toolExposure.atBoundary();
   policy.restore(ctx);
   navigation.refresh(ctx);
  });

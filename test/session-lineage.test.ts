@@ -64,9 +64,16 @@ function tool(session: SessionManager) {
     getActiveTools: () => ["smart_context"],
     on: () => {},
   } as unknown as ExtensionAPI, { config: () => DEFAULT_CONFIG });
-  const ctx = { sessionManager: session, cwd, hasUI: false } as unknown as ExtensionContext;
+  const ctx = { sessionManager: session, cwd, hasUI: false };
+  // Nested tool execution is unexpected in these tests; the stub fails loudly.
+  const hostContext = Object.assign(ctx as unknown as ExtensionContext, {
+    tools: [],
+    executeTool: async () => {
+      throw new Error("unexpected nested executeTool in session lineage tests");
+    },
+  });
   return async (params: ToolCall["arguments"], signal?: AbortSignal): Promise<string> => {
-    const [block] = (await definition!.execute("call", params as never, signal, undefined, ctx)).content;
+    const [block] = (await definition!.execute("call", params as never, signal, undefined, hostContext)).content;
     return block.type === "text" ? block.text : "";
   };
 }

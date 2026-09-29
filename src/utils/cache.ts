@@ -22,6 +22,7 @@ import type {
 import {
  flattenToolCallBlock,
  isTransientToolDiagnostic,
+ resolvesErrorResult,
  type ToolCallIndex,
 } from "./extraction.ts";
 import {
@@ -465,39 +466,35 @@ function reconcileCachedErrors(
    const message = deltaMessages[j];
    if (message.role !== "assistant" || !Array.isArray(message.content))
     continue;
-   const retry = message.content
+   // Every same-signature retry in this message counts (parallel calls can
+   // retry the same operation twice); stopping at the first would keep a
+   // later successful sibling invisible, unlike fresh extraction.
+   const retries = message.content
     .flatMap(flattenToolCallBlock)
-    .find(
+    .filter(
      (call) =>
       toolOperationSignature(call.name, call.arguments) ===
       error.operationSignature,
     );
-   if (!retry) continue;
+   if (!retries.length) continue;
    retryAttempted = true;
-   for (
-    let k = j + 1;
-    k < Math.min(deltaMessages.length, j + ERROR_RESOLVE_WINDOW);
-    k++
-   ) {
-    const result = deltaMessages[k];
-    if (result.role !== "toolResult" || result.isError) continue;
-    const resultCall = deltaToolCalls.get(result.toolCallId ?? "");
-    const matches =
-     retry.id == null
-      ? Boolean(
-       resultCall &&
-       toolOperationSignature(
-        resultCall.name,
-        resultCall.arguments,
-       ) === error.operationSignature,
-      )
-      : result.toolCallId === retry.id;
-    if (matches) {
-     resolved = true;
-     break;
+   for (const retry of retries) {
+    // Same classification contract as fresh extraction (resolvesErrorResult):
+    // a retry result still carrying a failure signal resolves nothing, and a
+    // LATER retry's success must reach this error too, so keep scanning.
+    for (
+     let k = j + 1;
+     k < Math.min(deltaMessages.length, j + ERROR_RESOLVE_WINDOW);
+     k++
+    ) {
+     if (resolvesErrorResult(deltaMessages[k], retry, deltaToolCalls)) {
+      resolved = true;
+      break;
+     }
     }
+    if (resolved) break;
    }
-   break;
+   if (resolved) break;
   }
   return { ...error, retryAttempted, resolved };
  });

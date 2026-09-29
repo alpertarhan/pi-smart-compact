@@ -370,6 +370,32 @@ export function isTransientToolDiagnostic(text: string): boolean {
   );
 }
 
+/**
+ * A retry's result resolves the original error only under the same failure
+ * classification that flagged it: not m.isError, and for command-executing
+ * tools no failure signal in the result text either — a retry that returns
+ * "isError: false" with `Command exited with code 1` in the body is still a
+ * failure, not a resolution. Shared by fresh extraction and the cached-delta
+ * reconciliation so both paths classify identically.
+ */
+export function resolvesErrorResult(
+  result: LlmMessage | undefined,
+  retry: FlatToolCall,
+  tcIdx: ToolCallIndex,
+): boolean {
+  if (!result || result.role !== "toolResult" || result.isError) return false;
+  const resultCall = tcIdx.get(result.toolCallId ?? "");
+  const matches =
+    retry.id == null
+      ? Boolean(resultCall && sameToolOperation(retry, resultCall))
+      : result.toolCallId === retry.id;
+  if (!matches) return false;
+  return !(
+    classifyToolOperation(retry.arguments, retry.name) === "execute" &&
+    hasCommandFailureSignal(extractText(result.content))
+  );
+}
+
 export function catalogErrors(
   msgs: LlmMessage[],
   _tcIdx?: ToolCallIndex,
@@ -432,36 +458,63 @@ export function catalogErrors(
       const blocks: unknown[] = Array.isArray(msgs[j]?.content)
         ? (msgs[j].content as unknown[])
         : [];
-      const retryTool = blocks
+      // Every same-operation retry in this message counts; a later retry
+      // after a failed one must not be invisible to earlier errors (the
+      // search used to stop at the first retry attempt).
+      const retryTools = blocks
         .flatMap((block) => flattenToolCallBlock(block))
-        .find((candidate) => sameToolOperation(failedCall, candidate));
-      if (!retryTool) continue;
+        .filter((candidate) => sameToolOperation(failedCall, candidate));
+      if (!retryTools.length) continue;
       err.retryAttempted = true;
-      for (
-        let k = j + 1;
-        k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW);
-        k++
-      ) {
-        const result = msgs[k];
-        if (result?.role !== "toolResult" || result.isError) continue;
-        const resolved =
-          retryTool.id == null
-            ? (() => {
-                const resultCall = tcIdx.get(result.toolCallId ?? "");
-                return Boolean(
-                  resultCall && sameToolOperation(retryTool, resultCall),
-                );
-              })()
-            : result.toolCallId === retryTool.id;
-        if (resolved) {
-          err.resolved = true;
-          break;
+      for (const retryTool of retryTools) {
+        for (
+          let k = j + 1;
+          k < Math.min(msgs.length, j + ERROR_RESOLVE_WINDOW);
+          k++
+        ) {
+          if (resolvesErrorResult(msgs[k], retryTool, tcIdx)) {
+            err.resolved = true;
+            break;
+          }
         }
+        if (err.resolved) break;
       }
-      break;
+      if (err.resolved) break;
     }
   }
   return errors;
+}
+
+/**
+ * Same-question decision entries collapse to their latest non-empty
+ * answer: input is chronological, the first occurrence keeps its position,
+ * and later answers replace earlier ones. Shared by fallback rendering,
+ * state merging, and verification so one active decision carries exactly one
+ * answer everywhere; a first-wins dedup alone would freeze the OLDEST answer
+ * of a re-asked question into the carried state.
+ */
+export function collapseDecisionsByQuestion<
+ T extends { summary: string; userResponse?: string },
+>(items: readonly T[]): T[] {
+ const order: string[] = [];
+ const byQuestion = new Map<string, T>();
+ for (const item of items) {
+  const key = normalizeFactKey(item.summary);
+  if (!key) continue;
+  const existing = byQuestion.get(key);
+  if (!existing) {
+   order.push(key);
+   byQuestion.set(key, item);
+   continue;
+  }
+  // Whitespace-only responses are absent, not new answers. A real answer
+  // replaces the whole record so the latest ANSWERED entry's provenance
+  // (type, index) survives, while the first occurrence keeps its position.
+  if (item.userResponse && item.userResponse.trim()) {
+   byQuestion.set(key, item);
+  }
+ }
+ return order.map((key) => byQuestion.get(key)!);
 }
 
 export function extractDecisions(
@@ -479,11 +532,11 @@ export function extractDecisions(
         ? args
         : ((args?.question ?? args?.prompt ?? "") as string);
     if (!question) continue;
-    for (
-      let i = tc.msgIndex + 1;
-      i < Math.min(msgs.length, tc.msgIndex + 4);
-      i++
-    ) {
+    // Bind the dialog answer by tool-call id: parallel calls in the same
+    // assistant message (or any later traffic) must not detach the answer
+    // from its question. The result always follows its call, so scan forward
+    // to the end of the window instead of a positional message-count limit.
+    for (let i = tc.msgIndex + 1; i < msgs.length; i++) {
       if (msgs[i]?.role === "toolResult" && msgs[i]?.toolCallId === id) {
         decisions.push({
           index: tc.msgIndex,
@@ -562,13 +615,16 @@ export function isDiagnosticConstraintText(text: string): boolean {
 }
 
 /**
- * This extension's own gate/notify prose. Operators paste a failed run's error
- * back into the session to ask about it; without this the next run mines
- * "do not bypass verification" as a prohibition and checks the summary against
- * it — each retry adding evidence that makes the next retry fail harder.
- */
-const OWN_OUTPUT_RE =
-  /(?:verification stopped apply|yield check stopped apply|smart compact failed|do not bypass verification|conversation unchanged|review \/smart-compact metrics|restart pi with debug=smart-compact|smart compact: )/i;
+  * This extension's own gate/notify prose. Operators paste a failed run's error
+  * back into the session to ask about it; without this the next run mines
+  * "do not bypass verification" as a prohibition and checks the summary against
+  * it — each retry adding evidence that makes the next retry fail harder.
+  * Split into unambiguous context markers and phrases a genuine user rule can
+  * legitimately share: the ambiguous phrase alone is NOT own output.
+  */
+const OWN_OUTPUT_CONTEXT_RE =
+  /(?:verification stopped apply|yield check stopped apply|smart compact failed|conversation unchanged|review \/smart-compact metrics|restart pi with debug=smart-compact|smart compact: )/i;
+const OWN_OUTPUT_PHRASE_RE = /do not bypass verification/i;
 
 /** `[x] Did the thing` is a completion record, not a live rule. `[ ]` stays. */
 const COMPLETED_CHECKLIST_RE = /^\[[xX✓✔]\]\s*\S/;
@@ -584,7 +640,7 @@ export function isNonLiveConstraintText(text: string): boolean {
   return (
     isDiagnosticConstraintText(candidate) ||
     isCompactionStatusText(candidate) ||
-    OWN_OUTPUT_RE.test(candidate) ||
+    OWN_OUTPUT_CONTEXT_RE.test(candidate) ||
     COMPLETED_CHECKLIST_RE.test(candidate)
   );
 }
@@ -598,12 +654,19 @@ export function mineConstraints(
     if (msgs[i]?.role !== "user") continue;
     const text = extractText(msgs[i].content);
     if (text.length < 10 || text.startsWith("/")) continue;
+    // Whole-message provenance: a pasted copy of this extension's warning can
+    // wrap across lines, isolating an ambiguous shared phrase on its own line.
+    // An unambiguous own-output marker anywhere in the message marks those
+    // phrase lines as ours too; a standalone user rule has no markers and
+    // stays live.
+    const ownOutputMessage = OWN_OUTPUT_CONTEXT_RE.test(text);
     // A prior compaction is represented as one multiline user message. Match
     // individual bullets/lines so an npm error later in that recap cannot turn
     // the entire recap (including notices) into one bogus constraint.
     for (const raw of text.split(/\n+/)) {
       const candidate = raw.replace(/^\s*[-*]\s+/, "").trim();
       if (candidate.length < 10 || isNonLiveConstraintText(candidate)) continue;
+      if (ownOutputMessage && OWN_OUTPUT_PHRASE_RE.test(candidate)) continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
         if (!re.test(candidate)) continue;
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");

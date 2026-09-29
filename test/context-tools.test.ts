@@ -23,7 +23,7 @@ function writeContextGraphSetting(enabled: boolean): void {
   fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
   fs.writeFileSync(
     path.join(home, ".pi", "agent", "settings.json"),
-    JSON.stringify({ smartCompact: { contextGraphEnabled: enabled } }),
+    JSON.stringify({ smartCompact: { contextGraphEnabled: enabled, toolLoading: "lazy" } }),
   );
   resetConfigCache();
 }

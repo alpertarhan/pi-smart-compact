@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { mergeExtractions, saveCachedExtraction, loadCachedExtraction } from "../src/utils/cache.ts";
 import { pruneRedundant } from "../src/utils/pruning.ts";
-import { extractStructured, buildToolCallIndex } from "../src/utils/extraction.ts";
+import { extractStructured, buildToolCallIndex, catalogErrors } from "../src/utils/extraction.ts";
 import { PROFILES } from "../src/constants.ts";
 import { buildEntryIdFingerprint, isPrefixOf } from "../src/utils/id-fingerprint.ts";
 import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
@@ -165,6 +165,111 @@ describe("mergeExtractions — index offset", () => {
 });
 
 // ── Deduplication and field merge ──
+
+describe("mergeExtractions — cached error reconciliation parity (A07)", () => {
+  const exec = (id: string, command = "bun test") =>
+    ({
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+    }) as unknown as LlmMessage;
+  const execResult = (id: string, text: string, isError = false) =>
+    ({
+      role: "toolResult",
+      toolCallId: id,
+      isError,
+      content: text,
+    }) as unknown as LlmMessage;
+
+  it("incremental reconciliation matches fresh extraction for retry failures and eventual success (A07)", () => {
+    const baseMsgs = [
+      exec("1"),
+      execResult("1", "Error: assertion failed", true),
+      exec("2"),
+      execResult("2", "Error: assertion failed", true),
+    ];
+    const deltaMsgs = [exec("3"), execResult("3", "3 pass\n0 fail")];
+    const base = makeExtraction({
+      errors: catalogErrors(baseMsgs),
+      messageCount: baseMsgs.length,
+    });
+    const delta = makeExtraction({
+      errors: catalogErrors(deltaMsgs),
+      messageCount: deltaMsgs.length,
+    });
+    const merged = mergeExtractions(
+      base,
+      delta,
+      baseMsgs.length,
+      deltaMsgs,
+      buildToolCallIndex(deltaMsgs),
+    );
+    const fresh = catalogErrors([...baseMsgs, ...deltaMsgs]);
+    expect(fresh.map((error) => error.resolved)).toEqual([true, true]);
+    expect(merged.errors.map((error) => error.resolved)).toEqual(
+      fresh.map((error) => error.resolved),
+    );
+    expect(merged.errors.map((error) => error.retryAttempted)).toEqual(
+      fresh.map((error) => error.retryAttempted),
+    );
+  });
+
+  it("reconciles from a successful sibling retry beside a failed one in the same message (A07)", () => {
+    const baseMsgs = [exec("1"), execResult("1", "Error: assertion failed", true)];
+    const deltaMsgs = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "a", name: "bash", arguments: { command: "bun test" } },
+          { type: "toolCall", id: "b", name: "bash", arguments: { command: "bun test" } },
+        ],
+      },
+      execResult("a", "Error: assertion failed", true),
+      execResult("b", "3 pass\n0 fail"),
+    ] as unknown as LlmMessage[];
+    const base = makeExtraction({
+      errors: catalogErrors(baseMsgs),
+      messageCount: baseMsgs.length,
+    });
+    const delta = makeExtraction({
+      errors: catalogErrors(deltaMsgs),
+      messageCount: deltaMsgs.length,
+    });
+    const merged = mergeExtractions(
+      base,
+      delta,
+      baseMsgs.length,
+      deltaMsgs,
+      buildToolCallIndex(deltaMsgs),
+    );
+    const fresh = catalogErrors([...baseMsgs, ...deltaMsgs]);
+    expect(fresh[0].resolved).toBe(true);
+    expect(merged.errors.map((error) => error.resolved)).toEqual(
+      fresh.map((error) => error.resolved),
+    );
+  });
+
+  it("does not reconcile a cached error from a retry whose result text still fails (A07)", () => {
+    const failure = "Error: assertion failed\nCommand exited with code 1";
+    const baseMsgs = [exec("1"), execResult("1", failure)];
+    const deltaMsgs = [exec("2"), execResult("2", failure)];
+    const base = makeExtraction({
+      errors: catalogErrors(baseMsgs),
+      messageCount: baseMsgs.length,
+    });
+    const delta = makeExtraction({
+      errors: catalogErrors(deltaMsgs),
+      messageCount: deltaMsgs.length,
+    });
+    const merged = mergeExtractions(
+      base,
+      delta,
+      baseMsgs.length,
+      deltaMsgs,
+      buildToolCallIndex(deltaMsgs),
+    );
+    expect(merged.errors.every((error) => !error.resolved)).toBe(true);
+  });
+});
 
 describe("mergeExtractions — deduplication", () => {
   it("deduplicates modifiedFiles by path and accumulates tool-call counts", () => {

@@ -262,7 +262,7 @@ export async function summarizeConversation(
    recordIssue({ key: "synth.single-pass", message: "Single-pass synthesis used deterministic fallback (" + errorDetail(err) + ").", error: err });
    rc.notify(
     "Single-pass generation stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]",
-    "warning",
+    "info",
    );
    finalSummary = assembleFallback(
     [],
@@ -454,7 +454,7 @@ export async function summarizeConversation(
       recordIssue({ key: "synth.batch", message: "Synthesis batch used deterministic fallback (" + errorDetail(err) + ").", error: err });
       rc.notify(
        "Synthesis batch stopped · deterministic evidence fallback preserved coverage [" + formatGenerationFailureForUi(err) + "]",
-       "warning",
+       "info",
       );
       showProgressOverlay(rc.ctx, {
        phase: 3,
@@ -506,7 +506,8 @@ export async function summarizeConversation(
      rc.cancellation.signal.throwIfAborted();
      const idx = nextBatch++;
      if (idx >= batchCallLimit) return;
-     if (budgetStopped || rc.services.budget.reason()) {
+     // Retries can consume the allowance calculated before workers start.
+     if (budgetStopped || rc.services.budget.reason() || rc.services.budget.remainingCalls() <= 1) {
       budgetStopped = true;
       results[idx] = batches[idx].map((chunk) =>
        failedChunkSummary(chunk),
@@ -578,7 +579,7 @@ export async function summarizeConversation(
     rc.notify(
      failedBatches.length +
      " synthesis batch(es) stopped · deterministic evidence fallback preserved coverage [" + formatGenerationFailureForUi(failedBatches[0]) + "]",
-     "warning",
+     "info",
     );
     showProgressOverlay(rc.ctx, {
      phase: 3,
@@ -624,7 +625,7 @@ export async function summarizeConversation(
    cacheable = false;
    generationFallbacks.push("assembly generation failed");
    recordIssue({ key: "synth.assembly", message: "Assembly used deterministic fallback (" + errorDetail(err) + ").", error: err });
-   rc.notify("Assembly stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]", "warning");
+   rc.notify("Assembly stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]", "info");
    method = "heuristic";
    finalSummary = assembleFallback(
     summaries,

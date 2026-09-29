@@ -112,10 +112,10 @@ tool exposure, policy and navigation state;
 (see [recoverable trimming](#recoverable-trimming)); the RTK companion uses
 `tool_call`.
 
-Tool exposure is owned by `app/lazy-tools.ts`. With `toolLoading: "lazy"`
-(default) only the `smart_tools` loader is active; a group becomes active when
-the agent loads it, and loaded groups are forgotten at `session_start`,
-`session_tree` and `session_compact`. `eager` activates every permitted group;
+Tool exposure is owned by `app/lazy-tools.ts`. The default `eager` mode keeps
+permitted declarations stable from session start. Optional `lazy` exposes
+`smart_tools` first; loaded groups reset at `session_start` and `session_tree`,
+not `session_compact` (native kept thinking may still bind system/tools).
 `off` removes all owned tools while the human UI keeps working. Group
 permissions (`agentToolAccess`, memory backend, `contextNavigationEnabled`)
 apply in every mode. The exposure removes only its own tools, restores only
@@ -144,7 +144,7 @@ settings.
 `ui/profiles.ts` derives presets from exact persisted flags. Behavior presets
 are **Manual only**, **Manual + agent**, **Cleanup only** and **Fully
 automatic**; the built-in defaults, which match none of them, are labeled
-**With Pi (default)**. Summary formats are **Verified text**, **Text +
+**Pressure-first (default)**. Summary formats are **Verified text**, **Text +
 images** and **Provider (experimental)**; provider output needs a second
 confirming Enter, and capacity-ineligible models cannot be selected. Fully
 automatic selects the `settled` strategy. Presets atomically patch existing
@@ -342,6 +342,15 @@ anchor footer and the Anthropic anchor cache marker (`app/anchor-cache.ts`).
 type `smart-context-anchor`, plus `smart_navigation` tool results) and legacy
 `context` tool anchors; recall scans other sessions' JSONL read-only.
 
+Agent anchors require the shared early pressure gate by default. An anchor
+requests one safe consolidation through `smart_context`'s existing queue;
+only its new region can be trimmed before first replay. Previous anchor and
+checkpoint prefixes stay protected. Append-only anchors do not invalidate a
+prepared summary; ready/running compaction takes priority over agent cleanup.
+Human commands bypass pressure gates, not safety checks. Selective trim/rewind
+fail closed if they would change history before retained signed Anthropic
+thinking. Byte-identical thinking alone does not preserve its prefix binding.
+
 A human anchor is a `sendMessage` custom message followed by a native label on
 that entry; a human pivot navigates to the label so Pi's `custom_message`
 handling cannot drop the anchor text. An agent pivot is queued by the tool,
@@ -372,6 +381,12 @@ breadcrumbs, and a "Changes Since Last Compaction" delta. Snapshots are scoped
 to project, session and branch head; see
 [state, caching and persistence](#state-caching-and-persistence).
 
+Same-question decisions keep the latest non-empty answered record, including
+its provenance; an unanswered re-ask does not erase the prior answer. Fallback,
+verification and state merging share this selection rule. Automatic constraint
+retirement uses bounded recognition of explicit releases, not general
+natural-language entailment: question, report and denial forms are not grants.
+
 ## 3. Verified compaction
 
 ### Automatic strategies
@@ -380,32 +395,44 @@ to project, session and branch head; see
 `background` runs and the native hook does not replace Pi's summaries. Pi's own
 compactor is not affected. Hygiene can still run.
 
-- **`native-hook`** (default) is passive. It participates only when Pi starts
+- **`native-hook`** is passive. It participates only when Pi starts
   a compaction; its percentage setting is a minimum replacement gate, not a
   scheduler, and Pi auto-compaction must itself be enabled for host-driven
   runs.
-- **`settled`** applies finite token/percentage, queue, in-flight and
+- **`settled`** (default, 80% apply gate) applies finite token/percentage, queue, in-flight and
   per-session cooldown guards at idle `agent_settled`, then asks Pi for a
-  normal host compaction. Pi re-enters `session_before_compact`, which reuses an
+  normal host compaction. Every finished attempt, including callback errors,
+  synchronous throws and watchdog expiry, starts the cooldown; late callbacks
+  cannot reset it or change a newer request's state. Pi re-enters `session_before_compact`, which reuses an
   already tool-staged summary or runs EESV exactly once under the host's signal
   and timeout. `session_compact` stays the only durable commit authority;
   `session_compact_failed` discards the candidate. This keeps proactive
   triggering out of the pending/commit state machine and preserves
-  branch-provenance checks.
-- **`background`** (`app/background-preparation.ts`) snapshots branch, model,
-  session and usage before asynchronous work. `prepareContextPercent` sets an
+  branch-provenance checks. Watchdog expiry is not a host cancellation: a busy
+  host is reported as pending without manual-retry advice, and late completion
+  remains valid.
+- **`background`** (opt-in, `app/background-preparation.ts`) snapshots branch,
+  model, session, system prompt and usage before asynchronous work. Effective
+  tool definitions are fingerprinted and checked again before use. `prepareContextPercent` sets an
   independent early gate with the existing minimum token floor; null preserves
   `applyTokens - clamp(floor(applyTokens * 0.125), 8192, 32000)`. An explicit
   prepare percentage must be below the effective `minContextPercent` apply gate.
   Only pipeline admission is lowered; targets, yield and apply-time safety are
   unchanged. A private pending slot isolates cancellation from foreground
-  staging. One task, a ten-minute attempt cooldown and a five-minute ready TTL
-  bound speculation. Model/config changes, branch navigation, new compaction or
+  staging. One task, a ten-minute attempt cooldown and configured `pendingTtlMs`
+  (default five minutes) bound speculation. Model/system/tool/config changes, branch navigation, new compaction or
   context edits, switch/shutdown and native compaction invalidate unfinished
   work, and late completion cannot publish after cancellation. Before reuse, a
   content fingerprint proves the captured prefix is unchanged; appended tail
   growth must still satisfy the verified target, minimum yield and response
   reserve.
+
+`contextPressure` supplies execution, status and TUI with the same policy window
+and early/apply gates (288k/320k for a 400k window at default 80%). Roomy history
+stays unchanged by default; `contextPressureOnly: false` opts into legacy
+break-even/cold-cache hygiene. Metadata checkpoints and first-delivery offload
+are independent of old-prefix pruning. Cleanup commits before preparation can
+snapshot it, and later compaction observes Pi's updated projected usage.
 
 Preparation never waits inside `turn_end`. Proactive application waits for
 idle `agent_settled`; an ongoing tool loop relies on Pi's native maintenance
@@ -554,7 +581,12 @@ Deterministically pulls modified/read/deleted files, tool and bash-like errors,
 retry/resolution signals, explicit and implicit decisions, constraints and
 preferences, heuristic topic segments, timeline events, the main goal and open
 loops across the whole compacted prefix. This is the ground truth that
-synthesis and verification trust.
+synthesis and verification trust. Dialog answers follow tool-call IDs rather
+than a fixed next-message window. Fresh extraction and cached reconciliation
+share retry-result classification and inspect later/sibling retries; a false
+`isError` flag cannot turn an error-bearing command result into success.
+Self-notice filtering distinguishes a standalone user rule from that phrase
+inside an attributed Smart Compact warning.
 
 ### Explore
 
@@ -566,7 +598,8 @@ error chains. Tool support is probed once and cached per run; without function
 calling the system falls back to a direct structured analysis. The tool
 conversation is capped at three rounds, each response is capped where the
 provider supports output limits, and the shared prefix uses short-lived prompt
-caching.
+caching. Every exploration path leaves two calls for batch synthesis and final
+assembly; with two or fewer calls remaining it uses deterministic boundaries.
 
 ### Synthesize
 
@@ -583,7 +616,12 @@ caching.
 Session-aware prompting, decision propagation across later batches,
 mode-specific thresholds and output limits, provider-aware wave concurrency,
 aggregate prompt-token reservation and deterministic fallback assembly when any
-budget or LLM call fails.
+budget or LLM call fails. Batch retries and queued workers recheck remaining
+calls before dispatch so they cannot spend the final assembly call.
+Single-pass and final assembly reject known nonterminal stop reasons and
+unclosed Markdown fences before the synthesis cache can retain the result.
+Their existing error paths use deterministic fallback, without extra retries
+or enlarged budgets.
 
 ### Verify
 
@@ -594,6 +632,13 @@ high-confidence constraints, weak goal coverage, missing structure, suspicious
 fabricated paths, done/unresolved inconsistencies, explicit decisions, open
 loops and unsupported high-risk outcome claims. Claims such as "tests passed"
 need matching source prose or a successful related tool result.
+
+Explicit decisions are question–answer units, not independent bags of words:
+short/symbolic/numeric answers retain their identity, and one question cannot
+borrow another question's answer. Answer polarity is separate from the
+question's wording. A conflicting answer is an inconsistency that cannot be
+repaired by simply appending the expected answer. These deterministic checks
+remain bounded heuristics, not a proof of arbitrary prose equivalence.
 
 Repair order is intentional: (1) deterministic patch first (free, idempotent);
 (2) one LLM patch only in `thorough` mode if still insufficient; (3) replace
@@ -879,7 +924,7 @@ derived-only reset from confirmed all-project graph deletion; neither changes
 Mnemopi/Hindsight, compaction state or backups. Closing a local ref only marks
 its node resolved.
 
-**Retention limits:** pending in-memory compaction 5 min · exploration
+**Retention limits:** pending in-memory compaction `pendingTtlMs` (default 5 min) · exploration
 tool-support cache 1 h / 128 routes · token calibration 128 routes · extraction
 cache 1 h · compaction state 7 d / 64 snapshots · context graph 2,000
 active derived fact nodes, 2,000 tombstones (resolved facts and closed manual
@@ -903,7 +948,7 @@ loop). `consume()` returns a discriminated result:
 | --- | --- |
 | `ok` | fresh payload for this session |
 | `empty` | nothing staged |
-| `expired` | older than the 5-minute TTL |
+| `expired` | older than the configured `pendingTtlMs` |
 | `mismatch` | staged by a different session, project, or non-ancestor branch head |
 
 Session identity comes from
@@ -922,7 +967,10 @@ deadline through a shared [`ExternalCancellation`](https://github.com/alpertarha
 handle. Either source calls `abort()`, and every side-effect gate checks the
 shared state before writing or applying. The caller waits for a safe pipeline
 unwind; no `Promise.race` hard return can leave work running past the hook
-lifecycle.
+lifecycle. Lazy auth preflight also observes this signal, so a non-cooperative
+registry cannot pin the cancelled run's lock. The underlying registry operation
+may finish later; its outcome is consumed without caching credentials into the
+cancelled stage or allowing staging/apply to resume.
 
 ### Filesystem and locks
 

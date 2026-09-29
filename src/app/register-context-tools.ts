@@ -2,7 +2,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type {
  ExtensionAPI,
  ExtensionContext,
+ Theme,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import type { CompactConfig } from "../types.ts";
@@ -24,6 +26,18 @@ import {
  parseMemoryRef,
 } from "../infra/memory-ref.ts";
 import { contextGraphFile } from "../infra/paths.ts";
+import {
+ expandHint,
+ expandedRow,
+ firstTextContent,
+ metaLine,
+ previewBlock,
+ rawFallbackRow,
+ safeArg,
+ statusLabel,
+ summarizeLine,
+ tryRow,
+} from "../ui/tool-rows.ts";
 import {
  describeRemoteResolve,
  describeRemoteSave,
@@ -121,6 +135,15 @@ export function registerContextTools(pi: ExtensionAPI): void {
    if (loadConfig().toolLoading === "off" || !pi.getActiveTools().includes("smart_recall")) throw new Error("smart_recall is disabled in Pi settings or /tools.");
    return executeRecall(params, signal, ctx);
   },
+  renderCall(args, theme) {
+   const label = theme.fg("toolTitle", "smart_recall ");
+   const scope = args.scope ? theme.fg("dim", " [" + safeArg(args.scope, 20) + "]") : "";
+   const query = safeArg(args.query, 100);
+   return new Text(label + theme.fg("muted", query) + scope, 0, 0);
+  },
+  renderResult(result, { expanded }, theme, context) {
+   return tryRow(theme, () => renderRecallRow(result, expanded, theme, context), result, expanded);
+  },
  });
 
  pi.registerTool({
@@ -167,12 +190,282 @@ export function registerContextTools(pi: ExtensionAPI): void {
    if (loadConfig().toolLoading === "off" || !pi.getActiveTools().includes("smart_save_memory")) throw new Error("smart_save_memory is disabled in Pi settings or /tools.");
    return executeSaveMemory(params, signal, ctx);
   },
+  renderCall(args, theme) {
+   const label = theme.fg("toolTitle", "smart_save_memory ");
+   if (args.ref && (args.status ?? "active") === "resolved") {
+    return new Text(label + theme.fg("muted", "resolve ") + theme.fg("dim", safeArg(args.ref, 80)), 0, 0);
+   }
+   const kind = theme.fg("accent", safeArg(args.kind ?? "memory", 40));
+   // Never render the fact content itself in the call row.
+   const title = safeArg(args.title, 80);
+   return new Text(label + kind + (title ? " " + theme.fg("muted", title) : ""), 0, 0);
+  },
+  renderResult(result, { expanded }, theme, context) {
+   return tryRow(theme, () => renderSaveRow(result, expanded, theme, context), result, expanded);
+  },
  });
 
 }
 
 type ToolText = { type: "text"; text: string };
 type ToolResult = { content: ToolText[]; details: unknown };
+
+/** A renderable tool result as the hooks receive it. */
+interface RenderableResult {
+ content?: ReadonlyArray<{ type: string; text?: string }>;
+ details?: unknown;
+ isError?: boolean;
+}
+
+interface RenderContext<TArgs> {
+ args: TArgs;
+ isError: boolean;
+}
+
+/** Count receipt states into honest buckets for the recall row; derived
+ * from the refresh that already ran — no new status calls. */
+function receiptBuckets(
+ receipts: ReadonlyArray<{ state?: string }>,
+): { done: number; pending: number; failed: number; unknown: number } {
+ const buckets = { done: 0, pending: 0, failed: 0, unknown: 0 };
+ for (const receipt of receipts) {
+  const state = receipt.state ?? "unknown";
+  if (state === "completed" || state === "deleted") buckets.done++;
+  else if (state === "failed") buckets.failed++;
+  else if (state === "unknown") buckets.unknown++;
+  else buckets.pending++;
+ }
+ return buckets;
+}
+
+function renderRecallRow(
+ result: RenderableResult,
+ expanded: boolean,
+ theme: Theme,
+ context: RenderContext<RecallParams>,
+): Text {
+ if (context.isError) {
+  const head = theme.fg("error", "recall failed:");
+  return expanded
+   ? expandedRow(theme, result, [head])
+   : new Text(head + " " + summarizeLine(firstTextContent(result.content), 140), 0, 0);
+ }
+ const details = result.details as Record<string, unknown> | undefined;
+ if (!details) return rawFallbackRow(theme, result, expanded);
+ const lines: string[] = [];
+
+ if (Array.isArray(details.results)) {
+  const results = details.results as Array<{ kind?: string; title?: string; content?: string; source?: string }>;
+  lines.push(
+   statusLabel(theme, results.length ? "done" : "skipped") +
+   " " +
+   theme.fg("muted", results.length + " local match(es)"),
+  );
+  if (!expanded) {
+   lines.push(
+    ...previewBlock(
+     results.map((item) =>
+      "[" + (item.kind ?? "fact") + "] " + summarizeLine(item.title ?? "", 100) +
+      (item.content ? " — " + summarizeLine(item.content, 80) : ""),
+     ),
+     false,
+     3,
+    ),
+   );
+  }
+  return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+ }
+
+ const mnemopi = details.mnemopi as { state?: string; reason?: string; facts?: Array<{ kind?: string; title?: string; content?: string }> } | undefined;
+ if (mnemopi) {
+  if (mnemopi.state === "recalled") {
+   lines.push(
+    statusLabel(theme, mnemopi.facts?.length ? "done" : "skipped") +
+    " " +
+    theme.fg("muted", (mnemopi.facts?.length ?? 0) + " mnemopi match(es)"),
+   );
+   if (!expanded) {
+    lines.push(
+     ...previewBlock(
+      (mnemopi.facts ?? []).map((fact) =>
+       "[" + (fact.kind ?? "fact") + "] " + summarizeLine(fact.title ?? "", 100) +
+       (fact.content ? " — " + summarizeLine(fact.content, 80) : ""),
+      ),
+      false,
+      3,
+     ),
+    );
+   }
+  } else {
+   const status = mnemopi.state === "failed" ? "failed" : mnemopi.state === "skipped" ? "skipped" : "pending";
+   lines.push(statusLabel(theme, status) + " " + theme.fg("muted", "mnemopi " + (mnemopi.state ?? "")));
+   if (mnemopi.reason) lines.push(theme.fg("dim", summarizeLine(mnemopi.reason, 140)));
+  }
+  return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+ }
+
+ const remote = details.remote as
+  | { state?: string; reason?: string; facts?: Array<{ id?: string; documentId?: string; type?: string; preview?: string }>; receipts?: Array<{ state?: string }> }
+  | undefined;
+ if (remote) {
+  if (remote.state === "ok") {
+   const buckets = receiptBuckets(remote.receipts ?? []);
+   lines.push(
+    statusLabel(theme, remote.facts?.length ? "done" : "skipped") +
+    " " +
+    theme.fg("muted", (remote.facts?.length ?? 0) + " remote fact(s)"),
+   );
+   if (remote.receipts?.length) {
+    lines.push(
+     metaLine(
+      theme,
+      "prior saves",
+      buckets.done + " completed, " + buckets.pending + " pending, " + buckets.failed + " failed, " + buckets.unknown + " unknown",
+     ),
+    );
+   }
+   if (!expanded) {
+    // Bounded fact previews derived from the results that already came
+    // back — no extra calls, no raw UUID walls.
+    lines.push(
+     ...previewBlock(
+      (remote.facts ?? []).map((fact) =>
+       (fact.type ? "[" + fact.type + "] " : "") + summarizeLine(fact.preview ?? "", 110),
+      ),
+      false,
+      3,
+     ),
+    );
+    lines.push(expandHint(theme));
+   }
+  } else {
+   const status =
+    remote.state === "failed" ? "failed" : remote.state === "not-configured" || remote.state === "skipped" ? "skipped" : "pending";
+   lines.push(statusLabel(theme, status) + " " + theme.fg("muted", "hindsight " + (remote.state ?? "")));
+   if (remote.reason) lines.push(theme.fg("dim", summarizeLine(remote.reason, 140)));
+  }
+  return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+ }
+
+ return rawFallbackRow(theme, result, expanded);
+}
+
+function renderSaveRow(
+ result: RenderableResult,
+ expanded: boolean,
+ theme: Theme,
+ context: RenderContext<SaveParams>,
+): Text {
+ if (context.isError) {
+  const head = theme.fg("error", "save failed:");
+  return expanded
+   ? expandedRow(theme, result, [head])
+   : new Text(head + " " + summarizeLine(firstTextContent(result.content), 140), 0, 0);
+ }
+ const details = result.details as Record<string, unknown> | undefined;
+ if (!details) return rawFallbackRow(theme, result, expanded);
+ const lines: string[] = [];
+ const finish = () =>
+  expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
+
+ if (details.approved === false) {
+  lines.push(statusLabel(theme, "cancelled") + " " + theme.fg("muted", "not saved — user did not approve"));
+  return finish();
+ }
+
+ // Local resolve outcome: only a positive closed count means resolved; a
+ // bare ref is a refusal (inactive backend, wrong digest, missing fact) and
+ // must never render green.
+ if (typeof details.closed === "number") {
+  if (details.closed > 0) {
+   lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "resolved"));
+   if (expanded && typeof details.ref === "string") {
+    lines.push(metaLine(theme, "ref", details.ref));
+   }
+  } else {
+   lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "no active match — nothing changed"));
+   if (expanded && typeof details.ref === "string") {
+    lines.push(metaLine(theme, "ref", details.ref));
+   }
+  }
+  return finish();
+ }
+
+ const local = details.memory as { kind?: string; title?: string } | undefined;
+ if (local && typeof details.ref === "string") {
+  lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "saved locally"));
+  const fact = "[" + (local.kind ?? "memory") + "] " + (local.title ?? "");
+  if (fact.trim() !== "[]") lines.push(metaLine(theme, "fact", fact));
+  if (expanded) lines.push(metaLine(theme, "ref", details.ref));
+  else lines.push(expandHint(theme));
+  return finish();
+ }
+
+ const mnemopi = details.mnemopi as { state?: string; reason?: string; closed?: boolean; memoryId?: string } | undefined;
+ if (mnemopi) {
+  if (mnemopi.state === "saved") {
+   lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "mnemopi saved"));
+   if (expanded && typeof details.ref === "string") lines.push(metaLine(theme, "ref", details.ref));
+  } else if (mnemopi.state === "resolved") {
+   // Mnemopi reports closed:boolean: false = no matching active fact.
+   if (mnemopi.closed) {
+    lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "mnemopi resolved"));
+   } else {
+    lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "no matching active fact — nothing changed"));
+   }
+   if (expanded && typeof details.ref === "string") lines.push(metaLine(theme, "ref", details.ref));
+  } else {
+   const status = mnemopi.state === "failed" ? "failed" : "pending";
+   lines.push(statusLabel(theme, status) + " " + theme.fg("muted", "mnemopi " + (mnemopi.state ?? "done")));
+   if (mnemopi.reason) lines.push(theme.fg("dim", summarizeLine(mnemopi.reason, 140)));
+  }
+  return finish();
+ }
+
+ const remote = details.remote as
+  | { state?: string; reason?: string; title?: string; documentId?: string; operationId?: string; target?: string }
+  | undefined;
+ if (remote) {
+  const state = remote.state ?? "unknown";
+  if (state === "completed") {
+   lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "saved & searchable"));
+  } else if (state === "accepted") {
+   lines.push(statusLabel(theme, "pending") + " " + theme.fg("muted", "accepted — not yet searchable"));
+  } else if (state === "failed") {
+   lines.push(statusLabel(theme, "failed") + " " + theme.fg("muted", "not saved"));
+  } else if (state === "not-configured") {
+   lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "hindsight not configured"));
+  } else if (state === "deleted") {
+   lines.push(statusLabel(theme, "done") + " " + theme.fg("muted", "deleted remotely"));
+  } else if (state === "not-found") {
+   lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "already absent — nothing deleted"));
+  } else if (state === "pending") {
+   lines.push(statusLabel(theme, "pending") + " " + theme.fg("muted", "delete pending remotely"));
+  } else {
+   lines.push(statusLabel(theme, "pending") + " " + theme.fg("muted", "outcome unknown"));
+  }
+  if (remote.title) lines.push(metaLine(theme, "fact", remote.title));
+  // Refs are expanded-only in the human view (UUID noise when collapsed);
+  // they are always present in the model-facing content. The native
+  // expansion hint uses the configured keybinding.
+  if (typeof details.ref === "string" && expanded) {
+   lines.push(metaLine(theme, "ref", details.ref));
+  } else if (typeof details.ref === "string" && (state === "completed" || state === "accepted")) {
+   lines.push(expandHint(theme));
+  }
+  if (expanded || state === "unknown" || state === "failed") {
+   if (remote.operationId) lines.push(metaLine(theme, "operation", remote.operationId));
+   if (remote.documentId) lines.push(metaLine(theme, "document", remote.documentId));
+   if (remote.target) lines.push(metaLine(theme, "server", remote.target));
+  }
+  if (remote.reason) lines.push(theme.fg("dim", summarizeLine(remote.reason, 140)));
+  return finish();
+ }
+
+ // Ref-only details are refusals (inactive backend, wrong digest, missing
+ // fact) or unknown outcomes: render the actual result text, never green.
+ return rawFallbackRow(theme, result, expanded);
+}
 
 function textResult(text: string, details: unknown = undefined): ToolResult {
  return { content: [{ type: "text" as const, text }], details };
@@ -281,7 +574,14 @@ export async function executeRecall(
  const facts = outcome.facts
   .filter((fact) => !kinds || !fact.metadata.kind || kinds.has(fact.metadata.kind))
   .slice(0, params.limit ?? 5);
- return textResult(formatHindsightFacts(hindsight.target, projectId, facts) + pendingNote, {
+ // Receipt counts come from the refresh that already ran — no extra status
+ // calls — so the agent sees prior-save completion state alongside results.
+ const buckets = receiptBuckets(refreshed);
+ const receiptSummary = refreshed.length
+  ? "Prior saves: " + buckets.done + " completed, " + buckets.pending +
+  " pending, " + buckets.failed + " failed, " + buckets.unknown + " unknown."
+  : "";
+ return textResult(formatHindsightFacts(hindsight.target, projectId, facts) + pendingNote + (receiptSummary ? "\n" + receiptSummary : ""), {
   remote: {
    state: "ok",
    target: describeHindsightTarget(hindsight.target),
@@ -290,6 +590,8 @@ export async function executeRecall(
     documentId: fact.documentId,
     type: fact.type,
     mentionedAt: fact.mentionedAt,
+    // Bounded display preview from the result that already came back.
+    preview: fact.text.replace(/\s+/g, " ").slice(0, 160),
    })),
    redactions: scrubber.count(),
    receipts: refreshed.map((receipt) => ({
@@ -446,6 +748,7 @@ async function executeSaveMemory(
    "receipt" in outcome && outcome.receipt
     ? {
      state: outcome.state,
+     title,
      documentId: outcome.receipt.documentId,
      operationId: outcome.receipt.operationId,
      target: describeHindsightTarget(hindsight.target),
@@ -453,7 +756,24 @@ async function executeSaveMemory(
     }
     : outcome,
  };
- return textResult(describeRemoteSave(outcome), details);
+ // The stable ref belongs in the model-facing content for every successful
+ // or acknowledged save (the agent cannot see details), clearly separated
+ // from searchable-now vs accepted-not-yet-searchable; uncertain outcomes
+ // keep the full operation/document identity instead.
+ let text = describeRemoteSave(outcome);
+ if (
+  "receipt" in outcome &&
+  outcome.receipt &&
+  (outcome.state === "completed" || outcome.state === "accepted")
+ ) {
+  text +=
+   "\nTitle: " + title +
+   "\nRef: hindsight:" + memoryId + "@" + digest +
+   (outcome.state === "accepted"
+    ? " (accepted, NOT yet searchable; resolves only after the server completes indexing)"
+    : "");
+ }
+ return textResult(text, details);
 }
 
 /**

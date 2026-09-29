@@ -71,13 +71,13 @@ export type ArmId = (typeof ARMS)[number];
  * - warm gates are separate (runner-side model fixtures). */
 export function armSmartCompactSettings(
  arm: ArmId,
- overlays?: { backgroundPrep?: boolean },
+ overlays?: { backgroundPrep?: boolean; toolLoading?: "eager" | "lazy" },
 ): Record<string, unknown> {
  const hygiene = arm === "recoverable-hygiene" || arm === "hybrid";
  const stages = arm === "eesv" || arm === "hybrid";
  const base = {
-  // This comparison measures compaction strategies, not lazy discovery.
-  toolLoading: "eager",
+  // Matched across strategy arms; the CLI can compare exposure modes separately.
+  toolLoading: overlays?.toolLoading ?? "eager",
   autoTrigger: false,
   contextHygieneEnabled: hygiene,
   artifactOffloadEnabled: hygiene,

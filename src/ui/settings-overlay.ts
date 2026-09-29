@@ -218,10 +218,6 @@ interface CategoryEnv {
 
 const needsAutoTrigger: Inactive = (config) =>
   config.autoTrigger ? undefined : "turn on Automatic compaction first";
-const needsBackgroundTiming: Inactive = (config) =>
-  config.autoTrigger && config.autoTriggerStrategy === "background"
-    ? undefined
-    : "used only when Start when = Prepare in background";
 const needsMnemopi: Inactive = (config) =>
   config.memoryBackend === "mnemopi" ? undefined : "used only when Memory store = Mnemopi";
 const needsHindsight: Inactive = (config) =>
@@ -262,9 +258,10 @@ const CATEGORIES: ReadonlyArray<{
             labels: { "native-hook": "Before Pi's compaction", settled: "When idle", background: "Prepare in background" },
           },
         },
-        { kind: "input", setting: MIN_CONTEXT_SETTING, inactive: needsAutoTrigger },
-        { kind: "input", setting: MAX_CONTEXT_SETTING, inactive: needsAutoTrigger },
-        { kind: "input", setting: PREPARE_CONTEXT_SETTING, inactive: needsBackgroundTiming },
+        // These gates also serve hygiene and agent tools when automatic compaction is off.
+        { kind: "input", setting: MIN_CONTEXT_SETTING },
+        { kind: "input", setting: MAX_CONTEXT_SETTING },
+        { kind: "input", setting: PREPARE_CONTEXT_SETTING },
         {
           kind: "choice",
           setting: {
@@ -383,7 +380,7 @@ const CATEGORIES: ReadonlyArray<{
           setting: {
             id: "toolLoading",
             label: "Agent tools",
-            description: "On demand: the agent sees a small loader and opens tools when needed. Always available: every permitted tool is active. Off: no context tools can run. Pi may retain previously loaded declarations in cached history. Permissions such as Agent can compact still apply.",
+            description: "Always available (default): permitted tools stay visible with a stable prompt prefix. On demand saves initial schema tokens but later loading can rebuild the cache. Off disables agent context tools, not human commands. Host permissions still apply.",
             values: ["lazy", "eager", "off"],
             labels: { lazy: "On demand", eager: "Always available", off: "Off" },
           },
@@ -452,15 +449,25 @@ const CATEGORIES: ReadonlyArray<{
     {
       id: "hygiene",
       label: "Tool output cleanup",
-      description: "Keeps the context small between compactions; local, no model calls",
+      description: "Recoverable, batched cleanup; no model call, but history edits can rebuild the prompt cache",
       rows: [
         {
           kind: "choice",
           setting: {
             id: "contextHygieneEnabled",
             label: "Automatic cleanup",
-            description: "Moves old tool output to local archives when it pays off, when the prompt cache is cold, or when context gets tight; recent turns and instructions stay.",
+            description: "Archives safe old output in batches under context pressure; preserves recent turns, instructions and signed thinking dependencies. Cleanup and compaction use the same pressure window.",
             values: BOOLEAN_VALUES,
+          },
+        },
+        {
+          kind: "choice",
+          setting: {
+            id: "contextPressureOnly",
+            label: "Cleanup timing",
+            description: "Pressure only (default) leaves roomy cached history alone, including agent trim/rewind/anchor requests. Economic also allows break-even/cold-cache cleanup. Human commands can request early cleanup; safety checks always apply.",
+            values: BOOLEAN_VALUES,
+            labels: { true: "Pressure only", false: "Economic (opt-in)" },
           },
         },
         {
