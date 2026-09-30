@@ -91,6 +91,54 @@ describe("verifySummary", () => {
 		expect(result.result.gaps).toEqual([]);
 		expect(result.summary).toContain(text);
 	});
+	it("does not score required evidence lines against each other", () => {
+		// Real pair from a recorded session: both are collected constraints, and the
+		// deterministic floor must carry both. Fragment polarity reads the second
+		// one's status note as a positive "restart" against the first one's "avoid".
+		const deferred = "**Daemon restart deferred until later decision**: avoid live daemon restart without explicit request.";
+		const overridden = "Continue to avoid commits, installation, or live daemon restart unless explicitly requested for follow-up patches (subsequently overridden: commit + push executed; tag/release/install/`agm restart` deliberately deferred — live daemon still on 0.3.0).";
+		const pinned = "Live daemon is still on 0.3.0; do not auto-restart.";
+		const extraction = makeExtraction({
+			constraints: [deferred, overridden, pinned].map((text, index) => ({ index, text, category: "prohibition" as const, confidence: 1 })),
+		});
+		const floor = assembleFallback([], extraction);
+		const repaired = repairSummaryDeterministically(floor, verifySummary(floor, extraction), extraction);
+		expect(repaired.result.gaps.filter((gap) => gap.kind === "inconsistency")).toEqual([]);
+		expect(repaired.result.ok).toBe(true);
+		// Summary-authored text that flips a required line is still a contradiction.
+		const flipped = floor.replace("- " + pinned, "- " + pinned + "\n- Restart the live daemon now without an explicit request.");
+		expect(flipped).not.toBe(floor);
+		expect(verifySummary(flipped, extraction).gaps.some((gap) => gap.kind === "inconsistency")).toBe(true);
+	});
+	it("still rejects two required constraints of opposite polarity", () => {
+		const extraction = makeExtraction({
+			constraints: [
+				{ index: 0, text: "Do not publish stable", category: "prohibition", confidence: 1 },
+				{ index: 1, text: "Must publish stable now", category: "requirement", confidence: 1 },
+			],
+		});
+		const floor = assembleFallback([], extraction);
+		const repaired = repairSummaryDeterministically(floor, verifySummary(floor, extraction), extraction);
+		expect(repaired.result.gaps.some((gap) => gap.kind === "inconsistency")).toBe(true);
+	});
+	it("does not read a required evidence line as the summary's own outcome claim", () => {
+		// Real constraint from a recorded session: a bug description containing
+		// "no error". The claim scan flagged it, repair removed it, and the next
+		// pass reported the constraint missing, so no candidate could pass.
+		const bug = "**P4 (must-fix)**: Send where JS string length passes MAX_FRAME but UTF-8 bytes do not \u2014 `send()` returns `{queued:true}` while the outbox silently trims and drops it; message lost with no error surfaced.";
+		const extraction = makeExtraction({
+			constraints: [{ index: 0, text: bug, category: "requirement", confidence: 1 }],
+		});
+		const evidence = { sourceMessages: [] as never[] };
+		const floor = assembleFallback([], extraction);
+		const repaired = repairSummaryDeterministically(floor, verifySummary(floor, extraction, null, evidence), extraction, null, evidence);
+		expect(repaired.result.gaps).toEqual([]);
+		expect(repaired.summary).toContain("no error surfaced");
+		// Summary-authored prose that echoes the phrase still needs tool evidence.
+		const authored = floor.replace("### Done\n", "### Done\n- All tests pass with no errors after the fix.\n");
+		expect(authored).not.toBe(floor);
+		expect(verifySummary(authored, extraction, null, evidence).gaps.some((gap) => gap.kind === "unsupported-claim")).toBe(true);
+	});
 	it("preserves short negation and checks additional contradictions beside verbatim clauses", () => {
 		const cases = [
 			["No new dependencies", "New dependencies", false],

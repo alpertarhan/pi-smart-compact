@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Verification no longer rejects every candidate over its own required
+  evidence. Two recorded defects had the same shape: the deterministic floor
+  is built from exactly the lines the verifier demands, so a line the verifier
+  also scores as a defect leaves nothing that can pass, the session stays
+  uncompacted at 99% context, and Pi's own summarizer then hits its output
+  cap. First, the contradiction scan judged "Continue to avoid commits,
+  installation, or live daemon restart ... (`agm restart` deliberately
+  deferred)" as a positive "restart" beside "avoid live daemon restart":
+  negation near the anchor cannot see a coordinated list or a split clause.
+  Required evidence lines are now compared by sentence-level polarity, the
+  judgment the scan already applies to its source, so lines that agree are
+  not scored against each other; two required lines of opposite polarity
+  ("Do not publish stable" beside "Must publish stable now") remain a gap,
+  and summary-authored contradictions are never exempt. Second, the outcome
+  claim scan read a recorded bug ("message lost with no error surfaced") as
+  a success claim, repair removed it, and the next pass reported the
+  constraint missing. Exact renderings of required evidence are no longer
+  outcome claims; prose that echoes such a phrase still needs tool evidence.
+- Extraction ignores harness-injected `user` messages: pi-processes
+  `<process_event>` notifications, this extension's own continuity bridge
+  ledger, and agent-mesh envelopes. They were mined as the active goal, as
+  constraints (with `Constraint:` labels accumulating across generations),
+  decisions, and recent user requests. Continuity labels quoted by Pi's own
+  compaction summary are stripped before constraints are stored.
+
+### Changed
+
+- Automatic runs are capped at 300 seconds instead of 60, and
+  `autoTriggerTimeoutMs` defaults to 300,000 ms. Recorded MiniMax M3 runs took
+  26–45 s when they finished and ~40% of automatic attempts were cut at the
+  old 60 s cap, each leaving the session for Pi's own compactor.
+
 ### Repository
 
 - Research reports and review findings are now local, ignored artifacts rather

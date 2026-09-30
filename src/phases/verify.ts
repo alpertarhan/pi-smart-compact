@@ -162,7 +162,56 @@ function hasListedPath(
  return false;
 }
 
-function outcomeClaims(summary: string, pathEvidence: ReadonlyMap<string, string>): string[] {
+/** Labels the deterministic renderers and the continuity ledger put in front of evidence. */
+const EVIDENCE_LINE_LABEL_RE =
+ /^(?:(?:constraint|goal|decision|critical|open loop|unresolved error|resolved error|\[focus\]|\[note\]):?\s*)+/i;
+/** Shortest rendered prefix of an evidence text that still counts as a quotation of it. */
+const EVIDENCE_QUOTE_MIN_CHARS = 80;
+
+/**
+ * Lines the verifier itself requires the summary to carry are evidence, not
+ * outcome claims by the summary's author. "`send()` returns `{queued:true}`
+ * ...; message lost with no error surfaced" is a recorded bug, yet the claim
+ * scan read "no error" as a success claim, repair removed the line, and the
+ * next pass reported the constraint missing: no candidate could pass. Only
+ * exact renderings count: the whole text, or a truncation-length prefix of
+ * it, with display labels and bold markers stripped. Prose that merely
+ * echoes a phrase from evidence still needs tool evidence.
+ */
+function isRequiredEvidenceLine(line: string, corpus: readonly string[]): boolean {
+ const key = normalizeFactKey(line.replace(/\*\*/g, "").replace(EVIDENCE_LINE_LABEL_RE, ""));
+ if (!key) return false;
+ return corpus.some((text) =>
+  text === key || (key.length >= EVIDENCE_QUOTE_MIN_CHARS && text.startsWith(key)),
+ );
+}
+
+function requiredEvidenceCorpus(
+ collected: CollectedVerificationEvidence,
+ continuity: CompactionState | null,
+): string[] {
+ const texts = [
+  ...collected.constraints.map((item) => item.text),
+  ...collected.unresolved.map((item) => item.message),
+  ...collected.resolved.map((item) => item.message),
+  ...(collected.goal ? [collected.goal] : []),
+  ...(continuity?.criticalContext ?? []),
+  ...collected.decisions.flatMap((item) => {
+   // The fallback and the ledger bound the question and the answer
+   // separately before joining them with an arrow.
+   const question = summaryEvidenceLine(item.summary, TRUNC.DECISION_SUMMARY);
+   const answer = item.answer ? summaryEvidenceLine(item.answer, TRUNC.USER_RESPONSE) : "";
+   return answer ? [item.summary, item.answer as string, question + " \u2192 " + answer] : [item.summary];
+  }),
+ ];
+ return Array.from(new Set(texts.map((text) => normalizeFactKey(text.replace(/\*\*/g, ""))).filter(Boolean)));
+}
+
+function outcomeClaims(
+ summary: string,
+ pathEvidence: ReadonlyMap<string, string>,
+ evidenceCorpus: readonly string[] = [],
+): string[] {
  // Only exact, grounded path representations are exempt. Prose in a file
  // section still needs outcome evidence; a heading is not a trust boundary.
  const pathLines = new Set(Array.from(pathEvidence, ([path, display]) => [path, display, "`" + path + "`"]).flat());
@@ -178,6 +227,7 @@ function outcomeClaims(summary: string, pathEvidence: ReadonlyMap<string, string
     )
     .filter((line) => line.length > 0 && !line.startsWith("#") && !pathLines.has(line))
     .filter((line) => HIGH_RISK_OUTCOME_RE.test(line))
+    .filter((line) => !isRequiredEvidenceLine(line, evidenceCorpus))
     .filter(
      (line) =>
       /\bno\s+(?:errors?|failures?)\b/i.test(line) ||
@@ -766,9 +816,16 @@ function hasSemanticEvidence(source: string, target: string): boolean {
  });
 }
 
-export function hasSemanticContradiction(source: string, target: string): boolean {
+export function hasSemanticContradiction(
+ source: string,
+ target: string,
+ exempt?: ReadonlySet<string>,
+): boolean {
  // Do not apply a whole instruction's polarity to one of its own clauses.
  // Other target fragments remain checked, even beside a verbatim copy.
+ // `exempt` holds fragments of required evidence lines that share the
+ // source's sentence-level polarity: a summary cannot contradict evidence by
+ // quoting evidence that agrees with it.
  const sourceFragments = new Set(semanticFragments(source).map(tokens => tokens.join(" ")));
  const { sourceTokens, concepts, anchor, negative, conditional } =
   semanticShape(source);
@@ -778,7 +835,8 @@ export function hasSemanticContradiction(source: string, target: string): boolea
   Math.max(1, Math.ceil(concepts.length * 0.6)),
  );
  return semanticFragments(target).some((tokens) => {
-  if (!tokens.includes(anchor) || sourceFragments.has(tokens.join(" "))) return false;
+  const key = tokens.join(" ");
+  if (!tokens.includes(anchor) || sourceFragments.has(key) || exempt?.has(key)) return false;
   const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
   // Sharing a generic anchor such as "release" or "file" is not enough:
   // another constraint in the same section must overlap the actual concepts.
@@ -1530,11 +1588,66 @@ function verifyErrorEvidence(
  }
 }
 
+/** Lengths the deterministic renderers cut evidence lines to before they reach a summary. */
+const EVIDENCE_RENDER_LIMITS = [
+ TRUNC.CONSTRAINT_TEXT, TRUNC.MESSAGE, TRUNC.PREVIEW_MID, TRUNC.PREVIEW,
+ TRUNC.DECISION_SUMMARY, TRUNC.USER_RESPONSE, TRUNC.DETAIL, TRUNC.TOPIC_LABEL,
+];
+
+/**
+ * Fragment keys of the evidence lines the verifier itself requires the summary
+ * to carry, split by sentence-level polarity.
+ *
+ * The contradiction scan judges a target fragment by negation near the anchor
+ * token, which cannot see sentence scope: "Continue to avoid commits,
+ * installation, or live daemon restart ... (...; `agm restart` deliberately
+ * deferred)" reads as a positive "restart" both as a whole line (the
+ * coordinated list puts "avoid" six tokens away) and as a split clause,
+ * beside "avoid live daemon restart". Both are required lines and the
+ * deterministic floor is built from exactly these lines, so scoring the
+ * artifact rejected every candidate and left a session uncompacted at 99%
+ * context. `semanticShape` already decides a source's polarity at sentence
+ * level; evidence lines get the same judgment, so two required lines of the
+ * same polarity are not scored against each other.
+ *
+ * Two required lines of opposite polarity ("Do not publish stable" beside
+ * "Must publish stable now") remain a gap, and summary-authored text that
+ * contradicts evidence is never exempt.
+ */
+function requiredEvidenceKeysByPolarity(
+ collected: CollectedVerificationEvidence,
+ continuity: CompactionState | null,
+): { negative: Set<string>; positive: Set<string> } {
+ const texts = [
+  ...collected.constraints.map((item) => item.text),
+  ...collected.decisions.flatMap((item) =>
+   item.answer ? [item.summary, item.answer] : [item.summary],
+  ),
+  ...collected.unresolved.map((item) => item.message),
+  ...collected.resolved.map((item) => item.message),
+  ...(collected.goal ? [collected.goal] : []),
+  ...(continuity?.criticalContext ?? []),
+ ];
+ const keys = { negative: new Set<string>(), positive: new Set<string>() };
+ for (const text of texts) {
+  const bucket = semanticShape(text).negative ? keys.negative : keys.positive;
+  const variants = [text, ...EVIDENCE_RENDER_LIMITS.map((max) => summaryEvidenceLine(text, max))];
+  for (const variant of variants) {
+   for (const tokens of semanticFragments(variant)) bucket.add(tokens.join(" "));
+  }
+ }
+ return keys;
+}
+
 function verifySemanticCoverage(
  parsed: CanonicalSummary,
  collected: CollectedVerificationEvidence,
+ continuity: CompactionState | null,
  accumulator: VerificationAccumulator,
 ): void {
+ const evidenceKeys = requiredEvidenceKeysByPolarity(collected, continuity);
+ const exemptFor = (source: string) =>
+  semanticShape(source).negative ? evidenceKeys.negative : evidenceKeys.positive;
  const constraintTarget = [
   findSection(parsed, "constraints")?.body ?? "",
   findSection(parsed, "critical-context")?.body ?? "",
@@ -1543,7 +1656,7 @@ function verifySemanticCoverage(
   if (!hasSemanticEvidence(constraint.text, constraintTarget)) {
    addGap(accumulator, { kind: "missing-constraint", text: constraint.text }, 8);
   }
-  if (hasSemanticContradiction(constraint.text, constraintTarget)) {
+  if (hasSemanticContradiction(constraint.text, constraintTarget, exemptFor(constraint.text))) {
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: constraint contradicts "
@@ -1556,7 +1669,7 @@ function verifySemanticCoverage(
   if (!hasSemanticEvidence(collected.goal, goalTarget)) {
    addGap(accumulator, { kind: "missing-goal", goal: collected.goal }, 12);
   }
-  if (hasSemanticContradiction(collected.goal, goalTarget)) {
+  if (hasSemanticContradiction(collected.goal, goalTarget, exemptFor(collected.goal))) {
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: goal polarity or condition changed",
@@ -1622,7 +1735,7 @@ function verifySemanticCoverage(
     20,
    );
   }
-  if (hasSemanticContradiction(decision.summary, decisionQuestionBody)) {
+  if (hasSemanticContradiction(decision.summary, decisionQuestionBody, exemptFor(decision.summary))) {
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: decision contradicts "
@@ -1747,7 +1860,8 @@ function verifyOpenLoopsAndClaims(
  }
  if (!evidence.sourceMessages) return;
  const tools = successfulToolEvidence(evidence.sourceMessages);
- for (const claim of outcomeClaims(summary, paths.rendered)) {
+ const evidenceCorpus = requiredEvidenceCorpus(collected, continuity);
+ for (const claim of outcomeClaims(summary, paths.rendered, evidenceCorpus)) {
   if (!successfulToolSupportsClaim(claim, tools, extraction)) {
    addGap(accumulator, { kind: "unsupported-claim", claim }, 20);
   }
@@ -1776,7 +1890,7 @@ export function verifySummary(
   collected,
   accumulator,
  );
- verifySemanticCoverage(parsed, collected, accumulator);
+ verifySemanticCoverage(parsed, collected, continuity, accumulator);
  verifyFileReferences(
   summary,
   extraction,

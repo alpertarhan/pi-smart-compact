@@ -314,7 +314,7 @@ model (Home warns above 400k tokens), set `Context cap for start % (tokens)`
 and safety headroom still use the real window.
 
 Turning `Automatic compaction` off disables both Smart Compact strategies. It
-does not turn off Pi's own compactor. Automatic runs are capped at 60 seconds
+does not turn off Pi's own compactor. Automatic runs are capped at 300 seconds
 and four model calls, whatever the configured limits are. When they fail, Pi
 may still use its own compactor. See
 [automatic strategies](./configuration.md#automatic-strategies) for the

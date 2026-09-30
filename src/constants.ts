@@ -29,7 +29,7 @@ export const POST_SUMMARY_RESERVE_RATIO = 0.25;
 /** Maximum number of open-loop records retained in durable continuity state. */
 export const MAX_STATE_OPEN_LOOPS = 25;
 /** Auto compaction must yield to native recovery instead of blocking the host indefinitely. */
-export const AUTO_TRIGGER_TIMEOUT_CAP_MS = 60_000;
+export const AUTO_TRIGGER_TIMEOUT_CAP_MS = 300_000;
 /** Provider-call ceiling for the synchronous session_before_compact hook. */
 export const AUTO_TRIGGER_MAX_LLM_CALLS = 4;
 /** Suppress proactive settled-trigger churn after any confirmed compaction. */
@@ -144,7 +144,7 @@ export const DEFAULT_CONFIG = {
  autoTrigger: true,
  showStatus: true,
  autoTriggerStrategy: "settled" as const,
- autoTriggerTimeoutMs: 120000,
+ autoTriggerTimeoutMs: 300000,
  backupEnabled: true,
  backupDir: "",
  minContextPercent: 80, // Two phases: early cleanup, then compaction; tool share is not fullness.
