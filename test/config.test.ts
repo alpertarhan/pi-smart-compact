@@ -5,6 +5,7 @@ import {
   computeToolCharPercentage,
 } from "../src/utils/helpers.ts";
 import {
+  AUTO_TRIGGER_TIMEOUT_CAP_MS,
   DEFAULT_CONFIG,
   VERSION,
   MIN_TOKEN_THRESHOLD,
@@ -193,8 +194,11 @@ describe("validateSmartCompactConfig", () => {
     expect(sc.maxLatencyMs).toBeUndefined();
   });
 
-  it("uses a less aggressive default auto-trigger timeout", () => {
-    expect(DEFAULT_CONFIG.autoTriggerTimeoutMs).toBe(120000);
+  it("defaults the automatic timeout to the full 300 s cap", () => {
+    // Recorded MiniMax M3 runs took 26–45 s when they finished and ~40% of
+    // automatic attempts were cut at the old 60 s cap; the default is the cap.
+    expect(DEFAULT_CONFIG.autoTriggerTimeoutMs).toBe(300000);
+    expect(DEFAULT_CONFIG.autoTriggerTimeoutMs).toBe(AUTO_TRIGGER_TIMEOUT_CAP_MS);
   });
 
   it("sanitizes invalid profile overrides", () => {

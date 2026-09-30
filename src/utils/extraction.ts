@@ -517,6 +517,19 @@ export function collapseDecisionsByQuestion<
  return order.map((key) => byQuestion.get(key)!);
 }
 
+/**
+ * Text injected by the harness as a `user` message after `convertToLlm`:
+ * pi-processes events, this extension's own continuity bridge/ledger, and
+ * agent-mesh envelopes. None of it is human-authored, so it must never be
+ * mined as goal, constraint, decision, or recent user request.
+ */
+const HARNESS_INJECTED_RE =
+  /^(?:<process_event\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply)\b)/;
+
+export function isHarnessInjectedText(text: string): boolean {
+  return HARNESS_INJECTED_RE.test(text.trim());
+}
+
 export function extractDecisions(
   msgs: LlmMessage[],
   _tcIdx?: ToolCallIndex,
@@ -555,6 +568,7 @@ export function extractDecisions(
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
     const txt = extractText(msgs[i].content);
+    if (isHarnessInjectedText(txt)) continue;
     if (CHOICE_RE.test(txt)) {
       decisions.push({
         index: i,
@@ -645,6 +659,10 @@ export function isNonLiveConstraintText(text: string): boolean {
   );
 }
 
+/** Ledger labels quoted back by a host summary; repeated passes stack them. */
+const CONTINUITY_LABEL_RE =
+  /^(?:(?:Constraint|Goal|Decision|Critical|Open loop|Unresolved error|Resolved error):\s*)+/i;
+
 export function mineConstraints(
   msgs: LlmMessage[],
 ): StructuredExtraction["constraints"] {
@@ -654,6 +672,7 @@ export function mineConstraints(
     if (msgs[i]?.role !== "user") continue;
     const text = extractText(msgs[i].content);
     if (text.length < 10 || text.startsWith("/")) continue;
+    if (isHarnessInjectedText(text)) continue;
     // Whole-message provenance: a pasted copy of this extension's warning can
     // wrap across lines, isolating an ambiguous shared phrase on its own line.
     // An unambiguous own-output marker anywhere in the message marks those
@@ -664,7 +683,10 @@ export function mineConstraints(
     // individual bullets/lines so an npm error later in that recap cannot turn
     // the entire recap (including notices) into one bogus constraint.
     for (const raw of text.split(/\n+/)) {
-      const candidate = raw.replace(/^\s*[-*]\s+/, "").trim();
+      const candidate = raw
+        .replace(/^\s*[-*]\s+/, "")
+        .trim()
+        .replace(CONTINUITY_LABEL_RE, "");
       if (candidate.length < 10 || isNonLiveConstraintText(candidate)) continue;
       if (ownOutputMessage && OWN_OUTPUT_PHRASE_RE.test(candidate)) continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
@@ -731,7 +753,10 @@ export function segmentTopicsHeuristic(
     const fileShift = Boolean(
       lastFile && nextBasename && nextBasename !== lastFile,
     );
-    const userShift = message.role === "user" && SHIFT_RE.test(text);
+    const userShift =
+      message.role === "user" &&
+      !isHarnessInjectedText(text) &&
+      SHIFT_RE.test(text);
     const sizeShift =
       tokenAcc > 0 && tokenAcc + messageTokens > pc.maxChunkTokens;
     const breakBefore =
@@ -812,7 +837,7 @@ function buildTimeline(
     const m = msgs[i];
     if (m.role === "user") {
       const txt = extractText(m.content);
-      if (!txt.startsWith("/"))
+      if (!txt.startsWith("/") && !isHarnessInjectedText(txt))
         timeline.push({
           index: i,
           event: "user_request",
@@ -865,7 +890,7 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
     const m = msgs[i];
     if (m?.role !== "user") continue;
     const text = extractText(m.content).trim();
-    if (!text) continue;
+    if (!text || isHarnessInjectedText(text)) continue;
     if (HISTORY_SUMMARY_RE.test(text)) {
       const carried = summaryEvidenceLine(
         findSection(text, "goal")?.body ?? "",
@@ -970,7 +995,8 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/")) continue;
+    if (txt.length < 10 || txt.startsWith("/") || isHarnessInjectedText(txt))
+      continue;
     if (FOLLOWUP_RE.test(txt)) {
       // Avoid duplicates with errors
       const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));
@@ -999,7 +1025,8 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/")) continue;
+    if (txt.length < 10 || txt.startsWith("/") || isHarnessInjectedText(txt))
+      continue;
     if (BLOCKED_RE.test(txt)) {
       const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));
       if (!isDup) {
@@ -1120,7 +1147,10 @@ export function extractStructured(
   );
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs
-    .filter((m) => m.role === "user")
+    .filter(
+      (m) =>
+        m.role === "user" && !isHarnessInjectedText(extractText(m.content)),
+    )
     .slice(-5)
     .map((m) => extractText(m.content));
   const lastErrors = errors.slice(-3).map((e) => e.message);

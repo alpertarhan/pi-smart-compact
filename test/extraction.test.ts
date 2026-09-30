@@ -14,7 +14,7 @@ import {
   collapseDecisionsByQuestion,
 } from "../src/utils/extraction.ts";
 import type { LlmMessage, ProfileConfig } from "../src/types.ts";
-import { EXTRACTION_LIMITS } from "../src/constants.ts";
+import { EXTRACTION_LIMITS, PROFILES } from "../src/constants.ts";
 
 const PC: ProfileConfig = {
   summaryBudgetTokens: 6000,
@@ -1107,5 +1107,72 @@ describe("buildToolCallIndex — multi_tool_use.parallel", () => {
     expect(errs[0].tool).toBe("bash");
     expect(errs[0].retryAttempted).toBe(true);
     expect(errs[0].resolved).toBe(true);
+  });
+});
+
+describe("harness-injected user messages", () => {
+  const goal = "Fix the flaky login test in auth.spec.ts";
+
+  it("ignores pi-processes notifications for goal and lastUserMessages", () => {
+    const event =
+      '<process_event type="lifecycle" kind="success" process_id="proc_8d36">\nexited 0\n</process_event>';
+    const ex = extractStructured(
+      [msg("user", goal), msg("assistant", "ok"), msg("user", event)],
+      PROFILES.balanced,
+    );
+    expect(ex.mainGoal).toBe(goal);
+    expect(ex.lastUserMessages).not.toContain(event);
+  });
+
+  it("does not re-mine the native continuity bridge ledger", () => {
+    const bridge =
+      "Native compaction continuity bridge (preserve these unresolved facts):\n\n## Continuity Ledger\n- Constraint: Do not restart the daemon.\n- Goal: old goal";
+    const ex = extractStructured(
+      [msg("user", goal), msg("assistant", "ok"), msg("user", bridge)],
+      PROFILES.balanced,
+    );
+    expect(ex.mainGoal).toBe(goal);
+    expect(ex.constraints.some((c) => c.text.startsWith("Constraint:"))).toBe(
+      false,
+    );
+  });
+
+  it("does not mine agent-mesh envelopes as constraints", () => {
+    const mesh =
+      "[agent-mesh] question from peer: Always run make before commit and never skip lint.";
+    const ex = extractStructured(
+      [msg("user", goal), msg("assistant", "ok"), msg("user", mesh)],
+      PROFILES.balanced,
+    );
+    expect(ex.mainGoal).toBe(goal);
+    expect(ex.constraints.some((c) => /make before commit/.test(c.text))).toBe(
+      false,
+    );
+  });
+});
+
+describe("harness-injected follow-ups", () => {
+  const goal = "Fix the flaky login test in auth.spec.ts";
+
+  it("ignores real agent-mesh envelope shape", () => {
+    const mesh =
+      "**agent-mesh message from tidal-dragon (01a0f215-aaaa)** [58b57d71cc8cbd20] Always run make before commit and never skip lint.";
+    const ex = extractStructured(
+      [msg("user", goal), msg("assistant", "ok"), msg("user", mesh)],
+      PROFILES.balanced,
+    );
+    expect(ex.mainGoal).toBe(goal);
+    expect(ex.constraints.some((c) => /make before commit/.test(c.text))).toBe(
+      false,
+    );
+  });
+
+  it("strips stacked continuity labels and dedupes", () => {
+    const summary =
+      "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nShip it\n\n## Constraints\n- Constraint: Constraint: Do not restart the daemon.\n- Do not restart the daemon.\n</summary>";
+    const constraints = mineConstraints([msg("user", summary)]);
+    expect(constraints.map((c) => c.text)).toEqual([
+      "Do not restart the daemon.",
+    ]);
   });
 });

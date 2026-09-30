@@ -228,10 +228,10 @@ compaction is on.
 
 ### Automatic runs cap
 
-Automatic runs (native-hook, settled and background) are capped at **60
-seconds** and **four model calls**. `autoTriggerTimeoutMs` defaults to 120,000
-ms and accepts up to 300,000 ms, but the effective automatic deadline is
-`min(autoTriggerTimeoutMs × provider timeout multiplier, 60 s)`. The call cap is
+Automatic runs (native-hook, settled and background) are capped at **300
+seconds** and **four model calls**. `autoTriggerTimeoutMs` defaults to 300,000
+ms and accepts up to 300,000 ms; the effective automatic deadline is
+`min(autoTriggerTimeoutMs × provider timeout multiplier, 300 s)`. The call cap is
 `min(mode call budget, 4)`. When an automatic run times out or fails, it unwinds
 so Pi's own compactor can run.
 
@@ -269,7 +269,7 @@ For calls (`maxLlmCalls`) and prompt tokens (`maxLlmInputTokens`):
 | Per-run option (`--max-calls`, `max_calls`, ...) | Used as given, even above the mode limit |
 | Config value `0` | The mode limit |
 | Config value above `0` | `min(config value, mode limit)` |
-| Automatic run | Additionally capped at 4 calls and 60 s |
+| Automatic run | Additionally capped at 4 calls and 300 s |
 
 With the default `maxLlmCalls: 8`, every mode keeps its own limit, because 8 is
 not below any mode's call limit. A config value can only lower the limit.
@@ -517,7 +517,7 @@ Hindsight setup, data flow and troubleshooting:
 | `minContextPercent` | 0–100 | `80` | `Start at context %` |
 | `prepareContextPercent` | `null` or 0–100, below `minContextPercent` | `null` | `Cleanup / prepare at context %` |
 | `maxContextTokens` | `0` (off) or integer 16,384–2,000,000 | `0` | `Context cap for start % (tokens)` |
-| `autoTriggerTimeoutMs` | integer 1,000–300,000 | `120000` | `Automatic run time limit (ms)`; capped at 60 s |
+| `autoTriggerTimeoutMs` | integer 1,000–300,000 | `300000` | `Automatic run time limit (ms)`; capped at 300 s |
 | `compactionEngines` | ordered list of `eesv`, `native` | `["eesv"]` | `Engine` |
 | `requireApproval` | boolean | `true` | `Ask before applying` |
 | `showStatus` | boolean | `true` | `Footer status` |
