@@ -643,7 +643,15 @@ Repair order is intentional: (1) deterministic patch first (free, idempotent);
 lower-scoring output with a deterministic quality floor built only from
 extraction, continuity and steering; (4) reject unless final verification has
 no gaps and meets the verified threshold. Untrusted chunk prose never feeds the
-quality floor. Final verification runs again after continuity injection. The
+quality floor. The floor's Goal, Constraints, Key Decisions, Blocked and
+Critical Context sections are rendered from the verifier's own required
+evidence set (`collectVerificationEvidence`: live, high-confidence,
+non-retired constraints; explicit decisions collapsed to one active answer;
+continuity-merged errors and goal), written whole, so the floor never carries a
+line the verifier does not require and can therefore never fail its own gate on
+a contradiction that deterministic repair cannot fix. The contradiction scan
+treats required error lines and the steering focus as polarity-free: an error
+records what happened and a focus names a subject, neither is a rule. Final verification runs again after continuity injection. The
 final scalar is reported as repaired **verification coverage**, alongside the
 pre-repair score and fallback provenance, never as raw synthesis quality.
 Failures keep only exhaustive content-free gap kinds and the rejecting gate
