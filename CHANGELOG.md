@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [10.1.2] - 2026-09-30
+
+### Release approval
+
+- Patch release approved by the release owner after the deterministic gates
+  on the exact candidate. No version-specific applied-canary cohort or live
+  provider run exists for `10.1.2`; the fix is evidenced by the test sweep
+  and offline replay of recorded sessions only.
+
 ### Fixed
 
 - **The deterministic quality floor can no longer fail its own verification
