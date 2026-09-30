@@ -28,9 +28,10 @@ package installation.
       `CHANGELOG.md`; never word a candidate entry as if the final release
       check or canary promotion already passed.
 - [ ] Update the guide, configuration, evaluation, architecture and migration
-      notes for behavior/config changes. Dated reports (`docs/reports/`) stay
-      historical and are not packed; add a new report or addendum instead of
-      rewriting them.
+      notes for behavior/config changes. Research reports (`docs/reports/`)
+      and review findings (`docs/findings/`) stay local, untracked and unpacked.
+      Preserve dated evidence; add local reports or addenda instead of rewriting
+      it. Existing copies in Git history are not erased by this policy.
 - [ ] On a major version change, update the supported-versions row in
       `SECURITY.md`; `release:audit` requires it to read ``Latest `<major>.x` ``.
 - [ ] For Claude subscription routes, pair the fresh candidate with the exact

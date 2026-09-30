@@ -134,10 +134,11 @@ Update the page that owns the topic:
 | Vulnerability reporting, data handling | `SECURITY.md` |
 | Support routing | `SUPPORT.md` |
 
-Dated reports (`docs/reports/*-YYYY-MM-DD.md`), `docs/findings/` review reports
-and `docs/MIGRATING_TO_V8.md` are historical. Do not rewrite their
-measurements, dates or shipped names; add a new dated report or an addendum
-instead.
+Research reports in `docs/reports/` and review findings in `docs/findings/`
+are local, ignored artifacts: do not track or package them. Preserve their
+measurements, dates and revision limits; add dated reports or addenda rather
+than rewriting evidence. Removing tracking does not erase earlier Git history.
+The tracked `docs/MIGRATING_TO_V8.md` remains a historical migration guide.
 
 ### 4. Run validation before shipping
 

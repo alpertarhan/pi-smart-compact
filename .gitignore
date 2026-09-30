@@ -29,9 +29,11 @@ coverage/
 # OS
 .DS_Store
 
-# Generated evaluator output stays local; curated evidence lives in docs/reports/
+# Local evaluator output, research reports and review findings
 task-eval-reports/
 replay-eval-reports/
+/docs/reports/
+/docs/findings/
 
 # Scratch / progress files used by sub-agents and chains
 .pi/

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Repository
+
+- Research reports and review findings are now local, ignored artifacts rather
+  than tracked repository content. Existing files stay on disk; Git history
+  and published release tags are unchanged.
+
 ## [10.1.0] - 2026-09-29
 
 ### Release approval
