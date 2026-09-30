@@ -53,9 +53,7 @@ flowchart LR
 Quality means retained constraints, trustworthy failure evidence and low
 retrieval churn, not merely fewer tokens. There are no recurring
 model-visible status prompts, no automatic error deletion, and no destructive
-file rollback. The [2026-09-24 context hygiene report](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/context-hygiene-2026-09-24.md)
-(repository only, historical) records the original experiments and acceptance
-criteria.
+file rollback.
 
 ## Design ideas
 
@@ -767,9 +765,7 @@ Anthropic blocks or opaque OpenAI items, so this extension does both:
   on-demand compaction.
 
 `test/native-compaction-compat.test.ts` pins what stock adapters drop by
-themselves. The design research and measured runs are in the
-[2026-09-24 research report](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/hindsight-native-compaction-research-2026-09-24.md)
-(repository only, historical).
+themselves.
 
 ### Experimental visual evidence
 
@@ -804,9 +800,8 @@ summary. Changing model/provider/API or using a text-only model withholds
 images; stricter scrubbing also withholds old pixels that cannot be
 retroactively redacted. Only the latest compaction's archive is eligible, and
 native fallback can discard it. Metrics record only visual token estimates and
-frame counts. The [2026-09-24 visual pilot](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/visual-pilot-2026-09-24.md)
-(repository only) is a dated single-model synthetic sample, not production or
-cross-model accuracy.
+frame counts. Historical visual-pilot results are dated single-model synthetic
+samples, not production or cross-model accuracy evidence.
 
 ## 4. Optional cross-session memory
 

@@ -46,23 +46,18 @@ state lives and how long it is retained.
 
 ## Historical evidence
 
-Reports are preserved as dated evidence. Their measurements, revision limits and
-warnings remain part of the record; they are not current setup instructions.
+Research reports and review findings are local, ignored artifacts under
+`docs/reports/` and `docs/findings/`, not tracked repository or npm content.
+Their dated measurements and revision limits are not current setup instructions
+or product guarantees. Earlier copies can still exist in Git history; removing
+tracking does not erase them. See the
+[evaluation guide](./evaluation.md#pilots-and-dated-reports) for evidence limits.
 
-- [Pilot and research reports on GitHub](https://github.com/alpertarhan/pi-smart-compact/tree/main/docs/reports):
-  context hygiene, AgentSession lifecycle, visual evidence, Hindsight/native
-  compaction research and the earlier provider baseline. The
-  [evaluation guide](./evaluation.md#pilots-and-dated-reports) explains each scope.
-- [Review findings on GitHub](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/findings/README.md):
-  the index of external-model and agent-harness audits, organized by reviewer
-  and date. Findings are advisory, not a release gate or product guarantee.
 - [v7 → v8 migration](./MIGRATING_TO_V8.md): instructions for that historical
   transition, **not** the current installation baseline.
 
-`docs/reports/` and `docs/findings/` are repository-only and excluded from npm.
-Links to those archives deliberately open GitHub, so this index also works from
-an installed package. User guides and brand assets ship with the package;
-developer source, tests and evaluation scripts do not.
+User guides and brand assets ship with the package; developer source, tests
+and evaluation scripts do not.
 
 A green scripted pilot does not establish live-model fidelity, billed savings
 or production readiness. Use the [evaluation limits](./evaluation.md) and

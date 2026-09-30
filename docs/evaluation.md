@@ -133,9 +133,8 @@ receives the same three bounded coding-continuity scenarios (`implementation`,
 `debugging`, `continuity`) sequentially, with a 1,500-token output cap and a
 60-second timeout per call, scored by the deterministic verifier. It reports
 score, latency and reported usage. Apply a route manually, and only after
-representative evidence; one probe is not that evidence. The dated
-[2026-08-06 baseline](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/provider-evaluation-2026-08-06.md)
-(repository only) is an example of this output, not a current ranking.
+representative evidence; one probe is not that evidence. Historical probe
+results are not a current model ranking.
 
 ## Paired continuation and memory evaluation
 
@@ -400,22 +399,15 @@ no provider request.
 | `PSC_HINDSIGHT_LIVE=1 … bun run test/hindsight-live.canary.ts` | Not run by `bun test` | Live Hindsight contract with a hard call budget; see [Hindsight memory](./hindsight-memory.md#tests) |
 
 Dated reports record what was measured on their date, with the code and host
-versions stated inside. They are kept for provenance and are not updated
-retroactively; later findings are added as dated addenda. Current behavior is
-described in the [guide](./guide.md), [configuration](./configuration.md) and
-[architecture](../ARCHITECTURE.md). Reports live in the repository only; the
-npm package does not include `docs/reports/` or `docs/findings/`. Pilot
-reports have a machine-readable `.json` companion beside them.
+versions stated inside. Preserve their provenance; add dated addenda rather
+than updating measurements retroactively. Current behavior is described in the
+[guide](./guide.md), [configuration](./configuration.md) and
+[architecture](../ARCHITECTURE.md).
 
-| Report | Scope |
-| --- | --- |
-| [Provider evaluation baseline, 2026-08-06](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/provider-evaluation-2026-08-06.md) | Live three-scenario probe across five models; advisory; 2026-09-25 addendum on route-report token semantics |
-| [Context hygiene and continuity, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/context-hygiene-2026-09-24.md) | Hygiene design and offline experiments |
-| [Hindsight and provider-native compaction research, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/hindsight-native-compaction-research-2026-09-24.md) | Pre-implementation research plus later measured results |
-| [Full AgentSession offline pilot, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/session-pilot-2026-09-24.md) | Scripted-transport lifecycle pilot; 2026-09-25 candidate and `9.8.0-canary.1` follow-ups |
-| [Visual evidence pilot, 2026-09-24](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/reports/visual-pilot-2026-09-24.md) | Live synthetic bitmap-versus-text reading pilot on one model |
+Research reports in `docs/reports/` and review findings in `docs/findings/`
+are local, ignored artifacts, not tracked repository or npm content. Pilot
+reports can keep machine-readable `.json` companions beside them. Earlier
+copies may remain in Git history; this policy does not erase that history.
 
-External review findings, one folder per reviewer, are indexed in
-[`docs/findings/`](https://github.com/alpertarhan/pi-smart-compact/blob/main/docs/findings/README.md).
-They are advisory analyses of a specific revision range, not release gates or
-evidence of current behavior.
+External review findings are advisory analyses of a specific revision range,
+not release gates or evidence of current behavior.
