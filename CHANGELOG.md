@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The deterministic quality floor can no longer fail its own verification
+  gate.** The floor rendered every extracted constraint, including ones the
+  user had since released (`factOverrides`), stale implicit decisions, and its
+  own `[focus]`/`[note]` steering tags, while the verifier required a
+  different set; a released prohibition beside its live replacement, an error
+  message naming the action a rule forbids ("daemon restart failed" beside "Do
+  not restart the daemon"), or a steering focus that named that action, each
+  scored as a semantic contradiction, which deterministic repair cannot fix,
+  so every candidate was rejected. The floor now renders exactly the
+  verifier's required evidence (`collectVerificationEvidence`), written
+  whole; the contradiction scan treats required error lines and the steering
+  focus as polarity-free; and the floor's goal falls back to the continuity
+  goal. Summary-authored contradictions and two live rules of opposite
+  polarity still fail. A 512-combination sweep over the evidence sources
+  (retired rule, low-confidence inverse, non-live text, continuity-only rule
+  or goal, overlapping errors, implicit inverse decision, coverage overflow,
+  over-limit texts) asserts no non-repairable gap.
+- A user steering note longer than the constraint line limit is required,
+  rendered and repaired whole; a summary that cuts its trailing prohibition
+  is still rejected as altered evidence.
+- Display labels `Critical:`, `Open loop:`, `Unresolved error:` and
+  `Resolved error:` (plain or bold) are stripped before semantic comparison
+  like `Constraint:`/`Goal:`/`Decision:` already were.
+
 ## [10.1.1] - 2026-09-30
 
 ### Release approval

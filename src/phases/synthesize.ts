@@ -11,6 +11,7 @@ import type {
  ExplorationReport,
  ProfileConfig,
  CompactionState,
+ ContinuityOverride,
 } from "../types.ts";
 import {
  COMPACT_SYSTEM_PREFIX,
@@ -29,9 +30,9 @@ import {
  type TokenEstimator,
 } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
-import { patchResponseIsTruncated } from "../phases/verify.ts";
+import { collectVerificationEvidence, patchResponseIsTruncated } from "../phases/verify.ts";
 import * as log from "../utils/logger.ts";
-import { extractText, collapseDecisionsByQuestion } from "../utils/extraction.ts";
+import { extractText } from "../utils/extraction.ts";
 import { filterToolCalls } from "../utils/type-guards.ts";
 import {
  buildExtractionContext,
@@ -855,46 +856,50 @@ export async function assembleLLM(
  return assembled;
 }
 
+/**
+ * Deterministic quality floor. Its Goal, Constraints, Key Decisions, Blocked
+ * and Critical Context sections render exactly the evidence the verifier
+ * requires ({@link collectVerificationEvidence}: live, high-confidence,
+ * non-retired constraints; explicit decisions collapsed to one active answer;
+ * continuity-merged errors and goal). A line the verifier does not require
+ * is a line it may score as a contradiction, which is not deterministically
+ * repairable; the floor therefore adds nothing of its own to those sections.
+ */
 export function assembleFallback(
  summaries: ChunkSummary[],
  extraction: StructuredExtraction,
  steering: { focus?: string; note?: string } = {},
  budgetTokens: number = 6_000,
  continuity: CompactionState | null = null,
+ factOverrides: readonly ContinuityOverride[] = [],
 ): string {
  const safe = (value: string, max: number = TRUNC.PREVIEW_MID) =>
   summaryEvidenceLine(value, max);
+ // Required evidence is written whole. Extraction already bounds constraints,
+ // decisions and the goal; the one unbounded input is the user's steering
+ // note, which is their directive verbatim. Cutting a required line can drop
+ // a trailing "do not", and the verifier rightly fails that as altered.
+ const whole = (value: string) => summaryEvidenceLine(value, value.length);
  const files = deterministicFileEvidence(extraction, budgetTokens, continuity);
  const detModified = files.modified;
  const detRead = files.read;
  const detDeleted = files.deleted;
- const unresolved = extraction.errors
-  .filter((error) => !error.resolved)
+ const required = collectVerificationEvidence(extraction, continuity, {
+  steering,
+  factOverrides,
+ });
+ const unresolved = required.unresolved
   .map((error) => safe(error.message, TRUNC.PREVIEW))
   .filter(Boolean);
- const resolved = extraction.errors
-  .filter((error) => error.resolved)
-  .slice(-5)
-  .map((error) => safe(error.message, TRUNC.PREVIEW))
-  .filter(Boolean);
- const constraints = extraction.constraints
-  .map((item) => "- " + safe(item.text, TRUNC.CONSTRAINT_TEXT))
+ const constraints = required.constraints
+  .map((item) => "- " + whole(item.text))
   .filter((line) => line !== "- ");
- if (steering.focus?.trim())
-  constraints.push(
-   "- [focus] Preserve detail about: " +
-   safe(steering.focus, TRUNC.CONSTRAINT_TEXT),
-  );
- if (steering.note?.trim())
-  constraints.push("- [note] " + safe(steering.note, TRUNC.CONSTRAINT_TEXT));
  // One active answer per question: the fallback must not render a stale
  // answer beside the latest one and then fail its own verification gate.
- const decisions = collapseDecisionsByQuestion(extraction.decisions)
+ const decisions = required.decisions
   .map((item) => {
-   const summary = safe(item.summary, TRUNC.DECISION_SUMMARY);
-   const response = item.userResponse
-    ? safe(item.userResponse, TRUNC.USER_RESPONSE)
-    : "";
+   const summary = whole(item.summary);
+   const response = item.answer ? whole(item.answer) : "";
    return summary
     ? "- **" + summary + "**" + (response ? " → " + response : "")
     : "";
@@ -924,8 +929,7 @@ export function assembleFallback(
    "",
    TRUNC.PREVIEW,
   ) || "Continue from the latest preserved context.";
- const goal =
-  safe(extraction.mainGoal ?? "", TRUNC.DETAIL) || "Continue the current task.";
+ const goal = whole(required.goal ?? "") || "Continue the current task.";
  const overflow = Object.entries(extraction.evidenceOverflow ?? {})
   .filter(([, count]) => typeof count === "number" && count > 0)
   .map(
@@ -937,14 +941,13 @@ export function assembleFallback(
     " item(s) from the human summary.",
   );
  const critical = [
-  ...unresolved.map(
-   (error) => "- Unresolved error: " + safe(error, TRUNC.TOPIC_LABEL),
+  ...required.unresolved.map(
+   (error) => "- Unresolved error: " + safe(error.message, TRUNC.TOPIC_LABEL),
   ),
-  ...resolved.map(
-   (error) => "- Resolved error: " + safe(error, TRUNC.TOPIC_LABEL),
+  ...required.resolved.map(
+   (error) => "- Resolved error: " + safe(error.message, TRUNC.TOPIC_LABEL),
   ),
-  ...overflow,
- ];
+ ].filter((line) => !/: $/.test(line));
  return [
   "## Goal",
   goal,
@@ -987,6 +990,9 @@ export function assembleFallback(
   ...(critical.length ? critical : ["- None recorded."]),
   "",
   "## Topics Covered",
+  // Coverage disclosure lives here, outside the sections the contradiction
+  // scan reads, because it is floor-authored text rather than evidence.
+  ...overflow,
   ...(summaries.length
    ? summaries.map((item) => {
     const topic = safe(item.topic, TRUNC.TOPIC_LABEL) || "Segment";

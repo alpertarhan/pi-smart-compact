@@ -139,6 +139,7 @@ export async function summarizeConversation(
    { focus: rc.focus, note: rc.userNote },
    pc.summaryBudgetTokens,
    rc.previousState,
+   rc.factOverrides,
   );
   setCachedSynthesis(cacheKey, {
    finalSummary,
@@ -235,6 +236,7 @@ export async function summarizeConversation(
    { focus: rc.focus, note: rc.userNote },
    pc.summaryBudgetTokens,
    rc.previousState,
+   rc.factOverrides,
   );
   method = "heuristic";
  } else if (singleRequest) {
@@ -270,6 +272,7 @@ export async function summarizeConversation(
     { focus: rc.focus, note: rc.userNote },
     pc.summaryBudgetTokens,
     rc.previousState,
+    rc.factOverrides,
    );
    method = "heuristic";
   }
@@ -633,6 +636,7 @@ export async function summarizeConversation(
     { focus: rc.focus, note: rc.userNote },
     pc.summaryBudgetTokens,
     rc.previousState,
+    rc.factOverrides,
    );
   }
  }

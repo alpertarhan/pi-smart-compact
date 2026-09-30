@@ -647,6 +647,15 @@ function stemToken(token: string): string {
  return lower;
 }
 
+/**
+ * Display labels the deterministic renderers and continuity ledger put in
+ * front of a carried fact (`Unresolved error: …`, `Constraint: …`). They are
+ * metadata: stripping them keeps a labeled rendering token-identical to the
+ * raw evidence it carries, so the required-evidence exemptions match it.
+ */
+const EVIDENCE_LABEL_PREFIX_RE =
+ /^\s*(?:(?:\*\*)?(?:Constraint|Goal|Decision|Critical|Open loop|Unresolved error|Resolved error):(?:\*\*)?\s*)+/i;
+
 function semanticTokens(text: string): string[] {
  // Continuity labels are display metadata, not changes to a carried fact's polarity.
  // Apostrophes are unified before tokenization so curly typographic quotes
@@ -658,7 +667,7 @@ function semanticTokens(text: string): string[] {
   .replace(/[\u{2018}\u{2019}\u{02BC}`\u{00B4}]/gu, "'")
   .replace(/\bcannot\b/gi, "can not")
   .replace(/\b(\w+)n't\b/gi, "$1 not")
-  .replace(/^\s*(?:Constraint|Goal|Decision):\s*/i, "");
+  .replace(EVIDENCE_LABEL_PREFIX_RE, "");
  return (normalized.match(/[\p{L}\p{N}_-]+/gu) ?? [])
   .map(stemToken)
   .filter((token) => token.length > 2 || NEGATION_MARKERS.has(token));
@@ -1158,10 +1167,11 @@ interface VerificationAccumulator {
  score: number;
 }
 
-interface CollectedVerificationEvidence {
+export interface CollectedVerificationEvidence {
  unresolved: Array<{ message: string }>;
  resolved: Array<{ message: string }>;
- constraints: Array<{ text: string }>;
+ /** `topic` marks the steering focus: a subject pointer, not a rule with polarity. */
+ constraints: Array<{ text: string; topic?: boolean }>;
  decisions: Array<{ summary: string; answer: string | null }>;
  goal: string | null;
 }
@@ -1392,7 +1402,13 @@ function uniqueByText<T>(items: T[], text: (item: T) => string): T[] {
  });
 }
 
-function collectVerificationEvidence(
+/**
+ * The evidence the verifier requires a summary to carry. Exported so the
+ * deterministic floor renders exactly this set: any line the floor adds that
+ * the verifier does not require is a line the verifier may score as a defect,
+ * and a floor that fails its own gate leaves a session uncompactable.
+ */
+export function collectVerificationEvidence(
  extraction: StructuredExtraction,
  continuity: CompactionState | null,
  evidence: VerificationEvidence,
@@ -1419,10 +1435,11 @@ function collectVerificationEvidence(
   ],
   (item) => item.message,
  ).slice(-5);
- const steeringConstraints: Array<{ text: string }> = [];
+ const steeringConstraints: Array<{ text: string; topic?: boolean }> = [];
  if (evidence.steering?.focus?.trim()) {
   steeringConstraints.push({
    text: "Preserve detail about: " + evidence.steering.focus,
+   topic: true,
   });
  }
  if (evidence.steering?.note?.trim()) {
@@ -1613,29 +1630,46 @@ const EVIDENCE_RENDER_LIMITS = [
  * Two required lines of opposite polarity ("Do not publish stable" beside
  * "Must publish stable now") remain a gap, and summary-authored text that
  * contradicts evidence is never exempt.
+ *
+ * Required error lines and the steering focus are exempt in both polarities:
+ * an error message is a record of what happened and the focus is a subject
+ * pointer, not a rule, so "daemon restart failed" under Critical Context or
+ * "Preserve detail about: the daemon restart path" does not contradict "Do
+ * not restart the daemon". The verifier demands those lines verbatim; scoring
+ * them would again reject every candidate.
  */
 function requiredEvidenceKeysByPolarity(
  collected: CollectedVerificationEvidence,
  continuity: CompactionState | null,
 ): { negative: Set<string>; positive: Set<string> } {
  const texts = [
-  ...collected.constraints.map((item) => item.text),
+  ...collected.constraints.flatMap((item) => (item.topic ? [] : [item.text])),
   ...collected.decisions.flatMap((item) =>
    item.answer ? [item.summary, item.answer] : [item.summary],
   ),
-  ...collected.unresolved.map((item) => item.message),
-  ...collected.resolved.map((item) => item.message),
   ...(collected.goal ? [collected.goal] : []),
   ...(continuity?.criticalContext ?? []),
  ];
+ // Polarity-free evidence: errors record what happened and the steering
+ // focus names a subject; neither can contradict a rule.
+ const polarityFree = [
+  ...collected.constraints.flatMap((item) => (item.topic ? [item.text] : [])),
+  ...collected.unresolved.map((item) => item.message),
+  ...collected.resolved.map((item) => item.message),
+ ];
  const keys = { negative: new Set<string>(), positive: new Set<string>() };
- for (const text of texts) {
-  const bucket = semanticShape(text).negative ? keys.negative : keys.positive;
+ const addVariants = (text: string, buckets: Set<string>[]) => {
   const variants = [text, ...EVIDENCE_RENDER_LIMITS.map((max) => summaryEvidenceLine(text, max))];
   for (const variant of variants) {
-   for (const tokens of semanticFragments(variant)) bucket.add(tokens.join(" "));
+   for (const tokens of semanticFragments(variant)) {
+    for (const bucket of buckets) bucket.add(tokens.join(" "));
+   }
   }
+ };
+ for (const text of texts) {
+  addVariants(text, [semanticShape(text).negative ? keys.negative : keys.positive]);
  }
+ for (const text of polarityFree) addVariants(text, [keys.negative, keys.positive]);
  return keys;
 }
 
@@ -2049,10 +2083,13 @@ export function patchDeterministic(
     break;
    }
    case "missing-constraint":
+    // The required line, whole: extraction bounds its own constraints, and
+    // a user steering note is the user's directive verbatim. A cut that
+    // dropped a trailing "do not" would leave this gap open on every pass.
     canonical = appendToSection(
      canonical,
      "constraints",
-     "- " + safe(gap.text, TRUNC.CONSTRAINT_TEXT),
+     "- " + safe(gap.text, gap.text.length),
     );
     break;
    case "missing-decision": {
@@ -2078,7 +2115,7 @@ export function patchDeterministic(
     canonical = upsertSection(
      canonical,
      "goal",
-     safe(gap.goal, TRUNC.DETAIL) || "Continue the current task.",
+     safe(gap.goal, gap.goal.length) || "Continue the current task.",
     );
     break;
    case "missing-open-loops": {

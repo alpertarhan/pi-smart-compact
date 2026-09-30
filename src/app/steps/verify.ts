@@ -168,6 +168,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 			evidence.steering,
 			summaryBudgetTokens,
 			rc.previousState,
+			rc.factOverrides,
 		);
 		let deterministicVerification = verifySummary(
 			deterministic,

@@ -6,9 +6,11 @@ import {
 	repairSummaryDeterministically,
 	formatVerificationGap,
 	hasSemanticContradiction,
+	isDeterministicallyPatchable,
 	patchSummary,
 	releasesConstraint,
 } from "../src/phases/verify.ts";
+import { normalizeFactKey } from "../src/utils/helpers.ts";
 import { renderContinuityCapsule, retireSupersededConstraints } from "../src/utils/state.ts";
 import { verifyAndPatch as runVerificationStep } from "../src/app/steps/verify.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
@@ -71,7 +73,10 @@ function verifyAndPatch(
 }
 
 describe("verifySummary", () => {
-	it.each(["Constraint: ", "Goal: ", "Decision: "])("ignores display labels without ignoring changed semantics: %s", (label) => {
+	it.each([
+		"Constraint: ", "Goal: ", "Decision: ", "Critical: ", "Open loop: ",
+		"Unresolved error: ", "Resolved error: ", "**Unresolved error:** ", "Constraint: Constraint: ",
+	])("ignores display labels without ignoring changed semantics: %s", (label) => {
 		const rule = "Don't compact when room exists; only compact under pressure";
 		expect(hasSemanticContradiction(rule, label + rule)).toBe(false);
 		expect(hasSemanticContradiction(label + rule, rule)).toBe(false);
@@ -1994,5 +1999,216 @@ describe("EESV audit regressions: verification evidence contract (A01-A04)", () 
 		const result = verifySummary(withoutRule, extraction, null, { factOverrides: overrides });
 		expect(result.ok).toBe(false);
 		expect(result.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
+	});
+});
+
+describe("deterministic floor never fails its own gate", () => {
+	const constraint = (
+		text: string,
+		confidence = 1,
+		category: "requirement" | "prohibition" | "preference" = "requirement",
+	) => ({ text, index: 0, category, confidence });
+	const error = (message: string, resolved = false) => ({
+		index: 0, tool: "bash", message, retryAttempted: false, resolved,
+	});
+	const retire = (text: string) => ({
+		id: "ov-" + normalizeFactKey(text),
+		kind: "constraint" as const,
+		summaryKey: normalizeFactKey(text),
+		status: "superseded" as const,
+		updatedAt: 1,
+	});
+	const NEGATIVE_RULE = "Do not restart the daemon.";
+	const RESTART_ERROR = "daemon restart failed: permission denied";
+
+	it("does not read a required error line as a contradiction of a constraint", () => {
+		// An error is a record of what happened, not a rule: quoting it under
+		// Critical Context beside the prohibition it names is faithful, and the
+		// verifier demands that quote. Scoring it rejected every candidate.
+		const extraction = makeExtraction({
+			constraints: [constraint(NEGATIVE_RULE, 1, "prohibition")],
+			errors: [error(RESTART_ERROR)],
+		});
+		const floor = assembleFallback([], extraction);
+		expect(floor.includes("Unresolved error: " + RESTART_ERROR)).toBe(true);
+		const result = verifySummary(floor, extraction);
+		expect(result.gaps).toEqual([]);
+		expect(result.ok).toBe(true);
+		// The label is display metadata: a model summary that writes the same
+		// labeled line gets the same judgment.
+		const labeled = floor.replace(
+			"- Unresolved error: " + RESTART_ERROR,
+			"- **Unresolved error:** " + RESTART_ERROR,
+		);
+		expect(verifySummary(labeled, extraction).ok).toBe(true);
+		// Summary-authored text of the opposite polarity is still a contradiction.
+		const authored = floor.replace(
+			"- " + NEGATIVE_RULE,
+			"- " + NEGATIVE_RULE + "\n- Restart the daemon now.",
+		);
+		expect(
+			verifySummary(authored, extraction).gaps.some(
+				(gap) => gap.kind === "inconsistency" && gap.detail.includes("semantic-contradiction"),
+			),
+		).toBe(true);
+	});
+
+	it("carries a long steering note whole and still fails a summary that cuts its trailing prohibition", () => {
+		// `/compact <instructions>` is unbounded user text; extraction bounds
+		// everything else. A cut at the constraint line limit would drop the
+		// negation, and the verifier is right to fail that as altered evidence.
+		const note = "Keep the daemon running through the release window, "
+			+ "keep the audit output verbatim, keep the lockfile frozen, keep the release notes honest, ".repeat(4)
+			+ "and do not restart the daemon.";
+		expect(note.length).toBeGreaterThan(300);
+		const extraction = makeExtraction({ mainGoal: "Finish the release." });
+		const steering = { note };
+		const floor = assembleFallback([], extraction, steering);
+		expect(floor.includes("- " + note)).toBe(true);
+		expect(verifySummary(floor, extraction, null, { steering }).ok).toBe(true);
+		const cut = floor.replace("- " + note, "- " + note.slice(0, 300));
+		const result = verifySummary(cut, extraction, null, { steering });
+		expect(result.ok).toBe(false);
+		expect(result.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
+		// Repair writes the required line whole, so the LLM path recovers too.
+		const repaired = repairSummaryDeterministically(cut, result, extraction, null, { steering });
+		expect(repaired.result.ok).toBe(true);
+		expect(repaired.summary.includes(note)).toBe(true);
+	});
+
+	it("exempts the steering focus line only, not a summary line that repeats its words", () => {
+		const extraction = makeExtraction({
+			constraints: [constraint(NEGATIVE_RULE, 1, "prohibition")],
+		});
+		const steering = { focus: "restart the daemon now" };
+		const floor = assembleFallback([], extraction, steering);
+		expect(floor.includes("Preserve detail about: restart the daemon now")).toBe(true);
+		expect(verifySummary(floor, extraction, null, { steering }).ok).toBe(true);
+		const authored = floor.replace("- " + NEGATIVE_RULE, "- " + NEGATIVE_RULE + "\n- Restart the daemon now.");
+		expect(
+			verifySummary(authored, extraction, null, { steering }).gaps.some(
+				(gap) => gap.kind === "inconsistency" && gap.detail.includes("semantic-contradiction"),
+			),
+		).toBe(true);
+	});
+
+	it("renders only the evidence the verifier requires", () => {
+		const state = makeState({
+			goal: "Ship the 10.1.2 patch.",
+			constraints: [{ id: "c1", text: "Never force-push main.", category: "prohibition", confidence: 0.9 }],
+			unresolvedErrors: [{ id: "e1", message: "bun audit exit 1", tool: "bash", files: [] }],
+			decisions: [{ id: "d1", summary: "Should we keep the 60 s cap?", userResponse: "No, raise it to 300 s", type: "explicit" }],
+		});
+		const retired = "Do not touch the lockfile.";
+		const extraction = makeExtraction({
+			mainGoal: null,
+			constraints: [
+				constraint(retired, 1, "prohibition"),
+				constraint("Touch the lockfile only for the audit fix.", 1),
+				constraint("Restart the daemon now.", 0.5),
+				constraint("[x] Tests pass", 1),
+			],
+			decisions: [
+				{ index: 1, type: "implicit", summary: "Keep the 60 s cap for now." },
+			],
+		});
+		const overrides = [retire(retired)];
+		const floor = assembleFallback([], extraction, {}, 6_000, state, overrides);
+		const goal = floor.split("\n## Constraints")[0];
+		expect(goal.includes("Ship the 10.1.2 patch.")).toBe(true);
+		const constraints = floor.split("## Constraints & Preferences\n")[1].split("\n## Progress")[0];
+		expect(constraints.includes("Touch the lockfile only for the audit fix.")).toBe(true);
+		expect(constraints.includes("Never force-push main.")).toBe(true);
+		expect(constraints.includes(retired)).toBe(false);
+		expect(constraints.includes("Restart the daemon now.")).toBe(false);
+		expect(constraints.includes("[x] Tests pass")).toBe(false);
+		expect(floor.includes("Should we keep the 60 s cap?** → No, raise it to 300 s")).toBe(true);
+		expect(floor.includes("Keep the 60 s cap for now.")).toBe(false);
+		expect(floor.includes("Unresolved error: bun audit exit 1")).toBe(true);
+		// Nothing left for repair: the floor is the required evidence.
+		const result = verifySummary(floor, extraction, state, { factOverrides: overrides });
+		expect(result.gaps).toEqual([]);
+		expect(result.ok).toBe(true);
+	});
+
+	it("keeps the coverage disclosure out of the sections the contradiction scan reads", () => {
+		const extraction = makeExtraction({
+			constraints: [constraint("Never omit older items from the summary.", 1, "prohibition")],
+			evidenceOverflow: { constraints: 3 },
+		});
+		const floor = assembleFallback([], extraction);
+		const critical = floor.split("## Critical Context\n")[1].split("\n## Topics Covered")[0];
+		expect(critical.includes("Safety bound omitted")).toBe(false);
+		expect(floor.split("## Topics Covered\n")[1].includes("Safety bound omitted 3 older constraints item(s)")).toBe(true);
+		expect(verifySummary(floor, extraction).ok).toBe(true);
+	});
+
+	it("produces no non-repairable gap for any combination of evidence sources", () => {
+		// Every dimension is a way the floor could carry a line the verifier
+		// does not require, or miss one it does. The one designed failure —
+		// two live constraints of opposite polarity — is covered separately by
+		// "still rejects two required constraints of opposite polarity".
+		const dimensions = [
+			"retiredRule", "lowConfidenceInverse", "nonLiveText", "continuityRule",
+			"continuityGoalOnly", "overlappingErrors", "implicitInverseDecision", "overflow",
+			"longTexts",
+		] as const;
+		// Longer than every render limit, with the negation past the cut so the
+		// rendered line and the full evidence differ in polarity.
+		const filler = "keep the audit output verbatim, keep the lockfile frozen, keep the release notes honest, ".repeat(4);
+		const longRule = "Keep the daemon running through the release window, " + filler + "and do not restart the daemon.";
+		const longGoal = "Restore the daemon for the release window, " + filler + "and never restart it during the window.";
+		const longError = "daemon restart failed after the retry budget, " + filler + "and the daemon did not come back.";
+		const steering = { focus: "the daemon restart path", note: "Keep the audit output verbatim." };
+		let checked = 0;
+		for (let mask = 0; mask < 1 << dimensions.length; mask++) {
+			const on = new Set(dimensions.filter((_, bit) => mask & (1 << bit)));
+			const constraints = [
+				on.has("retiredRule")
+					? constraint("Restart the daemon after the tests pass.", 1)
+					: constraint(NEGATIVE_RULE, 1, "prohibition"),
+			];
+			if (on.has("retiredRule")) constraints.push(constraint(NEGATIVE_RULE, 1, "prohibition"));
+			if (on.has("lowConfidenceInverse")) constraints.push(constraint("Restart the daemon now.", 0.5));
+			if (on.has("nonLiveText")) constraints.push(constraint("[x] Daemon restarted", 1));
+			if (on.has("longTexts")) constraints.push(constraint(longRule, 1, "prohibition"));
+			const state = makeState({
+				goal: "Restore the daemon without a restart.",
+				constraints: on.has("continuityRule")
+					? [{ id: "c1", text: "Never force-push main.", category: "prohibition", confidence: 0.9 }]
+					: [],
+				unresolvedErrors: on.has("overlappingErrors")
+					? [{ id: "e1", message: "daemon restart failed: permission denied", tool: "bash", files: [] }]
+					: [],
+				resolvedErrors: on.has("overlappingErrors")
+					? [{ id: "e2", message: "restart of the daemon hit a timeout", tool: "bash" }]
+					: [],
+				decisions: [{ id: "d1", summary: "Should the daemon restart automatically?", userResponse: "No, only on request", type: "explicit" }],
+			});
+			const extraction = makeExtraction({
+				mainGoal: on.has("continuityGoalOnly") ? null : on.has("longTexts") ? longGoal : "Keep the daemon up; do not restart it.",
+				constraints,
+				errors: [
+					...(on.has("overlappingErrors") ? [error("daemon restart failed: permission denied"), error("restart of the daemon hit a timeout", true)] : []),
+					...(on.has("longTexts") ? [error(longError), error(longError + " (second attempt)", true)] : []),
+				],
+				decisions: on.has("implicitInverseDecision")
+					? [{ index: 2, type: "implicit", summary: "Restart the daemon automatically." }]
+					: [],
+				lastUserMessages: ["all tests pass, deploy it", "see src/does-not-exist.ts"],
+				modifiedFiles: [{ path: "src/daemon.ts", operations: ["edit"], lastIndex: 1 }] as never,
+				evidenceOverflow: on.has("overflow") ? { constraints: 2, errors: 1 } : undefined,
+			});
+			const overrides = on.has("retiredRule") ? [retire(NEGATIVE_RULE)] : [];
+			const evidence = { steering, factOverrides: overrides, summaryBudgetTokens: 6_000 };
+			const floor = assembleFallback([], extraction, steering, 6_000, state, overrides);
+			const initial = verifySummary(floor, extraction, state, evidence);
+			const unrepairable = initial.gaps.filter((gap) => !isDeterministicallyPatchable(gap));
+			expect({ mask: [...on], unrepairable }).toEqual({ mask: [...on], unrepairable: [] });
+			const repaired = repairSummaryDeterministically(floor, initial, extraction, state, evidence);
+			expect({ mask: [...on], ok: repaired.result.ok, gaps: repaired.result.gaps }).toEqual({ mask: [...on], ok: true, gaps: [] });
+			checked++;
+		}
+		expect(checked).toBe(512);
 	});
 });
