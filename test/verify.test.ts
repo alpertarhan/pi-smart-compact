@@ -11,7 +11,7 @@ import {
 	releasesConstraint,
 } from "../src/phases/verify.ts";
 import { normalizeFactKey } from "../src/utils/helpers.ts";
-import { renderContinuityCapsule, retireSupersededConstraints } from "../src/utils/state.ts";
+import { previewMergedContinuity, renderContinuityCapsule, retireSupersededConstraints } from "../src/utils/state.ts";
 import { verifyAndPatch as runVerificationStep } from "../src/app/steps/verify.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
@@ -58,10 +58,21 @@ function makeState(partial: Partial<CompactionState> = {}): CompactionState {
 	};
 }
 
-/** Direct step fixtures bypass upstream work but must carry its stage proof. */
+/**
+ * Direct step fixtures bypass upstream work but must carry its stage proof and
+ * the extract step's merged-continuity preview, which is what the step
+ * verifies against.
+ */
 function verifyAndPatch(
 	input: any,
 ): ReturnType<typeof runVerificationStep> {
+	if (input.verificationContinuity === undefined) {
+		input.verificationContinuity = previewMergedContinuity(
+			input.extraction,
+			input.previousState ?? null,
+			input.factOverrides ?? [],
+		);
+	}
 	return runVerificationStep(Object.assign(input, {
 		_prepared: true,
 		_windowed: true,

@@ -240,6 +240,13 @@ export interface ExtractedExt extends TieredExt {
   projectId: string;
   continuityScope: ContinuityScope;
   previousState: CompactionState | null;
+  /**
+   * Preview of the merged continuity the post-state gate verifies against
+   * (`previewMergedContinuity`). Synthesis, the deterministic floor and the
+   * post-synthesis gate use it as their continuity so every stage requires
+   * the same evidence; `previousState` stays the delta/loop baseline.
+   */
+  verificationContinuity: CompactionState;
   /** Constraints retired this run (superseded by later user messages). */
   factOverrides: ContinuityOverride[];
   /**

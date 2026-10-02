@@ -53,6 +53,7 @@ import {
 import { prepareConversationBackup } from "../../utils/backups.ts";
 import {
  loadScopedCompactionState,
+ previewMergedContinuity,
  renderContinuityCapsule,
  retireSupersededConstraints,
 } from "../../utils/state.ts";
@@ -82,8 +83,11 @@ export function loadExtractionContinuity(
   ...extraction.constraints.map(item => ({ text: item.text, index: item.index })),
   ...(previousState?.constraints ?? []).map(item => ({ text: item.text })),
  ], rc.llmMessages, previousState?.factOverrides ?? []);
+ // Synthesis and both verification gates must agree on the required evidence;
+ // the state step's merge is the authority, so preview it here.
+ const verificationContinuity = previewMergedContinuity(extraction, previousState, factOverrides);
  return {
-  projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides,
+  projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity,
   continuity: previousState ? renderContinuityCapsule(previousState) : "",
  };
 }
@@ -262,7 +266,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   rc.llmMessages,
  );
 
- const { projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, continuity } = loadExtractionContinuity({
+ const { projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity, continuity } = loadExtractionContinuity({
   cwd: rc.ctx.cwd, sessionId: rc.sessionId, llmMessages: rc.llmMessages,
   branch: rc.ctx.sessionManager?.getBranch?.() ?? rc.branch,
  }, extraction);
@@ -290,6 +294,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   projectId: string;
   continuityScope: typeof continuityScope;
   previousState: import("../../types.ts").CompactionState | null;
+  verificationContinuity: import("../../types.ts").CompactionState;
   factOverrides: import("../../types.ts").ContinuityOverride[];
   convText: string;
   convTokens: number;
@@ -306,6 +311,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
  out.projectId = projectId;
  out.continuityScope = continuityScope;
  out.previousState = previousState;
+ out.verificationContinuity = verificationContinuity;
  out.factOverrides = factOverrides;
  out.convText = convText;
  out.convTokens = convTokens;
