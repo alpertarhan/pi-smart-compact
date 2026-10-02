@@ -651,7 +651,14 @@ continuity-merged errors and goal), written whole, so the floor never carries a
 line the verifier does not require and can therefore never fail its own gate on
 a contradiction that deterministic repair cannot fix. The contradiction scan
 treats required error lines and the steering focus as polarity-free: an error
-records what happened and a focus names a subject, neither is a rule. Final verification runs again after continuity injection. The
+records what happened and a focus names a subject, neither is a rule. Every
+stage verifies against the same continuity: the extract step previews the
+state merge (`previewMergedContinuity`: previous snapshot merged with the
+current extraction, overrides applied, collections bounded) and synthesis, the
+floor and the post-synthesis gate use that preview, so the post-state gate —
+which verifies against the real merge — demands the same required evidence. A
+fact that was required at one gate and merely present at the next is exactly
+what the contradiction scan would read as summary-authored text. Final verification runs again after continuity injection. The
 final scalar is reported as repaired **verification coverage**, alongside the
 pre-repair score and fallback provenance, never as raw synthesis quality.
 Failures keep only exhaustive content-free gap kinds and the rejecting gate

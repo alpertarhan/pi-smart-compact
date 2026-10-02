@@ -138,7 +138,7 @@ export async function summarizeConversation(
    extraction,
    { focus: rc.focus, note: rc.userNote },
    pc.summaryBudgetTokens,
-   rc.previousState,
+   rc.verificationContinuity,
    rc.factOverrides,
   );
   setCachedSynthesis(cacheKey, {
@@ -235,7 +235,7 @@ export async function summarizeConversation(
    extraction,
    { focus: rc.focus, note: rc.userNote },
    pc.summaryBudgetTokens,
-   rc.previousState,
+   rc.verificationContinuity,
    rc.factOverrides,
   );
   method = "heuristic";
@@ -271,7 +271,7 @@ export async function summarizeConversation(
     extraction,
     { focus: rc.focus, note: rc.userNote },
     pc.summaryBudgetTokens,
-    rc.previousState,
+    rc.verificationContinuity,
     rc.factOverrides,
    );
    method = "heuristic";
@@ -619,7 +619,7 @@ export async function summarizeConversation(
     rc.cancellation.signal,
     rc.services,
     rc.config.focusWeighting ? rc.focus : undefined,
-    rc.previousState,
+    rc.verificationContinuity,
    );
    if (r?.startsWith("##")) finalSummary = r;
    else throw new Error("Invalid summary response");
@@ -635,7 +635,7 @@ export async function summarizeConversation(
     extraction,
     { focus: rc.focus, note: rc.userNote },
     pc.summaryBudgetTokens,
-    rc.previousState,
+    rc.verificationContinuity,
     rc.factOverrides,
    );
   }

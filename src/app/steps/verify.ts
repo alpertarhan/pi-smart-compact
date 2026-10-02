@@ -47,7 +47,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 	let verification = verifySummary(
 		summary,
 		extraction,
-		rc.previousState,
+		rc.verificationContinuity,
 		evidence,
 	);
 	const initialScore = verification.score;
@@ -93,7 +93,7 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 			summary,
 			verification,
 			extraction,
-			rc.previousState,
+			rc.verificationContinuity,
 			evidence,
 		);
 		summary = repaired.summary;
@@ -139,14 +139,14 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 			verification = verifySummary(
 				summary,
 				extraction,
-				rc.previousState,
+				rc.verificationContinuity,
 				evidence,
 			);
 			const repaired = repairSummaryDeterministically(
 				summary,
 				verification,
 				extraction,
-				rc.previousState,
+				rc.verificationContinuity,
 				evidence,
 			);
 			summary = repaired.summary;
@@ -167,20 +167,20 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 			extraction,
 			evidence.steering,
 			summaryBudgetTokens,
-			rc.previousState,
+			rc.verificationContinuity,
 			rc.factOverrides,
 		);
 		let deterministicVerification = verifySummary(
 			deterministic,
 			extraction,
-			rc.previousState,
+			rc.verificationContinuity,
 			evidence,
 		);
 		const repaired = repairSummaryDeterministically(
 			deterministic,
 			deterministicVerification,
 			extraction,
-			rc.previousState,
+			rc.verificationContinuity,
 			evidence,
 		);
 		deterministic = repaired.summary;

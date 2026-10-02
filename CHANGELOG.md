@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The post-state gate no longer rejects a summary that passed the
+  post-synthesis gate.** Synthesis, the deterministic floor and the
+  post-synthesis gate verified against the previous snapshot while the
+  post-state gate verified against the merged state, whose collections are
+  bounded (constraints capped at 30, current facts first). A rule the previous
+  snapshot carried in an older form — "`lucky-phoenix` writes production code …
+  Avoid parallel writes" beside its current form ending "`lucky-phoenix` not
+  active" — was required at the first gate, so the floor rendered both; the
+  merge dropped the older form past the cap, so at the second gate it was no
+  longer required, and the current rule's negated anchor read it as a
+  summary-authored contradiction (80/100, not deterministically repairable,
+  session uncompactable; recorded three times on 10.1.2). The extract step
+  now previews the merge (`previewMergedContinuity`) and every earlier stage
+  verifies against that preview, so all gates demand the same evidence.
+  Offline replay of five recorded sessions: post-state 100/ok.
+
 ## [10.1.2] - 2026-09-30
 
 ### Release approval

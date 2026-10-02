@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { buildState } from "../src/app/steps/state.ts";
+import { assembleFallback } from "../src/phases/synthesize.ts";
+import { verifySummary } from "../src/phases/verify.ts";
+import { previewMergedContinuity } from "../src/utils/state.ts";
 import { createServices } from "../src/infra/services.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
@@ -283,6 +286,133 @@ describe("buildState continuity integration", () => {
         stage: "post-state",
       });
     }
+  });
+
+  it("passes the post-state gate when the merge cap drops a superseded variant the previous snapshot carried", () => {
+    // Recorded shape (agent-mesh session, 10.1.2): the previous snapshot held
+    // an older variant of a constraint, the current window held it extended
+    // with a trailing "`lucky-phoenix` not active". Both were required at the
+    // post-synthesis gate (continuity = previous snapshot), so the floor
+    // rendered both. The state merge keeps current facts first and caps
+    // constraints at 30, dropping the older variant; at the post-state gate it
+    // was no longer required, so the extended rule's negated anchor read the
+    // older line as a summary-authored contradiction (80/100, not repairable).
+    // Every stage now verifies against the merged-continuity preview.
+    const projectId = "continuity-cap-" + Math.random().toString(36).slice(2);
+    const older =
+      "**Ownership:** `lucky-phoenix` writes production code/tests/docs; assistant session `silent-raven` independently reviews/tests. Avoid parallel writes to repository files.";
+    const extended = older + " Currently `tidal-dragon` is the sole live writer; `lucky-phoenix` not active.";
+    const previous: CompactionState = {
+      goal: "Ship agent-mesh 0.4",
+      decisions: [],
+      constraints: [
+        ...Array.from({ length: 29 }, (_, i) => ({
+          id: "prev-" + i,
+          text: "Keep previous rule " + i + " about module " + i + " intact.",
+          category: "requirement" as const,
+          confidence: 1,
+        })),
+        { id: "prev-own", text: older, category: "prohibition", confidence: 0.8 },
+      ],
+      modifiedFiles: [],
+      readFiles: [],
+      deletedFiles: [],
+      unresolvedErrors: [],
+      resolvedErrors: [],
+      openLoops: [],
+      topics: [],
+      nextActions: [],
+      criticalContext: [],
+      sessionType: "implementation",
+      compactionVersion: "10.1.2",
+      updatedAt: Date.now(),
+    };
+    const extraction: StructuredExtraction = {
+      modifiedFiles: [],
+      readFiles: [],
+      deletedFiles: [],
+      errors: [],
+      decisions: [],
+      constraints: [
+        { index: 1, text: extended, category: "prohibition", confidence: 0.8 },
+        ...Array.from({ length: 29 }, (_, i) => ({
+          index: i + 2,
+          text: "Keep current rule " + i + " about service " + i + " intact.",
+          category: "requirement" as const,
+          confidence: 1,
+        })),
+      ],
+      topics: [],
+      timeline: [],
+      mainGoal: "Ship agent-mesh 0.4",
+      lastUserMessages: [],
+      lastErrors: [],
+      messageCount: 2,
+    };
+    const preview = previewMergedContinuity(extraction, previous, []);
+    expect(preview.constraints).toHaveLength(30);
+    expect(preview.constraints.some((item) => item.text === older)).toBe(false);
+    expect(preview.constraints.some((item) => item.text === extended)).toBe(true);
+
+    const services = createServices();
+    const rc = (finalSummary: string): any => ({
+      ctx: { cwd: process.cwd() },
+      extraction,
+      finalSummary,
+      projectId,
+      continuityScope: { schemaVersion: 2, projectId, sessionId: "s", branchHeadId: "b" },
+      previousState: previous,
+      verificationContinuity: preview,
+      factOverrides: [],
+      llmMessages: [],
+      explorationReport: null,
+      config: { pinPaths: [] },
+      services,
+      estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
+      profile: "aggressive",
+      mode: "fast",
+      method: "heuristic",
+      chunkCount: 1,
+      summaries: [],
+      toCompact: [{}, {}],
+      convTokens: 1_000,
+      totalTokens: 50_000,
+      compactTokens: 20_000,
+      accTokens: 10_000,
+      compactionPlan: {
+        keepFrom: 2, compactTokens: 20_000, retainedTokens: 10_000, projectedAfterTokens: 40_000,
+        projectedSavedTokens: 10_000, projectedYield: 0.2, fixedContextTokens: 20_000,
+        retentionTargetTokens: 10_000, summaryBudgetTokens: 10_000, targetAfterTokens: 40_000,
+        hardBoundaryAdjusted: false, viable: true, reason: "viable", relaxedSoftBoundaries: [],
+      },
+      backupPath: null,
+      verified: true,
+      verificationGaps: [],
+      verificationScore: 100,
+      verificationProvenance: { initialScore: 100, deterministicPatched: [], llmPatched: false, finalScore: 100, remainingGaps: [] },
+      explorationRounds: 0,
+      modelLabel: "openai/test",
+      notify: () => {},
+      _prepared: true, _windowed: true, _recovered: true, _tiered: true, _extracted: true, _synthesized: true, _verified: true,
+    });
+
+    // Old pipeline: floor built against the previous snapshot carries both variants.
+    const oldFloor = assembleFallback([], extraction, {}, 10_000, previous, []);
+    expect(oldFloor).toContain("- " + older + "\n");
+    expect(verifySummary(oldFloor, extraction, previous).ok).toBe(true);
+    expect(() => buildState(rc(oldFloor))).toThrow(
+      expect.objectContaining({ name: "VerificationGateError", stage: "post-state" }),
+    );
+
+    // New pipeline: floor built against the preview carries exactly the merged set.
+    const floor = assembleFallback([], extraction, {}, 10_000, preview, []);
+    expect(floor).toContain(extended);
+    expect(floor).not.toContain("- " + older + "\n");
+    expect(verifySummary(floor, extraction, preview).ok).toBe(true);
+    const result = buildState(rc(floor));
+    expect(result.verified).toBe(true);
+    expect(result.verificationScore).toBe(100);
+    expect(result.compactionState.constraints.some((item) => item.text === extended)).toBe(true);
   });
 
   it("rejects an oversized verified final state before details can exist", () => {
