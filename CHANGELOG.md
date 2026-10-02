@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Evidence lines no longer manufacture a file by cutting through a path.**
+  `summaryEvidenceLine` cut at the character limit wherever it fell; the
+  cross-compaction delta cuts loop summaries at 60 characters, and in a
+  recorded session that landed inside `.json`, so the summary carried
+  `OPENCLAW_HOME/.openclaw/openclaw.js`, a file that never existed. The
+  verifier flagged it as fabricated (repairable, so not blocking), but a
+  reader of the summary would have looked for it. The cut now backs off to
+  the last separator inside the split token (a true directory prefix) or to
+  the token start; shorter cuts remain prefixes of longer renderings, so
+  needle checks keep matching.
+
 ## [10.1.3] - 2026-10-02
 
 ### Release approval

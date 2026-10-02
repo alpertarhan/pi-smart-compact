@@ -32,13 +32,39 @@ const HEADING_RE = /^(#{1,3})\s+(.+?)\s*$/;
 
 /** Collapse untrusted extracted evidence to one Markdown-safe line. */
 export function summaryEvidenceLine(value: string, maxLength: number): string {
-	return value
+	const line = value
 		.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
 		.replace(/\s+/g, " ")
 		.trim()
-		.replace(/^(?:(?:#{1,6}|[-*+]|>)\s+)+/, "")
-		.slice(0, maxLength)
-		.trim();
+		.replace(/^(?:(?:#{1,6}|[-*+]|>)\s+)+/, "");
+	if (line.length <= maxLength) return line;
+	return cutBeforeSplitPath(line, maxLength).trim();
+}
+
+/** Same character class the file-reference scanner treats as one token. */
+const PATH_TOKEN_CHAR_RE = /[\w./-]/;
+
+/**
+ * Cut at `max` without splitting a path-like token. A cut through
+ * `openclaw.json` yields `openclaw.js`: a file that never existed, which the
+ * verifier rightly flags as fabricated and a later reader would look for. The
+ * kept text ends at the last separator inside the split token (a true
+ * directory prefix, which the scanner does not read as a file) or before the
+ * token. The result stays a prefix of every longer rendering of the same
+ * text, so needle checks built from shorter cuts keep matching. Only when
+ * backing off would leave nothing does the hard cut stand.
+ */
+function cutBeforeSplitPath(line: string, max: number): string {
+	const kept = line.slice(0, max);
+	if (!PATH_TOKEN_CHAR_RE.test(line[max] ?? "") || !PATH_TOKEN_CHAR_RE.test(kept.slice(-1))) {
+		return kept;
+	}
+	const tokenStart = kept.search(/[\w./-]+$/);
+	const token = kept.slice(tokenStart) + (line.slice(max).match(/^[\w./-]*/)?.[0] ?? "");
+	if (!/[./]/.test(token)) return kept;
+	const lastSlash = kept.lastIndexOf("/");
+	const cut = lastSlash >= tokenStart ? lastSlash + 1 : tokenStart;
+	return cut > 0 ? kept.slice(0, cut) : kept;
 }
 
 /** Lossless Markdown-safe representation for one path. */
