@@ -1209,6 +1209,24 @@ describe("computeDelta", () => {
 });
 
 describe("formatDeltaSection", () => {
+  it("does not cut a loop summary through a path and invent a file", () => {
+    const delta: ReturnType<typeof computeDelta> = {
+      newDecisions: [],
+      removedDecisions: [],
+      resolvedLoops: [],
+      persistentLoops: [],
+      newLoops: ["No change Config valid: $OPENCLAW_HOME/.openclaw/openclaw.json Command timed out after 180 seconds"],
+      newModifiedFiles: [],
+      resolvedErrors: [],
+      newErrors: [],
+      goalChanged: false,
+      previousGoal: null,
+    };
+    const md = formatDeltaSection(delta);
+    expect(md).toContain("**New loops**: No change Config valid: $OPENCLAW_HOME/.openclaw/");
+    expect(md).not.toContain("openclaw.js");
+  });
+
   it("formats resolved loops with strikethrough", () => {
     const delta: ReturnType<typeof computeDelta> = {
       newDecisions: [],

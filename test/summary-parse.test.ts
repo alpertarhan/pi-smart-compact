@@ -6,7 +6,8 @@
  * `renderSummary` doesn't reorder canonical sections.
  */
 import { describe, it, expect } from "bun:test";
-import { parseSummary, findSection, hasSection, upsertSection, appendToSection, renderSummary } from "../src/domain/summary-parse.ts";
+import { parseSummary, findSection, hasSection, upsertSection, appendToSection, renderSummary, summaryEvidenceLine } from "../src/domain/summary-parse.ts";
+import { extractFileRefs } from "../src/utils/file-ref-detect.ts";
 import type { SectionPlacement } from "../src/domain/summary-parse.ts";
 
 describe("parseSummary", () => {
@@ -156,4 +157,39 @@ describe("renderSummary", () => {
     const once = renderSummary(parseSummary("### Goal\nA\n### Next Steps\n- B\n"));
     expect(renderSummary(parseSummary(once))).toBe(once);
   });
+});
+
+describe("summaryEvidenceLine", () => {
+	// Recorded (hollow-gecko session, 10.1.x): the delta section cut this loop
+	// summary at 60 characters, landing inside `.json`, and the summary then
+	// carried `OPENCLAW_HOME/.openclaw/openclaw.js`, a file that never
+	// existed. The verifier flagged it as fabricated, correctly.
+	const message = "No change Config valid: $OPENCLAW_HOME/.openclaw/openclaw.json Command timed out after 180 seconds";
+
+	it("never manufactures a file by cutting through a path token", () => {
+		for (const max of [30, 45, 49, 50, 51, 55, 60, 62]) {
+			const line = summaryEvidenceLine(message, max);
+			expect(line.length).toBeLessThanOrEqual(max);
+			// Either the whole file name survives or none of it does.
+			expect(extractFileRefs(line).every((ref) => ref.endsWith("openclaw.json"))).toBe(true);
+			expect(/openclaw\.js\b/.test(line)).toBe(false);
+			// Shorter cuts stay prefixes of longer renderings, so needle checks
+			// built from them keep matching the rendered line.
+			expect(summaryEvidenceLine(message, 150)).toContain(line);
+		}
+		expect(summaryEvidenceLine(message, 60)).toBe("No change Config valid: $OPENCLAW_HOME/.openclaw/");
+		expect(extractFileRefs(summaryEvidenceLine(message, 100))).toEqual(["OPENCLAW_HOME/.openclaw/openclaw.json"]);
+	});
+
+	it("backs off to the token start when the split path has no separator in the kept part", () => {
+		expect(summaryEvidenceLine("see openclaw.json for details", 15)).toBe("see");
+		expect(summaryEvidenceLine("see openclaw.json for details", 17)).toBe("see openclaw.json");
+	});
+
+	it("leaves split plain words and short lines alone", () => {
+		expect(summaryEvidenceLine("Install failed at step three now", 26)).toBe("Install failed at step thr");
+		expect(summaryEvidenceLine("Install failed at step three now", 200)).toBe("Install failed at step three now");
+		// Only a path-like token with nothing before it keeps the hard cut.
+		expect(summaryEvidenceLine("averyveryverylongfilenamewithoutanyslashes.json", 20)).toBe("averyveryverylongfil");
+	});
 });
