@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [10.1.3] - 2026-10-02
+
+### Release approval
+
+- Patch release approved by the release owner after the deterministic gates
+  on the exact candidate. No version-specific applied-canary cohort or live
+  provider run exists for `10.1.3`; the fix is evidenced by the state-step
+  regression test and offline replay of recorded sessions only.
+
 ### Fixed
 
 - **The post-state gate no longer rejects a summary that passed the
