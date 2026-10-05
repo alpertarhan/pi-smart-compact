@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [10.1.5] - 2026-10-05
+
+### Release approval
+
+- Patch release approved by the release owner after the deterministic gates
+  on the exact candidate. No version-specific applied-canary cohort or live
+  provider run exists for `10.1.5`; the fix is evidenced by unit tests and
+  offline replay of a recorded session's cache usage only.
+
 ### Fixed
 
 - **Anchor prompt cache no longer evicts the rolling cache marker on OAuth
