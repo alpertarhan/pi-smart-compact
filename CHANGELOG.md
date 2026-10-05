@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Context attention.** Context pressure used to reach the model only through
+  the human status line and `smart_context status` results, so the anchor,
+  checkpoint/rewind, trim and compaction tools sat idle until a person asked
+  for them. The extension now sends the model one short note when usage
+  enters the cleanup band and one more at the compaction band, naming only
+  the actions available right now: `smart_navigation anchor` (with the lazy
+  `smart_tools` load step when needed), `smart_context checkpoint`/`rewind`
+  and `trim` only when history edits are possible on this model (signed
+  Anthropic thinking blocks them), plus whether automatic compaction will
+  prepare. Mid-turn the note rides along with the next tool batch; at a turn
+  end a cleanup note waits for the next prompt and a compaction note is
+  skipped under auto-trigger because settled compaction runs first. One note
+  per band per session, re-armed once pressure clears; the note is a tail
+  message, so the cached prefix is untouched. Gated by `Navigation guide`
+  (`contextGuidanceEnabled`), tool loading and agent tool access.
+
 ## [10.1.5] - 2026-10-05
 
 ### Release approval
