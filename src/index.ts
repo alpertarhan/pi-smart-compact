@@ -57,6 +57,7 @@ import { createNativeContinuityBridge } from "./app/native-continuity-bridge.ts"
 import { createNativeReplayHook, setNativeToolSource } from "./app/native-compaction.ts";
 import { createSettledAutoTrigger } from "./app/settled-auto-trigger.ts";
 import { createBackgroundPreparation } from "./app/background-preparation.ts";
+import { registerContextAttention } from "./app/context-attention.ts";
 import { createHostCacheLedger, formatCacheLedgerSummary } from "./app/host-cache-ledger.ts";
 import { injectVisualArchive } from "./app/visual-archive.ts";
 import { SecretScrubber } from "./domain/scrub.ts";
@@ -338,6 +339,12 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
   onCacheWarm: (ctx, at) => { if (hostCache.sessionId() === resolveSessionId(ctx)) hostCache.noteCacheWarm(at); },
+ });
+
+ registerContextAttention(pi, {
+  config: automaticConfig,
+  canAgentAct: ctx => policy.snapshot().agentToolAccess !== "disabled" && !pivotQueued(ctx) && !isRunning.isSessionActive(resolveSessionId(ctx)),
+  reachable: group => toolExposure.reachable(group),
  });
 
  registerSmartCompactCommand(pi, {
