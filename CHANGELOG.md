@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [10.2.1] - 2026-10-05
+
+### Release approval
+
+- The release owner approved `10.2.1` as a stable patch with a version-specific
+  canary exception. Publication remains gated on the deterministic checks for
+  this exact candidate. No version-specific applied-canary cohort or live
+  provider/signature test exists; offline regressions do not establish cache-hit
+  savings or a `PROMOTE` result.
+
+### Fixed
+
+- **Native compaction prefix.** Reuse Pi's complete system/tool transcript
+  instead of prepending the current prompt and loadout a second time. Legacy
+  histories without an initial system message retain their fallback. Real-adapter
+  regressions cover initial and repeated native compaction; provider-side
+  thinking-signature acceptance is not claimed by these offline tests.
+- **Context attention follows execution gates.** Do not recommend trimming over
+  prepared compaction. Recompute prompt-start guidance instead of parking stale
+  pressure in `nextTurn`, and describe settled, background and native-hook
+  strategies separately. History guidance remains available with navigation off;
+  checkpoints no longer promise that a later rewind will be safe. Anchor advice
+  does not guarantee cleanup or cache hits, and manual-mode compaction advice
+  distinguishes staging from applying. A real offline Pi lifecycle regression
+  covers compaction between a completed high-pressure turn and the next prompt.
+
 ## [10.2.0] - 2026-10-05
 
 ### Release approval

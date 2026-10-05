@@ -459,8 +459,9 @@ Settings → **Agent tools & navigation** has the switches: **Session
 navigation** (off hides the panel and the agent tool; recorded anchors and the
 other switches are kept), **Search other sessions**, **Return to an anchor**,
 **Anchor prompt cache** (Anthropic models: keeps a prompt-cache marker on the
-newest anchor, so the context before it is read from cache while later turns
-change), **Anchor status** (footer, display only) and **Navigation guide**.
+newest anchor so an unchanged prefix can be reused while later turns change;
+hits still depend on provider caching and expiry), **Anchor status** (footer,
+display only) and **Navigation guide**.
 
 Legacy `context` tool anchors recorded in earlier sessions stay readable in
 browse and search.

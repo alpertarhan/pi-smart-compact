@@ -454,7 +454,7 @@ Settings → **Agent tools & navigation**.
 | `contextPivotEnabled` | `Return to an anchor` | `true` | Returning to an anchor on a new branch with a required carryover. |
 | `contextAnchorCacheEnabled` | `Anchor prompt cache` | `true` | Anthropic models: keeps a prompt-cache marker on the newest anchor. |
 | `contextAnchorStatusEnabled` | `Anchor status` | `true` | Shows the newest anchor on this branch in Pi's footer; display only. |
-| `contextGuidanceEnabled` | `Navigation guide` | `true` | Lets you or the agent open the navigation guide on request; it is never added to a request otherwise. Also enables context attention: one short note to the model when context usage enters the cleanup band and again at the compaction band, naming only the context tools available right now (anchor; checkpoint/rewind and trim when history edits are possible). Re-armed once pressure clears. |
+| `contextGuidanceEnabled` | `Navigation guide` | `true` | Lets you or the agent open the navigation guide on request; the full guide is never injected automatically. Also enables one short context-attention note per pressure band. Prompt-start advice uses current usage and permissions, not a parked `nextTurn` note. It names reachable tools, shares cleanup's preparation gate, and distinguishes automatic strategies and staging from applying. Checkpoint metadata can remain available when trim/rewind is blocked. Navigation off does not disable history guidance. Re-armed when pressure clears, compaction occurs or the session/model changes. |
 
 Group permissions apply in both `lazy` and `eager` modes: `compaction` follows
 `agentToolAccess`, `memory` needs `contextGraphEnabled` or a non-local

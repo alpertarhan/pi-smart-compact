@@ -329,13 +329,15 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
  registerArtifactOffload(pi, automaticConfig, () => toolExposure.reachable("history"));
+ // Execution and model guidance share this gate; prepared work wins over cleanup.
+ const canAutoTrim = (ctx: ExtensionContext) => toolExposure.reachable("history") && !background.hasWork()
+  && !pendingRef.isPresent(resolveSessionId(ctx)) && !isRunning.isSessionActive(resolveSessionId(ctx));
  const smartContext = registerSmartContextTool(pi, {
   config: automaticConfig,
   isPaused: pivotQueued,
   canAgentMutate: () => policy.snapshot().agentToolAccess !== "disabled",
   // Digests point the model at smart_context; like offload, automatic trims need it reachable.
-  canAutoTrim: ctx => toolExposure.reachable("history") && !background.hasWork() && !pendingRef.isPresent(resolveSessionId(ctx))
-   && !isRunning.isSessionActive(resolveSessionId(ctx)),
+  canAutoTrim,
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
   onCacheWarm: (ctx, at) => { if (hostCache.sessionId() === resolveSessionId(ctx)) hostCache.noteCacheWarm(at); },
@@ -344,6 +346,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  registerContextAttention(pi, {
   config: automaticConfig,
   canAgentAct: ctx => policy.snapshot().agentToolAccess !== "disabled" && !pivotQueued(ctx) && !isRunning.isSessionActive(resolveSessionId(ctx)),
+  canCleanup: canAutoTrim,
   reachable: group => toolExposure.reachable(group),
  });
 

@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeContext, type Context } from "@earendil-works/pi-ai";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { stream as anthropicStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { runSmartCompact } from "../src/app/run-smart-compact.ts";
 import {
  attemptNativeCompaction,
@@ -20,7 +23,7 @@ import { readMetricsLog } from "../src/utils/cache.ts";
 import { formatCompactErrorForUi } from "../src/ui/error-format.ts";
 import { notifyNativeText } from "../src/ui/overlays.ts";
 import { recentIssues, resetIssuesForTests } from "../src/utils/issues.ts";
-import type { NativeState } from "../src/infra/native-protocol.ts";
+import { replayNativeState, type NativeState } from "../src/infra/native-protocol.ts";
 import { BudgetGuard } from "../src/infra/services.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
 import { commitAppliedCompaction } from "../src/app/steps/persist.ts";
@@ -674,6 +677,56 @@ describe("native compaction engine", () => {
   expect(fake.wire).toHaveLength(1);
   expect(readMetricsLog().map((entry) => [entry.sessionId, entry.method, entry.status, entry.totalCalls]))
    .toEqual([["native-session", "native", "dry-run", 1]]);
+ });
+});
+
+describe("native compaction transcript prefix (real Pi adapter)", () => {
+ it.each([false, true])("preserves the system/tool timeline without prepending the current loadout (prior native=%s)", async prior => {
+  const model = anthropicProvider().getModels().find(item => item.id === "claude-fable-5-1")!;
+  const systemMessage = { role: "system", content: "ORIGINAL_BASE", toolsAdded: [READ_TOOL], timestamp: 0 };
+  const priorState: NativeState = { version: 1, api: "anthropic-messages", provider: model.provider, model: model.id,
+   items: [{ type: "compaction", content: "PRIOR BLOCK", signature: "offline-signature" }] };
+  const first = prior
+   ? { type: "compaction", id: "c0", parentId: null, timestamp: new Date(0).toISOString(), summary: "PRIOR SUMMARY",
+    firstKeptEntryId: "u0", tokensBefore: 100_000, systemMessage, details: { native: priorState } }
+   : { type: "message", id: "s0", parentId: null, timestamp: new Date(0).toISOString(), message: systemMessage };
+  const branch = conversation(10, [first]);
+  branch.splice(3, 0, { type: "message", id: "system-update", parentId: "a0", timestamp: new Date(0).toISOString(),
+   message: { role: "system", content: "LATER_INSTRUCTION", toolsAdded: [{ ...READ_TOOL, name: "search" }], timestamp: 1 } });
+  branch[4].parentId = "system-update";
+  const fake = useProvider(fakeProvider());
+  const harness = makeCtx(branch, { model });
+  let captured: Context | undefined;
+  harness.ctx.modelRegistry.streamSimple = (route: typeof model, context: Context, options: any) => {
+   captured = context;
+   return anthropicStream(route, normalizeContext(context), { ...options, apiKey: "offline-placeholder" });
+  };
+  const { outcome } = await run(branch, ["native"], { ctx: harness });
+  expect(outcome.kind).toBe("staged");
+  expect(fake.wire).toHaveLength(1);
+  expect(captured?.messages[0]?.role).toBe("system");
+
+  // Pi's ordinary agent loop normalizes only the complete transcript. Capture
+  // that real adapter's payload, not a hand-built approximation of the wire.
+  let ordinary: any;
+  await anthropicStream(model, normalizeContext({ messages: captured!.messages }), {
+   apiKey: "offline-placeholder", maxRetries: 0,
+   fetch: Object.assign(async (_url: unknown, init?: RequestInit) => {
+    ordinary = JSON.parse(String(init?.body));
+    return Response.json({ error: { type: "invalid_request_error", message: "offline capture only" } }, { status: 400 });
+   }, { preconnect() {} }) as typeof fetch,
+  }).result();
+  if (prior) ordinary = replayNativeState("anthropic-messages", ordinary, priorState, "PRIOR SUMMARY");
+  const native = fake.wire[0].body;
+  expect(ordinary).toBeDefined();
+  expect(native.system).toEqual(ordinary.system);
+  expect(native.tools).toEqual(ordinary.tools);
+  expect(native.messages).toEqual(ordinary.messages);
+  expect(JSON.stringify(native)).toContain("LATER_INSTRUCTION");
+  expect(JSON.stringify(native).match(/ORIGINAL_BASE/g)).toHaveLength(1);
+  expect(captured).not.toHaveProperty("systemPrompt");
+  expect(captured).not.toHaveProperty("tools");
+  if (prior) expect(native.messages[0]).toEqual({ role: "assistant", content: priorState.items });
  });
 });
 
