@@ -152,6 +152,7 @@ export async function attemptNativeCompaction(
     };
   }
   const prefix = rc.msgs.slice(0, cut);
+  const messages = prefix.map((entry) => entry.message as Message);
   const prefixTokens = prefix.reduce(
     (sum, entry) => sum + rc.estimator.message(entry.message as LlmMessage),
     0,
@@ -203,9 +204,14 @@ export async function attemptNativeCompaction(
     const stream = rc.ctx.modelRegistry.streamSimple(
       model,
       {
-        systemPrompt: rc.ctx.getSystemPrompt(),
-        messages: prefix.map((entry) => entry.message as Message),
-        tools: toolSource(),
+        messages,
+        // Pi's projection already carries the initial prompt and tool deltas.
+        // Adding today's loadout would prepend a second head and change the
+        // prefix to which retained thinking is bound. Only legacy histories
+        // without an initial system message need the fallback loadout.
+        ...(messages[0]?.role === "system" ? {} : {
+          systemPrompt: rc.ctx.getSystemPrompt(), tools: toolSource(),
+        }),
       },
       {
         signal: rc.cancellation.signal,
