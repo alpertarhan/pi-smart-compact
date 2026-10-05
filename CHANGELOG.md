@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [10.2.0] - 2026-10-05
+
+### Release approval
+
+- Minor release approved by the release owner after the deterministic gates
+  on the exact candidate. No version-specific applied-canary cohort or live
+  provider run exists for `10.2.0`; the feature is evidenced by unit tests
+  only. The note is gated by `Navigation guide` (`contextGuidanceEnabled`)
+  and turns off with it.
+
 ### Added
 
 - **Context attention.** Context pressure used to reach the model only through
