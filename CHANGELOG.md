@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Anchor prompt cache no longer evicts the rolling cache marker on OAuth
+  payloads.** pi-ai places `cache_control` on both OAuth system blocks (the
+  Claude Code identity line and the system prompt), so an Anthropic request
+  already carries four breakpoints: identity, system prompt, tools, rolling
+  tail. Adding the anchor marker made five, and the limit enforcement dropped
+  the first foreign message marker, which was the rolling tail. From the
+  first turn after an anchor every request then read only the prefix up to
+  the anchor and wrote nothing: `cacheWrite` stayed 0 while uncached input
+  grew turn by turn (a recorded session fell from 99% to 40% cache hits and
+  stayed there through a compaction that kept the anchor). The rolling tail
+  is now never an eviction candidate; the redundant identity marker goes
+  first, then the tools marker, both of which only cover prefixes of the
+  system-prompt marker. API-key payloads (one system marker) were unaffected.
+
 ## [10.1.4] - 2026-10-02
 
 ### Release approval
