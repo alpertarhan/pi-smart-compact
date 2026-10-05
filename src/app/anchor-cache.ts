@@ -16,7 +16,9 @@
  * reply after N yet) N's prefix has never been written. The previous anchor M
  * keeps a marker too, [system, tools, M, N], so the prefix through M is read
  * and only (M, N] is written. The bridge uses a free slot or displaces a
- * foreign message marker; it never evicts system/tools markers.
+ * redundant foreign marker (see `evictable`); it never displaces the rolling
+ * tail, which is what advances the cache every turn (pi-ai's OAuth layout
+ * already carries four markers: identity, system prompt, tools, tail).
  *
  * TTL follows the payload: a `1h` marker (Pi long retention) makes the anchor
  * `1h` and rolling markers after it `5m`; otherwise markers stay default.
@@ -214,8 +216,26 @@ function transitionBridge(payload: AnthropicPayload, anchors: AnchorLocator[], a
 
 function bridgeFits(payload: AnthropicPayload): boolean {
   const markers = listMarkers(payload);
-  const displaceable = markers.filter((m) => m.section === "messages" && !m.owned).length;
-  return markers.length - displaceable < MARKER_LIMIT;
+  return markers.length - evictable(markers).length < MARKER_LIMIT;
+}
+
+/**
+ * Foreign markers in eviction order. The rolling tail (last message marker)
+ * is never a candidate: without it nothing after the anchor is ever written
+ * and every turn resends the whole tail uncached. Anthropic caches the prefix
+ * tools → system → messages, so an earlier system marker (OAuth identity
+ * block) and the tools marker only cover prefixes of the last system marker.
+ */
+function evictable(markers: MarkerRef[]): MarkerRef[] {
+  const foreign = (list: MarkerRef[]) => list.filter((m) => !m.owned);
+  const messages = markers.filter((m) => m.section === "messages");
+  const system = markers.filter((m) => m.section === "system");
+  return [
+    ...foreign(messages.slice(0, -1)),
+    ...foreign(system.slice(0, -1)),
+    ...foreign(markers.filter((m) => m.section === "tools")),
+    ...foreign(system.slice(-1)),
+  ];
 }
 
 function setMarker(payload: AnthropicPayload, ref: BlockRef, control: CacheControl): void {
@@ -272,17 +292,13 @@ function countMarkers(payload: AnthropicPayload): number {
 }
 
 /**
- * Evict foreign markers until the limit holds: messages oldest first, then
- * tools, then system; nested content markers last, newest message first.
- * Owned anchor markers are never evicted.
+ * Evict markers until the limit holds, in `evictable` order; nested content
+ * markers last, newest message first. Owned anchor markers are never evicted.
  */
 function enforceMarkerLimit(payload: AnthropicPayload): void {
   let markers = listMarkers(payload);
   while (markers.length > MARKER_LIMIT) {
-    const target =
-      markers.find((m) => m.section === "messages" && !m.owned) ??
-      markers.find((m) => m.section === "tools" && !m.owned) ??
-      markers.find((m) => m.section === "system" && !m.owned);
+    const target = evictable(markers)[0];
     if (!target) break;
     delete blockAt(payload, target)!.cache_control;
     markers = listMarkers(payload);

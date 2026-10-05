@@ -91,16 +91,25 @@ describe("anchor cache layout", () => {
     expect(layout(value)).toEqual(["system", "tools", "M", "N"]);
   });
 
-  it("transition with parallel results: the bridge displaces the foreign rolling marker", () => {
+  it("transition with parallel results: the bridge yields the tools marker, never the rolling tail", () => {
     const value = payload([["w1"], ["M"], ["w2"], ["N", "w3"]]);
     hook().run(value, [toolAnchor("M"), toolAnchor("N")]);
-    expect(layout(value)).toEqual(["system", "tools", "M", "N"]);
+    expect(layout(value)).toEqual(["system", "M", "N", "w3"]);
   });
 
-  it("the bridge never evicts system or tools markers", () => {
+  it("the bridge displaces a redundant system marker, never the last system marker", () => {
     const value = payload([["M"], ["w1"], ["N"]], { systemMarkers: 2 });
     hook().run(value, [toolAnchor("M"), toolAnchor("N")]);
-    expect(layout(value)).toEqual(["system", "system", "tools", "N"]);
+    expect(layout(value)).toEqual(["system", "tools", "M", "N"]);
+    expect(value.system[1].cache_control).toBeDefined();
+  });
+
+  it("OAuth layout (identity + system markers): the rolling tail survives so later turns keep writing", () => {
+    // pi-ai OAuth payloads already carry four markers; the anchor must not push the tail out.
+    const value = payload([["w1"], ["N"], ["w2"]], { systemMarkers: 2 });
+    hook().run(value, [toolAnchor("N")]);
+    expect(layout(value)).toEqual(["system", "tools", "N", "w2"]);
+    expect(value.system[0].cache_control).toBeUndefined();
   });
 
   it("anchors from the same fresh round are not bridge targets", () => {
@@ -114,8 +123,9 @@ describe("anchor cache layout", () => {
     value.messages[2].content[0].cache_control = marker();
     value.messages[6].content[0].cache_control = marker();
     hook().run(value, [toolAnchor("N")]);
-    // w1 precedes the anchor; over the cap, foreign message markers yield before system/tools.
-    expect(layout(value)).toEqual(["system", "system", "tools", "N"]);
+    // w1 precedes the anchor; over the cap, stale message markers yield first, then the
+    // redundant system marker; the rolling tail w3 is never evicted.
+    expect(layout(value)).toEqual(["system", "tools", "N", "w3"]);
   });
 
   it("1h retention: anchor and bridge read 1h, rolling markers after the anchor restart at 5m without mutating shared controls", () => {
