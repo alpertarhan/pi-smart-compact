@@ -63,6 +63,23 @@ const assistant = (usage: { input: number; cacheRead: number; cacheWrite: number
 });
 
 describe("host prompt-cache ledger through the extension hooks", () => {
+  it.each([6, 36])("passes the active model's cache lifetime to the ledger (gap=%s minutes)", async gap => {
+    const { dispatch } = extension();
+    const base = context("thirty-minute-cache", []);
+    const ctx = { ...base, model: { ...base.model, provider: "openai", id: "gpt-5.6", promptCache: { short: 1_800, long: 1_800 } } };
+    await dispatch("session_start", { type: "session_start", reason: "startup" }, ctx);
+    for (let i = 0; i < 4; i++) {
+      const message = { ...assistant({ input: 105_000, cacheRead: 0, cacheWrite: 0 }, 1 + i * gap * 60_000),
+        provider: "openai", model: "gpt-5.6" };
+      await dispatch("message_end", { type: "message_end", message }, ctx);
+    }
+    // Six-minute gaps are not expiry for this model. Report an unknown cause,
+    // not a provider-confirmed diagnosis or a second user-facing warning.
+    const issue = recentIssues().find(item => item.key === "cache.foreign-rebuilds");
+    if (gap === 6) expect(issue?.message).toContain("cause is unknown");
+    else expect(issue).toBeUndefined();
+  });
+
   it("records foreign rebuilds without duplicating Pi's cache-miss notification", async () => {
     const { dispatch } = extension();
     const notifications: string[] = [];

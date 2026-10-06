@@ -367,13 +367,16 @@ policy starts from the same history. Policies:
   pressure fires later in replay than live.
 - `timed-<N>`: the current rule with `N` in place of the break-even limit;
   pressure commits, `N* ≤ N` commits (`break-even`), otherwise the batch is held
-  and applied at the first request after the previous request's cache lifetime
-  (`cold`). Planning, cooldown and protected prefixes use the extension's own
+  and applied at the first request beyond the model's estimated cache horizon
+  (`cold`). The longest advertised `promptCache` tier is used when the chosen
+  retention is unknown; observed 1h writes can extend it. Missing lifetime
+  metadata never permits a cold trim. Planning, cooldown and protected prefixes use the extension's own
   `planContextTrim`/`trimEntries`/`trimTokens`.
 
 Cost model per request: the projected context is estimated per message; the
 cached prefix is the longest run of identical projected messages shared with
-the previous request (0 after the cache lifetime or a model switch);
+the previous request (0 after the estimated cache horizon, a model switch,
+or when cache lifetime metadata is unknown);
 `uncached = prompt − cached`; a rebuild is `uncached ≥ max(--rebuild-min,
 0.5 × prompt)`; price = `cacheRead × cached + (cacheWrite, else input) ×
 uncached` at catalog rates. System prompt, tool definitions and output are

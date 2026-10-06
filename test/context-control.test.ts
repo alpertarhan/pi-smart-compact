@@ -20,9 +20,11 @@ import {
 } from "../src/app/context-operations.ts";
 import { contextEvidence } from "../src/app/context-evidence.ts";
 import { registerNavigation } from "../src/app/register-navigation.ts";
+import { anchorFromEntry } from "../src/app/navigation-data.ts";
 import { createSettledAutoTrigger } from "../src/app/settled-auto-trigger.ts";
 import { contextPressure } from "../src/app/background-preparation.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
+import { ATTENTION_CUSTOM_TYPE } from "../src/app/context-attention.ts";
 function assistant(content: AssistantMessage["content"] = [], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
     role: "assistant", content, api: "openai-completions", provider: "test", model: "test", stopReason, timestamp: 1,
@@ -261,6 +263,8 @@ describe("recoverable context edits", () => {
   it("rewinds research while preserving errors, mutations, commands, unknown tools and tool pairs", () => {
     const session = manager();
     const cp = checkpoint(session);
+    const attention = session.appendCustomMessageEntry(ATTENTION_CUSTOM_TYPE, "DISPOSABLE_PRESSURE_HINT", true, { band: "cleanup", percent: 75 });
+    const foreign = session.appendCustomMessageEntry("other-extension-notice", "FOREIGN_CONTEXT_MUST_STAY", true);
     const read = toolBatch(session, "read", "RESEARCH_DETAIL", false, { path: "src/a.ts" });
     const failure = toolBatch(session, "read", "ENOENT", true);
     const edit = toolBatch(session, "edit", "Changed src/a.ts", false, { path: "src/a.ts", newText: "new" });
@@ -280,6 +284,9 @@ describe("recoverable context edits", () => {
     expect(text).toContain("Use option B");
     expect(text).toContain("NOT reverted");
     expect(text).not.toContain("Temporary analysis");
+    expect(text).not.toContain("DISPOSABLE_PRESSURE_HINT");
+    expect(ids(session)).toContain(foreign);
+    expect(session.getEntry(attention)).toMatchObject({ content: "DISPOSABLE_PRESSURE_HINT" });
     expect(inspectContext(session.getBranch(), session.getSessionId()).checkpoint).toBeNull();
     expect(readContextReference(session.getBranch(), session.getSessionId(), read.result)).toBe("RESEARCH_DETAIL");
   });
@@ -515,6 +522,75 @@ describe("smart_context boundary lifecycle", () => {
     expect(h.changes()).toBe(1);
   });
 
+  it.each(["roomy", "unavailable", "cleared-before-commit"])("returns to the checkpoint plus one report when usage is %s", async usage => {
+    const h = harness();
+    h.setTokens(1_000);
+    if (usage === "unavailable") h.ctx.getContextUsage = () => undefined;
+    h.session.appendCustomMessageEntry(ATTENTION_CUSTOM_TYPE, "Checkpoint-prefix notice must stay byte-identical", true, { band: "cleanup", percent: 75 });
+    h.boundary(await h.execute({ action: "checkpoint", label: "Bounded investigation" }));
+    const prefix = structuredClone(buildSessionProjection(h.session.getBranch()).messages);
+    const research = toolBatch(h.session, "read", "DISPOSABLE_RESEARCH_DETAIL", false, { path: "src/auth.ts" });
+    toolBatch(h.session, "functions.search_graph", "DISPOSABLE_GRAPH_DETAIL", false, { project: "offline", query: "auth" });
+    h.session.appendMessage(assistant([{ type: "text", text: "DISPOSABLE_ANALYSIS" }]));
+    h.session.appendCustomMessageEntry(ATTENTION_CUSTOM_TYPE, "DISPOSABLE_PRESSURE_HINT", true, { band: "cleanup", percent: 75 });
+    const report = "src/auth.ts:12 needs <=. Keep the async API. Local-time parsing failed. Next: patch and test.";
+    if (usage === "cleared-before-commit") h.setTokens(140_000);
+    const rewind = await h.execute({ action: "rewind", report });
+    h.setTokens(1_000);
+    expect(ids(h.session)).toContain(research.result); // queued is not applied
+    h.boundary(rewind);
+    const request = h.request();
+    const messages = (request.result?.messages ?? request.messages).slice(1);
+    expect(messages.slice(0, prefix.length)).toEqual(prefix);
+    expect(messages).toHaveLength(prefix.length + 1);
+    expect(JSON.stringify(messages)).not.toContain("DISPOSABLE_");
+    expect(JSON.stringify(messages).split(report)).toHaveLength(2); // exactly one retained report
+    expect(readContextReference(h.session.getBranch(), h.session.getSessionId(), research.result)).toBe("DISPOSABLE_RESEARCH_DETAIL");
+    expect(h.session.getEntry(research.result)).toMatchObject({ message: { content: [{ text: "DISPOSABLE_RESEARCH_DETAIL" }] } });
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint).toBeNull();
+    h.boundary(await h.execute({ action: "checkpoint", label: "Next investigation" }));
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint?.label).toBe("Next investigation");
+  });
+
+  it("does not silently replace an active checkpoint, at request or commit time", async () => {
+    const h = harness();
+    h.setTokens(1_000);
+    h.boundary(await h.execute({ action: "checkpoint", label: "Original investigation" }));
+    const original = inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint;
+    await expect(h.tool.execute("nested", { action: "checkpoint", label: "Accidental nesting" }, undefined, undefined, h.ctx)).rejects.toThrow("already active");
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint).toEqual(original);
+    const raced = harness();
+    const batch = await raced.execute({ action: "checkpoint", label: "Queued" });
+    checkpoint(raced.session, "intervening");
+    const result = raced.boundary(batch);
+    expect(inspectContext(raced.session.getBranch(), raced.session.getSessionId()).checkpoint?.id).toBe("intervening");
+    expect(result.entries.at(-1).content).toContain("already active");
+  });
+
+  it("keeps preparation and signed-thinking guards for pressure-independent rewind", async () => {
+    const h = harness({ canTrim: false });
+    h.setTokens(1_000);
+    h.boundary(await h.execute({ action: "checkpoint" }));
+    const read = toolBatch(h.session, "read", "KEEP_WHILE_BLOCKED");
+    await expect(h.tool.execute("busy", { action: "rewind", report: "Findings" }, undefined, undefined, h.ctx)).rejects.toThrow("take priority");
+    h.setCanTrim(true);
+    const rewind = await h.execute({ action: "rewind", report: "Findings" });
+    h.setCanTrim(false);
+    expect(h.boundary(rewind).entries.at(-1).content).toContain("take priority");
+    expect(ids(h.session)).toContain(read.result);
+    h.setCanTrim(true);
+    // A side-effecting batch must stay, including its signed thinking. Removing earlier evidence is unsafe.
+    h.session.appendMessage({ ...assistant([
+      { type: "thinking", thinking: "Depends on the research", thinkingSignature: "offline-signature" },
+      { type: "toolCall", name: "write", id: "side-effect", arguments: { path: "a", content: "b" } },
+    ], "toolUse"), api: "anthropic-messages" });
+    h.session.appendMessage({ role: "toolResult", toolName: "write", toolCallId: "side-effect", content: [{ type: "text", text: "written" }], isError: false, timestamp: 1 });
+    const unsafe = await h.execute({ action: "rewind", report: "Keep the write and findings" });
+    expect(h.boundary(unsafe).entries.at(-1).content).toContain("signed Anthropic thinking");
+    expect(ids(h.session)).toContain(read.result);
+    expect(h.changes()).toBe(0);
+  });
+
   it("queues a checkpoint until the batch ends, then rewinds without a summarizer", async () => {
     const h = harness();
     expect(h.tool.executionMode).toBe("sequential");
@@ -717,7 +793,8 @@ describe("pressure-first policy", () => {
     const cp = await h.execute({ action: "checkpoint" });
     h.boundary(cp); // metadata is cheap and permitted before the detour
     expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint).not.toBeNull();
-    await expect(h.tool.execute("rewind", { action: "rewind", report: "done" }, undefined, undefined, h.ctx)).rejects.toThrow("No context pressure");
+    h.boundary(await h.execute({ action: "rewind", report: "Finished the bounded research; continue the original task." }));
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).checkpoint).toBeNull();
   });
 
   it("allows explicit human cleanup below pressure and rechecks queued agent requests", async () => {
@@ -821,6 +898,158 @@ describe("cleanup before compaction", () => {
 });
 
 describe("anchor consolidation", () => {
+  function confirmedAnchorHarness() {
+    const h = harness();
+    h.setTokens(1_000);
+    let navigationTool: any;
+    let visible = true;
+    let pending = false;
+    let blocked: string | undefined;
+    let confirm = async () => true;
+    const prompts: string[] = [];
+    const events = new Map<string, any>();
+    Object.assign(h.ctx, { hasUI: true, hasPendingMessages: () => pending });
+    Object.assign(h.ctx.ui, { confirm: async (_title: string, text: string, options?: { signal?: AbortSignal }) => {
+      expect(options?.signal).toBe(signal.signal);
+      prompts.push(text);
+      return confirm();
+    } });
+    const signal = new AbortController();
+    registerNavigation({
+      registerTool: (tool: any) => { navigationTool = tool; },
+      getActiveTools: () => visible ? ["smart_navigation", "smart_context"] : ["smart_context"],
+      on: (name: string, handler: any) => events.set(name, handler),
+    } as any, {
+      config: () => h.cfg, mutationBlocked: () => blocked,
+      onAnchor: (ctx, origin, id, abort, approved) => h.controller.requestAnchorTrim(ctx, origin, id, abort, approved).notice,
+    });
+    const execute = async (name = "reviewed", extra = {}) => {
+      const callId = "anchor-" + sequence++;
+      const params = { action: "anchor", name, summary: "Preserve constraints. Next: verify the implementation.", ...extra };
+      const message = assistant([{ type: "toolCall", name: "smart_navigation", id: callId, arguments: params }], "toolUse");
+      const messageEntryId = h.session.appendMessage(message);
+      const response = await navigationTool.execute(callId, params, signal.signal, undefined, h.ctx);
+      const result: ToolResultMessage = { role: "toolResult", toolCallId: callId, toolName: "smart_navigation",
+        content: response.content, details: response.details, isError: false, timestamp: 1 };
+      const resultId = h.session.appendMessage(result);
+      return { response, message, messageEntryId, toolResults: [result], toolResultEntryIds: [resultId] };
+    };
+    return { ...h, executeAnchor: execute, prompts, events, signal,
+      setConfirm: (fn: () => Promise<boolean>) => { confirm = fn; },
+      setVisible: (value: boolean) => { visible = value; }, setPending: (value: boolean) => { pending = value; },
+      setBlocked: (value: string) => { blocked = value; },
+    };
+  }
+
+  it.each(["roomy", "unknown"])("uses host consent once for early anchor cleanup with %s usage, never as a general bypass", async usage => {
+    const h = confirmedAnchorHarness();
+    if (usage === "unknown") h.ctx.getContextUsage = () => undefined;
+    const old = toolBatch(h.session, "read", "RECOVERABLE".repeat(600));
+    tail(h.session);
+    expect(planContextTrim(h.session.getBranch()).automatic).not.toBe("ready"); // user action, not periodic cleanup
+    const batch = await h.executeAnchor();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0]).toContain("reviewed");
+    expect(h.prompts[0]).toContain("Preserve constraints");
+    expect(batch.response.details.userConfirmed).toBe(true);
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+    h.boundary(batch);
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(true);
+    expect(readContextReference(h.session.getBranch(), h.session.getSessionId(), old.result)).toBe("RECOVERABLE".repeat(600));
+    expect(h.cfg.contextPressureOnly).toBe(true);
+    expect(JSON.stringify(h.session.getBranch())).toContain('"cause":"manual"');
+    h.setConfirm(async () => false);
+    await expect(h.executeAnchor("second", { userConfirmed: true })).rejects.toThrow("not approved");
+    expect(h.prompts).toHaveLength(2);
+    await expect(h.execute({ action: "trim", userConfirmed: true })).rejects.toThrow("No context pressure");
+  });
+
+  it("shows and saves only the scrubbed anchor that the host approved", async () => {
+    const h = confirmedAnchorHarness();
+    const secret = "ghp_" + "x".repeat(36);
+    const batch = await h.executeAnchor("private", { summary: `Keep constraints, not this credential: ${secret}` });
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0]).not.toContain(secret);
+    expect(batch.response.details.anchor.summary).not.toContain(secret);
+    expect(h.prompts[0]).toContain(batch.response.details.anchor.summary);
+  });
+
+  it.each(["pressure", "economic"])("does not add consent prompts to an already permitted %s anchor", async mode => {
+    const h = confirmedAnchorHarness();
+    if (mode === "pressure") h.setTokens(140_000);
+    else h.cfg.contextPressureOnly = false;
+    await h.executeAnchor();
+    expect(h.prompts).toHaveLength(0);
+  });
+
+  it.each(["prepared", "signed", "no-eligible"])("reports a saved anchor without claiming cleanup when %s blocks it", async reason => {
+    const h = confirmedAnchorHarness();
+    if (reason !== "no-eligible") toolBatch(h.session, "read", "KEEP".repeat(5_000));
+    tail(h.session, 8);
+    if (reason === "prepared") h.setCanTrim(false);
+    if (reason === "signed") h.session.appendMessage({ ...assistant([{ type: "thinking", thinking: "bound", thinkingSignature: "signed" }]), api: "anthropic-messages" });
+    const batch = await h.executeAnchor();
+    expect(h.prompts).toHaveLength(1);
+    expect(batch.response.content[0].text).not.toContain("cleanup queued");
+    h.boundary(batch);
+    expect(h.session.getBranch().some(entry => anchorFromEntry(entry))).toBe(true);
+    expect(h.changes()).toBe(0);
+  });
+
+  it.each(["denied", "headless", "disabled", "hidden", "pending", "running"])("does not create or queue an early anchor when %s", async blocker => {
+    const h = confirmedAnchorHarness();
+    const old = toolBatch(h.session, "read", "KEEP".repeat(5_000));
+    tail(h.session, 8);
+    if (blocker === "denied") h.setConfirm(async () => false);
+    if (blocker === "headless") Object.assign(h.ctx, { hasUI: false });
+    if (blocker === "disabled") h.cfg.contextNavigationEnabled = false;
+    if (blocker === "hidden") h.setVisible(false);
+    if (blocker === "pending") h.setPending(true);
+    if (blocker === "running") h.setBlocked("Compaction is running");
+    await expect(h.executeAnchor("blocked", { userConfirmed: true })).rejects.toThrow();
+    expect(h.prompts).toHaveLength(blocker === "denied" ? 1 : 0);
+    h.turn();
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(false);
+    expect(h.session.getBranch().some(entry => anchorFromEntry(entry))).toBe(false);
+  });
+
+  it.each(["abort", "session", "branch", "compact", "shutdown", "model", "input", "hidden", "disabled", "running"])("rejects stale consent after %s changes", async change => {
+    const h = confirmedAnchorHarness();
+    h.setConfirm(async () => {
+      if (change === "abort") h.signal.abort();
+      if (change === "session") h.events.get("session_before_switch")({}, h.ctx);
+      if (change === "branch") h.events.get("session_tree")({}, h.ctx);
+      if (change === "compact") h.events.get("session_before_compact")({}, h.ctx);
+      if (change === "shutdown") h.events.get("session_shutdown")({}, h.ctx);
+      if (change === "model") h.events.get("model_select")({}, h.ctx);
+      if (change === "input") h.session.appendMessage({ role: "user", content: "New instructions take priority", timestamp: 2 });
+      if (change === "hidden") h.setVisible(false);
+      if (change === "disabled") h.cfg.contextNavigationEnabled = false;
+      if (change === "running") h.setBlocked("Compaction is running");
+      return true;
+    });
+    await expect(h.executeAnchor()).rejects.toThrow();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.session.getBranch().some(entry => anchorFromEntry(entry))).toBe(false);
+    expect(h.changes()).toBe(0);
+  });
+
+  it.each(["prepared", "policy", "input", "failed", "signed"])("revalidates %s at commit even after host consent", async change => {
+    const h = confirmedAnchorHarness();
+    const old = toolBatch(h.session, "read", "KEEP".repeat(5_000));
+    tail(h.session, 8);
+    const batch = await h.executeAnchor();
+    if (change === "prepared") h.setCanTrim(false);
+    if (change === "policy") h.setCanMutate(false);
+    if (change === "input") h.session.appendMessage({ role: "user", content: "New request", timestamp: 2 });
+    if (change === "signed") h.session.appendMessage({ ...assistant([{ type: "thinking", thinking: "bound to old output", thinkingSignature: "signed" }]), api: "anthropic-messages" });
+    if (change === "failed") batch.toolResults[0].isError = true;
+    h.boundary(batch);
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(false);
+    expect(h.changes()).toBe(0);
+    expect(JSON.stringify(buildSessionProjection(h.session.getBranch()).messages)).toContain("KEEP".repeat(5_000));
+  });
+
   it("seals only the new anchor region once and preserves exact recovery", async () => {
     const h = harness();
     const pinned = toolBatch(h.session, "read", "PINNED".repeat(4_000));
@@ -1105,9 +1334,10 @@ describe("manual trim controller", () => {
   });
 });
 
-type PricedModel = { provider: string; id: string; cost: { input: number; output: number; cacheRead: number; cacheWrite: number } };
-const ANTHROPIC: PricedModel = { provider: "anthropic", id: "claude-test", cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
-const OPENAI: PricedModel = { provider: "openai", id: "gpt-test", cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } };
+type PricedModel = { provider: string; id: string; api?: AssistantMessage["api"]; promptCache?: { short?: number; long?: number }; cost: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+// Fixed five-minute fixture, not a claim about current Claude retention defaults.
+const ANTHROPIC: PricedModel = { provider: "anthropic", id: "claude-test", api: "anthropic-messages", promptCache: { short: 300, long: 300 }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } };
+const OPENAI: PricedModel = { provider: "openai", id: "gpt-test", api: "openai-responses", cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 } };
 
 /** Independent expectation: the host's own projection after committing the plan, measured with the same estimator. */
 function expectedTrim(session: SessionManager, model: PricedModel) {
@@ -1138,7 +1368,8 @@ function deferredFixture(model: PricedModel | undefined, largeTail: boolean, hyg
   h.setTokens(100_000); // below the 140k start gate
   const old = toolBatch(h.session, "read", "old research".repeat(2_000));
   if (largeTail) h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });
-  tail(h.session);
+  for (let i = 0; i < 4; i++) h.session.appendMessage({ ...assistant([{ type: "text", text: "Recent protected turn " + i }]),
+    provider: model?.provider ?? "test", model: model?.id ?? "test", api: model?.api ?? "openai-completions" });
   return { h, old };
 }
 function controlOf(entries: SessionBoundaryDraft[] | undefined) {
@@ -1147,6 +1378,31 @@ function controlOf(entries: SessionBoundaryDraft[] | undefined) {
 }
 
 describe("automatic trim timing", () => {
+  it("does not cold-trim a 30-minute model at six minutes", () => {
+    const model = { ...OPENAI, id: "gpt-5.6", promptCache: { short: 1_800, long: 1_800 } };
+    const { h } = deferredFixture(model, true);
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).not.toBeNull();
+    h.setNow(1 + 6 * 60_000);
+    expect(Boolean(h.request().result)).toBe(false);
+    h.setNow(1 + 30 * 60_000);
+    expect(h.request().result).toBeUndefined();
+    h.setNow(1 + 30 * 60_000 + 1);
+    expect(h.request().result).toBeDefined();
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "cold" });
+  });
+
+  it("does not infer a cold cache when model lifetime metadata is missing", () => {
+    const { h } = deferredFixture(OPENAI, true);
+    h.turn();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).not.toBeNull();
+    h.setNow(1 + 6 * 60_000);
+    expect(Boolean(h.request().result)).toBe(false);
+    h.setNow(1 + 48 * ONE_HOUR_MS);
+    expect(h.request().result).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
+  });
+
   it("marks a warm-cache trim, applies it on the first cold request and commits it at the next completed turn", async () => {
     const { h, old } = deferredFixture(ANTHROPIC, true);
     const expected = expectedTrim(h.session, ANTHROPIC);
@@ -1180,6 +1436,32 @@ describe("automatic trim timing", () => {
     h.nextRequest();
     expect(h.edits()).toEqual(["trim"]);
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+  });
+
+  it("does not borrow another route's response timestamp for expiry", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    h.turn();
+    h.ctx.model = { ...h.ctx.model!, provider: "other", id: "other" };
+    h.setNow(1 + 2 * ONE_HOUR_MS);
+    expect(h.request().result).toBeUndefined();
+  });
+
+  it("uses the longest advertised tier when the selected retention is unknown", () => {
+    const { h } = deferredFixture({ ...ANTHROPIC, promptCache: { short: 300, long: 3_600 } }, true);
+    h.turn();
+    h.setNow(1 + 6 * 60_000);
+    expect(h.request().result).toBeUndefined();
+    h.setNow(1 + ONE_HOUR_MS + 1);
+    expect(h.request().result).toBeDefined();
+  });
+
+  it("keeps pressure-only histories intact beyond a known cache horizon", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    h.cfg.contextPressureOnly = true;
+    h.turn();
+    h.setNow(1 + 2 * ONE_HOUR_MS);
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    expect(h.request().result).toBeUndefined();
   });
 
   it("commits immediately when the tail is small enough to pay back within the horizon", () => {
@@ -1279,18 +1561,21 @@ describe("automatic trim timing", () => {
     expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "cold" });
   });
 
-  it("prices OpenAI-style caches without a write surcharge and honors 1h retention", () => {
-    const { h } = deferredFixture(OPENAI, true);
-    const oneHour = assistant([{ type: "text", text: "cached for an hour" }]);
+  it("retains an observed 1h prefix across shorter tail writes and pure reads", () => {
+    const { h } = deferredFixture(ANTHROPIC, true);
+    const route = { provider: ANTHROPIC.provider, model: ANTHROPIC.id, api: ANTHROPIC.api! };
+    const oneHour = { ...assistant([{ type: "text", text: "cached for an hour" }]), ...route };
     oneHour.usage = { ...oneHour.usage, cacheWrite: 5_000, cacheWrite1h: 5_000 };
     h.session.appendMessage(oneHour);
-    const expected = expectedTrim(h.session, OPENAI);
+    h.session.appendMessage({ ...assistant([{ type: "text", text: "short-lived tail" }]), ...route,
+      usage: { ...assistant().usage, cacheWrite: 500, cacheWrite1h: 0 } });
+    const expected = expectedTrim(h.session, ANTHROPIC);
     expect(h.turn()).toBeUndefined();
     expect(h.controller.deferredTrim(h.session.getSessionId())!.breakEvenRequests).toBeCloseTo(expected.breakEvenRequests, 9);
     h.setNow(1 + FIVE_MINUTES_MS + 1);
     expect(h.request().result).toBeUndefined();
     // A fully cached response writes nothing but refreshes the 1h entry; its lifetime is the last writer's.
-    const hit = { ...assistant([{ type: "text", text: "fully cached" }]), timestamp: 1 + FIVE_MINUTES_MS + 2, usage: { ...assistant().usage, cacheRead: 5_000, cacheWrite: 0 } };
+    const hit = { ...assistant([{ type: "text", text: "fully cached" }]), ...route, timestamp: 1 + FIVE_MINUTES_MS + 2, usage: { ...assistant().usage, cacheRead: 5_000, cacheWrite: 0 } };
     h.session.appendMessage(hit);
     h.setNow(hit.timestamp + FIVE_MINUTES_MS + 1);
     expect(h.request().result).toBeUndefined();
@@ -1319,7 +1604,7 @@ describe("automatic trim timing", () => {
     h.turn();
     h.setNow(1 + 4 * 60_000);
     decide(h, { warmCost: 0.01, missCost: 10, continuationProbability: 1 });
-    const response = { ...assistant([{ type: "text", text: "real response" }]), timestamp: 1 + 2 * 60_000 };
+    const response = { ...assistant([{ type: "text", text: "real response" }]), provider: ANTHROPIC.provider, model: ANTHROPIC.id, timestamp: 1 + 2 * 60_000 };
     h.session.appendMessage(response);
     for (const fn of h.handlers.get("message_end")!) fn({ type: "message_end", message: response }, h.ctx);
     h.setNow(response.timestamp + FIVE_MINUTES_MS + 1); // cold for the response, warm for the stale refresh
@@ -1343,5 +1628,8 @@ describe("automatic trim timing", () => {
     const unpriced = deferredFixture(undefined, true).h;
     unpriced.turn();
     expect(decide(unpriced, economics(removedUsd, -0.001))).toBeUndefined();
+    const unknownLifetime = deferredFixture(OPENAI, true).h;
+    unknownLifetime.turn();
+    expect(decide(unknownLifetime, economics(0, -0.001))).toBeUndefined();
   });
 });

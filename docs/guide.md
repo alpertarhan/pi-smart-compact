@@ -222,10 +222,11 @@ boundary under pressure. The other two causes below require the explicit
 - `pressure`: context usage reached the early pressure gate.
 - `break-even`: the model's catalog prices say the trim pays back its prompt
   cache rewrite within 24 further requests.
-- `cold`: otherwise the batch is held back until the cache has expired (5
-  minutes after the last response, 1 hour when the last response that wrote
-  cache reported 1h retention). A refresh from Pi's cache warming keeps the
-  entry alive, so the batch also waits one lifetime past the latest refresh.
+- `cold`: otherwise the batch waits beyond the model's estimated cache horizon.
+  Pi's `promptCache` metadata supplies the lifetime, not a universal five-minute
+  default. When the chosen retention is unknown, the longest advertised tier
+  is used; reported 1h writes can extend it. Missing lifetime metadata prevents
+  time-based cleanup. A refresh from Pi's cache warming extends this wait too.
   The first request after that already sends the trimmed context, every later
   request keeps sending it, and the edits commit at the next completed turn
   that nothing else claims.
@@ -388,36 +389,44 @@ size, an `artifact-<hash>` ID and short first/last excerpts.
 
 ## Checkpoint and rewind
 
-Use this for bounded research: set a checkpoint, explore, then replace the
-exploration with a short report.
+Use this for a bounded read-only investigation, not periodic cleanup:
+checkpoint → explore → rewind with findings → continue the original task.
+For a purely read-only detour, the delivered context becomes the unchanged
+checkpoint prefix plus one report. Finish the rewind before implementation
+or your final answer; do not wait for context pressure.
 
 Example inputs (one JSON object per call; explore between checkpoint and rewind):
 
 ```jsonl
 {"action":"checkpoint","label":"Investigate auth expiry"}
-{"action":"rewind","report":"Expiry must use <=. Keep async API. Failed approach: local-time parsing. Next: patch and test."}
-{"action":"plan"}
-{"action":"trim"}
+{"action":"rewind","report":"src/auth.ts:12: expiry must use <=. Keep async API. Failed approach: local-time parsing. Next: patch and test."}
 ```
 
-- Check `status` for actual usage and gates. Checkpoints are permitted below
-  pressure; agent rewind/trim/anchor requests are not, by default. Human
-  commands can request early work. Unsafe edits before retained signed
-  Anthropic thinking are refused, even when thinking bytes themselves would
-  stay unchanged.
+- `checkpoint` and `rewind` do **not** require context pressure or an available
+  usage reading. Autonomous agent trim/anchor requests and automatic cleanup
+  still do by default; an early user-requested anchor requires host confirmation.
+  Research return is a separate operation, not a cleanup trigger.
+- Check `status` when blocked. Tool permissions, prepared/running compaction,
+  a pending pivot and signed-thinking safety checks still apply. Keep/report
+  findings if blocked; do not loop, silently replace the checkpoint, or claim
+  the rewind completed.
 - `checkpoint`, `rewind` and `trim` return **queued**. Pi commits them at the
   end of the current tool batch.
-- One checkpoint is active at a time; a new one replaces it. It survives reload.
+- One checkpoint is active at a time and survives reload. A second checkpoint
+  is rejected; finish the active one before starting another investigation.
 - New user instructions, a compaction, branch changes or edits to the context
   before the checkpoint invalidate rewind. It does not silently drop new
   requirements.
 - Rewind removes successful read-only tool exchanges as complete call/result
-  pairs. Errors, instruction reads, incomplete exchanges, images, shell
+  pairs, including supported graph queries, diagnostics and web research.
+  It removes intermediate assistant prose, the rewind call itself and this
+  extension's pressure hints created during the detour, leaving one handoff.
+  Unrelated extension messages stay. Errors, instruction reads, incomplete exchanges, images, shell
   commands, writes and unknown tools stay.
 - **Files, processes, Git state and external effects are never rolled back.**
 - The report (maximum 8,000 characters) is written by the agent and is not
-  verified. It should include findings, constraints, failed attempts and the
-  next step. More than 512 eligible messages requires a normal compaction.
+  verified. It should include findings with evidence paths/identifiers,
+  constraints, failed attempts and the next step. More than 512 eligible messages requires a normal compaction.
 - `plan` previews how many outputs a trim would remove and the characters
   saved, without queuing anything.
 
@@ -431,6 +440,33 @@ safe cleanup of its new region through the shared trim controller. Previous
 anchor prefixes stay protected. It is not a full compaction; the response says
 whether cleanup was queued, blocked or unnecessary. A human may mark a milestone
 earlier. Append-only anchors do not discard an already prepared summary.
+
+### User-guided early anchors
+
+With `contextPressureOnly: true`, you can ask the agent to mark a milestone
+before the pressure gate (including when usage is unknown). The agent prepares
+an anchor name and summary; Pi shows them in a native confirmation dialog.
+Approval authorizes **that anchor and one safe cleanup only**. It changes no
+settings, grants no future permission and needs no extra summarizer request.
+The model cannot authorize itself with a `userConfirmed` argument.
+
+- Rejecting/cancelling the dialog leaves the anchor and cleanup unrequested.
+  Non-interactive hosts cannot grant this exception; RPC supports the dialog.
+- Session/branch changes, new history/input, revoked navigation/tool access and
+  cancellation invalidate pending approval. Cleanup rechecks the originating
+  successful tool batch and all safety/preparation gates at commit.
+- User-confirmed cleanup skips automatic pressure, minimum-batch and cooldown
+  timing, not eligibility: recent turns, previous anchor/checkpoint prefixes,
+  instructions and signed-thinking dependencies stay protected. It works with
+  automatic cleanup disabled. An anchor can be saved even when no safe cleanup
+  is possible; the response says why instead of claiming context shrank.
+- Autonomous anchor/trim and automatic cleanup keep their pressure policy.
+  `contextPressureOnly: false` remains the existing early/economic opt-in;
+  no global switch needs changing for a user-confirmed request.
+- Full compaction remains a separate operation with its existing permission
+  and verification rules. An anchor does not replace the whole conversation.
+
+### Manual navigation panel
 
 Home → **History & recovery** → **Session navigation**, or `/smart-compact context`:
 
@@ -648,30 +684,33 @@ out rather than estimated. Discarded preparations are only in
 
 For each assistant response in the current session, Pi Continuity records the
 prompt usage the provider reported for Pi's own request: uncached input, cache
-reads and cache writes. Nothing is estimated; responses without reported
-usage, or with zero prompt tokens (aborted or failed requests), are skipped.
+reads and cache writes. Those token counts are measured; rebuild detection and
+cause labels are estimates. Responses without reported usage, or with zero
+prompt tokens (aborted or failed requests), are skipped.
 
-A request counts as a cache rebuild when it is not the session's first and
-its uncached tokens (input + cache writes) are at least 16,384 and at least
-half of its prompt tokens. Each rebuild gets one cause, checked in this order:
+A request counts as an estimated rebuild when it is not the current route's
+first and its uncached tokens (input + cache writes) are at least 16,384 and at
+least half of its prompt tokens. Timing labels are checked in this order; they
+are not provider-confirmed root causes:
 
 - **continuity**: a Continuity edit reached the branch since the previous
   request (an output trim or checkpoint rewind, a navigation pivot, or a Pi
   Continuity compaction). Edits that were queued but not committed do not
   count.
-- **idle-expiry**: the gap since the previous request, or since Pi's latest
-  cache-warming refresh after it, exceeded the cache lifetime, 5 minutes, or
-  1 hour while the cached prefix was written with 1-hour retention (only
-  Anthropic reports that split).
-- **foreign**: neither. Something else changed the prompt prefix, for
-  example another extension, a model or tool change, Pi's built-in
-  compaction, or eviction by the provider.
+- **possible idle-expiry**: the gap since the previous request or cache-warming
+  refresh exceeded the model's longest advertised cache lifetime, extended by
+  any observed 1h writes. Unknown lifetime metadata never implies expiry.
+- **foreign / cause unknown**: neither. The ledger did not observe a Continuity
+  edit or a known expiry horizon; this does not prove another extension changed
+  the prompt. Tool changes, Pi's built-in compaction or provider eviction are
+  possible explanations, not assigned causes. A model switch starts a new
+  timing baseline rather than borrowing the old model's clock.
 
 Home › Readiness & details lists the request count, the share of prompt
 tokens read from cache, rebuilds by cause with their uncached tokens, and the
 cost Pi priced from that usage when the model has catalog prices. The third
-foreign rebuild in a session shows one notice with the count and uncached
-tokens. The ledger is session-local: it resets on a new or switched session,
+unassigned rebuild records one diagnostic with the count and uncached tokens;
+it does not duplicate Pi's cache-miss notification. The ledger is session-local: it resets on a new or switched session,
 is not persisted, and covers only Pi's own requests; Pi Continuity's summary
 calls are in `/smart-compact metrics` instead.
 

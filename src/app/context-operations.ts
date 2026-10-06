@@ -17,6 +17,7 @@ import { digest } from "./tool-artifacts.ts";
 
 export const CONTEXT_CONTROL_TYPE = "smart-compact-context";
 export const CONTEXT_REPORT_TYPE = "smart-compact-rewind";
+export const ATTENTION_CUSTOM_TYPE = "smart-compact-attention";
 export const MAX_CONTEXT_EDITS = 512;
 export const MAX_TRIM_EDITS = 32;
 export const MIN_TRIM_CHARS = 4_096;
@@ -383,8 +384,11 @@ export function planContextRewind(branch: SessionEntry[], sessionId: string, che
   if (!state.checkpoint || state.checkpoint.id !== checkpointId) {
     throw new Error(state.invalidReason ?? "No matching active checkpoint; create one before research.");
   }
-  const suffixIds = new Set(branch.slice(state.checkpointIndex + 1).map(entry => entry.id));
-  const targets = [...removableResearch(branch)].filter(id => suffixIds.has(id));
+  const research = removableResearch(branch);
+  // Our pressure hint describes the discarded detour, not the restored context.
+  // Use entry provenance, never a text prefix that could match user instructions.
+  const targets = branch.slice(state.checkpointIndex + 1).filter(entry => research.has(entry.id)
+    || (entry.type === "custom_message" && entry.customType === ATTENTION_CUSTOM_TYPE)).map(entry => entry.id);
   if (targets.length > MAX_CONTEXT_EDITS) throw new Error("Research exceeds the rewind edit limit; compact instead.");
   const targetSet = new Set(targets);
   const edited = new Set(branch.flatMap(entry => entry.type === "context_edit" ? [entry.targetId] : []));

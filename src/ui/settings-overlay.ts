@@ -465,7 +465,7 @@ const CATEGORIES: ReadonlyArray<{
           setting: {
             id: "contextPressureOnly",
             label: "Cleanup timing",
-            description: "Pressure only (default) leaves roomy cached history alone, including agent trim/rewind/anchor requests. Economic also allows break-even/cold-cache cleanup. Human commands can request early cleanup; safety checks always apply.",
+            description: "Pressure only (default) gates automatic cleanup and autonomous agent trim/anchor requests. A host-confirmed anchor can request one early cleanup without changing this setting. Checkpoint/rewind research is pressure-independent. Economic opts into early cleanup. Safety checks always apply.",
             values: BOOLEAN_VALUES,
             labels: { true: "Pressure only", false: "Economic (opt-in)" },
           },

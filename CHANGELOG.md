@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+## [10.3.0] - 2026-10-06
+
+### Release approval
+
+- The release owner explicitly approved `10.3.0` as a stable release to `latest`
+  with a version-specific canary exception, not an RC. Publication remains
+  gated on the exact candidate's deterministic release checks and required CI.
+  No version-specific applied-canary cohort or live provider/signature test
+  exists. Offline regressions do not establish provider-side signature
+  acceptance, cache-hit savings, production quality or a `PROMOTE` result.
+
+### Added
+
+- **User-confirmed early anchors.** In pressure-only mode, an explicitly
+  user-requested anchor can ask Pi for one-time host confirmation, then save the
+  anchor and request one safe cleanup below pressure or with unknown usage.
+  No model argument grants permission and no setting changes. Rejection,
+  cancellation, stale session/history and revoked navigation/tool access fail
+  closed; confirmed cleanup still revalidates the originating batch, policy,
+  prepared work and signed thinking. Autonomous actions retain their timing
+  gates. No extra summarizer request, automatic full compaction or general
+  pressure bypass is added.
+
+### Fixed
+
+- **Model-aware cache lifetime.** Economic cleanup, the host cache ledger and
+  replay estimates now share Pi's model cache-lifetime metadata instead of
+  assuming five minutes for every provider. A 30-minute cache is not cold at
+  minute six. Unknown/invalid lifetimes cannot authorize a cold trim; pressure
+  and manual cleanup remain available. With no recorded retention choice the
+  longest advertised tier is used, and shorter tail writes do not retire an
+  observed 1h prefix. Model switches do not reuse the previous route's clock.
+  Ledger expiry/cause labels are explicitly estimates. Replay assumes no cache
+  reuse when lifetime metadata is unknown, without changing measured baseline
+  usage. Automatic cleanup thresholds and provider routes are unchanged.
+- **Research checkpoint/rewind semantics.** A bounded read-only investigation
+  can return to its checkpoint with one findings report even below pressure,
+  with unknown usage, or after pressure clears before commit. Automatic
+  cleanup and autonomous agent trim/anchor retain their pressure gates. Active checkpoints
+  cannot be silently replaced. Guidance distinguishes research return from
+  cleanup and points an active investigation at rewind rather than a new anchor.
+  Transient owned pressure hints inside the detour leave active context too;
+  checkpoint-prefix and unrelated extension messages are preserved.
+  Known read-only graph, diagnostic and web tools participate in recoverable
+  cleanup; source snippet first deliveries and explicit instruction reads stay
+  protected. Branch, permission, preparation, side-effect and signed-thinking
+  safeguards remain in force; no extra summarizer request or per-turn notice.
+
 ## [10.2.1] - 2026-10-05
 
 ### Release approval

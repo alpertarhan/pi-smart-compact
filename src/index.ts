@@ -324,7 +324,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  navigation = registerNavigation(pi, {
   config: automaticConfig,
   mutationBlocked: ctx => isRunning.isSessionActive(resolveSessionId(ctx)) ? "Compaction is running; wait for it to finish." : undefined,
-  onAnchor: (ctx, originId, callId, signal) => smartContext.requestAnchorTrim(ctx, originId, callId, signal).notice,
+  onAnchor: (ctx, originId, callId, signal, userConfirmed) => smartContext.requestAnchorTrim(ctx, originId, callId, signal, userConfirmed).notice,
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
@@ -677,11 +677,13 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   if (event.message.role !== "assistant") return;
   const sessionId = resolveSessionId(ctx);
   if (hostCache.sessionId() !== sessionId) hostCache.reset(sessionId);
-  if (!hostCache.observe(event.message)?.warn) return;
+  const promptCache = ctx.model && ctx.model.provider === event.message.provider && ctx.model.id === event.message.model
+   ? ctx.model.promptCache : undefined;
+  if (!hostCache.observe(event.message, undefined, promptCache)?.warn) return;
   const { foreign } = hostCache.summary().rebuilds;
   recordIssue({
    key: "cache.foreign-rebuilds",
-   message: "Pi's prompt cache was rebuilt " + foreign.count + " times this session with no Continuity edit before them (" + foreign.uncached.toLocaleString("en-US") + " uncached prompt tokens re-sent). Other extensions, model or tool changes, or Pi's built-in compaction change the prefix too; Home › Readiness & details lists rebuild causes.",
+   message: "Pi reported " + foreign.count + " large uncached prompts this session with no Continuity edit before them (" + foreign.uncached.toLocaleString("en-US") + " uncached prompt tokens). Their cause is unknown; model/tool changes and Pi's built-in compaction can also change the prefix. Home › Readiness & details lists rebuild estimates.",
   });
  });
 

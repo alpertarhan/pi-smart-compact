@@ -70,7 +70,7 @@ function storedFile(artifact: { owner: string; hash: string }) { return path.joi
 const responseJson = (response: any) => JSON.parse(response.content[0].text.split("\n").slice(1).join("\n"));
 
 describe("automatic tool artifacts", () => {
-  it.each(["read", "functions.read", "read_symbol", "read_enclosing"])("keeps %s delivery intact for read-before-edit guards", async toolName => {
+  it.each(["read", "functions.read", "read_symbol", "read_enclosing", "get_code_snippet", "functions.get_code_snippet"])("keeps %s delivery intact for read-before-edit guards", async toolName => {
     const h = harness();
     const captured = await h.capture(payload(), { toolName, details: { truncation: { truncated: false, outputLines: 1203 } } });
     expect(captured.result).toBeUndefined();

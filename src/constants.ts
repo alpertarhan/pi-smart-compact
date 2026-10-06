@@ -10,7 +10,7 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "10.2.1";
+export const VERSION = "10.3.0";
 /**
  * Opt-in components that are not installed with the extension: optional peer
  * dependencies in package.json, pinned to the versions the release audit
