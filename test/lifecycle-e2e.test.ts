@@ -693,6 +693,12 @@ describe("extension lifecycle end to end", () => {
     ).toHaveLength(1);
     if (strategy === "background") {
       const applied = readMetricsLog().find(entry => entry.runId === appliedRunIds[0] && entry.status === "success")!;
+      // Discard accounting is asynchronous; host apply need not wait for its write.
+      if (change === "stale-tail") {
+        for (let waited = 0; !readMetricsLog().some(entry => entry.status === "discarded") && waited < 1_000; waited += 10) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      }
       const discarded = readMetricsLog().filter(entry => entry.status === "discarded");
       if (change === "stale-tail") {
         expect(applied.preparation).toBeUndefined();
