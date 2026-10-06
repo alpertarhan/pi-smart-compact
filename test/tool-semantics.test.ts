@@ -92,6 +92,26 @@ describe("extractToolPath", () => {
 });
 
 describe("isArchivableToolResult", () => {
+  it.each([
+    "fetch_content", "lens_diagnostics", "effective_config", "ast_grep_search",
+    "search_graph", "trace_path", "get_code_snippet", "get_file_outline", "query_graph", "get_architecture",
+    "search_code", "get_graph_schema", "index_status", "check_index_coverage", "detect_changes", "compare_graphs", "list_projects",
+  ])("recognizes known read-only research tool %s without merging namespaces", name => {
+    expect(isReadOnlyResearchTool(name, {})).toBe(true);
+    expect(isReadOnlyResearchTool("functions." + name, {})).toBe(true);
+    expect(isArchivableToolResult(name, {})).toBe(true);
+    expect(isReadOnlyResearchTool("untrusted_server__" + name, {})).toBe(false);
+  });
+
+  it("keeps mutating tools, unknown operations and graph reads of instruction sources", () => {
+    for (const name of ["index_repository", "delete_project", "ingest_traces", "manage_adr", "ast_grep_replace", "process", "ask_user", "smart_save_memory"]) {
+      expect(isReadOnlyResearchTool(name, {})).toBe(false);
+    }
+    expect(isReadOnlyResearchTool("get_code_snippet", { qualified_name: "repo.AGENTS.Rules" })).toBe(false);
+    expect(isReadOnlyResearchTool("get_code_snippet", { qualified_name: "repo.assets.skills.workflow.SKILL" })).toBe(false);
+    expect(isReadOnlyResearchTool("get_file_outline", { file_path: "AGENTS.md" })).toBe(false);
+  });
+
   it("admits shell output and smart_context reads without widening read-only research", () => {
     expect(isArchivableToolResult("functions.bash", { command: "bun test" })).toBe(true);
     expect(isReadOnlyResearchTool("bash", { command: "bun test" })).toBe(false);

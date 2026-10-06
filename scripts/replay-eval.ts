@@ -85,7 +85,7 @@ try {
     const key = `${provider}/${id}`;
     if (!models.has(key)) {
       const model = runtime.getModel(provider, id);
-      models.set(key, model && { cost: model.cost, contextWindow: model.contextWindow });
+      models.set(key, model && { cost: model.cost, contextWindow: model.contextWindow, promptCache: model.promptCache });
     }
     return models.get(key);
   };

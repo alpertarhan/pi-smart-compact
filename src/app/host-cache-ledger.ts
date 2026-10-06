@@ -1,7 +1,7 @@
 /** Session-local ledger of the host's own provider prompt-cache usage, built only from reported usage. */
 
-import type { Usage } from "@earendil-works/pi-ai";
-import { FIVE_MINUTES_MS, ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../constants.ts";
+import type { ModelPromptCache, Usage } from "@earendil-works/pi-ai";
+import { ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../constants.ts";
 
 export type ContextEditKind = "trim" | "rewind" | "navigation" | "compaction";
 export type RebuildCause = "continuity" | "idle-expiry" | "foreign";
@@ -59,7 +59,7 @@ export interface HostCacheLedger {
   /** Pi sent a `cache_warm` refresh at `at`; it keeps the live prefix alive like a request. */
   noteCacheWarm(at: number): void;
   /** Assistant message at message_end; null when it carries no usable usage. */
-  observe(message: ObservedMessage, at?: number): LedgerEntry | null;
+  observe(message: ObservedMessage, at?: number, promptCache?: ModelPromptCache): LedgerEntry | null;
   summary(): LedgerSummary;
 }
 
@@ -67,9 +67,16 @@ const num = (value: unknown): number => typeof value === "number" && Number.isFi
 const tallies = <K extends string>(keys: readonly K[]) =>
   Object.fromEntries(keys.map(key => [key, { count: 0, uncached: 0 }])) as Record<K, TokenTally>;
 
-/** Lifetime of the prefix a request cached: 1 h when it reported 1h-retention writes, else 5 min. */
-export const cacheLifetimeMs = (usage: Partial<Usage> | undefined): number =>
-  num(usage?.cacheWrite1h) > 0 ? ONE_HOUR_MS : FIVE_MINUTES_MS;
+/**
+ * Best-effort lifetime from Pi's model metadata (seconds). The request's chosen
+ * retention is not recorded, so use the longest advertised tier. A reported
+ * 1h write can lengthen this estimate, never shorten it. Unknown is not expired.
+ */
+export function cacheLifetimeMs(usage: Partial<Usage> | undefined, promptCache?: ModelPromptCache): number | null {
+  const tiers = [promptCache?.short, promptCache?.long].filter(value => value !== undefined);
+  if (!tiers.length || tiers.some(value => !Number.isFinite(value) || value <= 0 || !Number.isFinite(value * 1000))) return null;
+  return Math.max(...tiers.map(value => value * 1000), num(usage?.cacheWrite1h) > 0 ? ONE_HOUR_MS : 0);
+}
 
 export function createHostCacheLedger(): HostCacheLedger {
   let sessionId: string | null = null;
@@ -77,15 +84,18 @@ export function createHostCacheLedger(): HostCacheLedger {
   let previousAt: number | undefined;
   // Latest cache_warm refresh since the previous request; extends the prefix's lifetime.
   let warmedAt: number | undefined;
-  // Lifetime of the live cached prefix: set by the last request that wrote cache.
-  let lifetimeMs = FIVE_MINUTES_MS;
+  // Keep the longest known lifetime on a route; a short tail write must not
+  // retire a longer-lived prefix. Unknown metadata and route changes reset it.
+  let lifetimeMs: number | null = null;
+  let previousRoute: string | undefined;
   let pendingEdit: ContextEditKind | undefined;
 
   const reset = (id: string | null) => {
     sessionId = id;
     previousAt = undefined;
     warmedAt = undefined;
-    lifetimeMs = FIVE_MINUTES_MS;
+    lifetimeMs = null;
+    previousRoute = undefined;
     pendingEdit = undefined;
     summary = {
       sessionId: id, requests: 0, input: 0, cacheRead: 0, cacheWrite: 0,
@@ -101,7 +111,7 @@ export function createHostCacheLedger(): HostCacheLedger {
     sessionId: () => sessionId,
     noteContextEdit(kind) { pendingEdit = kind; },
     noteCacheWarm(at) { warmedAt = Math.max(warmedAt ?? at, at); },
-    observe(message, at) {
+    observe(message, at, promptCache) {
       const usage = message.usage;
       if (!usage || typeof usage.input !== "number" || !Number.isFinite(usage.input)) return null;
       const input = num(usage.input);
@@ -116,12 +126,16 @@ export function createHostCacheLedger(): HostCacheLedger {
         at: time, provider: message.provider, model: message.model,
         prompt, uncached, cacheRead, rebuild: false,
       };
-      if (previousAt !== undefined) {
+      const route = JSON.stringify([message.provider, message.model]);
+      const sameRoute = route === previousRoute;
+      const currentLifetime = cacheLifetimeMs(usage, promptCache);
+      if (previousAt !== undefined && sameRoute) {
         entry.gapMs = Math.max(0, time - previousAt);
         if (uncached >= Math.max(REBUILD_MIN_TOKENS, 0.5 * prompt)) {
           entry.rebuild = true;
           const alive = Math.max(previousAt, warmedAt ?? previousAt);
-          entry.cause = pendingEdit ? "continuity" : time - alive > lifetimeMs ? "idle-expiry" : "foreign";
+          entry.cause = pendingEdit ? "continuity"
+            : lifetimeMs !== null && currentLifetime !== null && time - alive > Math.max(lifetimeMs, currentLifetime) ? "idle-expiry" : "foreign";
           const cause = summary.rebuilds[entry.cause];
           cause.count++;
           cause.uncached += uncached;
@@ -143,7 +157,9 @@ export function createHostCacheLedger(): HostCacheLedger {
         summary.cost.total += cost.total;
         if (entry.rebuild) summary.cost.rebuildUncached += num(cost.input) + num(cost.cacheWrite);
       }
-      if (cacheWrite > 0) lifetimeMs = cacheLifetimeMs(usage);
+      lifetimeMs = sameRoute && lifetimeMs !== null && currentLifetime !== null
+        ? Math.max(lifetimeMs, currentLifetime) : currentLifetime;
+      previousRoute = route;
       previousAt = time;
       warmedAt = undefined;
       pendingEdit = undefined;
@@ -163,7 +179,7 @@ export function formatCacheLedgerSummary(summary: LedgerSummary): string[] {
   const readPercent = prompt ? Math.round(summary.cacheRead / prompt * 100) : 0;
   const { continuity, "idle-expiry": idle, foreign } = summary.rebuilds;
   const total = continuity.count + idle.count + foreign.count;
-  const lines = [`Host prompt cache: ${summary.requests} requests · ${readPercent}% of prompt tokens read from cache · ${total} rebuilds`];
+  const lines = [`Host prompt cache: ${summary.requests} requests · ${readPercent}% of prompt tokens read from cache · ${total} estimated rebuilds`];
   if (!total) return lines;
   const parts: string[] = [];
   if (continuity.count) {
@@ -171,9 +187,9 @@ export function formatCacheLedgerSummary(summary: LedgerSummary): string[] {
       .filter(([, tally]) => tally.count).map(([kind, tally]) => `${kind} ${tally.count}`).join(", ");
     parts.push(`${continuity.count} after Continuity edits (${kinds}): ${tokens(continuity.uncached)} uncached`);
   }
-  if (idle.count) parts.push(`${idle.count} idle-expiry: ${tokens(idle.uncached)} uncached`);
-  if (foreign.count) parts.push(`${foreign.count} without a Continuity edit: ${tokens(foreign.uncached)} uncached`);
-  lines.push("Rebuilds: " + parts.join(" · "));
+  if (idle.count) parts.push(`${idle.count} possible idle-expiry: ${tokens(idle.uncached)} uncached`);
+  if (foreign.count) parts.push(`${foreign.count} without a Continuity edit (cause unknown): ${tokens(foreign.uncached)} uncached`);
+  lines.push("Rebuild estimates: " + parts.join(" · "));
   if (summary.cost.total > 0) lines.push(`Cost (Pi model pricing): \$${summary.cost.total.toFixed(4)} total · \$${summary.cost.rebuildUncached.toFixed(4)} uncached input+cache writes on rebuilds`);
   return lines;
 }

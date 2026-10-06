@@ -1,22 +1,67 @@
 import { describe, expect, it } from "bun:test";
 import { FIVE_MINUTES_MS, ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../src/constants.ts";
-import { createHostCacheLedger, formatCacheLedgerSummary } from "../src/app/host-cache-ledger.ts";
+import type { ModelPromptCache } from "@earendil-works/pi-ai";
+import { cacheLifetimeMs, createHostCacheLedger, formatCacheLedgerSummary } from "../src/app/host-cache-ledger.ts";
 
 const MINUTE = 60_000;
 function usage(input: number, cacheRead: number, cacheWrite = 0, extra: Record<string, unknown> = {}) {
   return { input, output: 100, cacheRead, cacheWrite, totalTokens: input + cacheRead + cacheWrite + 100, ...extra };
 }
+/** Explicit model metadata and a stable route, as supplied by the extension hook. */
+function ledgerWithMetadata(promptCache: ModelPromptCache = { short: 300, long: 300 }) {
+  const ledger = createHostCacheLedger();
+  return { ...ledger, observe: (message: Parameters<typeof ledger.observe>[0], at?: number) =>
+    ledger.observe({ provider: "anthropic", model: "fixture", ...message }, at, promptCache) };
+}
+
 /** Session with a warm first request at t=0. */
 function warm() {
-  const ledger = createHostCacheLedger();
+  const ledger = ledgerWithMetadata();
   ledger.reset("s1");
   ledger.observe({ usage: usage(1_000, 0, 100_000), provider: "anthropic" }, 0);
   return ledger;
 }
 
+describe("model cache lifetime", () => {
+  it("uses model metadata in seconds, not a provider-name or five-minute fallback", () => {
+    expect(cacheLifetimeMs(undefined, { short: 1_800, long: 1_800 })).toBe(30 * MINUTE);
+    expect(cacheLifetimeMs(undefined, { short: 300, long: 86_400 })).toBe(24 * ONE_HOUR_MS);
+    expect(cacheLifetimeMs({ cacheWrite1h: 1 }, { short: 300 })).toBe(ONE_HOUR_MS);
+    expect(cacheLifetimeMs(undefined)).toBeNull();
+    expect(cacheLifetimeMs({ cacheWrite1h: 1 })).toBeNull();
+    expect(cacheLifetimeMs(undefined, {})).toBeNull();
+  });
+
+  it.each([0, -1, NaN, Infinity, Number.MAX_VALUE])("fails closed on invalid lifetime %s", invalid => {
+    expect(cacheLifetimeMs(undefined, { short: 300, long: invalid })).toBeNull();
+  });
+});
+
 describe("host prompt-cache ledger", () => {
+  it("does not call a six-minute miss expiry on a thirty-minute model", () => {
+    const ledger = ledgerWithMetadata({ short: 1_800, long: 1_800 });
+    ledger.observe({ usage: usage(0, 0, 90_000) }, 0);
+    expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 6 * MINUTE)?.cause).toBe("foreign");
+    expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 37 * MINUTE)?.cause).toBe("idle-expiry");
+    expect(formatCacheLedgerSummary(ledger.summary()).join("\n")).toContain("possible idle-expiry");
+  });
+
+  it("keeps causes unknown without lifetime metadata even after a long gap", () => {
+    const ledger = ledgerWithMetadata({});
+    ledger.observe({ usage: usage(0, 0, 90_000) }, 0);
+    expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 48 * ONE_HOUR_MS)?.cause).toBe("foreign");
+    expect(formatCacheLedgerSummary(ledger.summary()).join("\n")).toContain("cause unknown");
+  });
+
+  it("starts a new route baseline without borrowing the old route's clock or TTL", () => {
+    const ledger = ledgerWithMetadata();
+    ledger.observe({ provider: "anthropic", usage: usage(0, 0, 90_000) }, 0);
+    ledger.noteContextEdit("trim");
+    expect(ledger.observe({ provider: "openai", usage: usage(0, 0, 90_000) }, 6 * MINUTE)?.rebuild).toBe(false);
+    expect(ledger.summary().rebuilds.continuity.count).toBe(0);
+  });
   it("never classifies the session's first request as a rebuild", () => {
-    const ledger = createHostCacheLedger();
+    const ledger = ledgerWithMetadata();
     ledger.reset("s1");
     expect(ledger.observe({ usage: usage(0, 0, 200_000) }, 0)).toMatchObject({ rebuild: false, uncached: 200_000, prompt: 200_000 });
   });
@@ -45,16 +90,16 @@ describe("host prompt-cache ledger", () => {
     expect(ledger.observe({ usage: usage(0, 0, 90_000) }, at + FIVE_MINUTES_MS + 2 * MINUTE)?.cause).toBe("foreign");
   });
 
-  it("uses a 1h TTL while the live prefix was written with 1h retention", () => {
-    const ledger = createHostCacheLedger();
+  it("does not shorten an observed 1h prefix when a short tail is written", () => {
+    const ledger = ledgerWithMetadata();
     ledger.reset("s1");
     ledger.observe({ usage: usage(100, 0, 80_000, { cacheWrite1h: 80_000 }) }, 0);
     // A pure cache read keeps the 1h retention of the prefix it read.
     ledger.observe({ usage: usage(100, 80_000) }, MINUTE);
     expect(ledger.observe({ usage: usage(0, 0, 80_000, { cacheWrite1h: 80_000 }) }, MINUTE + 30 * MINUTE)?.cause).toBe("foreign");
     expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 31 * MINUTE + ONE_HOUR_MS + 1)?.cause).toBe("idle-expiry");
-    // That write reported no 1h split: back to 5 minutes.
-    expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 31 * MINUTE + ONE_HOUR_MS + 1 + 6 * MINUTE)?.cause).toBe("idle-expiry");
+    // A later write without a 1h split cannot prove that the entire prefix is short-lived.
+    expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 31 * MINUTE + ONE_HOUR_MS + 1 + 6 * MINUTE)?.cause).toBe("foreign");
   });
 
   it("counts a cache_warm refresh as the previous keep-alive for one cache lifetime", () => {
@@ -96,8 +141,8 @@ describe("host prompt-cache ledger", () => {
     expect(summary.cost.total).toBeCloseTo(0.332, 10);
     expect(summary.cost.rebuildUncached).toBeCloseTo(0.3, 10);
     expect(formatCacheLedgerSummary(summary)).toEqual([
-      "Host prompt cache: 4 requests · 16% of prompt tokens read from cache · 2 rebuilds",
-      "Rebuilds: 1 after Continuity edits (compaction 1): 32k uncached · 1 idle-expiry: 40k uncached",
+      "Host prompt cache: 4 requests · 16% of prompt tokens read from cache · 2 estimated rebuilds",
+      "Rebuild estimates: 1 after Continuity edits (compaction 1): 32k uncached · 1 possible idle-expiry: 40k uncached",
       "Cost (Pi model pricing): $0.3320 total · $0.3000 uncached input+cache writes on rebuilds",
     ]);
   });

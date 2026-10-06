@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
-import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD, FIVE_MINUTES_MS } from "../constants.ts";
+import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { contextPressure } from "./background-preparation.ts";
@@ -31,6 +31,7 @@ import {
 
 const TOOL_NAME = "smart_context";
 const MAX_REPORT_CHARS = 8_000;
+const ACTIVE_CHECKPOINT_ERROR = "A checkpoint is already active. Finish it with rewind(report) before starting another.";
 /** Queued context change; `manual` marks a user/command request, not a tool call. */
 interface QueuedChange {
   action: "checkpoint" | "rewind" | "trim";
@@ -41,6 +42,8 @@ interface QueuedChange {
   text: string;
   signal?: AbortSignal;
   manual?: boolean;
+  /** One host-confirmed anchor; bypass timing only, never tool/batch/safety checks. */
+  userConfirmed?: boolean;
   /** Previous anchor: seal only the new region before the new anchor's first replay. */
   anchorBoundary?: string | null;
 }
@@ -81,21 +84,22 @@ interface TrimMark extends DeferredTrim {
   targets: { targetId: string; toolCallId: string; toolName: string; replacement: string }[];
 }
 
-/**
- * The live cached prefix: dated by the last response (an aborted or fully
- * cached one still refreshes it), with the lifetime of the last response that
- * wrote cache, as the host cache ledger keeps it. Null before any response.
- */
-function cachedPrefix(branch: SessionEntry[]): { since: number; lifetimeMs: number } | null {
+/** Best-effort cache horizon for this route and context epoch; unknown never permits a cold trim. */
+function cachedPrefix(branch: SessionEntry[], model: ExtensionContext["model"]): { since: number; lifetimeMs: number } | null {
+  let lifetimeMs = cacheLifetimeMs(undefined, model?.promptCache);
+  if (!model || lifetimeMs === null) return null;
   let since: number | undefined;
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index]!;
+    if (entry.type === "compaction" || entry.type === "context_edit" || entry.type === "branch_summary") break;
     if (entry.type !== "message" || entry.message.role !== "assistant") continue;
     const message = entry.message as AssistantMessage;
+    if (message.provider !== model.provider || message.model !== model.id) break;
     since ??= message.timestamp;
-    if ((message.usage?.cacheWrite ?? 0) > 0) return { since, lifetimeMs: cacheLifetimeMs(message.usage) };
+    // A later short-lived tail write must not shorten an older 1h prefix.
+    lifetimeMs = Math.max(lifetimeMs, cacheLifetimeMs(message.usage, model.promptCache) ?? lifetimeMs);
   }
-  return since === undefined ? null : { since, lifetimeMs: FIVE_MINUTES_MS };
+  return since === undefined || !Number.isFinite(since) ? null : { since, lifetimeMs };
 }
 
 /** True when `leafId` is still on the branch with no newer context rewrite after it. */
@@ -108,7 +112,7 @@ export function unchangedSince(branch: SessionEntry[], leafId: string): boolean 
 export type SmartContextController = {
   /** Queue a user-requested trim; it applies at the next natural turn boundary. */
   requestManualTrim(ctx: ExtensionContext): ManualTrimRequest;
-  requestAnchorTrim(ctx: ExtensionContext, originId: string, callId?: string, signal?: AbortSignal): ManualTrimRequest;
+  requestAnchorTrim(ctx: ExtensionContext, originId: string, callId?: string, signal?: AbortSignal, userConfirmed?: boolean): ManualTrimRequest;
   /** Automatic trim waiting for a cold prompt cache in this session, if any. */
   deferredTrim(sessionId: string): DeferredTrim | null;
 };
@@ -165,11 +169,11 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   pi.registerTool({
     name: TOOL_NAME,
     label: "Session Context",
-    description: "Check status for context pressure/gates. Before a large read-only detour, checkpoint; when finished, rewind(report) keeps findings and drops safe research under pressure. plan/trim old output; search/read archived evidence (scope=lineage includes parents). Changes apply after the batch, never roll back files/processes.",
+    description: "For bounded read-only research: checkpoint before exploring, then rewind(report) before implementation or your final answer. Rewind replaces safe exploration with your findings; no pressure required, one active checkpoint. status shows gates; plan/trim follow cleanup policy; search/read recover archived evidence (scope=lineage includes parents). Changes apply after the batch; safety guards remain, files/processes are never rolled back.",
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
-      report: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_REPORT_CHARS, description: "Rewind: findings, decisions, failures, next step." })),
+      report: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_REPORT_CHARS, description: "Rewind handoff: findings and evidence paths, constraints/decisions, failed attempts, next step." })),
       id: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Source ID." })),
       query: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Literal text." })),
       line: Type.Optional(Type.Integer({ minimum: 1, description: "Read from line." })),
@@ -271,7 +275,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (options.canAgentMutate?.(ctx) === false) {
         throw new Error("Agent-requested context changes are disabled by policy; status, plan, search and read stay available.");
       }
-      if (params.action !== "checkpoint" && config().contextPressureOnly && !contextPressure(ctx, config()).cleanup) {
+      if (params.action === "trim" && config().contextPressureOnly && !contextPressure(ctx, config()).cleanup) {
         throw new Error("No context pressure (or usage is unavailable); history left unchanged. Check status. Human commands can request early cleanup.");
       }
       if (params.action !== "checkpoint" && options.canAutoTrim?.(ctx) === false) {
@@ -279,6 +283,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       }
       if (options.isPaused?.(ctx)) throw new Error("Context changes are paused while a navigation pivot is pending.");
       if (queued) throw new Error("A context change is already queued; wait for the next turn boundary.");
+      if (params.action === "checkpoint" && state.checkpoint) throw new Error(ACTIVE_CHECKPOINT_ERROR);
       if (params.action === "rewind" && !state.checkpoint) throw new Error(state.invalidReason ?? "No active checkpoint.");
       const report = params.report?.trim() ?? "";
       if (params.action === "rewind" && (!report || report.length > MAX_REPORT_CHARS)) {
@@ -294,7 +299,11 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         checkpointId: params.action === "checkpoint" ? randomUUID() : state.checkpoint?.id ?? "",
         text: params.action === "rewind" ? text : text.slice(0, 120), signal,
       };
-      return reply(`${params.action} queued for the completed tool batch. ${params.action === "rewind" ? "Stop research here; files and processes stay unchanged." : "Use status to inspect the committed state."}`, {
+      const next = params.action === "checkpoint"
+        ? "Explore read-only, then call rewind(report) with findings, evidence, constraints and the next step before implementation or your final answer. Do not nest checkpoints. No pressure required."
+        : params.action === "rewind" ? "Stop research here. After the batch, continue the original task from the retained report. Files and processes are not reverted."
+        : "Use status to inspect the committed state.";
+      return reply(`${params.action} queued for the completed tool batch. ${next}`, {
         display: { state: "queued", action: params.action, label: text.slice(0, 120) },
       });
     },
@@ -359,7 +368,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         || !unchangedSince(branch, mark.leafId)
         || lastAnchorBoundary(branch) !== lastAnchorBoundary(branch.slice(0, branch.findIndex(entry => entry.id === mark!.leafId) + 1))
         || thinkingEditReason(branch, mark.entries, ctx.model?.api)) { mark = null; return; }
-      const prefix = cachedPrefix(branch);
+      const prefix = cachedPrefix(branch, ctx.model);
       const since = Math.max(prefix?.since ?? 0, warm?.sessionId === sessionId ? warm.at : 0);
       if (!prefix || now() - since <= prefix.lifetimeMs) return;
       current = applied = mark;
@@ -387,7 +396,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
    * savings `r·X` are ignored (conservative: fewer vetoes).
    */
   const vetoWarming = (event: CacheWarmingDecisionEvent, ctx: ExtensionContext, sessionId: string): boolean => {
-    if (config().contextPressureOnly || mark?.sessionId !== sessionId || !unchangedSince(ctx.sessionManager.getBranch(), mark.leafId)
+    if (config().contextPressureOnly || mark?.sessionId !== sessionId || !cachedPrefix(ctx.sessionManager.getBranch(), ctx.model)
+      || !unchangedSince(ctx.sessionManager.getBranch(), mark.leafId)
       || thinkingEditReason(ctx.sessionManager.getBranch(), mark.entries, ctx.model?.api)) return false;
     const cost = ctx.model?.cost;
     const price = cost ? (cost.cacheWrite > 0 ? cost.cacheWrite : cost.input) : NaN;
@@ -418,7 +428,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     }
     const settings = config();
     const pressure = contextPressure(ctx, settings).cleanup;
-    if (request && !request.manual && request.action !== "checkpoint" && settings.contextPressureOnly && !pressure) {
+    if (request && !request.manual && !request.userConfirmed && request.action === "trim" && settings.contextPressureOnly && !pressure) {
       return cancelled(event, "Context pressure cleared; history left unchanged.");
     }
     if (!request) {
@@ -456,6 +466,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     let entries: SessionBoundaryDraft[];
     try {
       if (request?.action === "checkpoint") {
+        if (state.checkpoint) throw new Error(ACTIVE_CHECKPOINT_ERROR);
         entries = [contextControlEntry({
           version: 1, action: "checkpoint", checkpoint: {
             id: request.checkpointId, label: request.text, sessionId, originId: branch.at(-1)!.id,
@@ -473,7 +484,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api });
         if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
-          entries = trimEntries(plan, request.manual ? "manual" : "agent");
+          entries = trimEntries(plan, request.manual || request.userConfirmed ? "manual" : "agent");
         } else {
           mark = null;
           if (plan.automatic !== "ready") return;
@@ -507,7 +518,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     }
     return { entries: [...event.entries, ...entries] };
   });
-  const requestTrim = (ctx: ExtensionContext, anchor?: { originId: string; callId?: string; signal?: AbortSignal }): ManualTrimRequest => {
+  const requestTrim = (ctx: ExtensionContext, anchor?: { originId: string; callId?: string; signal?: AbortSignal; userConfirmed?: boolean }): ManualTrimRequest => {
+      const userConfirmed = anchor?.userConfirmed === true;
       const sessionId = resolveSessionId(ctx);
       if (isUnresolvedSessionId(sessionId)) {
         return { state: "unavailable", notice: "Context control needs an identifiable session." };
@@ -521,7 +533,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (anchor && options.canAutoTrim?.(ctx) === false) {
         return { state: "busy", notice: "Cleanup deferred: prepared/running compaction or unavailable recovery tools take priority." };
       }
-      if (anchor?.callId && (options.canAgentMutate?.(ctx) === false || (config().contextPressureOnly && !contextPressure(ctx, config()).cleanup))) {
+      if (anchor?.callId && (options.canAgentMutate?.(ctx) === false || (!userConfirmed && config().contextPressureOnly && !contextPressure(ctx, config()).cleanup))) {
         return { state: "unavailable", notice: "Cleanup not requested: no context pressure or agent changes are disabled." };
       }
       const branch = ctx.sessionManager.getBranch();
@@ -529,24 +541,24 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (anchor && origin < 0) return { state: "unavailable", notice: "Anchor origin is no longer on this branch." };
       const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
       const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api });
-      if (!plan.entries.length || (anchor?.callId && plan.automatic !== "ready")) {
+      if (!plan.entries.length || (anchor?.callId && !userConfirmed && plan.automatic !== "ready")) {
         return { state: "no-eligible", notice: plan.blockedReason ?? (anchor ? "No safe cleanup batch ready; recent turns and protected prefixes stay unchanged." : "No eligible archived output to trim.") };
       }
       mark = null;
       queued = {
         action: "trim", callId: anchor?.callId ?? "", sessionId, originId: anchor?.originId ?? branch.at(-1)?.id ?? "",
-        checkpointId: "", text: "", manual: !anchor?.callId, anchorBoundary, signal: anchor?.signal,
+        checkpointId: "", text: "", manual: !anchor?.callId, userConfirmed, anchorBoundary, signal: anchor?.signal,
       };
       return {
         state: "queued",
         notice: anchor?.callId
-          ? "Anchor cleanup queued for the completed tool batch; prior anchor prefixes and recent turns stay protected. Use status to confirm the committed state."
+          ? `${userConfirmed ? "User-confirmed anchor" : "Anchor"} cleanup queued for the completed tool batch; prior anchor prefixes and recent turns stay protected. Use status to confirm the committed state.`
           : "Manual trim queued. The first next provider request is not yet trimmed; the change applies at the next completed turn boundary. A pending navigation pivot or newer boundary change cancels it.",
       };
   };
   return {
     requestManualTrim: ctx => requestTrim(ctx),
-    requestAnchorTrim: (ctx, originId, callId, signal) => requestTrim(ctx, { originId, callId, signal }),
+    requestAnchorTrim: (ctx, originId, callId, signal, userConfirmed) => requestTrim(ctx, { originId, callId, signal, userConfirmed }),
     deferredTrim: deferred,
   };
 }

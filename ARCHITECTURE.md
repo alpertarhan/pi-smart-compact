@@ -250,13 +250,17 @@ reloads and forks. At a completed, uncontested turn boundary a ready batch
 commits with cause `pressure` (early pressure gate reached) or `break-even`
 (catalog prices say it pays back within `AUTO_TRIM_BREAK_EVEN_REQUESTS` = 24
 requests). Otherwise it is held (`deferredTrim` in `smart_context` status):
-once the prompt cache has expired, `context_with_system` sends the trimmed
-results request-locally, byte-identical to the future `context_edit`, and the
-edits commit with cause `cold` at the next completed turn. While a batch is
+beyond the model's estimated cache horizon, `context_with_system` sends the
+trimmed results request-locally, byte-identical to the future `context_edit`,
+and the edits commit with cause `cold` at the next completed turn. The shared
+`cacheLifetimeMs` uses Pi's longest advertised `promptCache` tier, extended by
+observed 1h writes; unknown metadata never permits a cold trim. Model changes
+and context epochs do not inherit the old route's clock. While a batch is
 held, `cache_warming_decision` may stop Pi's cache warming when a refresh no
 longer pays. Unknown prices allow only `pressure` and `cold`. The formula and
 drop conditions are in [configuration](./docs/configuration.md);
-`app/host-cache-ledger.ts` attributes observed prefix rebuilds. These are
+`app/host-cache-ledger.ts` uses the same horizon for estimated rebuild timing;
+its labels are temporal observations, not proof of causality. Costs are
 catalog-price estimates, not measured cache billing. Manual and agent trims
 commit at the next boundary with cause `manual` or `agent`; explicit trim
 bypasses batching, not safety.
@@ -286,11 +290,20 @@ context. A checkpoint captures session/origin IDs and a projected-prefix
 fingerprint. New user messages, an intervening compaction or branch summary, or
 a changed prefix invalidate it. The agent-written handoff is a bounded
 `custom_message`, not an authoritative user instruction or an EESV
-verification result.
+verification result. Checkpoint/rewind are explicit research round trips and
+are pressure-independent (including unknown usage); automatic cleanup and
+agent trim/anchor remain pressure-gated. A second active checkpoint is rejected
+at request and commit time. For a pure read-only detour the delivered context
+is the unchanged checkpoint prefix plus one report, without another model call.
 
 A conservative read-only tool allowlist plus shared nested-call normalization
 protects side effects. Rewind removes only whole successful, complete,
-text-only read exchanges and successful assistant prose after the checkpoint.
+text-only read exchanges (including supported graph, diagnostic and web tools)
+and successful assistant prose after the checkpoint. Owned pressure hints
+inside that suffix are omitted by native custom-entry type, never text matching;
+pre-checkpoint hints and unrelated extension messages stay. Namespace lookalikes and
+mutating graph operations are not admitted. First-delivery graph source snippets
+stay whole for read-before-edit guards, just like native file/symbol reads.
 Mixed batches, errors, commands, writes, unknown tools and image results stay
 raw. Context edits omit messages in the projection, not in session history. The
 mutation cap is 512; no partial rewind is applied when it is exceeded. Files
@@ -340,8 +353,17 @@ anchor footer and the Anthropic anchor cache marker (`app/anchor-cache.ts`).
 type `smart-context-anchor`, plus `smart_navigation` tool results) and legacy
 `context` tool anchors; recall scans other sessions' JSONL read-only.
 
-Agent anchors require the shared early pressure gate by default. An anchor
-requests one safe consolidation through `smart_context`'s existing queue;
+Autonomous agent anchors require the shared early pressure gate by default.
+An early user-requested anchor uses native `ctx.ui.confirm`: only a literal
+host `true` grants a call-local timing exception. The name/summary are scrubbed
+before approval, then session epoch, leaf, pending input, permissions and running
+work are rechecked. Headless, denied, cancelled or stale approval fails closed.
+No tool argument or persistent setting carries this grant. The trusted callback
+forwards `userConfirmed` to the existing queue, leaving `manual` false for a tool
+call so batch, permission, preparation, origin and signature checks still run.
+The single trim is recorded with cause `manual`; future requests inherit nothing.
+
+An anchor requests one safe consolidation through `smart_context`'s existing queue;
 only its new region can be trimmed before first replay. Previous anchor and
 checkpoint prefixes stay protected. Append-only anchors do not invalidate a
 prepared summary; ready/running compaction takes priority over agent cleanup.

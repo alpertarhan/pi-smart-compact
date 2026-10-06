@@ -15,10 +15,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
 import { contextPressure } from "./background-preparation.ts";
-import { inspectContext, planContextTrim } from "./context-operations.ts";
+import { ATTENTION_CUSTOM_TYPE, inspectContext, planContextTrim } from "./context-operations.ts";
 import { NAVIGATION_TOOL_NAME } from "./navigation-data.ts";
 
-export const ATTENTION_CUSTOM_TYPE = "smart-compact-attention";
+export { ATTENTION_CUSTOM_TYPE } from "./context-operations.ts";
 const CONTEXT_TOOL_NAME = "smart_context";
 const COMPACTION_TOOL_NAME = "smart_compact";
 const LOADER_TOOL_NAME = "smart_tools";
@@ -101,23 +101,35 @@ function renderAttention(
     active.has(tool) ? "" : reachable(group) && active.has(LOADER_TOOL_NAME) ? ` Load it first: ${LOADER_TOOL_NAME} load ${group}.` : null;
   const navigation = settings.contextNavigationEnabled ? load("navigation", NAVIGATION_TOOL_NAME) : null;
   const history = load("history", CONTEXT_TOOL_NAME);
-  if (navigation !== null) {
+  let checkpointLabel: string | undefined;
+  let trimmable = 0;
+  if (history !== null) {
+    try {
+      const branch = ctx.sessionManager.getBranch();
+      const checkpoint = inspectContext(branch, resolveSessionId(ctx)).checkpoint;
+      checkpointLabel = checkpoint?.label;
+      if (canCleanup && !checkpoint) {
+        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api });
+        if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
+      }
+    } catch {
+      // Advice must not turn an unavailable plan into permission to edit history.
+    }
+  }
+  if (navigation !== null && checkpointLabel === undefined) {
     lines.push(`- Finishing a unit of work? ${NAVIGATION_TOOL_NAME} anchor with a concise handoff (done / in progress / next step). An anchor alone does not reduce context; cleanup depends on safety and preparation gates.${navigation}`);
   }
   if (history !== null) {
-    let trimmable = 0;
-    if (canCleanup) {
-      try {
-        const branch = ctx.sessionManager.getBranch();
-        const plan = planContextTrim(branch, inspectContext(branch, resolveSessionId(ctx)).checkpoint?.originId, { readerApi: ctx.model?.api });
-        if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
-      } catch {
-        // Advice must not turn an unavailable plan into permission to edit history.
-      }
+    if (checkpointLabel !== undefined) {
+      const next = canCleanup
+        ? `Finish with ${CONTEXT_TOOL_NAME} rewind(report) before implementation or your final answer. No pressure required; safety checks still apply.`
+        : "Prepared/running compaction or unavailable recovery takes priority. Preserve findings and check status; do not replace the checkpoint or retry in a loop.";
+      lines.push(`- Research checkpoint ${JSON.stringify(checkpointLabel)} is active. ${next}${history}`);
+    } else {
+      if (trimmable > 0) lines.push(`- ${CONTEXT_TOOL_NAME} trim: ${trimmable} archived tool output${trimmable === 1 ? "" : "s"} eligible now.${history}`);
+      // Checkpoints are metadata; a safe plan today cannot promise a safe rewind later.
+      lines.push(`- Starting a large read-only detour? ${CONTEXT_TOOL_NAME} checkpoint first; rewind(report) afterward before implementation or your final answer. No pressure required; safety checks still apply. Keep findings and evidence in the report.${trimmable > 0 ? "" : history}`);
     }
-    if (trimmable > 0) lines.push(`- ${CONTEXT_TOOL_NAME} trim: ${trimmable} archived tool output${trimmable === 1 ? "" : "s"} eligible now.${history}`);
-    // Checkpoints are metadata; a safe plan today cannot promise a safe rewind later.
-    lines.push(`- Starting a large read-only detour? ${CONTEXT_TOOL_NAME} checkpoint first; rewind(report) afterward only when status permits. Keep findings and evidence in the report.${trimmable > 0 ? "" : history}`);
   }
   if (band === "compaction" && !settings.autoTrigger) {
     const compaction = load("compaction", COMPACTION_TOOL_NAME);

@@ -370,10 +370,16 @@ stay on disk and manual `/smart-compact trim` still works.
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
 | `contextHygieneEnabled` | `Automatic cleanup` | `true` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction. Works with `autoTrigger: false`. |
-| `contextPressureOnly` | `Cleanup timing` | `true` | Automatic cleanup and agent trim/rewind/anchor requests require the early pressure gate. `false` opts into the legacy economic/cold-cache timing below. Human commands bypass pressure, never safety checks. |
+| `contextPressureOnly` | `Cleanup timing` | `true` | Automatic cleanup and autonomous agent trim/anchor requests require the early pressure gate. Human commands and one host-confirmed anchor can bypass timing, never safety checks. Checkpoint/rewind research round trips are independent of pressure. `false` opts into the legacy early/economic timing below; no switch is needed for a user-confirmed anchor. |
 | `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
+
+User-guided early anchors use Pi's native confirmation, not a new setting or
+model-settable override. The confirmation is scoped to one anchor/cleanup;
+`contextHygieneEnabled: false` disables periodic cleanup, not explicit confirmed
+work. Tool/navigation permissions, prepared work and signed-thinking guards
+still apply. See [user-guided anchors](./guide.md#user-guided-early-anchors).
 
 ### Fixed hygiene limits
 
@@ -398,8 +404,10 @@ These limits are not configurable. Behavior and examples are in the guide's
 Default: only `pressure` can trigger automatic cleanup. The shared early gate is
 `prepareContextPercent`, or the adaptive lead when null. A 400k policy window
 with the default 80% apply gate cleans from 288k and compacts from 320k.
-Unknown usage does not authorize cleanup. First-delivery offload and metadata
-checkpoints do not rewrite cached history and remain independent of pressure.
+Unknown usage does not authorize automatic cleanup. First-delivery offload and
+metadata checkpoints do not rewrite cached history. Explicit research rewind
+is also independent of pressure: it returns to a valid checkpoint with a report,
+subject to the same branch, permission, preparation and safety checks.
 
 The following economics apply **only with `contextPressureOnly: false`**.
 Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
@@ -415,13 +423,17 @@ At a completed turn boundary a ready batch commits with cause:
 - `pressure` when usage reached the early pressure gate;
 - `break-even` when `N* ≤ 24`;
 - `cold` otherwise, after waiting. The batch is held (`smart_context`
-  `status` reports it as `deferredTrim`). The first request after the cache
-  expired (5 minutes after the last response, 1 hour when the last response
-  that wrote cache reported 1h retention) sends the trimmed messages, later
-  requests keep them, and the edits commit at the next completed, uncontested
-  turn.
+  `status` reports it as `deferredTrim`). The first request beyond the estimated
+  cache horizon sends the trimmed messages; later requests keep them, and the
+  edits commit at the next completed, uncontested turn. The horizon comes from
+  Pi's model `promptCache` metadata (seconds), not a universal five-minute TTL.
+  Since the chosen retention tier is not recorded, the longest advertised tier
+  is used; an observed 1h write can extend it. Short tail writes never shorten
+  an older 1h prefix. A different model or context epoch cannot supply the clock.
+  Missing/invalid lifetime metadata disables `cold` timing and its warming veto,
+  not manual cleanup or pressure-based cleanup.
 
-An unknown price only allows `pressure` and `cold`. Manual and permitted agent trims
+An unknown price only allows `pressure` and `cold` (the latter still needs lifetime metadata). Manual and permitted agent trims
 commit at the next boundary (causes `manual`, `agent`).
 
 A Pi cache-warming refresh counts as a response for this expiry. While a

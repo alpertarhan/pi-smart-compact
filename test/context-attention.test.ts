@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { ATTENTION_CUSTOM_TYPE, registerContextAttention, type ContextAttentionDeps } from "../src/app/context-attention.ts";
+import { CONTEXT_CONTROL_TYPE } from "../src/app/context-operations.ts";
+import { contextMessageEntries } from "../src/infra/ai-messages.ts";
+import { fingerprintContext } from "../src/app/pending-slot.ts";
 
 type Handler = (event: { type: string; message: unknown }, ctx: unknown) => unknown;
 type Sent = { message: { customType: string; content: string; details?: unknown }; options?: { deliverAs?: string } };
@@ -63,6 +66,28 @@ describe("context attention", () => {
     const h = harness();
     h.assistant(100_000);
     expect(h.sent).toHaveLength(0);
+  });
+
+  it("points an active research checkpoint at rewind, not a new checkpoint or anchor", () => {
+    const branch = research();
+    branch.push({ type: "custom", id: "cp", parentId: branch.at(-1)!.id, timestamp: new Date(1).toISOString(),
+      customType: CONTEXT_CONTROL_TYPE, data: { version: 1, action: "checkpoint", checkpoint: {
+        id: "cp", label: "Auth investigation", sessionId: "s1", originId: branch.at(-1)!.id,
+        snapshot: fingerprintContext(contextMessageEntries(branch)),
+      } } });
+    const h = harness({ branch });
+    h.assistant(100_000);
+    expect(h.sent).toHaveLength(0); // no new per-turn prompt churn below pressure
+    h.assistant(150_000);
+    const text = h.sent[0].message.content;
+    expect(text).toContain("Auth investigation");
+    expect(text).toContain("smart_context rewind(report)");
+    expect(text).not.toContain("smart_context checkpoint first");
+    expect(text).not.toContain("smart_navigation anchor");
+    expect(text).not.toContain("trim:");
+    const blocked = harness({ branch, canCleanup: false });
+    blocked.assistant(150_000);
+    expect(blocked.sent[0].message.content).toContain("takes priority");
   });
 
   it("notes the cleanup band once per session, steering mid-turn with the available tools", () => {
@@ -158,7 +183,7 @@ describe("context attention", () => {
     expect(h.sent[0].message.content).not.toContain("trim:");
     expect(h.sent[0].message.content).not.toMatch(/stays (warm|cached)|queued automatically/);
     expect(h.sent[0].message.content).toContain("checkpoint"); // metadata still allowed
-    expect(h.sent[0].message.content).toContain("when status permits");
+    expect(h.sent[0].message.content).toContain("safety checks still apply");
   });
 
   it("history guidance works with navigation disabled", () => {

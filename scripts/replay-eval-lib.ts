@@ -6,7 +6,7 @@
 import {
   parseSessionEntries, SessionManager, type FileEntry, type SessionBoundaryDraft, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, ModelCostRates } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ModelCostRates, ModelPromptCache } from "@earendil-works/pi-ai";
 import {
   CONTEXT_CONTROL_TYPE, inspectContext, planContextTrim, trimBreakEvenRequests, trimEntries, trimTokens, type TrimCause,
 } from "../src/app/context-operations.ts";
@@ -20,7 +20,7 @@ import { makeTokenEstimator, type TokenEstimator } from "../src/utils/tokens.ts"
 export const PRESSURE_RATIO = 0.8;
 const AUTOMATIC_CAUSES: readonly unknown[] = ["pressure", "break-even", "cold"];
 
-export interface ModelInfo { cost?: Partial<ModelCostRates>; contextWindow?: number }
+export interface ModelInfo { cost?: Partial<ModelCostRates>; contextWindow?: number; promptCache?: ModelPromptCache }
 export type Catalog = (provider: string, model: string) => ModelInfo | undefined;
 export type Policy = { name: string; kind: "none" | "pressure" } | { name: string; kind: "timed"; breakEven: number };
 type AutoCause = Extract<TrimCause, "pressure" | "break-even" | "cold">;
@@ -187,7 +187,7 @@ function replayPolicy(
   let mark = null as Mark | null;
   let applied = null as Mark | null;
   let boundary: AssistantMessage | undefined;
-  let previous: { message: AssistantMessage; keys: string[] } | undefined;
+  let previous: { message: AssistantMessage; keys: string[]; lifetimeMs: number | null } | undefined;
   // Latest `cache_warm` refresh since the previous request: it keeps that request's prefix cached.
   let warmedAt: number | undefined;
 
@@ -227,8 +227,12 @@ function replayPolicy(
     const message = requestOf(entry);
     if (message) {
       result.requests++;
-      const expired = previous !== undefined
-        && message.timestamp - Math.max(previous.message.timestamp, warmedAt ?? 0) > cacheLifetimeMs(previous.message.usage);
+      const info = catalog(message.provider, message.model);
+      const lifetimeMs = cacheLifetimeMs(message.usage, info?.promptCache);
+      const prior = previous && previous.message.provider === message.provider && previous.message.model === message.model ? previous : undefined;
+      if (!prior) mark = null;
+      const expired = prior && prior.lifetimeMs !== null && lifetimeMs !== null
+        && message.timestamp - Math.max(prior.message.timestamp, warmedAt ?? 0) > prior.lifetimeMs;
       if (mark && !applied && expired && unchangedSince(working, mark.leafId)) {
         applied = mark;
         mark = null;
@@ -237,21 +241,23 @@ function replayPolicy(
       const context = applied ? [...working, ...chain(applied.entries, working.at(-1)?.id ?? null)] : working;
       const { keys, tokens, total } = project(context, message.provider, message.model);
       let cached = 0;
-      if (previous && !expired && previous.message.provider === message.provider && previous.message.model === message.model) {
-        for (let index = 0; index < keys.length && keys[index] === previous.keys[index]; index++) cached += tokens[index];
+      // Unknown lifetime has no assumed cache reuse, but is not permission to trim.
+      if (prior && prior.lifetimeMs !== null && lifetimeMs !== null && !expired) {
+        for (let index = 0; index < keys.length && keys[index] === prior.keys[index]; index++) cached += tokens[index];
       }
       const uncached = total - cached;
       result.prompt += total;
       result.cached += cached;
       result.uncached += uncached;
       if (previous && uncached >= Math.max(rebuildMin, 0.5 * total)) result.rebuilds++;
-      const cost = catalog(message.provider, message.model)?.cost;
+      const cost = info?.cost;
       if (num(message.usage.cost?.total) > 0 && cost && typeof cost.input === "number" && typeof cost.cacheRead === "number") {
         const write = num(cost.cacheWrite) > 0 ? cost.cacheWrite! : cost.input;
         result.pricedRequests++;
         result.cost = (result.cost ?? 0) + (cost.cacheRead * cached + write * uncached) / 1_000_000;
       }
-      previous = { message, keys };
+      previous = { message, keys, lifetimeMs: prior && prior.lifetimeMs !== null && lifetimeMs !== null
+        ? Math.max(prior.lifetimeMs, lifetimeMs) : lifetimeMs };
       warmedAt = undefined;
     }
     append([entry]);
@@ -302,7 +308,8 @@ export function formatReport(sessions: SessionResult[], policies: Policy[]): str
     ...sessions.map(({ id, baseline: b }) => [id.slice(0, 8), b.models.join(",") || "-", String(b.requests), String(b.input),
       String(b.cacheRead), String(b.cacheWrite), String(b.output), usd(b.recordedCost), String(b.subscriptionRequests)]),
   ]));
-  lines.push("", "Replay estimates (est. = local token estimator + catalog prices; not real savings or billing)");
+  lines.push("", "Replay estimates (est. = local token estimator + catalog prices; not real savings or billing)",
+    "Unknown cache lifetimes assume no reuse and never trigger cold trims; known horizons use the longest model tier.");
   const row = (session: string, p: PolicyResult) => [session, p.policy, String(p.requests), String(p.prompt), String(p.cached),
     String(p.uncached), String(p.rebuilds), `${p.trims.pressure}/${p.trims["break-even"]}/${p.trims.cold}`, String(p.removedTokens),
     `${p.pricedRequests}`, usd(p.cost), usd(p.deltaVsNone, true)];

@@ -163,7 +163,7 @@ describe("Mnemopi confirmed project memory", () => {
       harness.save({ content: FACT }),
       harness.save({ content: FACT.toUpperCase() }),
     ]);
-    expect(outcomes.map((result) => result.details.mnemopi.state)).toEqual(["saved", "saved"]);
+    expect(outcomes.map((result) => result.details.mnemopi.state), JSON.stringify(outcomes.map(result => result.details.mnemopi))).toEqual(["saved", "saved"]);
     expect(outcomes[0].details.mnemopi.id).toBe(outcomes[1].details.mnemopi.id);
     const recalled = await harness.recall({ query: "violet quartz" });
     expect(recalled.details.mnemopi.facts.map((fact) => fact.id)).toEqual([outcomes[0].details.mnemopi.id]);

@@ -113,7 +113,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  config?: () => CompactConfig;
  mutationBlocked?: (ctx: ExtensionContext) => string | undefined;
  /** Anchor creation may request one safe consolidation, without invalidating prepared compaction. */
- onAnchor?: (ctx: ExtensionContext, originId: string, callId?: string, signal?: AbortSignal) => string;
+ onAnchor?: (ctx: ExtensionContext, originId: string, callId?: string, signal?: AbortSignal, userConfirmed?: boolean) => string;
  /** Staging-time signal: queued and about-to-apply pivots, never append-only anchors. */
  onContextChange?: (ctx: ExtensionContext) => void;
  /** Commit-time signal: fires only after Pi applied a pivot's tree navigation. */
@@ -123,6 +123,11 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  let queued: Pivot | undefined;
  let applying: Pivot | undefined;
  let timer: ReturnType<typeof setTimeout> | undefined;
+ let epoch = 0;
+ const agentAllowed = () => {
+  const settings = config();
+  return settings.toolLoading !== "off" && pi.getActiveTools().includes(NAVIGATION_TOOL_NAME);
+ };
  const scrub = (text: string) => {
   const settings = config();
   return new SecretScrubber(settings.scrubSecrets, settings.scrubPii).scrubText(text).value;
@@ -228,7 +233,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  pi.registerTool({
   name: NAVIGATION_TOOL_NAME,
   label: "Context Navigation",
-  description: "View/recall session anchors. Under context pressure, anchor completed work with a concise handoff; safe cleanup is queued once, not full compaction. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
+  description: "View/recall session anchors. Anchor completed work under pressure. In pressure-only mode, an explicitly user-requested early anchor requires one-time host confirmation. Safe cleanup is queued once, not full compaction; never claim approval or retry a refusal. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
    target: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
@@ -245,7 +250,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   async execute(callId, params, signal, _onUpdate, ctx) {
    enabled();
    if (signal?.aborted) throw new Error("Navigation cancelled.");
-   if (config().toolLoading === "off" || !pi.getActiveTools().includes(NAVIGATION_TOOL_NAME)) throw new Error("Load navigation with smart_tools first; respect the user's /tools selection.");
+   if (!agentAllowed()) throw new Error("Navigation tool access is disabled or hidden; respect the user's policy and /tools selection.");
    if (params.action === "view") {
     if (params.target) {
      const target = resolveAnchorTarget(ctx.sessionManager, params.target);
@@ -267,12 +272,25 @@ export function registerNavigation(pi: ExtensionAPI, options: {
     });
    }
    if (params.action === "anchor") {
-    if (config().contextPressureOnly && !contextPressure(ctx, config()).cleanup) {
-     throw new Error("No context pressure (or usage is unavailable); no anchor added. Use smart_context status. A human can save an early anchor from /smart-compact.");
+    const early = config().contextPressureOnly && !contextPressure(ctx, config()).cleanup;
+    if (early && !ctx.hasUI) throw new Error("No context pressure (or usage is unavailable); early anchor requires host confirmation. No anchor or cleanup requested. A human can use /smart-compact.");
+    let data = anchor(ctx, params.name ?? "", params.summary ?? "");
+    let userConfirmed = false;
+    if (early) {
+     if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority; no anchor or cleanup requested.");
+     const approvalEpoch = epoch;
+     const sessionId = resolveSessionId(ctx);
+     const approved = await ctx.ui.confirm("Save anchor and request early cleanup?",
+      `Anchor: ${data.name}\n\n${data.summary}\n\nAllow this anchor and one safe cleanup without context pressure? Only eligible old tool outputs may be shortened; recent turns, protected prefixes and safety checks stay. No full compaction or file/process rollback. Cleanup can be blocked by prepared work or safety checks. This does not change your settings or authorize future calls.`,
+      { signal });
+     if (approved !== true || signal?.aborted) throw new Error("Anchor not approved or cancelled; no anchor or cleanup requested. Do not retry without a new user request.");
+     if (approvalEpoch !== epoch || sessionId !== resolveSessionId(ctx) || data.targetId !== ctx.sessionManager.getLeafId()
+      || ctx.hasPendingMessages() || !agentAllowed()) throw new Error("Anchor confirmation expired: session, history, pending input or tool permissions changed. Nothing was queued.");
+     data = anchor(ctx, data.name, data.summary); // recheck navigation, running work and name after the dialog
+     userConfirmed = true; // host response only; never read this from model arguments
     }
-    const data = anchor(ctx, params.name ?? "", params.summary ?? "");
-    const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal) ?? "History unchanged; no cleanup controller attached.";
-    return { content: [{ type: "text", text: `Anchor: ${data.name}\n\n${data.summary}\n\n${cleanup}` }], details: { anchor: data } };
+    const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal, userConfirmed) ?? "History unchanged; no cleanup controller attached.";
+    return { content: [{ type: "text", text: `Anchor: ${data.name}\n\n${data.summary}\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
    }
    const operation = preparePivot(ctx, params.target ?? "", params.carryover ?? "", params.message);
    operation.callId = callId;
@@ -334,15 +352,17 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   if (queued && event.text.trim() !== `/smart-compact ${APPLY_PREFIX}${queued.nonce}`) cancel(ctx, "new input took priority");
  });
  pi.on("context", (_event, ctx) => { footer(ctx); });
- const reset = (_event: unknown, ctx: ExtensionContext) => { cancel(); applying = undefined; footer(ctx); };
+ const reset = (_event: unknown, ctx: ExtensionContext) => { epoch++; cancel(); applying = undefined; footer(ctx); };
  pi.on("session_start", reset);
  pi.on("session_before_switch", reset);
  pi.on("session_before_fork", reset);
  pi.on("session_before_compact", (_event, ctx) => {
+  epoch++;
   if (queued?.sessionId === resolveSessionId(ctx) || applying?.sessionId === resolveSessionId(ctx)) return { cancel: true };
  });
- pi.on("session_shutdown", (_event, ctx) => { cancel(); applying = undefined; ctx.ui.setStatus(STATUS, undefined); });
- pi.on("session_tree", (_event, ctx) => { footer(ctx); });
+ pi.on("session_shutdown", (_event, ctx) => { epoch++; cancel(); applying = undefined; ctx.ui.setStatus(STATUS, undefined); });
+ pi.on("session_tree", (_event, ctx) => { epoch++; footer(ctx); });
+ pi.on("model_select", () => { epoch++; });
  return {
   isPending: ctx => (queued?.sessionId === resolveSessionId(ctx)) || (applying?.sessionId === resolveSessionId(ctx)),
   refresh,

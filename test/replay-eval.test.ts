@@ -2,6 +2,7 @@ import { afterAll, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { loadSession, policiesFor, replaySession } from "../scripts/replay-eval-lib.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "replay-eval-test-"));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -10,8 +11,8 @@ const T0 = Date.parse("2026-09-01T10:00:00Z");
 const MODEL = { api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5" };
 const READ_PATH = "/repo/src/PARSER_PATH_SECRET.ts";
 
-/** Session JSONL: one old large read, a large non-trimmable tail, then a 20-minute idle gap, optionally kept warm by Pi's `cache_warm` refreshes. */
-function fixture(warmed = false) {
+/** One old large read and a non-trimmable tail, then an idle gap beyond the longest advertised Claude tier (1h). */
+function fixture(warmed = false, gapMinutes = 70) {
   const id = warmed ? "0f1e2d3c-replay-warmed" : "0f1e2d3c-replay-fixture";
   const lines: unknown[] = [{ type: "session", version: 3, id, timestamp: new Date(T0).toISOString(), cwd: root }];
   const usages: { input: number; cacheRead: number; cacheWrite: number; output: number; total: number }[] = [];
@@ -46,7 +47,7 @@ function fixture(warmed = false) {
     assistant([{ type: "text", text: `Step ${turn} done.` }], T0 + turn * 20 * s);
     user(`Continue with step ${turn + 1}.`, T0 + turn * 20 * s + 5 * s);
   }
-  // Request 8 follows a 20-minute idle gap: the 5-minute cache has expired unless refreshes kept it alive.
+  // Request 8 follows the chosen gap; the last refresh at minute 16 keeps a 1h cache alive through minute 76.
   if (warmed) {
     for (let minute = 4; minute <= 16; minute += 4) {
       const at = T0 + 140 * s + minute * 60 * s;
@@ -56,11 +57,26 @@ function fixture(warmed = false) {
       parentId = entryId;
     }
   }
-  assistant([{ type: "text", text: "Resumed after the break." }], T0 + 140 * s + 20 * 60 * s);
-  user("Finish up.", T0 + 150 * s + 20 * 60 * s);
-  assistant([{ type: "text", text: "Done." }], T0 + 160 * s + 20 * 60 * s);
+  assistant([{ type: "text", text: "Resumed after the break." }], T0 + 140 * s + gapMinutes * 60 * s);
+  user("Finish up.", T0 + 150 * s + gapMinutes * 60 * s);
+  assistant([{ type: "text", text: "Done." }], T0 + 160 * s + gapMinutes * 60 * s);
   return { text: lines.map(line => JSON.stringify(line)).join("\n") + "\n", usages };
 }
+
+it.each([
+  { gap: 6, promptCache: { short: 1_800, long: 1_800 }, cold: 0 },
+  { gap: 31, promptCache: { short: 1_800, long: 1_800 }, cold: 1 },
+  { gap: 70, promptCache: undefined, cold: 0 },
+])("uses model lifetimes for replay cold trims (gap=$gap, cold=$cold)", ({ gap, promptCache, cold }) => {
+  const session = loadSession(fixture(false, gap).text)!;
+  const catalog = () => ({ contextWindow: 200_000, promptCache, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } });
+  const result = replaySession(session, catalog, { policies: policiesFor([24]), rebuildMin: 16_384 });
+  expect(result.policies.find(policy => policy.policy === "timed-24")!.trims.cold).toBe(cold);
+  if (!promptCache) {
+    expect(result.policies.find(policy => policy.policy === "none")!.cached).toBe(0);
+    expect(result.baseline.cacheRead).toBeGreaterThan(0); // measured data is never rewritten to match an estimate
+  }
+});
 
 it("replays a recorded session read-only and times automatic trims per policy", () => {
   const sessions = path.join(root, "sessions");

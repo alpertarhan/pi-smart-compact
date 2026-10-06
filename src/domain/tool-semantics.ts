@@ -58,6 +58,9 @@ export function extractToolPath(args: unknown): string | undefined {
 
 /** Explicit instruction/skill sources stay inline even when their read is recoverable. */
 export function isInstructionSource(args: Args): boolean {
+  // Graph snippets may address instruction files by qualified symbol rather than path.
+  if (typeof args.qualified_name === "string"
+    && /(?:^|[./])(?:AGENTS|CLAUDE|GEMINI|SKILL|copilot-instructions|skills?)(?:[./]|$)/i.test(args.qualified_name)) return true;
   return PATH_KEYS.some(key => {
     const source = typeof args[key] === "string" ? args[key].replaceAll("\\", "/") : "";
     return /(?:^|\/)(?:AGENTS|CLAUDE|GEMINI|SKILL|copilot-instructions)\.md$/i.test(source)
@@ -68,7 +71,10 @@ export function isInstructionSource(args: Args): boolean {
 // ponytail: conservative allowlist; retain unknown tools until their side effects are understood.
 const READ_ONLY_TOOLS = new Set([
   "read", "grep", "find", "ls", "symbol_search", "module_report", "project_report", "read_symbol", "read_enclosing",
-  "search_web", "read_url_content", "find_text_in_url_content", "summarize_url_content", "get_search_content",
+  "search_web", "read_url_content", "find_text_in_url_content", "summarize_url_content", "get_search_content", "fetch_content",
+  "lens_diagnostics", "effective_config", "ast_grep_search",
+  "search_graph", "trace_path", "get_code_snippet", "get_file_outline", "query_graph", "get_architecture",
+  "search_code", "get_graph_schema", "index_status", "check_index_coverage", "detect_changes", "compare_graphs", "list_projects",
 ]);
 export function isReadOnlyResearchTool(toolName: string, input: Args): boolean {
   if (isInstructionSource(input)) return false;

@@ -123,7 +123,7 @@ function eligible(event: ToolResultEvent): boolean {
   // Read guards derive coverage from the original call/truncation metadata. A
   // preview would grant permission to edit unseen lines, regardless of hook order.
   // Keep these deliveries intact until consumers share a delivery-aware contract.
-  if (["read", "read_symbol", "read_enclosing", "smart_context"].includes(tool)
+  if (["read", "read_symbol", "read_enclosing", "get_code_snippet", "smart_context"].includes(tool)
     || !isReadOnlyResearchTool(tool, event.input)) return false;
   return true;
 }
