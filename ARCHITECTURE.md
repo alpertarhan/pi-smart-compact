@@ -247,11 +247,15 @@ by the model (`canAutoTrim` checks it like artifact offload does).
 least 16,384 net saved characters and eight assistant turns since the last
 owned trim/rewind/compaction; branch history supplies that cooldown across
 reloads and forks. At a completed, uncontested turn boundary a ready batch
-commits with cause `pressure` (early pressure gate reached) or `break-even`
-(catalog prices say it pays back within `AUTO_TRIM_BREAK_EVEN_REQUESTS` = 24
-requests). Otherwise it is held (`deferredTrim` in `smart_context` status):
-beyond the model's estimated cache horizon, `context_with_system` sends the
-trimmed results request-locally, byte-identical to the future `context_edit`,
+commits with cause `pressure` only at the compaction gate, or `break-even`
+when catalog prices say it pays back within `AUTO_TRIM_BREAK_EVEN_REQUESTS` = 24
+requests. Default pressure-only timing also requires the early cleanup gate:
+in that band, unknown prices or poor payback leave history unchanged, with no
+deferred trim. Only `contextPressureOnly: false` with hygiene enabled permits
+below-gate economic cleanup or holding an uneconomic batch (`deferredTrim` in
+`smart_context` status). Beyond the model's estimated cache horizon,
+`context_with_system` sends the trimmed results request-locally, byte-identical
+to the future `context_edit`,
 and the edits commit with cause `cold` at the next completed turn. The shared
 `cacheLifetimeMs` uses Pi's longest advertised `promptCache` tier, extended by
 observed 1h writes; unknown metadata never permits a cold trim. Model changes

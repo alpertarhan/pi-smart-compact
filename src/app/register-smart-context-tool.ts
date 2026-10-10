@@ -195,7 +195,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           pressure: contextPressure(ctx, config()), blockedReason: plan.blockedReason,
           outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
           batch: plan.automatic, cooldownTurns: plan.cooldownTurns,
-          note: "No changes applied. Automatic cleanup requires enablement, a safe batch and an uncontested boundary. Pressure-only is the default; cache economics is opt-in. Estimates are not billed-token savings."
+          note: "No changes applied. Automatic cleanup requires enablement, a safe batch and an uncontested boundary. Below the compaction gate, cache break-even must also pass. Pressure-only is the default; cold-cache timing is opt-in. Estimates are not billed-token savings."
         };
         return reply(JSON.stringify(payload), {
           display: {
@@ -427,7 +427,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       return cancelled(event, "Prepared/running compaction or unavailable recovery tools take priority.");
     }
     const settings = config();
-    const pressure = contextPressure(ctx, settings).cleanup;
+    const { cleanup: pressure, compaction: urgentPressure } = contextPressure(ctx, settings);
     if (request && !request.manual && !request.userConfirmed && request.action === "trim" && settings.contextPressureOnly && !pressure) {
       return cancelled(event, "Context pressure cleared; history left unchanged.");
     }
@@ -439,7 +439,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (!hygiene) mark = applied = null;
       const enabled = hygiene || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
       if (!enabled || options.canAutoTrim?.(ctx) === false) return;
-      // Legacy economics are explicit opt-in, never a reason to shrink a roomy default session.
+      // Roomy histories stay unchanged unless early economic cleanup is explicitly enabled.
       if ((configNow.contextPressureOnly || !hygiene) && !pressure) { mark = null; if (!applied) return; }
     }
     const branch = ctx.sessionManager.getBranch();
@@ -488,10 +488,12 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         } else {
           mark = null;
           if (plan.automatic !== "ready") return;
-          const cause = pressure ? "pressure" : undefined;
+          // Only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
+          const cause = urgentPressure ? "pressure" : undefined;
           const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
           const breakEvenRequests = economics ? trimBreakEvenRequests(ctx.model?.cost, economics.savedTokens, economics.tailTokens) : null;
           if (economics && (breakEvenRequests === null || breakEvenRequests > AUTO_TRIM_BREAK_EVEN_REQUESTS)) {
+            if (settings.contextPressureOnly || !settings.contextHygieneEnabled) return;
             const edits = new Map(plan.entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
               ? [[entry.targetId, entry.replacement.content] as const] : []));
             mark = {

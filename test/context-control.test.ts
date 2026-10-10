@@ -670,7 +670,7 @@ describe("smart_context boundary lifecycle", () => {
   });
 
   it("previews without queuing changes, and batches independent hygiene across reloads", async () => {
-    const h = harness();
+    const h = harness({ model: OPENAI });
     h.cfg.autoTrigger = false;
     h.cfg.contextHygieneEnabled = true;
     const first = toolBatch(h.session, "read", "evidence".repeat(3_000));
@@ -683,7 +683,7 @@ describe("smart_context boundary lifecycle", () => {
     expect(readContextReference(h.session.getBranch(), h.session.getSessionId(), first.result)).toContain("evidence");
     const second = toolBatch(h.session, "read", "more evidence".repeat(2_000));
     tail(h.session);
-    const reload = harness({ background: true, session: SessionManager.inMemory(process.cwd(), undefined, [h.session.getHeader()!, ...h.session.getBranch()]) });
+    const reload = harness({ background: true, model: OPENAI, session: SessionManager.inMemory(process.cwd(), undefined, [h.session.getHeader()!, ...h.session.getBranch()]) });
     const plan = JSON.parse((await reload.execute({ action: "plan" })).response.content[0].text);
     expect(plan.batch).toBe("cooldown");
     reload.boundary(await reload.execute({ action: "status" }));
@@ -698,7 +698,7 @@ describe("smart_context boundary lifecycle", () => {
     const h = harness();
     h.cfg.autoTrigger = false;
     h.cfg.contextHygieneEnabled = true;
-    h.ctx.model = { contextWindow: 1_000_000 } as ExtensionContext["model"]; // 140k tokens: below the uncapped 1M start gate
+    h.ctx.model = { ...OPENAI, contextWindow: 1_000_000 } as ExtensionContext["model"]; // 140k tokens: below the uncapped 1M start gate
     toolBatch(h.session, "read", "evidence".repeat(3_000));
     tail(h.session);
     h.boundary(await h.execute({ action: "status" }));
@@ -749,6 +749,7 @@ describe("smart_context boundary lifecycle", () => {
     ["enabled", true], ["native-hook", false], ["below-threshold", false], ["hidden", true], ["busy", false],
   ] as const)("automatic hygiene is independent of agent exposure and respects %s", async (kind, shouldTrim) => {
     const h = harness({ background: kind !== "native-hook", canTrim: kind !== "busy" });
+    h.setTokens(160_000); // compaction pressure permits cleanup even without catalog prices
     const old = toolBatch(h.session, "read", "old research".repeat(2_000));
     tail(h.session);
     if (kind === "below-threshold") h.setTokens(100_000);
@@ -1253,6 +1254,7 @@ describe("agent mutation policy", () => {
 
   it("still runs deterministic automatic hygiene with agent mutations disabled", async () => {
     const h = harness({ background: true, canMutate: false });
+    h.setTokens(160_000);
     const old = toolBatch(h.session, "read", "old research".repeat(2_000));
     tail(h.session);
     const result = { role: "toolResult" as const, toolCallId: "unrelated", toolName: "read", content: [], isError: false, timestamp: 1 };
@@ -1378,6 +1380,47 @@ function controlOf(entries: SessionBoundaryDraft[] | undefined) {
 }
 
 describe("automatic trim timing", () => {
+  it.each([true, false])("keeps an uneconomic cached prefix in the cleanup band (pressure-only=%s)", pressureOnly => {
+    const { h, old } = deferredFixture(OPENAI, true);
+    Object.assign(h.cfg, { autoTriggerStrategy: "settled", contextPressureOnly: pressureOnly });
+    h.setTokens(150_000); // cleanup at 140k; compaction at 160k
+    expect(contextPressure(h.ctx, h.cfg)).toMatchObject({ cleanup: true, compaction: false });
+    expect(expectedTrim(h.session, OPENAI).breakEvenRequests).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    const before = structuredClone(h.session.getBranch());
+
+    // No smart_context invocation: the ordinary turn_end hook must leave history alone.
+    expect(h.turn()).toBeUndefined();
+    expect(h.session.getBranch()).toEqual(before);
+    expect(h.changes()).toBe(0);
+    expect(h.request().result).toBeUndefined();
+    if (pressureOnly) expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    else expect(h.controller.deferredTrim(h.session.getSessionId())).not.toBeNull();
+
+    // At the compaction gate, freeing context wins over cache economics.
+    h.setTokens(160_000);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "pressure", references: [old.result] });
+    expect(h.changes()).toBe(1);
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+  });
+
+  it("still allows a profitable automatic trim at the early cleanup gate", () => {
+    const { h, old } = deferredFixture(OPENAI, false);
+    h.cfg.contextPressureOnly = true;
+    h.setTokens(140_000);
+    expect(expectedTrim(h.session, OPENAI).breakEvenRequests).toBeLessThanOrEqual(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "break-even", references: [old.result] });
+  });
+
+  it("keeps an unpriced prefix until the compaction gate without queuing a cold trim in pressure-only mode", () => {
+    const { h, old } = deferredFixture(undefined, false);
+    h.cfg.contextPressureOnly = true;
+    h.setTokens(150_000);
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    h.setTokens(160_000);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "pressure", references: [old.result] });
+  });
+
   it("does not cold-trim a 30-minute model at six minutes", () => {
     const model = { ...OPENAI, id: "gpt-5.6", promptCache: { short: 1_800, long: 1_800 } };
     const { h } = deferredFixture(model, true);
@@ -1485,8 +1528,17 @@ describe("automatic trim timing", () => {
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
     h.setNow(1 + FIVE_MINUTES_MS + 1);
     expect(h.request().result).toBeUndefined();
-    h.setTokens(150_000); // at the 140k start gate
-    expect(controlOf(h.turn()?.entries)).toMatchObject({ action: "trim", references: [old.result], cause: "pressure" });
+    h.setTokens(150_000); // above the 140k start gate, with favorable economics
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ action: "trim", references: [old.result], cause: "break-even" });
+  });
+
+  it("does not queue a cold trim when only the background strategy enables cleanup", () => {
+    const { h, old } = deferredFixture(OPENAI, true, false);
+    h.setTokens(150_000);
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    h.setTokens(160_000);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "pressure", references: [old.result] });
   });
 
   it.each(["compaction", "context_edit"] as const)("drops a mark once a newer %s rewrote the context", kind => {

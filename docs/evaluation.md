@@ -365,13 +365,19 @@ policy starts from the same history. Policies:
   is the configured start percentage of `min(window, maxContextTokens)` against
   Pi's reported usage, which includes the system prompt and tool definitions, so
   pressure fires later in replay than live.
-- `timed-<N>`: the current rule with `N` in place of the break-even limit;
+- `timed-<N>`: an economic comparison policy with `N` as the break-even limit;
   pressure commits, `N* ≤ N` commits (`break-even`), otherwise the batch is held
   and applied at the first request beyond the model's estimated cache horizon
   (`cold`). The longest advertised `promptCache` tier is used when the chosen
   retention is unknown; observed 1h writes can extend it. Missing lifetime
   metadata never permits a cold trim. Planning, cooldown and protected prefixes use the extension's own
   `planContextTrim`/`trimEntries`/`trimTokens`.
+
+These are comparison policies, not an exact replay of runtime timing. The
+runtime's default pressure-only policy leaves history unchanged below its
+early gate, requires favorable cache economics between cleanup and compaction,
+and queues no cold-cache trim. Only reaching the compaction gate bypasses
+cache economics for an automatic trim.
 
 Cost model per request: the projected context is estimated per message; the
 cached prefix is the longest run of identical projected messages shared with

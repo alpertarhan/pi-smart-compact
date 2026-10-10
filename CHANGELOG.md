@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [10.3.1] - 2026-10-10
+
+### Release approval
+
+- The release owner explicitly approved `10.3.1` as a stable patch to `latest`
+  with a version-specific canary exception. Publication remains gated on this
+  exact candidate's deterministic release checks and required CI. No
+  version-specific applied-canary cohort or live provider-cache validation
+  exists; offline regressions and recorded-session replay do not establish
+  production cache-hit savings, invoice-level cost or a `PROMOTE` result.
+
+### Fixed
+
+- **Cache-aware early cleanup.** Reaching the early cleanup gate no longer
+  bypasses cache break-even checks for automatic trims. Below the compaction
+  gate, unknown prices or poor payback leave cached history unchanged in the
+  default pressure-only mode, without queuing a cold-cache rewrite. At the
+  compaction gate, safe cleanup can still prioritize freeing context over
+  cache economics. Profitable early cleanup, explicit manual/agent requests,
+  opt-in cold-cache timing, safety guards and preparation ordering remain
+  covered by regression tests. No new setting or model request is added.
+
 ## [10.3.0] - 2026-10-06
 
 ### Release approval
