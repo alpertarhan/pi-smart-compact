@@ -195,7 +195,7 @@ hides latency, not cost: an unused summary still spends its model budget.
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
 | Ready result lifetime | `pendingTtlMs` (default 5 minutes) |
-| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off; economic/cold-cache timing additionally requires `contextPressureOnly: false` |
+| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, with break-even required below the compaction gate. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
 window, preparation starts at 120k and applies at 140k. With Auto and an 80%
@@ -401,15 +401,22 @@ These limits are not configurable. Behavior and examples are in the guide's
 
 ### Automatic trim timing
 
-Default: only `pressure` can trigger automatic cleanup. The shared early gate is
-`prepareContextPercent`, or the adaptive lead when null. A 400k policy window
-with the default 80% apply gate cleans from 288k and compacts from 320k.
-Unknown usage does not authorize automatic cleanup. First-delivery offload and
-metadata checkpoints do not rewrite cached history. Explicit research rewind
+By default, automatic cleanup is considered only at the shared early gate:
+`prepareContextPercent`, or the adaptive lead when null. Between that gate and
+`minContextPercent`, a ready trim must also pass the cache break-even check
+below. An unknown price or poor payback leaves history unchanged, without
+queuing a cold-cache trim. At the compaction gate, freeing context takes
+priority over cache economics. A 400k policy window with the default 80% apply
+gate considers economical cleanup from 288k and allows pressure cleanup and
+compaction from 320k. Unknown usage does not authorize automatic cleanup.
+First-delivery offload and metadata checkpoints do not rewrite cached history. Explicit research rewind
 is also independent of pressure: it returns to a valid checkpoint with a report,
 subject to the same branch, permission, preparation and safety checks.
 
-The following economics apply **only with `contextPressureOnly: false`**.
+Cache economics apply to automatic trims below the compaction gate in both
+timing modes. `contextPressureOnly: false` additionally allows economical
+cleanup below the early gate and deferred cold-cache cleanup; both require
+`contextHygieneEnabled: true`.
 Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
 the estimated tokens of every message from the first trimmed output to the
 end, the part of the prompt cache a trim rewrites. With the active model's
@@ -420,10 +427,10 @@ free).
 
 At a completed turn boundary a ready batch commits with cause:
 
-- `pressure` when usage reached the early pressure gate;
-- `break-even` when `N* ≤ 24`;
-- `cold` otherwise, after waiting. The batch is held (`smart_context`
-  `status` reports it as `deferredTrim`). The first request beyond the estimated
+- `pressure` when usage reached the compaction gate;
+- `break-even` when `N* ≤ 24` and the timing policy permits cleanup;
+- `cold` otherwise, only with economic timing enabled, after waiting. The batch
+  is held (`smart_context status` reports it as `deferredTrim`). The first request beyond the estimated
   cache horizon sends the trimmed messages; later requests keep them, and the
   edits commit at the next completed, uncontested turn. The horizon comes from
   Pi's model `promptCache` metadata (seconds), not a universal five-minute TTL.
@@ -433,7 +440,8 @@ At a completed turn boundary a ready batch commits with cause:
   Missing/invalid lifetime metadata disables `cold` timing and its warming veto,
   not manual cleanup or pressure-based cleanup.
 
-An unknown price only allows `pressure` and `cold` (the latter still needs lifetime metadata). Manual and permitted agent trims
+An unknown price only allows `pressure` at the compaction gate and opt-in `cold`
+(the latter still needs lifetime metadata). Manual and permitted agent trims
 commit at the next boundary (causes `manual`, `agent`).
 
 A Pi cache-warming refresh counts as a response for this expiry. While a

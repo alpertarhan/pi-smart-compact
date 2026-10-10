@@ -215,14 +215,18 @@ command and needs `smart_context` reachable by the model, since the digest
 points it there (any **Agent tools** choice except **Off**).
 
 A batch needs at least 16,384 characters of net savings and eight assistant
-turns after the last trim, rewind or compaction. It then commits at the turn
-boundary under pressure. The other two causes below require the explicit
-**Economic (opt-in)** timing choice (`contextPressureOnly: false`):
+turns after the last trim, rewind or compaction. In the early cleanup band,
+automatic trims must also pay back their cache rewrite within 24 requests;
+unknown prices or poor payback leave history unchanged. Only reaching the
+compaction threshold lets context relief take priority over cache cost.
 
-- `pressure`: context usage reached the early pressure gate.
+- `pressure`: context usage reached the compaction gate.
 - `break-even`: the model's catalog prices say the trim pays back its prompt
-  cache rewrite within 24 further requests.
-- `cold`: otherwise the batch waits beyond the model's estimated cache horizon.
+  cache rewrite within 24 further requests. By default this also requires the
+  early pressure gate; **Economic (opt-in)** timing (`contextPressureOnly: false`)
+  allows it earlier.
+- `cold`: only with economic timing enabled, an uneconomic batch waits beyond
+  the model's estimated cache horizon. Pressure-only mode queues no cold trim.
   Pi's `promptCache` metadata supplies the lifetime, not a universal five-minute
   default. When the chosen retention is unknown, the longest advertised tier
   is used; reported 1h writes can extend it. Missing lifetime metadata prevents

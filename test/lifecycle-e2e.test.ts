@@ -423,7 +423,8 @@ describe("extension lifecycle end to end", () => {
     let routeLookups = 0;
     const ctx: any = {
       sessionManager: { getBranch: () => branch, getSessionId: () => "trim-before-background", getSessionFile: () => undefined },
-      model: { provider: "test", id: "test", contextWindow: 200_000 }, cwd,
+      // At early pressure, this small rewrite must have known, favorable cache economics.
+      model: { provider: "test", id: "test", contextWindow: 200_000, cost: { input: 1, output: 1, cacheRead: 0.1, cacheWrite: 0 } }, cwd,
       modelRegistry: { getAvailable: () => { routeLookups++; return []; } },
       getContextUsage: () => ({ tokens: 140_000 }),
       ui: { setStatus() {}, notify() {}, setWidget() {} },
@@ -435,6 +436,7 @@ describe("extension lifecycle end to end", () => {
     }
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(event.entries.some((entry: any) => entry.type === "context_edit" && entry.targetId === "result")).toBe(true);
+    expect(event.entries.find((entry: any) => entry.customType === "smart-compact-context")?.data.cause).toBe("break-even");
     expect(routeLookups).toBe(0);
     expect(branch.some(entry => entry.type === "context_edit")).toBe(false); // host has not committed yet
     await dispatch(handlers, "session_shutdown", {}, ctx);
