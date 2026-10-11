@@ -194,7 +194,7 @@ hides latency, not cost: an unused summary still spends its model budget.
 | `prepareContextPercent: null` (Auto) | Starts 12.5% of the apply-token threshold earlier, bounded to 8,192–32,000 tokens |
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
-| Ready result lifetime | `pendingTtlMs` (default 5 minutes) |
+| Ready result lifetime | `pendingTtlMs` (default 5 minutes); `pendingFingerprintTtlMs` extends it while the live branch still matches the captured prefix (off by default) |
 | Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, with break-even required below the compaction gate. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
@@ -303,6 +303,11 @@ timeout does not start Pi's compactor.
   15–90 s) and a streamed-output ceiling instead. This is not a hard provider
   limit.
 - Missing or partial provider usage is estimated conservatively.
+- With `promptCacheRoutingEnabled`, OpenAI-shaped session requests carry a
+  stable per-session `prompt_cache_key` for engine-routing stickiness. The
+  field is opt-in because strict gateways may reject unknown request fields;
+  Anthropic-shaped payloads and providers without a documented body routing
+  key are never stamped.
 
 ### Legacy `profile`
 
@@ -423,7 +428,11 @@ end, the part of the prompt cache a trim rewrites. With the active model's
 catalog prices, `r = cacheRead / input` and `w = cacheWrite / input` (`w = 1`
 when no write price is listed). The trim pays back after
 `N* = ((w - r) × T) / (r × X)` further requests (`0` when cache reads are
-free).
+free). `N* ≤ 24` and the 16,384-character savings floor are defaults:
+`autoTrimBreakEvenRequests` and `autoTrimMinSavingChars` configure both.
+Planning is tail-aware: eligible outputs sorted by branch position form a
+prefix-drop frontier, and the largest batch whose first edit still pays back
+its rewrite wins, so one early low-value output no longer blocks the rest.
 
 At a completed turn boundary a ready batch commits with cause:
 
@@ -546,6 +555,10 @@ Hindsight setup, data flow and troubleshooting:
 | `maxLatencyMs` | `0` or integer 5,000–7,200,000 | `0` (no limit) | `Run time limit (ms)` |
 | `codexMaxCallMs` | `0` or integer 5,000–3,600,000 | `0` (auto 15–90 s) | `Stuck-call timeout (ms)` |
 | `pendingTtlMs` | integer 1,000–3,600,000 | `300000` | `Prepared summary lifetime (ms)` |
+| `pendingFingerprintTtlMs` | `0` or integer 60,000–3,600,000 | `0` | `Extend pending lifetime while the context fingerprint matches` |
+| `autoTrimBreakEvenRequests` | integer 1–1000 | `24` | `Automatic trim payback limit (requests)` |
+| `autoTrimMinSavingChars` | integer 0–10000000 | `16384` | `Minimum net characters per automatic trim` |
+| `promptCacheRoutingEnabled` | boolean | `false` | `Stamp per-session prompt_cache_key on OpenAI-shaped requests` |
 | `contextHygieneEnabled` | boolean | `true` | `Automatic cleanup` |
 | `contextPressureOnly` | boolean | `true` | `Cleanup timing` |
 | `artifactOffloadEnabled` | boolean | `false` | `Offload huge outputs` |
