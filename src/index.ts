@@ -77,6 +77,7 @@ import { createContextToolExposure, registerContextToolLoader } from "./app/lazy
 import { registerNavigation, type NavigationController } from "./app/register-navigation.ts";
 import { registerAnchorCache } from "./app/anchor-cache.ts";
 import { applyCacheRoutingKey } from "./app/cache-routing.ts";
+import { buildSummaryAnchor } from "./app/summary-anchor.ts";
 export { findModelById, resolveModels } from "./app/model-routing.ts";
 
 /** Provider-reported usage of the staged run for Pi's session totals; never a local estimate. */
@@ -598,6 +599,18 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
      candidate.details,
      candidate.metricsSnapshot?.runType !== "manual",
     );
+    // Summary pseudo-anchor (best-effort): recall surface + pivot target for
+    // the post-compaction branch. Bookkeeping failures must not fail the commit.
+    try {
+     if (loadConfig().contextNavigationEnabled) {
+      const entry = buildSummaryAnchor(ctx.sessionManager, { summary: candidate.summary });
+      if (entry) {
+       void pi.sendMessage({ customType: entry.customType, content: entry.content, display: entry.display, details: entry.details }, { triggerTurn: false });
+      }
+     }
+    } catch (anchorError) {
+     log.debug("Summary anchor skipped: " + errorDetail(anchorError));
+    }
     if (persistenceFailures.length) {
      reportIssue({
       key: "apply.persistence",

@@ -34,7 +34,9 @@ function anchorFromDetails(details: unknown): AnchorState | null {
  if (!isRecord(details) || !isRecord(details.anchor)) return null;
  const { name, summary, targetId } = details.anchor;
  if (typeof name !== "string" || !name || typeof summary !== "string") return null;
- return { name, summary, targetId: typeof targetId === "string" ? targetId : "" };
+ // Unknown fields survive for foreign readers; synthetic marks compaction anchors.
+ return { name, summary, targetId: typeof targetId === "string" ? targetId : "",
+  ...(details.anchor.synthetic === true ? { synthetic: true } : {}) };
 }
 
 /** Anchor carried by an owned or legacy anchor tool result, or by a human anchor message. */
@@ -86,9 +88,22 @@ export function getAnchors(sm: NavigationSession): AnchorRecord[] {
 }
 
 /** On-branch anchors newest-first, then off-branch anchors newest-first. */
+/** In-session lists show at most this many newest synthetic (compaction) anchors; older ones stay as data. */
+export const SYNTHETIC_ANCHOR_VISIBLE_LIMIT = 2;
+
 function orderedAnchors(sm: NavigationSession): AnchorRecord[] {
  const newest = getAnchors(sm).reverse();
- return [...newest.filter(a => a.onBranch), ...newest.filter(a => !a.onBranch)];
+ // Visibility budget: compaction anchors flood nothing — the newest few stay
+ // listed, older ones remain on the branch (boundary/recall data) but hidden
+ // from list views. User anchors are never hidden.
+ let syntheticBudget = SYNTHETIC_ANCHOR_VISIBLE_LIMIT;
+ const visible = newest.filter(record => {
+  if (!record.data.synthetic) return true;
+  if (syntheticBudget <= 0) return false;
+  syntheticBudget--;
+  return true;
+ });
+ return [...visible.filter(a => a.onBranch), ...visible.filter(a => !a.onBranch)];
 }
 
 export function listAnchors(sm: NavigationSession, query: AnchorQuery = {}): AnchorPage {

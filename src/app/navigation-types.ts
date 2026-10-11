@@ -5,6 +5,8 @@ export interface AnchorState {
   name: string;
   targetId: string;
   summary: string;
+  /** Set on compaction-generated anchors; lists keep only the newest few visible. */
+  synthetic?: boolean;
 }
 
 export interface AnchorRecord {
