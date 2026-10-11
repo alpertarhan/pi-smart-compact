@@ -519,6 +519,12 @@ const NUMERIC_RULES: readonly NumericRule[] = [
    "smart-compact config: pendingTtlMs must be 1000–3600000 (staged summary TTL).",
  },
  {
+  key: "pendingFingerprintTtlMs",
+  valid: (value) => validNumericLimit("pendingFingerprintTtlMs", value),
+  message: () =>
+   "smart-compact config: pendingFingerprintTtlMs must be 0 or 60000–3600000; 0 keeps the plain TTL.",
+ },
+ {
   key: "hindsightTimeoutMs",
   valid: (value) => validNumericLimit("hindsightTimeoutMs", value),
   message: () =>

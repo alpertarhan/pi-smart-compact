@@ -81,6 +81,15 @@ export interface PendingSlot {
 
 export interface PendingSlotOptions {
   ttlMs: number | (() => number);
+  /**
+   * Optional ceiling (ms) past `ttlMs` for pendings the probe still certifies;
+   * 0 or omitted keeps the plain TTL. The probe runs only at consume, never in
+   * views: prune retains an unprobed entry until the ceiling, so `isPresent`
+   * can be conservatively true for an entry that consume then expires.
+   */
+  maxAgeMs?: number | (() => number);
+  /** Consume-time validity proof for the extended window (e.g. a live branch fingerprint). */
+  stillFresh?: (pending: PendingCompaction, ctx: SessionIdentityContext) => boolean;
   now?: () => number;
   maxEntries?: number;
 }
@@ -92,6 +101,7 @@ interface PendingEntry {
 
 export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
   const ttlMs = () => typeof opts.ttlMs === "function" ? opts.ttlMs() : opts.ttlMs;
+  const maxAgeMs = () => typeof opts.maxAgeMs === "function" ? opts.maxAgeMs() : (opts.maxAgeMs ?? 0);
   const now = opts.now ?? Date.now;
   const maxEntries = Math.max(1, opts.maxEntries ?? 64);
   const entries = new Map<string, PendingEntry>();
@@ -107,9 +117,15 @@ export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
   };
   const prune = (): void => {
     const current = now();
+    const cap = maxAgeMs();
+    // The extended window retains unprobed entries until the ceiling; only
+    // consume runs the validity probe.
+    const extended = cap > 0 && Boolean(opts.stillFresh);
     let removedNewest = false;
     for (const [sessionId, entry] of entries) {
-      if (current - entry.createdAt <= ttlMs()) continue;
+      const age = current - entry.createdAt;
+      if (age <= ttlMs()) continue;
+      if (extended && age <= cap) continue;
       entries.delete(sessionId);
       if (newestSessionId === sessionId) removedNewest = true;
     }
@@ -136,6 +152,14 @@ export function createPendingSlot(opts: PendingSlotOptions): PendingSlot {
       if (entry) {
         const ageMs = now() - entry.createdAt;
         if (ageMs > ttlMs()) {
+          // Past the soft TTL the payload may still serve when its captured
+          // context fingerprint is re-proven live; the consume site revalidates
+          // again regardless, so this only removes a redundant expiry.
+          const cap = maxAgeMs();
+          if (cap > 0 && ageMs <= cap && opts.stillFresh?.(entry.value, ctx)) {
+            deleteEntry(currentSessionId);
+            return { kind: "ok", pending: entry.value };
+          }
           deleteEntry(currentSessionId);
           prune();
           return { kind: "expired", ageMs };

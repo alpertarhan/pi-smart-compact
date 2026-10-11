@@ -83,6 +83,12 @@ export interface CompactConfig {
  maxLatencyMs: number; // 0 = unlimited soft budget; hard timeout stays separate
  /** Staged-summary retention before commit; default 5 minutes. */
  pendingTtlMs: number;
+ /**
+  * 0 = off. Otherwise a staged summary may serve past `pendingTtlMs`, until
+  * this ceiling, while its captured context fingerprint still matches the live
+  * branch; the consume-site revalidation runs regardless. Default 0.
+  */
+ pendingFingerprintTtlMs: number;
  focusWeighting: boolean;
  zeroCallEnabled: boolean;
  contextGraphEnabled: boolean;

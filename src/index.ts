@@ -136,7 +136,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // Encapsulated slot: producers call `.set(...)`, the event handler calls
  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
  // entirely inside the slot factory — see src/app/pending-slot.ts.
- const pendingRef: PendingSlot = createPendingSlot({ ttlMs: () => loadConfig().pendingTtlMs });
+ // Opt-in `pendingFingerprintTtlMs` lets a prepared summary serve past its
+ // wall-clock TTL while the live branch still matches its captured prefix;
+ // revalidatePending runs at every consume site regardless.
+ const pendingRef: PendingSlot = createPendingSlot({
+  ttlMs: () => loadConfig().pendingTtlMs,
+  maxAgeMs: () => loadConfig().pendingFingerprintTtlMs,
+  stillFresh: (pending, ctx) => pendingMatchesBranch(pending, ctx.sessionManager.getBranch()),
+ });
  const isRunning = createSessionRunLock();
  let navigation: NavigationController;
  const pivotQueued = (ctx: ExtensionContext) => navigation?.isPending(ctx) ?? false;
