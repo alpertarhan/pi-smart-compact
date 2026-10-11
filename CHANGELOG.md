@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [10.4.0] - 2026-10-11
+
+### Release approval
+
+- The release owner approved `10.4.0` as a stable minor release to `latest`.
+  Every new behavior is opt-in or conservative by default: with default
+  settings, trim timing, hold logic and safety guards behave as in `10.3.1`,
+  and no new model request is added. Publication is gated on this exact
+  candidate's deterministic release checks and required CI. Offline
+  regressions and recorded-session replay do not establish production
+  cache-hit savings or invoice-level cost; the cache-inactive route detector
+  and the readiness surfaces report observed cache behavior instead.
+
+### Added
+
+- **Configurable trim economics.** `autoTrimBreakEvenRequests` (default 24,
+  range 1–1000) and `autoTrimMinSavingChars` (default 16384, range 0–10000000)
+  replace the fixed automatic-trim limits. Planning now walks a tail-aware
+  candidate frontier — the rewritten cache suffix runs from the first edited
+  entry, so dropping an early low-value output can let the rest pay back its
+  cache rewrite — and the largest feasible batch by saved characters wins.
+  Plans without price data behave exactly as before.
+- **Fingerprint-aware pending lifetime.** `pendingFingerprintTtlMs` (default 0
+  = off, range 60000–3600000) lets a prepared summary serve past its
+  wall-clock lifetime, until the configured ceiling, while the live branch
+  still matches its captured prefix. Consume-site revalidation, append-only
+  growth accounting and all safety checks are unchanged.
+- **Provider cache-capability matrix.** Documented marker levels, selectable
+  TTLs, write/read price multipliers and routing keys per provider.
+  Anchor-cache rewriting skips routes documented to ignore message-level
+  markers (Moonshot's Anthropic-compatible top-level-only contract);
+  unverified providers keep current behavior.
+- **Cache-inactive route detection.** Three consecutive large requests with
+  zero cache reads flag a documented-caching route once in metrics and
+  readiness. Cache hits and write-dominant rebuilds reset the streak; unknown
+  providers without a documented discount are never flagged.
+- **Routing-key stamping (opt-in).** `promptCacheRoutingEnabled` (default
+  false) stamps a stable per-session `prompt_cache_key` on OpenAI-shaped
+  request payloads for engine-routing stickiness. Anthropic-shaped payloads,
+  existing keys and unresolved sessions are untouched.
+- **Long-context pricing visibility.** Context pressure surfaces report the
+  200K-token long-context pricing crossing for first-party Anthropic routes
+  on larger policy windows.
+- **Trim ROI.** `smart_context status` reports archived outputs, archived
+  characters and net saved characters derived from the branch's own trim
+  records; foreign-edited references drop out of the totals.
+- **Summary pseudo-anchors.** A committed Continuity compaction becomes a
+  synthetic anchor at the post-compaction leaf: a recall surface and pivot
+  target. In-session lists keep the newest two visible; name collisions get
+  numbered suffixes; cross-session lineage recall shows all of them.
+
+### Changed
+
+- Automatic trim planning is tail-aware (see above); with the default
+  settings and prices this only unblocks cleanup that previously stayed
+  blocked, and never trims more per boundary than the existing 32-output cap.
+
 ## [10.3.1] - 2026-10-10
 
 ### Release approval
