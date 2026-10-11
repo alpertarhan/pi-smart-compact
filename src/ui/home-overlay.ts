@@ -255,7 +255,7 @@ export function createHomeList(
     const held = options.deferredTrim?.() ?? null;
     trim.currentValue = held ? "held for a cold cache" : "no model call";
     trim.description = held
-      ? formatDeferredTrim(held) + " Choose to apply it at the next completed turn instead."
+      ? formatDeferredTrim(held, config.autoTrimBreakEvenRequests) + " Choose to apply it at the next completed turn instead."
       : "Queue cleanup for the next completed turn. Older output stays retrievable; the next model request is still sent untrimmed.";
     compact.currentValue = state.blocked ? "unavailable" : "choose options";
     compact.description = state.blocked

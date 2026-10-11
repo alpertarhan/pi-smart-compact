@@ -531,6 +531,26 @@ const NUMERIC_RULES: readonly NumericRule[] = [
    "smart-compact config: hindsightRecallMaxTokens must be 128–4096; using default.",
  },
  {
+  key: "autoTrimBreakEvenRequests",
+  valid: (value) => validNumericLimit("autoTrimBreakEvenRequests", value),
+  message: (value) =>
+   "smart-compact config: autoTrimBreakEvenRequests must be 1–1000, got " +
+   value +
+   ". Using default " +
+   DEFAULT_CONFIG.autoTrimBreakEvenRequests +
+   ".",
+ },
+ {
+  key: "autoTrimMinSavingChars",
+  valid: (value) => validNumericLimit("autoTrimMinSavingChars", value),
+  message: (value) =>
+   "smart-compact config: autoTrimMinSavingChars must be 0–10000000, got " +
+   value +
+   ". Using default " +
+   DEFAULT_CONFIG.autoTrimMinSavingChars +
+   ".",
+ },
+ {
   key: "minContextPercent",
   valid: (value) => validNumericLimit("minContextPercent", value),
   message: (value) =>

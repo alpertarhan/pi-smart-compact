@@ -26,7 +26,7 @@ const LOADER_TOOL_NAME = "smart_tools";
 type Band = "cleanup" | "compaction";
 type AttentionConfig = Pick<CompactConfig,
   "contextNavigationEnabled" | "contextGuidanceEnabled" | "toolLoading" | "autoTrigger" | "autoTriggerStrategy"
-  | "minContextPercent" | "prepareContextPercent" | "maxContextTokens">;
+  | "minContextPercent" | "prepareContextPercent" | "maxContextTokens" | "autoTrimMinSavingChars">;
 
 export interface ContextAttentionDeps {
   config: () => AttentionConfig;
@@ -109,7 +109,7 @@ function renderAttention(
       const checkpoint = inspectContext(branch, resolveSessionId(ctx)).checkpoint;
       checkpointLabel = checkpoint?.label;
       if (canCleanup && !checkpoint) {
-        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api });
+        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars });
         if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
       }
     } catch {

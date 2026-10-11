@@ -83,7 +83,45 @@ export function contextControlEntry(data: ControlData): SessionBoundaryDraft {
   return { type: "custom", customType: CONTEXT_CONTROL_TYPE, data };
 }
 
+/**
+ * Memoized `inspectContext`.
+ *
+ * The branch walk is O(branch) and `planContextTrim`, `contextEvidence` and
+ * the per-`message_end` attention note all run it repeatedly on an unchanged
+ * branch. Pi's session log is append-only, so `(sessionId, length, lastEntryId)`
+ * identifies the exact branch state: same key ⇒ same walk result. Callers must
+ * treat the returned object as immutable — the memo hands out shared Sets/Maps.
+ */
+const INSPECT_MEMO_MAX = 8;
+const inspectMemo = new Map<string, { length: number; lastId: string; result: ReturnType<typeof inspectContextWalk> }>();
+
+/** Test hook: number of sessions currently memoized. */
+export function _inspectContextMemoSizeForTests(): number {
+  return inspectMemo.size;
+}
+
+/** Test hook: drop all memoized inspection results. */
+export function clearInspectContextMemo(): void {
+  inspectMemo.clear();
+}
+
 export function inspectContext(branch: SessionEntry[], sessionId: string) {
+  const lastId = branch.at(-1)?.id ?? "";
+  const hit = inspectMemo.get(sessionId);
+  if (hit && hit.length === branch.length && hit.lastId === lastId) return hit.result;
+  const result = inspectContextWalk(branch, sessionId);
+  if (!inspectMemo.has(sessionId)) {
+    while (inspectMemo.size >= INSPECT_MEMO_MAX) {
+      const oldest = inspectMemo.keys().next().value;
+      if (oldest === undefined) break;
+      inspectMemo.delete(oldest);
+    }
+  }
+  inspectMemo.set(sessionId, { length: branch.length, lastId, result });
+  return result;
+}
+
+function inspectContextWalk(branch: SessionEntry[], sessionId: string) {
   let checkpoint: ContextCheckpoint | null = null;
   let checkpointIndex = -1;
   let invalidReason: string | undefined;
@@ -277,7 +315,7 @@ export function thinkingEditReason(branch: SessionEntry[], entries: SessionBound
   }
 }
 
-export function planContextTrim(branch: SessionEntry[], afterId?: string, options: { anchorBoundary?: string | null; readerApi?: string } = {}) {
+export function planContextTrim(branch: SessionEntry[], afterId?: string, options: { anchorBoundary?: string | null; readerApi?: string; /** Overrides MIN_AUTO_TRIM_SAVING_CHARS for this plan; callers pass the configured floor. */ minSavingChars?: number } = {}) {
   if (afterId && !branch.some(entry => entry.id === afterId)) throw new Error("Trim boundary is not on the active branch.");
   const candidates = archivableResults(branch);
   // A newly-created anchor may seal only its new region, once, before its first replay.
@@ -328,7 +366,8 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
   });
   const turnsSinceChange = branch.slice(lastChange + 1).filter(entry => entry.type === "message" && entry.message.role === "assistant").length;
   const cooldownTurns = lastChange < 0 ? 0 : Math.max(0, AUTO_TRIM_COOLDOWN_TURNS - turnsSinceChange);
-  const automatic = savedChars < MIN_AUTO_TRIM_SAVING_CHARS ? "insufficient-savings" : cooldownTurns > 0 ? "cooldown" : "ready";
+  const minSavingChars = options.minSavingChars ?? MIN_AUTO_TRIM_SAVING_CHARS;
+  const automatic = savedChars < minSavingChars ? "insufficient-savings" : cooldownTurns > 0 ? "cooldown" : "ready";
   return { entries, references, archives, savedChars, automatic, cooldownTurns, superseded: supersededCount, blockedReason };
 }
 

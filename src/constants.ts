@@ -128,6 +128,8 @@ export const CONFIG_NUMERIC_LIMITS = {
  pendingTtlMs: { min: 1_000, max: 3_600_000, integer: true },
  hindsightTimeoutMs: { min: 1_000, max: 60_000, integer: true },
  hindsightRecallMaxTokens: { min: 128, max: 4_096, integer: true },
+ autoTrimBreakEvenRequests: { min: 1, max: 1_000, integer: true },
+ autoTrimMinSavingChars: { min: 0, max: 10_000_000, integer: true },
 } as const;
 
 export const DEFAULT_CONFIG = {
@@ -173,6 +175,8 @@ export const DEFAULT_CONFIG = {
  artifactOffloadEnabled: false,
  contextHygieneEnabled: true,
  contextPressureOnly: true, // false opts into legacy break-even/cold-cache cleanup.
+ autoTrimBreakEvenRequests: AUTO_TRIM_BREAK_EVEN_REQUESTS,
+ autoTrimMinSavingChars: 16_384,
  contextNavigationEnabled: true,
  contextRecallEnabled: true,
  contextPivotEnabled: true,

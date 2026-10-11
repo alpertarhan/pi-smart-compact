@@ -116,6 +116,17 @@ export interface CompactConfig {
  contextHygieneEnabled: boolean;
  /** Require pressure for automatic cleanup and agent-requested history reduction; human commands bypass it. */
  contextPressureOnly: boolean;
+ /**
+  * Warm-cache payback ceiling (requests) for an automatic trim; batches beyond
+  * this payback wait for a cold prompt cache instead of rewriting a warm one.
+  * Default 24.
+  */
+ autoTrimBreakEvenRequests: number;
+ /**
+  * Minimum net characters an automatic trim batch must save to run at all.
+  * 0 permits arbitrarily small safe batches. Default 16384.
+  */
+ autoTrimMinSavingChars: number;
  /** Session anchors and context navigation; independent of recoverable cleanup. */
  contextNavigationEnabled: boolean;
  contextRecallEnabled: boolean;
@@ -146,6 +157,35 @@ export interface ProviderCapabilities {
  singlePassTokenMultiplier: number;
  /** Whether provider can receive non-text blocks directly. We currently summarize metadata only. */
  multimodal: "native" | "metadata-only";
+ /** Documented prompt-cache control surface; see ProviderCacheCaps. */
+ cacheControl: ProviderCacheCaps;
+}
+
+/**
+ * Prompt-cache control surface documented by each provider.
+ *
+ * Values record provider documentation, not pi-ai wiring: a capability stored
+ * here is not automatically exercised. Unverified providers keep the implicit
+ * default so existing behavior (and anchor-cache rewriting) is never lost on
+ * a guess.
+ */
+export interface ProviderCacheCaps {
+ /**
+  * Where the provider honors explicit cache markers:
+  *  - "explicit-message": per-message cache_control breakpoints (Anthropic native)
+  *  - "explicit-toplevel": only a top-level cache_control field is honored; message-level markers are ignored (Moonshot's Anthropic-compatible endpoint)
+  *  - "implicit": automatic prefix caching, no marker contract documented
+  *  - "none": no prompt caching documented
+  */
+ level: "explicit-message" | "explicit-toplevel" | "implicit" | "none";
+ /** Wire-selectable cache TTLs (ms); empty when the provider owns retention. */
+ ttlOptionsMs: readonly number[];
+ /** Cache-write price multiplier over base input for the priciest selectable tier; 1 = no premium. */
+ writeMultiplier: number;
+ /** Typical cache-read multiplier over base input; 1 = no discount. Informational — economics use model cost. */
+ readMultiplier: number;
+ /** Request field/header documented to improve routing stickiness; null when none is documented. */
+ routingKey: { location: "body" | "header"; name: string } | null;
 }
 
 export interface LLMCallMetric {
