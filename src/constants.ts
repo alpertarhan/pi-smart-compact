@@ -42,6 +42,11 @@ export const SETTLED_TRIGGER_COOLDOWN_MS = 10 * 60_000;
  * above that tail noise while staying far below a real prefix rebuild.
  */
 export const REBUILD_MIN_TOKENS = 16_384;
+
+/** Consecutive large zero-read requests before a route is flagged cache-inactive. */
+export const CACHE_INACTIVE_ROUTE_MIN_REQUESTS = 3;
+/** Prompt floor for the inactive-route streak; covers every documented provider minimum. */
+export const CACHE_INACTIVE_ROUTE_MIN_PROMPT_TOKENS = 4_096;
 /**
  * Further requests within which a warm-cache automatic trim must pay back its
  * prefix rewrite; sessions rarely run that many requests without another prefix change.

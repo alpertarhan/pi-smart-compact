@@ -12,6 +12,7 @@ import {
 import type { PendingCompaction, PreparationDiscardReason } from "./types.ts";
 import {
  MIN_TOKEN_THRESHOLD,
+ CACHE_INACTIVE_ROUTE_MIN_REQUESTS,
  AUTO_TRIGGER_TIMEOUT_CAP_MS,
 } from "./constants.ts";
 import { loadConfig } from "./utils/config.ts";
@@ -686,7 +687,16 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   if (hostCache.sessionId() !== sessionId) hostCache.reset(sessionId);
   const promptCache = ctx.model && ctx.model.provider === event.message.provider && ctx.model.id === event.message.model
    ? ctx.model.promptCache : undefined;
-  if (!hostCache.observe(event.message, undefined, promptCache)?.warn) return;
+  const entry = hostCache.observe(event.message, undefined, promptCache);
+  if (!entry) return;
+  if (entry.inactive) {
+   recordIssue({
+    key: "cache.inactive-route",
+    message: "Prompt caching never hits on " + entry.provider + "/" + entry.model + " after " + CACHE_INACTIVE_ROUTE_MIN_REQUESTS + " large requests, though the provider documents caching. Its cache markers or request fields are likely ignored; continuity edits still apply but their cache savings do not. Check /smart-compact metrics and the provider's caching contract.",
+   });
+   return;
+  }
+  if (!entry.warn) return;
   const { foreign } = hostCache.summary().rebuilds;
   recordIssue({
    key: "cache.foreign-rebuilds",

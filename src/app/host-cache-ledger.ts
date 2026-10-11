@@ -1,7 +1,8 @@
 /** Session-local ledger of the host's own provider prompt-cache usage, built only from reported usage. */
 
 import type { ModelPromptCache, Usage } from "@earendil-works/pi-ai";
-import { ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../constants.ts";
+import { CACHE_INACTIVE_ROUTE_MIN_PROMPT_TOKENS, CACHE_INACTIVE_ROUTE_MIN_REQUESTS, ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../constants.ts";
+import { getProviderCacheCaps } from "../utils/tokens.ts";
 
 export type ContextEditKind = "trim" | "rewind" | "navigation" | "compaction";
 export type RebuildCause = "continuity" | "idle-expiry" | "foreign";
@@ -26,6 +27,8 @@ export interface LedgerEntry {
   editKind?: ContextEditKind;
   /** Set only on the rebuild that makes the foreign count reach FOREIGN_REBUILD_WARN_COUNT. */
   warn?: true;
+  /** Set once, on the request that completes an all-miss streak on a documented-caching route. */
+  inactive?: true;
 }
 
 export interface TokenTally { count: number; uncached: number }
@@ -38,6 +41,8 @@ export interface LedgerSummary {
   cacheWrite: number;
   rebuilds: Record<RebuildCause, TokenTally>;
   continuity: Record<ContextEditKind, TokenTally>;
+  /** Routes that finished an all-miss streak despite documented caching; one row per route. */
+  inactiveRoutes: Array<{ provider: string; model: string; requests: number; uncached: number }>;
   /** Sums of `usage.cost` (Pi prices reported tokens with the model price table); `requests` counts entries that carried a cost. */
   cost: { requests: number; total: number; rebuildUncached: number };
 }
@@ -89,6 +94,8 @@ export function createHostCacheLedger(): HostCacheLedger {
   let lifetimeMs: number | null = null;
   let previousRoute: string | undefined;
   let pendingEdit: ContextEditKind | undefined;
+  // Per-route all-miss streaks: consecutive large requests with zero cache reads.
+  const routeStreaks = new Map<string, { provider: string; model: string; requests: number; uncached: number; warned: boolean }>();
 
   const reset = (id: string | null) => {
     sessionId = id;
@@ -97,10 +104,12 @@ export function createHostCacheLedger(): HostCacheLedger {
     lifetimeMs = null;
     previousRoute = undefined;
     pendingEdit = undefined;
+    routeStreaks.clear();
     summary = {
       sessionId: id, requests: 0, input: 0, cacheRead: 0, cacheWrite: 0,
       rebuilds: tallies(["continuity", "idle-expiry", "foreign"] as const),
       continuity: tallies(["trim", "rewind", "navigation", "compaction"] as const),
+      inactiveRoutes: [],
       cost: { requests: 0, total: 0, rebuildUncached: 0 },
     };
   };
@@ -151,6 +160,32 @@ export function createHostCacheLedger(): HostCacheLedger {
       summary.input += input;
       summary.cacheRead += cacheRead;
       summary.cacheWrite += cacheWrite;
+      // Inactive-route streak: documented-caching routes that keep serving
+      // large prompts with zero reads point at a broken marker contract.
+      // A large cache WRITE is the opposite evidence — the provider accepted a
+      // new cache entry (the prefix genuinely changed) — so it resets the
+      // streak instead of feeding it; full rewrites stay foreign-rebuild data.
+      if (entry.provider && entry.prompt >= CACHE_INACTIVE_ROUTE_MIN_PROMPT_TOKENS) {
+        const caps = getProviderCacheCaps(entry.provider);
+        if (caps.level !== "none" && caps.readMultiplier < 1) {
+          const key = route;
+          const streak = routeStreaks.get(key) ?? { provider: entry.provider, model: entry.model ?? "", requests: 0, uncached: 0, warned: false };
+          const writeDominant = cacheWrite > 0 && cacheWrite * 2 >= uncached;
+          if (cacheRead > 0 || writeDominant) {
+            streak.requests = 0;
+            streak.uncached = 0;
+          } else {
+            streak.requests++;
+            streak.uncached += uncached;
+            if (streak.requests >= CACHE_INACTIVE_ROUTE_MIN_REQUESTS && !streak.warned) {
+              streak.warned = true;
+              entry.inactive = true;
+              summary.inactiveRoutes.push({ provider: streak.provider, model: streak.model, requests: streak.requests, uncached: streak.uncached });
+            }
+          }
+          routeStreaks.set(key, streak);
+        }
+      }
       const cost = usage.cost;
       if (cost && typeof cost.total === "number" && Number.isFinite(cost.total)) {
         summary.cost.requests++;
@@ -191,5 +226,11 @@ export function formatCacheLedgerSummary(summary: LedgerSummary): string[] {
   if (foreign.count) parts.push(`${foreign.count} without a Continuity edit (cause unknown): ${tokens(foreign.uncached)} uncached`);
   lines.push("Rebuild estimates: " + parts.join(" · "));
   if (summary.cost.total > 0) lines.push(`Cost (Pi model pricing): \$${summary.cost.total.toFixed(4)} total · \$${summary.cost.rebuildUncached.toFixed(4)} uncached input+cache writes on rebuilds`);
+  if (summary.inactiveRoutes.length) {
+    const routes = summary.inactiveRoutes
+      .map(route => `${route.provider}/${route.model} ×${route.requests} (${tokens(route.uncached)} uncached)`)
+      .join(", ");
+    lines.push(`Caching never hits on: ${routes}. Markers or request fields may be ignored by this provider.`);
+  }
   return lines;
 }
