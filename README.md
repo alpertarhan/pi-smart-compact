@@ -19,12 +19,18 @@ this extension adds context hygiene and continuity policies around it.
 > The TUI still says **Smart Compact**. No data or configuration migration is
 > needed. [Identity and naming](./docs/identity.md).
 >
-> **Pi Continuity 10.1.0:** upgrading from 9.x? Update Pi to 0.87.1 or newer
+> **Upgrading from 9.x?** Update Pi to 0.87.1 or newer
 > and read the [upgrade notes](./docs/guide.md#upgrade-from-9x). Optional memory
 > engines and image rendering are installed separately. The
 > [changelog](./CHANGELOG.md) records the full release and its evidence limits.
-> These defaults (pressure-first cleanup, eager tool exposure, native tool
-> rows) ship with 10.1.0.
+>
+> **New in 10.4.0 — cache-aware economics:** configurable trim limits with a
+> tail-aware planning frontier, an opt-in fingerprint-aware pending lifetime,
+> a provider cache-capability matrix, cache-inactive route detection, opt-in
+> `prompt_cache_key` routing, long-context pricing visibility, trim ROI in
+> `smart_context status`, and automatic anchors for committed compactions.
+> See the [changelog](./CHANGELOG.md) and
+> [configuration](./docs/configuration.md#automatic-trim-timing).
 
 ## What it does
 

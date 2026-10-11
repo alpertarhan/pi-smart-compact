@@ -445,6 +445,11 @@ anchor prefixes stay protected. It is not a full compaction; the response says
 whether cleanup was queued, blocked or unnecessary. A human may mark a milestone
 earlier. Append-only anchors do not discard an already prepared summary.
 
+Since 10.4.0, a committed Continuity compaction also records a **synthetic
+anchor** at the post-compaction boundary automatically: the summary becomes a
+recall surface and pivot target without a manual step. In-session lists show
+only the newest two synthetic anchors; cross-session recall shows all of them.
+
 ### User-guided early anchors
 
 With `contextPressureOnly: true`, you can ask the agent to mark a milestone
@@ -714,7 +719,10 @@ Home › Readiness & details lists the request count, the share of prompt
 tokens read from cache, rebuilds by cause with their uncached tokens, and the
 cost Pi priced from that usage when the model has catalog prices. The third
 unassigned rebuild records one diagnostic with the count and uncached tokens;
-it does not duplicate Pi's cache-miss notification. The ledger is session-local: it resets on a new or switched session,
+it does not duplicate Pi's cache-miss notification. Since 10.4.0, a
+provider-documented caching route that keeps serving large requests with zero
+reads is flagged once as cache-inactive in readiness and metrics; cache hits
+and write-dominant rebuilds do not count toward it. The ledger is session-local: it resets on a new or switched session,
 is not persisted, and covers only Pi's own requests; Pi Continuity's summary
 calls are in `/smart-compact metrics` instead.
 

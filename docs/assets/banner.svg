@@ -1,28 +1,34 @@
 <svg width="1280" height="320" viewBox="0 0 1280 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title description">
     <title id="title">Pi Continuity</title>
-    <desc id="description">An open return path with a gold anchor: useful context kept within reach. Context hygiene and session continuity for Pi.</desc>
+    <desc id="description">A π-shaped context line: solid where context is kept, dotted where trimmed, anchored in gold. Context hygiene and session continuity for Pi.</desc>
     <!-- Master artwork. Outlined Avenir Next: Demi Bold wordmark, Regular descriptor. PNG and icon exports: docs/identity.md. -->
     <path fill="#f3f8f9" stroke="none" d="M 0 0
 L 1280 0
 L 1280 320
 L 0 320 Z"/>
     <g id="continuity-mark">
-        <path fill="none" stroke="#183e4b" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M 232 88
-L 143 88
-C 106 88 76 118 76 155
-L 76 165
-C 76 202 106 232 143 232
-L 190 232"/>
-        <path fill="none" stroke="#147d88" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" d="M 190 232
-L 213 232
-C 239 232 260 211 260 185
-C 260 159 239 138 213 138
-L 150 138"/>
-        <path fill="#e8b55b" stroke="none" d="M 166 138
-C 166 146.837 158.837 154 150 154
-C 141.163 154 134 146.837 134 138
-C 134 129.163 141.163 122 150 122
-C 158.837 122 166 129.163 166 138 Z"/>
+        <path fill="none" stroke="#e8b55b" stroke-width="14" d="M 190 96
+C 190 107.046 181.046 116 170 116
+C 158.954 116 150 107.046 150 96
+C 150 84.954 158.954 76 170 76
+C 181.046 76 190 84.954 190 96 Z"/>
+        <path fill="none" stroke="#183e4b" stroke-width="30" stroke-linecap="round" d="M 170 122
+L 170 214"/>
+        <path fill="none" stroke="#147d88" stroke-width="16" stroke-linecap="round" d="M 128 150
+L 212 150"/>
+        <path fill="none" stroke="#147d88" stroke-width="22" stroke-linecap="round" d="M 122 198
+C 130 228 148 242 170 242
+C 192 242 210 228 218 198"/>
+        <path fill="#e8b55b" stroke="none" d="M 131 198
+C 131 204.075 126.075 209 120 209
+C 113.925 209 109 204.075 109 198
+C 109 191.925 113.925 187 120 187
+C 126.075 187 131 191.925 131 198 Z"/>
+        <path fill="#e8b55b" stroke="none" d="M 231 198
+C 231 204.075 226.075 209 220 209
+C 213.925 209 209 204.075 209 198
+C 209 191.925 213.925 187 220 187
+C 226.075 187 231 191.925 231 198 Z"/>
     </g>
     <g id="wordmark">
         <g>

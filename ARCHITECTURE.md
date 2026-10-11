@@ -239,8 +239,12 @@ an anchor or newer boundary change cancels it with a visible message.
 
 Trimming protects four recent assistant turns and the active checkpoint prefix,
 replacing up to 32 old read-only results of at least 4096 characters with a
-bounded reference marker. Already-edited entries are not rewritten. Automatic
-trimming runs with `contextHygieneEnabled` independently of compaction, or with
+bounded reference marker. Already-edited entries are not rewritten. Since
+10.4.0, planning is also tail-aware: eligible outputs are scored along a
+prefix-drop frontier (the rewritten cache suffix runs from the first edited
+entry to the branch end), and the largest batch whose first edit still passes
+the configured break-even limit wins; without price data the full set is
+returned exactly as before. Automatic trimming runs with `contextHygieneEnabled` independently of compaction, or with
 the effective `background` strategy, and requires `smart_context` reachable
 by the model (`canAutoTrim` checks it like artifact offload does).
 `plan` gives an on-demand non-mutating preview. Automatic batches require at
@@ -1043,6 +1047,7 @@ with a safe default and fuzzy alias matching for unknowns:
 | `timeoutMultiplier` | auto-trigger hard-timeout headroom |
 | `singlePassTokenMultiplier` | single-pass vs chunked threshold |
 | `tokenRatioEstimate` | token estimation; refined by per-(provider, model) EMA calibration |
+| `cacheControl` | documented prompt-cache surface: marker level (message / top-level / implicit / none), selectable TTLs, write/read price multipliers, routing key. Drives anchor-cache gating (routes documented to ignore message-level markers are left byte-identical) and routing-key stamping; unverified providers keep current behavior |
 
 Every provider call is raced against one aborting hard deadline, so a
 transport that ignores cancellation cannot hold the run lock indefinitely.
