@@ -35,18 +35,31 @@ package is published by this identity change.
 
 ## Visual language
 
-The mark is a **stylized anchor**: a gold ring holds the shank, a teal
- crossbar and upturned arms carry the weight, and gold tips mark the fluke
- points. It expresses a dependable way back — continuity, not compression —
- without using a generic compression arrow, database stack or infinity symbol.
- This is a visual metaphor, not a diagram of the compaction algorithm.
+The mark is an **engraved continuity emblem** — an instrument ring read as the
+session itself, with the π glyph living inside it. Every element names a real
+behavior; nothing is decoration for its own sake:
+
+| Element | Meaning |
+| --- | --- |
+| Unbroken double ring | the session envelope: continuity around everything |
+| 32 fine ticks | conversation turn boundaries on the session ring |
+| 4 gold cardinal beads | the EESV stages: extract, explore, synthesize, verify |
+| Dashed inner arc with a gold bead | the prompt-cache lifetime between requests; the gold bead is the request that starts the clock, the hollow end a cache read |
+| π interlace, ink | kept context: the bar turns down into the retained tail |
+| Gold plaque threaded on the bar | an archived excerpt that stays in context behind a retrievable reference |
+| Short teal stem with a gold foot | a bounded exploration that ends at an anchor point |
+| Narrowing strata falling from the kept tail | extract → synthesize → verify: noise condensed toward essence, archived below |
+
+It expresses continuity and measured hygiene without a generic compression
+arrow, database stack or infinity symbol. This is a visual metaphor, not a
+diagram of the compaction algorithm.
 
 | Role | Color | Use |
 | --- | --- | --- |
-| Deep ink | `#183E4B` | Shank and wordmark |
-| Return teal | `#147D88` | Crossbar and arms |
-| Anchor gold | `#E8B55B` | Ring and fluke tips; never body text |
-| Supporting ink | `#466674` | Banner descriptor |
+| Deep ink | `#183E4B` | Kept context, retained tail, outer ring, wordmark |
+| Return teal | `#147D88` | Compacted summary, stems, dashed cache arc |
+| Anchor gold | `#E8B55B` | EESV beads, excerpt plaque, archive essence; never body text |
+| Supporting ink | `#466674` | Fine ticks, inner ring, banner descriptor |
 | Mist | `#F3F8F9` | Banner and rounded catalog tile |
 
 The wordmark uses **Avenir Next Demi Bold**; the descriptor uses **Avenir Next
@@ -63,7 +76,7 @@ Installation steps, controls and warnings must remain available as text.
 ## Visual assets
 
 <p>
-  <img src="./assets/pi-smart-compact.png" alt="Pi Continuity: a stylized anchor with a gold ring and fluke tips" width="128" height="128" />
+  <img src="./assets/pi-smart-compact.png" alt="Pi Continuity: an engraved continuity emblem around a π interlace" width="128" height="128" />
 </p>
 
 | File | Dimensions | Purpose |
@@ -94,10 +107,10 @@ const mark = banner.match(/<g id="continuity-mark">[\s\S]*?<\/g>/)?.[0];
 if (!mark) throw new Error("Missing continuity-mark group in banner.svg");
 const icon = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 320 320" role="img" aria-labelledby="title description">
   <title id="title">Pi Continuity</title>
-  <desc id="description">A stylized gold-topped anchor: context hygiene with a dependable way back.</desc>
+  <desc id="description">The continuity emblem: an engraved session ring with turn ticks and EESV beads around a π interlace with a gold excerpt plaque and narrowing archive strata.</desc>
   <!-- Generated from banner.svg; regenerate using docs/identity.md. -->
   <rect width="320" height="320" rx="64" fill="#F3F8F9"/>
-  <g transform="translate(-8 0)">${mark}</g>
+  <g>${mark}</g>
 </svg>
 `;
 writeFileSync(root + "pi-smart-compact.svg", icon);
