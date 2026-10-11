@@ -80,7 +80,7 @@
 		"extensions": [
 			"./dist/index.js"
 		],
-		"image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/main/docs/assets/pi-smart-compact.png"
+		"image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/main/docs/assets/pi-smart-compact.png?v=2"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": ">=0.87.1",

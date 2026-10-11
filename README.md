@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/banner.png" alt="Pi Continuity — context hygiene and session continuity for Pi" width="960" height="240" />
+  <img src="./docs/assets/banner.png?v=2" alt="Pi Continuity — context hygiene and session continuity for Pi" width="960" height="240" />
 </p>
 
 # Pi Continuity
