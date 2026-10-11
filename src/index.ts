@@ -76,6 +76,7 @@ import { createSmartCompactPolicy } from "./app/smart-compact-policy.ts";
 import { createContextToolExposure, registerContextToolLoader } from "./app/lazy-tools.ts";
 import { registerNavigation, type NavigationController } from "./app/register-navigation.ts";
 import { registerAnchorCache } from "./app/anchor-cache.ts";
+import { applyCacheRoutingKey } from "./app/cache-routing.ts";
 export { findModelById, resolveModels } from "./app/model-routing.ts";
 
 /** Provider-reported usage of the staged run for Pi's session totals; never a local estimate. */
@@ -204,6 +205,12 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // Native engine: tools for the nested request, replay of stored native state.
  setNativeToolSource(activeToolDefinitions);
  registerAnchorCache(pi, { config: loadConfig });
+ // Cache routing stickiness (opt-in): stamp prompt_cache_key on OpenAI-shaped
+ // session payloads. In-place and undefined-returning so it cannot fight the
+ // replay and anchor hooks over the returned payload.
+ pi.on("before_provider_request", (event, ctx) => {
+  applyCacheRoutingKey(event.payload, ctx, () => loadConfig().promptCacheRoutingEnabled);
+ });
  const nativeReplay = createNativeReplayHook();
  pi.on("before_provider_request", (event, ctx) => nativeReplay.handle(event.payload, ctx));
  const applyFailureWrites = new Map<string, Promise<boolean>>();

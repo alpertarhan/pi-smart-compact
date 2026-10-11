@@ -51,6 +51,7 @@ const BOOLEAN_KEYS = [
  "contextAnchorCacheEnabled",
  "contextAnchorStatusEnabled",
  "contextGuidanceEnabled",
+ "promptCacheRoutingEnabled",
  "adaptiveDamageFeedback",
  "onlineDamageMonitor",
 ] as const;

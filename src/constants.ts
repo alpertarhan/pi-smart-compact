@@ -190,6 +190,7 @@ export const DEFAULT_CONFIG = {
  contextAnchorCacheEnabled: true,
  contextAnchorStatusEnabled: true,
  contextGuidanceEnabled: true,
+ promptCacheRoutingEnabled: false,
  telemetryChannel: "stable" as const,
  adaptiveDamageFeedback: false,
  onlineDamageMonitor: true,

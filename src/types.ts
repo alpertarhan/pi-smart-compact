@@ -141,6 +141,12 @@ export interface CompactConfig {
  contextAnchorStatusEnabled: boolean;
  /** Read the context-management guide only on explicit demand. */
  contextGuidanceEnabled: boolean;
+ /**
+  * Stamp a stable per-session `prompt_cache_key` on OpenAI-shaped payloads so
+  * same-prefix requests route to one inference engine. Off by default: strict
+  * gateways may reject the field; enable for GPT-5.6+ / Azure routes.
+  */
+ promptCacheRoutingEnabled: boolean;
  telemetryChannel: "stable" | "canary";
  adaptiveDamageFeedback: boolean;
  onlineDamageMonitor: boolean;
