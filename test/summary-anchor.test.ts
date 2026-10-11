@@ -6,7 +6,14 @@
 import { describe, expect, it } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ANCHOR_CUSTOM_TYPE, anchorFromEntry, getAnchors, listAnchors } from "../src/app/navigation-data.ts";
-import { appendSummaryAnchor } from "../src/app/summary-anchor.ts";
+import { buildSummaryAnchor } from "../src/app/summary-anchor.ts";
+
+/** Apply the built entry through the writable session manager, like index.ts does via sendMessage. */
+function appendSummaryAnchor(sm: SessionManager, details: { summary: string }): void {
+  const entry = buildSummaryAnchor(sm, details);
+  if (!entry) return;
+  sm.appendCustomMessageEntry(entry.customType, entry.content, entry.display, entry.details);
+}
 
 function seeded(): SessionManager {
   const sm = SessionManager.inMemory();
@@ -14,7 +21,7 @@ function seeded(): SessionManager {
   return sm;
 }
 
-describe("appendSummaryAnchor", () => {
+describe("buildSummaryAnchor", () => {
   it("writes a synthetic anchor at the current leaf", () => {
     const sm = seeded();
     const leafBefore = sm.getLeafId();
@@ -44,12 +51,13 @@ describe("appendSummaryAnchor", () => {
     expect(record.data.summary.length).toBeLessThanOrEqual(12_000);
   });
 
-  it("skips a duplicate anchor name instead of throwing", () => {
+  it("suffixes a duplicate name instead of dropping or overwriting the anchor", () => {
     const sm = seeded();
     appendSummaryAnchor(sm, { summary: "Same summary." });
     const before = getAnchors(sm).length;
     expect(() => appendSummaryAnchor(sm, { summary: "Same summary." })).not.toThrow();
-    expect(getAnchors(sm).length).toBe(before);
+    expect(getAnchors(sm).length).toBe(before + 1);
+    expect(getAnchors(sm).at(-1)!.data.name).toBe("compaction: Same summary. \u00b7 2");
   });
 
   it("does nothing without completed history", () => {

@@ -26,7 +26,8 @@ const LOADER_TOOL_NAME = "smart_tools";
 type Band = "cleanup" | "compaction";
 type AttentionConfig = Pick<CompactConfig,
   "contextNavigationEnabled" | "contextGuidanceEnabled" | "toolLoading" | "autoTrigger" | "autoTriggerStrategy"
-  | "minContextPercent" | "prepareContextPercent" | "maxContextTokens" | "autoTrimMinSavingChars">;
+  | "minContextPercent" | "prepareContextPercent" | "maxContextTokens" | "autoTrimMinSavingChars"
+  | "autoTrimBreakEvenRequests">;
 
 export interface ContextAttentionDeps {
   config: () => AttentionConfig;
@@ -109,7 +110,7 @@ function renderAttention(
       const checkpoint = inspectContext(branch, resolveSessionId(ctx)).checkpoint;
       checkpointLabel = checkpoint?.label;
       if (canCleanup && !checkpoint) {
-        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: 24 } });
+        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
       }
     } catch {
