@@ -47,6 +47,8 @@ export const REBUILD_MIN_TOKENS = 16_384;
 export const CACHE_INACTIVE_ROUTE_MIN_REQUESTS = 3;
 /** Prompt floor for the inactive-route streak; covers every documented provider minimum. */
 export const CACHE_INACTIVE_ROUTE_MIN_PROMPT_TOKENS = 4_096;
+/** First-party Anthropic long-context pricing starts above this many prompt tokens. */
+export const LONG_CONTEXT_PRICING_THRESHOLD_TOKENS = 200_000;
 /**
  * Further requests within which a warm-cache automatic trim must pay back its
  * prefix rewrite; sessions rarely run that many requests without another prefix change.
