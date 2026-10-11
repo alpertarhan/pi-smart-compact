@@ -25,7 +25,7 @@ import {
  tryRow,
 } from "../ui/tool-rows.ts";
 import {
-  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim,
+  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim, trimRoi,
   thinkingEditReason, trimBreakEvenRequests, trimEntries, trimTokens,
 } from "./context-operations.ts";
 
@@ -257,6 +257,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             pending: queued?.sessionId === sessionId ? queued.action : undefined,
             deferredTrim: deferred(sessionId) ?? undefined,
             archivedOutputs: evidence.list.length, ids: sources.map(source => source.id), sources,
+            trimRoi: trimRoi(branch, sessionId),
             ...(evidence.visualExcerpts ? { visualExcerpts: evidence.visualExcerpts } : {}),
             ...(params.scope === "lineage" ? { lineage: lineage.map(parent => ({ session: parent.sessionId, depth: parent.depth,
               sources: evidence.list.filter(source => source.session === parent.sessionId).length })) } : {}),

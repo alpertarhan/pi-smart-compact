@@ -454,6 +454,45 @@ export function planContextRewind(branch: SessionEntry[], sessionId: string, che
   return { entries, removed: targets.length };
 }
 
+/**
+ * What recoverable cleanup saved on the live branch, derived from the same
+ * control records the trims wrote. `savedCharsEstimate` counts archived bytes
+ * minus the markers that remain in context; it matches planContextTrim's
+ * savedChars for a freshly committed plan. Spill artifacts are not included —
+ * the storage report owns those.
+ */
+export function trimRoi(branch: SessionEntry[], sessionId: string): {
+  archivedOutputs: number;
+  archivedChars: number;
+  savedCharsEstimate: number;
+} {
+  const state = inspectContext(branch, sessionId);
+  // Only still-recoverable references count: a foreign edit revokes the id and
+  // its replacement content is no longer our marker's business.
+  let archivedChars = 0;
+  let archivedOutputs = 0;
+  for (const id of state.references) {
+    const record = state.archives.get(id);
+    if (!record) continue;
+    archivedOutputs++;
+    archivedChars += record.chars;
+  }
+  let markerChars = 0;
+  for (const entry of branch) {
+    if (entry.type !== "context_edit" || !state.references.has(entry.targetId)) continue;
+    // The host stores replacement content as a text-block array; a bare string
+    // is the defensive fallback for hand-built drafts.
+    const content = entry.replacement?.content;
+    if (typeof content === "string") markerChars += content.length;
+    else if (Array.isArray(content)) {
+      for (const block of content) {
+        if (typeof (block as { text?: unknown })?.text === "string") markerChars += (block as { text: string }).text.length;
+      }
+    }
+  }
+  return { archivedOutputs, archivedChars, savedCharsEstimate: Math.max(0, archivedChars - markerChars) };
+}
+
 /** Explicit, branch-local recovery only; never reveal assistant reasoning or arbitrary session entries. */
 export function readContextReference(branch: SessionEntry[], sessionId: string, id: string): string {
   const state = inspectContext(branch, sessionId);
