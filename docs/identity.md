@@ -76,7 +76,7 @@ Installation steps, controls and warnings must remain available as text.
 ## Visual assets
 
 <p>
-  <img src="./assets/pi-smart-compact.png" alt="Pi Continuity: an engraved continuity emblem around a π interlace" width="128" height="128" />
+  <img src="./assets/pi-smart-compact.png?v=2" alt="Pi Continuity: an engraved continuity emblem around a π interlace" width="128" height="128" />
 </p>
 
 | File | Dimensions | Purpose |
