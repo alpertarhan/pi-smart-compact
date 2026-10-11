@@ -208,7 +208,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const branch = ctx.sessionManager.getBranch();
       const state = inspectContext(branch, sessionId);
       if (params.action === "plan") {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars });
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
         const payload = {
           pressure: contextPressure(ctx, config()), blockedReason: plan.blockedReason,
           outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
@@ -241,7 +241,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         const evidence = contextEvidence(branch, sessionId, new SecretScrubber(settings.scrubSecrets, settings.scrubPii), lineage);
         if (params.action === "status") {
           const sources = evidence.list.slice(offset, offset + limit);
-          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars });
+          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
           const pressure = contextPressure(ctx, settings);
           const cleanup = {
             enabled: settings.contextHygieneEnabled || (settings.autoTrigger && settings.autoTriggerStrategy === "background"),
@@ -500,7 +500,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         entries = applied.entries;
         applied = null;
       } else {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars });
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
           entries = trimEntries(plan, request.manual || request.userConfirmed ? "manual" : "agent");
@@ -562,7 +562,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const origin = anchor ? branch.findIndex(entry => entry.id === anchor.originId) : -1;
       if (anchor && origin < 0) return { state: "unavailable", notice: "Anchor origin is no longer on this branch." };
       const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
-      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars });
+      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
       if (!plan.entries.length || (anchor?.callId && !userConfirmed && plan.automatic !== "ready")) {
         return { state: "no-eligible", notice: plan.blockedReason ?? (anchor ? "No safe cleanup batch ready; recent turns and protected prefixes stay unchanged." : "No eligible archived output to trim.") };
       }

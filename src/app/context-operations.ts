@@ -3,7 +3,7 @@ import {
   buildSessionProjection, type ProjectedSessionEntry, type SessionBoundaryDraft, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { ModelCostRates, ToolCall } from "@earendil-works/pi-ai";
-import { TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
+import { AUTO_TRIM_BREAK_EVEN_REQUESTS, TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
 import {
   fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, isShellTool, normalizeToolName, toolCallSubject,
 } from "../domain/tool-semantics.ts";
@@ -315,7 +315,74 @@ export function thinkingEditReason(branch: SessionEntry[], entries: SessionBound
   }
 }
 
-export function planContextTrim(branch: SessionEntry[], afterId?: string, options: { anchorBoundary?: string | null; readerApi?: string; /** Overrides MIN_AUTO_TRIM_SAVING_CHARS for this plan; callers pass the configured floor. */ minSavingChars?: number } = {}) {
+/** Warm-cache inputs for frontier scoring; absent cost keeps the full plan. */
+export interface TrimEconomy {
+  provider?: string;
+  model?: string;
+  cost?: Partial<ModelCostRates>;
+  breakEvenLimit?: number;
+}
+
+/**
+ * Prefix-drop frontier over position-sorted candidates. Entries after the
+ * first edit add savings at zero tail cost — the suffix [first..end] is
+ * rewritten once regardless — so dropping only ever helps at the front, and
+ * the frontier spans every optimum. O(branch) precompute, O(1) per candidate.
+ * Without cost data or feasible candidates the full set is returned and the
+ * callers' existing hold logic decides.
+ */
+function selectTrimFrontier(
+  candidates: Array<{ id: string; toolName: string; call: ToolCall; text: string; marker: string; savedChars: number }>,
+  branch: SessionEntry[],
+  economy: TrimEconomy | undefined,
+  floorChars: number,
+): Array<{ id: string; toolName: string; call: ToolCall; text: string; marker: string; savedChars: number }> {
+  if (!candidates.length || !economy?.cost) return candidates;
+  const messages = contextMessageEntries(branch);
+  const indexes = new Map(messages.map((entry, index) => [entry.id, index] as const));
+  const estimator = makeTokenEstimator(economy.provider, economy.model);
+  const prefixRaw: number[] = new Array(messages.length + 1).fill(0);
+  for (let i = 0; i < messages.length; i++) {
+    // SAFETY: contextMessageEntries wraps convertToLlm() output, i.e. real LLM messages.
+    prefixRaw[i + 1] = prefixRaw[i]! + estimator.message(messages[i]!.message as unknown as LlmMessage);
+  }
+  const totalRaw = prefixRaw[messages.length]!;
+  const limit = economy.breakEvenLimit ?? AUTO_TRIM_BREAK_EVEN_REQUESTS;
+  const positioned = candidates
+    .map(candidate => {
+      const at = indexes.get(candidate.id);
+      // SAFETY: same wrapper invariant as the prefix walk above.
+      const message = at === undefined ? undefined : messages[at]!.message as unknown as LlmMessage | undefined;
+      let savedTokens = 0;
+      if (message) {
+        const kept = estimator.message({ ...message, content: [{ type: "text", text: candidate.marker }] });
+        savedTokens = Math.max(0, estimator.message(message) - kept);
+      }
+      return { ...candidate, index: at ?? Number.MAX_SAFE_INTEGER, savedTokens };
+    })
+    .sort((left, right) => left.index - right.index);
+  let bestSuffix = -1;
+  let bestChars = -1;
+  let suffixTokens = 0;
+  let suffixChars = 0;
+  for (let j = positioned.length - 1; j >= 0; j--) {
+    suffixTokens += positioned[j]!.savedTokens;
+    suffixChars += positioned[j]!.savedChars;
+    const first = positioned[j]!.index;
+    if (first >= messages.length) continue;
+    const tail = totalRaw - prefixRaw[first]! - suffixTokens;
+    const breakEven = trimBreakEvenRequests(economy.cost, suffixTokens, tail);
+    if (breakEven === null || breakEven > limit || suffixChars < floorChars) continue;
+    // Descending scan + strict comparison keeps the most-dropped plan on ties.
+    if (suffixChars > bestChars) {
+      bestChars = suffixChars;
+      bestSuffix = j;
+    }
+  }
+  return bestSuffix < 0 ? positioned : positioned.slice(bestSuffix);
+}
+
+export function planContextTrim(branch: SessionEntry[], afterId?: string, options: { anchorBoundary?: string | null; readerApi?: string; /** Overrides MIN_AUTO_TRIM_SAVING_CHARS for this plan; callers pass the configured floor. */ minSavingChars?: number; /** Warm-cache inputs for frontier scoring; absent cost keeps the full plan. */ economy?: TrimEconomy } = {}) {
   if (afterId && !branch.some(entry => entry.id === afterId)) throw new Error("Trim boundary is not on the active branch.");
   const candidates = archivableResults(branch);
   // A newly-created anchor may seal only its new region, once, before its first replay.
@@ -331,33 +398,36 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
   const superseded = supersededResults(projection, candidates);
   const rank = (id: string) => { const reason = superseded.get(id); return reason === "edited" ? 0 : reason === "reread" ? 1 : 2; };
   // Superseded outputs first (edited before reread), each group in branch order; the cap then prefers them.
+  const floorChars = options.minSavingChars ?? MIN_AUTO_TRIM_SAVING_CHARS;
   const eligible = projection.slice(0, cutoff).flatMap(({ sourceEntry, messages }) => {
     const message = messages[0];
     const call = candidates.get(sourceEntry.id);
     if (!call || protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id) || message?.role !== "toolResult"
       || message.isError || message.content.some(block => block.type !== "text")) return [];
     const text = extractText(message.content);
-    return text.length < MIN_TRIM_CHARS ? [] : [{ id: sourceEntry.id, toolName: message.toolName, call, text }];
+    if (text.length < MIN_TRIM_CHARS) return [];
+    const flat = flattenToolCallBlock(call);
+    const reason = superseded.get(sourceEntry.id);
+    const marker = buildTrimMarker({
+      toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined, note: reason && SUPERSEDED_NOTE[reason],
+    });
+    return [{ id: sourceEntry.id, toolName: message.toolName, call, text, marker, savedChars: text.length - marker.length }];
   }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
+  const chosen = selectTrimFrontier(eligible, branch, options.economy, floorChars);
   const entries: SessionBoundaryDraft[] = [];
   const references: string[] = [];
   const archives: ArchiveRecord[] = [];
   let savedChars = 0;
-  for (const { id, toolName, call, text } of eligible) {
-    const flat = flattenToolCallBlock(call);
-    const reason = superseded.get(id);
-    const marker = buildTrimMarker({
-      toolName, entryId: id, text, call: flat.length === 1 ? flat[0] : undefined, note: reason && SUPERSEDED_NOTE[reason],
-    });
+  for (const { id, text, marker, savedChars: entrySaved } of chosen) {
     entries.push({ type: "context_edit", targetId: id, replacement: { content: marker } });
     references.push(id);
     archives.push({ id, sha256: digest(text), chars: text.length });
-    savedChars += text.length - marker.length;
+    savedChars += entrySaved;
   }
   const blockedReason = thinkingEditReason(branch, entries, options.readerApi);
   if (blockedReason) return { entries: [] as SessionBoundaryDraft[], references: [] as string[], archives: [] as ArchiveRecord[], savedChars: 0,
     automatic: "signed-thinking", cooldownTurns: 0, superseded: 0, blockedReason };
-  const supersededCount = eligible.filter(item => superseded.has(item.id)).length;
+  const supersededCount = chosen.filter(item => superseded.has(item.id)).length;
   if (entries.length) entries.push(contextControlEntry({ version: 1, action: "trim", references, archives }));
   // Branch-persisted cooldown survives reload/fork; never rewrite a cached prefix every turn.
   const lastChange = branch.findLastIndex(entry => {

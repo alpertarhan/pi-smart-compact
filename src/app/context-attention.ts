@@ -109,7 +109,7 @@ function renderAttention(
       const checkpoint = inspectContext(branch, resolveSessionId(ctx)).checkpoint;
       checkpointLabel = checkpoint?.label;
       if (canCleanup && !checkpoint) {
-        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars });
+        const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: 24 } });
         if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
       }
     } catch {
