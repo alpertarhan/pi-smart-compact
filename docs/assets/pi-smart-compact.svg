@@ -1,94 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 320 320" role="img" aria-labelledby="title description">
   <title id="title">Pi Continuity</title>
-  <desc id="description">The continuity emblem: session ring, turn ticks, EESV beads, cache-lifetime arc, and a π interlace over narrowing strata.</desc>
+  <desc id="description">One unbroken line through compaction, ending at a gold anchor.</desc>
   <rect width="320" height="320" rx="64" fill="#F3F8F9"/>
   <g id="continuity-mark">
-        <circle cx="160" cy="160" r="138" fill="none" stroke="#183e4b" stroke-width="3"/>
-        <circle cx="160" cy="160" r="129" fill="none" stroke="#466674" stroke-width="1.5"/>
-        <path fill="none" stroke="#183e4b" stroke-width="3" stroke-linecap="round" d="M 160 38
-L 160 52"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 183.8 40.34
-L 182.44 47.21"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 206.69 47.29
-L 204.01 53.75"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 227.78 58.56
-L 223.89 64.38"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 246.27 73.73
-L 241.32 78.68"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 261.44 92.22
-L 255.62 96.11"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 272.71 113.31
-L 266.25 115.99"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 279.66 136.2
-L 272.79 137.56"/>
-        <path fill="none" stroke="#183e4b" stroke-width="3" stroke-linecap="round" d="M 282 160
-L 268 160"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 279.66 183.8
-L 272.79 182.44"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 272.71 206.69
-L 266.25 204.01"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 261.44 227.78
-L 255.62 223.89"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 246.27 246.27
-L 241.32 241.32"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 227.78 261.44
-L 223.89 255.62"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 206.69 272.71
-L 204.01 266.25"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 183.8 279.66
-L 182.44 272.79"/>
-        <path fill="none" stroke="#183e4b" stroke-width="3" stroke-linecap="round" d="M 160 282
-L 160 268"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 136.2 279.66
-L 137.56 272.79"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 113.31 272.71
-L 115.99 266.25"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 92.22 261.44
-L 96.11 255.62"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 73.73 246.27
-L 78.68 241.32"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 58.56 227.78
-L 64.38 223.89"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 47.29 206.69
-L 53.75 204.01"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 40.34 183.8
-L 47.21 182.44"/>
-        <path fill="none" stroke="#183e4b" stroke-width="3" stroke-linecap="round" d="M 38 160
-L 52 160"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 40.34 136.2
-L 47.21 137.56"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 47.29 113.31
-L 53.75 115.99"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 58.56 92.22
-L 64.38 96.11"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 73.73 73.73
-L 78.68 78.68"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 92.22 58.56
-L 96.11 64.38"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 113.31 47.29
-L 115.99 53.75"/>
-        <path fill="none" stroke="#466674" stroke-width="1.5" stroke-linecap="round" d="M 136.2 40.34
-L 137.56 47.21"/>
-        <circle cx="160" cy="31" r="4.5" fill="#e8b55b" stroke="none"/>
-        <circle cx="289" cy="160" r="4.5" fill="#e8b55b" stroke="none"/>
-        <circle cx="160" cy="289" r="4.5" fill="#e8b55b" stroke="none"/>
-        <circle cx="31" cy="160" r="4.5" fill="#e8b55b" stroke="none"/>
-        <path fill="none" stroke="#147d88" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="8 6" d="M 71.8 215.11
-A 104 104 0 0 1 71.8 104.89"/>
-        <circle cx="71.8" cy="215.11" r="5.5" fill="#e8b55b" stroke="none"/>
-        <circle cx="71.8" cy="104.89" r="4.5" fill="none" stroke="#147d88" stroke-width="2.5"/>
-        <path fill="none" stroke="#183e4b" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" d="M 88 100
-L 224 100
-L 224 212"/>
-        <rect fill="#e8b55b" stroke="none" x="166" y="81" width="24" height="38" rx="7"/>
-        <path fill="none" stroke="#147d88" stroke-width="26" stroke-linecap="round" d="M 112 100
-L 112 164"/>
-        <circle cx="112" cy="184" r="9" fill="#e8b55b" stroke="none"/>
-        <path fill="none" stroke="#183e4b" stroke-width="10" stroke-linecap="round" d="M 210 248
-L 254 248"/>
-        <path fill="none" stroke="#147d88" stroke-width="10" stroke-linecap="round" d="M 216 261
-L 252 261"/>
-        <path fill="none" stroke="#e8b55b" stroke-width="10" stroke-linecap="round" d="M 222 274
-L 242 274"/>
+        <path fill="none" stroke="#183e4b" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M 87 82
+L 233 82
+L 233 206"/>
+        <path fill="none" stroke="#183e4b" stroke-width="30" stroke-linecap="round" d="M 130 82
+L 130 154"/>
+        <path fill="none" stroke="#147d88" stroke-width="26" stroke-linecap="round" d="M 233 214
+C 233 234 210 242 178 242
+L 158 242"/>
+        <circle cx="122" cy="240" r="15" fill="#e8b55b" stroke="none"/>
     </g>
 </svg>
