@@ -12,8 +12,11 @@ function hook(flags: Flags = { contextNavigationEnabled: true, contextAnchorCach
   });
   return {
     flags,
-    run: (payload: unknown, branch: unknown[]) =>
-      handler!({ type: "before_provider_request", payload }, { sessionManager: { getBranch: () => branch } }),
+    run: (payload: unknown, branch: unknown[], model?: { provider: string; id: string }) =>
+      handler!({ type: "before_provider_request", payload }, {
+        sessionManager: { getBranch: () => branch },
+        ...(model ? { model } : {}),
+      }),
   };
 }
 
@@ -237,6 +240,30 @@ describe("anchor cache gates", () => {
     const before = JSON.stringify(value);
     expect(hook().run(value, [toolAnchor("compacted-away"), { type: "message", message: { role: "user", content: "hi" } }])).toBeUndefined();
     expect(JSON.stringify(value)).toBe(before);
+  });
+
+  it("skips providers that ignore message-level markers (documented top-level-only contract)", () => {
+    // Moonshot's Anthropic-compatible endpoint reads only a top-level
+    // cache_control field; moving message markers there is a silent no-op.
+    const branch = [toolAnchor("M"), toolAnchor("N")];
+    const value = payload([["w1"], ["M"], ["w2"], ["N"], ["w3"]]);
+    const before = JSON.stringify(value);
+    expect(hook().run(value, branch, { provider: "kimi-coding", id: "kimi-k3" })).toBeUndefined();
+    expect(JSON.stringify(value)).toBe(before);
+  });
+
+  it("keeps rewriting for providers without a documented top-level-only contract", () => {
+    const branch = [toolAnchor("M"), toolAnchor("N")];
+    const value = payload([["w1"], ["M"], ["w2"], ["N"], ["w3"]]);
+    hook().run(value, branch, { provider: "zai-anthropic", id: "glm-5.3" });
+    expect(layout(value)).toEqual(["system", "tools", "N", "w3"]);
+  });
+
+  it("keeps rewriting when the route carries no model identity (legacy fakes, host gaps)", () => {
+    const branch = [toolAnchor("M"), toolAnchor("N")];
+    const value = payload([["w1"], ["M"], ["w2"], ["N"], ["w3"]]);
+    hook().run(value, branch);
+    expect(layout(value)).toEqual(["system", "tools", "N", "w3"]);
   });
 });
 

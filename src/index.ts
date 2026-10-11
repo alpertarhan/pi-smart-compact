@@ -12,6 +12,7 @@ import {
 import type { PendingCompaction, PreparationDiscardReason } from "./types.ts";
 import {
  MIN_TOKEN_THRESHOLD,
+ CACHE_INACTIVE_ROUTE_MIN_REQUESTS,
  AUTO_TRIGGER_TIMEOUT_CAP_MS,
 } from "./constants.ts";
 import { loadConfig } from "./utils/config.ts";
@@ -75,6 +76,8 @@ import { createSmartCompactPolicy } from "./app/smart-compact-policy.ts";
 import { createContextToolExposure, registerContextToolLoader } from "./app/lazy-tools.ts";
 import { registerNavigation, type NavigationController } from "./app/register-navigation.ts";
 import { registerAnchorCache } from "./app/anchor-cache.ts";
+import { applyCacheRoutingKey } from "./app/cache-routing.ts";
+import { buildSummaryAnchor } from "./app/summary-anchor.ts";
 export { findModelById, resolveModels } from "./app/model-routing.ts";
 
 /** Provider-reported usage of the staged run for Pi's session totals; never a local estimate. */
@@ -136,7 +139,14 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // Encapsulated slot: producers call `.set(...)`, the event handler calls
  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
  // entirely inside the slot factory — see src/app/pending-slot.ts.
- const pendingRef: PendingSlot = createPendingSlot({ ttlMs: () => loadConfig().pendingTtlMs });
+ // Opt-in `pendingFingerprintTtlMs` lets a prepared summary serve past its
+ // wall-clock TTL while the live branch still matches its captured prefix;
+ // revalidatePending runs at every consume site regardless.
+ const pendingRef: PendingSlot = createPendingSlot({
+  ttlMs: () => loadConfig().pendingTtlMs,
+  maxAgeMs: () => loadConfig().pendingFingerprintTtlMs,
+  stillFresh: (pending, ctx) => pendingMatchesBranch(pending, ctx.sessionManager.getBranch()),
+ });
  const isRunning = createSessionRunLock();
  let navigation: NavigationController;
  const pivotQueued = (ctx: ExtensionContext) => navigation?.isPending(ctx) ?? false;
@@ -196,6 +206,12 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // Native engine: tools for the nested request, replay of stored native state.
  setNativeToolSource(activeToolDefinitions);
  registerAnchorCache(pi, { config: loadConfig });
+ // Cache routing stickiness (opt-in): stamp prompt_cache_key on OpenAI-shaped
+ // session payloads. In-place and undefined-returning so it cannot fight the
+ // replay and anchor hooks over the returned payload.
+ pi.on("before_provider_request", (event, ctx) => {
+  applyCacheRoutingKey(event.payload, ctx, () => loadConfig().promptCacheRoutingEnabled);
+ });
  const nativeReplay = createNativeReplayHook();
  pi.on("before_provider_request", (event, ctx) => nativeReplay.handle(event.payload, ctx));
  const applyFailureWrites = new Map<string, Promise<boolean>>();
@@ -583,6 +599,18 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
      candidate.details,
      candidate.metricsSnapshot?.runType !== "manual",
     );
+    // Summary pseudo-anchor (best-effort): recall surface + pivot target for
+    // the post-compaction branch. Bookkeeping failures must not fail the commit.
+    try {
+     if (loadConfig().contextNavigationEnabled) {
+      const entry = buildSummaryAnchor(ctx.sessionManager, { summary: candidate.summary });
+      if (entry) {
+       void pi.sendMessage({ customType: entry.customType, content: entry.content, display: entry.display, details: entry.details }, { triggerTurn: false });
+      }
+     }
+    } catch (anchorError) {
+     log.debug("Summary anchor skipped: " + errorDetail(anchorError));
+    }
     if (persistenceFailures.length) {
      reportIssue({
       key: "apply.persistence",
@@ -679,7 +707,16 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   if (hostCache.sessionId() !== sessionId) hostCache.reset(sessionId);
   const promptCache = ctx.model && ctx.model.provider === event.message.provider && ctx.model.id === event.message.model
    ? ctx.model.promptCache : undefined;
-  if (!hostCache.observe(event.message, undefined, promptCache)?.warn) return;
+  const entry = hostCache.observe(event.message, undefined, promptCache);
+  if (!entry) return;
+  if (entry.inactive) {
+   recordIssue({
+    key: "cache.inactive-route",
+    message: "Prompt caching never hits on " + entry.provider + "/" + entry.model + " after " + CACHE_INACTIVE_ROUTE_MIN_REQUESTS + " large requests, though the provider documents caching. Its cache markers or request fields are likely ignored; continuity edits still apply but their cache savings do not. Check /smart-compact metrics and the provider's caching contract.",
+   });
+   return;
+  }
+  if (!entry.warn) return;
   const { foreign } = hostCache.summary().rebuilds;
   recordIssue({
    key: "cache.foreign-rebuilds",

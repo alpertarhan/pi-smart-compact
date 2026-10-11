@@ -1,6 +1,6 @@
 /** Opt-in speculative preparation. Application stays in Pi's native compaction lifecycle. */
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
+import { LONG_CONTEXT_PRICING_THRESHOLD_TOKENS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig, MetricsSnapshot, PendingCompaction, PreparationDiscardReason } from "../types.ts";
 import { pendingMatchesBranch, revalidatePending } from "./pending-slot.ts";
@@ -69,6 +69,18 @@ export function contextPressure(
   cleanupTokens, compactionTokens,
   cleanup: tokens !== null && cleanupTokens !== null && tokens >= cleanupTokens,
   compaction: tokens !== null && compactionTokens !== null && tokens >= compactionTokens,
+  // First-party Anthropic bills long-context pricing above 200K prompt tokens
+  // (≈2× input; cache multipliers stack on it). Exact provider match only:
+  // Anthropic-compatible proxies price their own routes. Consumers surface
+  // the crossing point; no advice line fires past it.
+  longContextPricing: ctx.model?.provider === "anthropic"
+   && typeof ctx.model?.contextWindow === "number" && ctx.model.contextWindow > LONG_CONTEXT_PRICING_THRESHOLD_TOKENS
+   && policyWindow !== null
+   ? {
+    thresholdTokens: LONG_CONTEXT_PRICING_THRESHOLD_TOKENS,
+    thresholdPercent: Math.round(LONG_CONTEXT_PRICING_THRESHOLD_TOKENS / policyWindow * 1_000) / 10,
+   }
+   : undefined,
  };
 }
 

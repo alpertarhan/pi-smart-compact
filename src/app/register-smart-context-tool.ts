@@ -25,7 +25,7 @@ import {
  tryRow,
 } from "../ui/tool-rows.ts";
 import {
-  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim,
+  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim, trimRoi,
   thinkingEditReason, trimBreakEvenRequests, trimEntries, trimTokens,
 } from "./context-operations.ts";
 
@@ -67,11 +67,11 @@ export interface DeferredTrim {
 }
 
 /** Why an automatic trim is being held, for Home/status text; token counts are estimates. */
-export function formatDeferredTrim(deferred: DeferredTrim): string {
+export function formatDeferredTrim(deferred: DeferredTrim, breakEvenLimit: number = AUTO_TRIM_BREAK_EVEN_REQUESTS): string {
   const tokens = (value: number) => value >= 1000 ? `${Math.round(value / 1000)}k` : String(value);
   const why = deferred.breakEvenRequests === null
     ? "the model's cache price is unknown"
-    : `it pays back its cache rewrite only after ${Math.ceil(deferred.breakEvenRequests)} requests (limit ${AUTO_TRIM_BREAK_EVEN_REQUESTS})`;
+    : `it pays back its cache rewrite only after ${Math.ceil(deferred.breakEvenRequests)} requests (limit ${breakEvenLimit})`;
   const warming = deferred.warmingStopped ? " Prompt-cache warming was stopped so the cache can go cold." : "";
   return `Saves ~${tokens(deferred.savedTokens)} tokens, but ${why}, so it waits for a cold prompt cache.${warming}`;
 }
@@ -84,8 +84,17 @@ interface TrimMark extends DeferredTrim {
   targets: { targetId: string; toolCallId: string; toolName: string; replacement: string }[];
 }
 
-/** Best-effort cache horizon for this route and context epoch; unknown never permits a cold trim. */
-function cachedPrefix(branch: SessionEntry[], model: ExtensionContext["model"]): { since: number; lifetimeMs: number } | null {
+/**
+ * Best-effort cache horizon for this route and context epoch; unknown never permits a cold trim.
+ *
+ * `since` approximates the request START, not the response end: Anthropic measures
+ * the cache TTL from the start of the request that wrote the entry, and generation
+ * time counts against it. The predecessor entry's timestamp (the user message or
+ * tool-result batch that triggered the request) is the closest proxy recorded on
+ * the branch; without one the assistant timestamp is the conservative fallback.
+ * Test hook: exported for cache-economics coverage.
+ */
+export function cachedPrefix(branch: SessionEntry[], model: ExtensionContext["model"]): { since: number; lifetimeMs: number } | null {
   let lifetimeMs = cacheLifetimeMs(undefined, model?.promptCache);
   if (!model || lifetimeMs === null) return null;
   let since: number | undefined;
@@ -95,11 +104,20 @@ function cachedPrefix(branch: SessionEntry[], model: ExtensionContext["model"]):
     if (entry.type !== "message" || entry.message.role !== "assistant") continue;
     const message = entry.message as AssistantMessage;
     if (message.provider !== model.provider || message.model !== model.id) break;
-    since ??= message.timestamp;
+    since ??= requestStartEstimate(branch, index, message.timestamp);
     // A later short-lived tail write must not shorten an older 1h prefix.
     lifetimeMs = Math.max(lifetimeMs, cacheLifetimeMs(message.usage, model.promptCache) ?? lifetimeMs);
   }
   return since === undefined || !Number.isFinite(since) ? null : { since, lifetimeMs };
+}
+
+/** Preceding message entry's timestamp; non-message or out-of-order predecessors fall back. */
+function requestStartEstimate(branch: SessionEntry[], index: number, fallback: number): number {
+  const previous = branch[index - 1];
+  const timestamp = previous?.type === "message" ? previous.message.timestamp : undefined;
+  return typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0 && timestamp <= fallback
+    ? timestamp
+    : fallback;
 }
 
 /** True when `leafId` is still on the branch with no newer context rewrite after it. */
@@ -190,7 +208,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const branch = ctx.sessionManager.getBranch();
       const state = inspectContext(branch, sessionId);
       if (params.action === "plan") {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api });
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
         const payload = {
           pressure: contextPressure(ctx, config()), blockedReason: plan.blockedReason,
           outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
@@ -223,7 +241,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         const evidence = contextEvidence(branch, sessionId, new SecretScrubber(settings.scrubSecrets, settings.scrubPii), lineage);
         if (params.action === "status") {
           const sources = evidence.list.slice(offset, offset + limit);
-          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api });
+          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
           const pressure = contextPressure(ctx, settings);
           const cleanup = {
             enabled: settings.contextHygieneEnabled || (settings.autoTrigger && settings.autoTriggerStrategy === "background"),
@@ -239,6 +257,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             pending: queued?.sessionId === sessionId ? queued.action : undefined,
             deferredTrim: deferred(sessionId) ?? undefined,
             archivedOutputs: evidence.list.length, ids: sources.map(source => source.id), sources,
+            trimRoi: trimRoi(branch, sessionId),
             ...(evidence.visualExcerpts ? { visualExcerpts: evidence.visualExcerpts } : {}),
             ...(params.scope === "lineage" ? { lineage: lineage.map(parent => ({ session: parent.sessionId, depth: parent.depth,
               sources: evidence.list.filter(source => source.session === parent.sessionId).length })) } : {}),
@@ -481,7 +500,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         entries = applied.entries;
         applied = null;
       } else {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api });
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
           entries = trimEntries(plan, request.manual || request.userConfirmed ? "manual" : "agent");
@@ -492,7 +511,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           const cause = urgentPressure ? "pressure" : undefined;
           const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
           const breakEvenRequests = economics ? trimBreakEvenRequests(ctx.model?.cost, economics.savedTokens, economics.tailTokens) : null;
-          if (economics && (breakEvenRequests === null || breakEvenRequests > AUTO_TRIM_BREAK_EVEN_REQUESTS)) {
+          const breakEvenLimit = settings.autoTrimBreakEvenRequests;
+          if (economics && (breakEvenRequests === null || breakEvenRequests > breakEvenLimit)) {
             if (settings.contextPressureOnly || !settings.contextHygieneEnabled) return;
             const edits = new Map(plan.entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
               ? [[entry.targetId, entry.replacement.content] as const] : []));
@@ -542,7 +562,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const origin = anchor ? branch.findIndex(entry => entry.id === anchor.originId) : -1;
       if (anchor && origin < 0) return { state: "unavailable", notice: "Anchor origin is no longer on this branch." };
       const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
-      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api });
+      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
       if (!plan.entries.length || (anchor?.callId && !userConfirmed && plan.automatic !== "ready")) {
         return { state: "no-eligible", notice: plan.blockedReason ?? (anchor ? "No safe cleanup batch ready; recent turns and protected prefixes stay unchanged." : "No eligible archived output to trim.") };
       }

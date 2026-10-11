@@ -42,6 +42,13 @@ export const SETTLED_TRIGGER_COOLDOWN_MS = 10 * 60_000;
  * above that tail noise while staying far below a real prefix rebuild.
  */
 export const REBUILD_MIN_TOKENS = 16_384;
+
+/** Consecutive large zero-read requests before a route is flagged cache-inactive. */
+export const CACHE_INACTIVE_ROUTE_MIN_REQUESTS = 3;
+/** Prompt floor for the inactive-route streak; covers every documented provider minimum. */
+export const CACHE_INACTIVE_ROUTE_MIN_PROMPT_TOKENS = 4_096;
+/** First-party Anthropic long-context pricing starts above this many prompt tokens. */
+export const LONG_CONTEXT_PRICING_THRESHOLD_TOKENS = 200_000;
 /**
  * Further requests within which a warm-cache automatic trim must pay back its
  * prefix rewrite; sessions rarely run that many requests without another prefix change.
@@ -126,8 +133,11 @@ export const CONFIG_NUMERIC_LIMITS = {
   zeroOrRange: true,
  },
  pendingTtlMs: { min: 1_000, max: 3_600_000, integer: true },
+ pendingFingerprintTtlMs: { min: 60_000, max: 3_600_000, integer: true, zeroOrRange: true },
  hindsightTimeoutMs: { min: 1_000, max: 60_000, integer: true },
  hindsightRecallMaxTokens: { min: 128, max: 4_096, integer: true },
+ autoTrimBreakEvenRequests: { min: 1, max: 1_000, integer: true },
+ autoTrimMinSavingChars: { min: 0, max: 10_000_000, integer: true },
 } as const;
 
 export const DEFAULT_CONFIG = {
@@ -158,6 +168,7 @@ export const DEFAULT_CONFIG = {
  codexMaxCallMs: 0,
  maxLatencyMs: 0,
  pendingTtlMs: 300000,
+ pendingFingerprintTtlMs: 0,
  focusWeighting: true,
  zeroCallEnabled: true,
  contextGraphEnabled: true,
@@ -173,12 +184,15 @@ export const DEFAULT_CONFIG = {
  artifactOffloadEnabled: false,
  contextHygieneEnabled: true,
  contextPressureOnly: true, // false opts into legacy break-even/cold-cache cleanup.
+ autoTrimBreakEvenRequests: AUTO_TRIM_BREAK_EVEN_REQUESTS,
+ autoTrimMinSavingChars: 16_384,
  contextNavigationEnabled: true,
  contextRecallEnabled: true,
  contextPivotEnabled: true,
  contextAnchorCacheEnabled: true,
  contextAnchorStatusEnabled: true,
  contextGuidanceEnabled: true,
+ promptCacheRoutingEnabled: false,
  telemetryChannel: "stable" as const,
  adaptiveDamageFeedback: false,
  onlineDamageMonitor: true,

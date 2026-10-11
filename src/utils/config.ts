@@ -51,6 +51,7 @@ const BOOLEAN_KEYS = [
  "contextAnchorCacheEnabled",
  "contextAnchorStatusEnabled",
  "contextGuidanceEnabled",
+ "promptCacheRoutingEnabled",
  "adaptiveDamageFeedback",
  "onlineDamageMonitor",
 ] as const;
@@ -519,6 +520,12 @@ const NUMERIC_RULES: readonly NumericRule[] = [
    "smart-compact config: pendingTtlMs must be 1000–3600000 (staged summary TTL).",
  },
  {
+  key: "pendingFingerprintTtlMs",
+  valid: (value) => validNumericLimit("pendingFingerprintTtlMs", value),
+  message: () =>
+   "smart-compact config: pendingFingerprintTtlMs must be 0 or 60000–3600000; 0 keeps the plain TTL.",
+ },
+ {
   key: "hindsightTimeoutMs",
   valid: (value) => validNumericLimit("hindsightTimeoutMs", value),
   message: () =>
@@ -529,6 +536,26 @@ const NUMERIC_RULES: readonly NumericRule[] = [
   valid: (value) => validNumericLimit("hindsightRecallMaxTokens", value),
   message: () =>
    "smart-compact config: hindsightRecallMaxTokens must be 128–4096; using default.",
+ },
+ {
+  key: "autoTrimBreakEvenRequests",
+  valid: (value) => validNumericLimit("autoTrimBreakEvenRequests", value),
+  message: (value) =>
+   "smart-compact config: autoTrimBreakEvenRequests must be 1–1000, got " +
+   value +
+   ". Using default " +
+   DEFAULT_CONFIG.autoTrimBreakEvenRequests +
+   ".",
+ },
+ {
+  key: "autoTrimMinSavingChars",
+  valid: (value) => validNumericLimit("autoTrimMinSavingChars", value),
+  message: (value) =>
+   "smart-compact config: autoTrimMinSavingChars must be 0–10000000, got " +
+   value +
+   ". Using default " +
+   DEFAULT_CONFIG.autoTrimMinSavingChars +
+   ".",
  },
  {
   key: "minContextPercent",

@@ -32,6 +32,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactConfig } from "../types.ts";
 import { isRecord } from "../utils/type-guards.ts";
+import { getProviderCacheCaps } from "../utils/tokens.ts";
 import { anchorFromMessage } from "./navigation-data.ts";
 
 type AnchorCacheConfig = Pick<CompactConfig, "contextNavigationEnabled" | "contextAnchorCacheEnabled">;
@@ -88,13 +89,20 @@ export function registerAnchorCache(
 
 function applyAnchorCache(
   payload: unknown,
-  ctx: Pick<ExtensionContext, "sessionManager">,
+  ctx: Pick<ExtensionContext, "sessionManager" | "model">,
   config: () => AnchorCacheConfig,
-): unknown {
+): AnthropicPayload | undefined {
   if (!isAnthropicPayload(payload)) return undefined;
   if (!listMarkers(payload).some((m) => m.section === "messages")) return undefined;
   const settings = config();
   if (!settings.contextNavigationEnabled || !settings.contextAnchorCacheEnabled) return undefined;
+
+  // Providers documented to ignore message-level markers (Moonshot's
+  // Anthropic-compatible endpoint reads only a top-level cache_control field)
+  // make every rewrite here a silent no-op that can only displace markers
+  // other consumers placed. Leave those payloads byte-identical.
+  const provider = ctx.model?.provider;
+  if (provider && getProviderCacheCaps(provider).level === "explicit-toplevel") return undefined;
 
   const anchors = branchAnchors(ctx.sessionManager?.getBranch?.() ?? []);
   const newest = anchors.at(-1);

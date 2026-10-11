@@ -11,7 +11,7 @@ type Sent = { message: { customType: string; content: string; details?: unknown 
 const settings = (over: Partial<ReturnType<ContextAttentionDeps["config"]>> = {}) => ({
   contextNavigationEnabled: true, contextGuidanceEnabled: true, toolLoading: "eager" as const, autoTrigger: true,
   autoTriggerStrategy: "settled" as const,
-  minContextPercent: 80, prepareContextPercent: null, maxContextTokens: 0, ...over,
+  minContextPercent: 80, prepareContextPercent: null, maxContextTokens: 0, autoTrimMinSavingChars: 16_384, autoTrimBreakEvenRequests: 24, ...over,
 });
 
 function harness(opts: { active?: string[]; config?: Partial<ReturnType<ContextAttentionDeps["config"]>>; canAct?: boolean; canCleanup?: boolean; reachable?: boolean; branch?: SessionEntry[] } = {}) {
