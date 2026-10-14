@@ -1,6 +1,23 @@
 # Changelog
 
-## [Unreleased]
+## [10.5.0] - 2026-10-14
+
+### Release approval
+
+- The release owner approved `10.5.0` as a stable minor release to `latest`
+  without a canary cohort. Defaults are unchanged (`requireApproval` stays
+  `true`), so with default settings every dialog behaves as in `10.4.0`; the
+  deterministic release gate covers the touched paths. Evidence limits: no
+  external canary cohort and no live provider-quality evidence; recorded here
+  as the owner exception required by `docs/RELEASE.md`.
+
+### Changed
+
+- `requireApproval: false` now also covers the anchor early-cleanup dialog and
+  the project-memory save/resolve confirmations, and permits headless memory
+  writes. It previously governed only the manual compaction apply screen.
+- The `smart_save_memory` tool description now reflects the `requireApproval`
+  setting at registration instead of always claiming a confirmation dialog.
 
 ## [10.4.0] - 2026-10-11
 

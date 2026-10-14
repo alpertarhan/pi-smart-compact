@@ -14,7 +14,11 @@ import { anchorFromEntry } from "../src/app/navigation-data.ts";
 import { registerNavigation } from "../src/app/register-navigation.ts";
 import { registerSmartContextTool } from "../src/app/register-smart-context-tool.ts";
 
-it.each([true, false])("real Pi applies early anchor cleanup only after host consent (approved=%s)", async approved => {
+it.each([
+  [true, false],
+  [false, false],
+  [false, true],
+])("real Pi applies early anchor cleanup only with host consent (approved=%s standingApproval=%s)", async (approved, standingApproval) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "psc-anchor-consent-"));
   let session: AgentSession | undefined;
   try {
@@ -25,7 +29,7 @@ it.each([true, false])("real Pi applies early anchor cleanup only after host con
     const model = { ...runtime.getModel("anthropic", "claude-opus-5-5")!, baseUrl: "http://127.0.0.1:1", contextWindow: 200_000 };
     const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, cacheWarming: "off" });
     const manager = SessionManager.inMemory(root);
-    const cfg = { ...DEFAULT_CONFIG, autoTrigger: false, contextHygieneEnabled: false };
+    const cfg = { ...DEFAULT_CONFIG, autoTrigger: false, contextHygieneEnabled: false, requireApproval: !standingApproval };
     const errors: unknown[] = [];
     const payload = "RECOVERABLE_ANCHOR_RESEARCH\n".repeat(200);
     let outputs = 0;
@@ -74,13 +78,14 @@ it.each([true, false])("real Pi applies early anchor cleanup only after host con
     };
     await session.prompt("Inspect the implementation, then mark a milestone and request safe cleanup.");
     expect(requests).toHaveLength(7);
-    expect(confirmations).toBe(1);
+    expect(confirmations).toBe(standingApproval ? 0 : 1);
     expect(JSON.stringify(requests[5])).toContain("RECOVERABLE_ANCHOR_RESEARCH");
     const after = JSON.stringify(requests[6]);
     const state = inspectContext(manager.getBranch(), manager.getSessionId());
-    expect(manager.getBranch().some(entry => anchorFromEntry(entry))).toBe(approved);
-    expect(state.references.size).toBe(approved ? 1 : 0);
-    if (approved) {
+    const saved = approved || standingApproval;
+    expect(manager.getBranch().some(entry => anchorFromEntry(entry))).toBe(saved);
+    expect(state.references.size).toBe(saved ? 1 : 0);
+    if (saved) {
       expect(after).toContain("[Archived search_graph output");
       expect(after).not.toContain(JSON.stringify(payload).slice(1, -1));
       expect(after).toContain("Keep the async API");

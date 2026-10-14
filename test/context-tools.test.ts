@@ -445,4 +445,37 @@ describe("context memory tools", () => {
     );
     expect(result.content[0].text).toContain("interactive host confirmation");
   });
+
+  it("saves memory without a confirmation dialog when requireApproval is off", async () => {
+    writeSmartCompactSettings({ requireApproval: false });
+    const save = registeredTools().tools.get("smart_save_memory");
+    let dialogs = 0;
+    const ctx = {
+      ...context(),
+      ui: { ...context().ui, confirm: async () => { dialogs++; return true; } },
+    };
+    const result = await save.execute(
+      "save-noconfirm",
+      { kind: "context", content: "no-dialog fact" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    expect(dialogs).toBe(0);
+    expect(result.content[0].text).toContain("Saved project memory");
+  });
+
+  it("writes memory headlessly when requireApproval is off", async () => {
+    writeSmartCompactSettings({ requireApproval: false });
+    const save = registeredTools().tools.get("smart_save_memory");
+    const ctx = { ...context(), hasUI: false };
+    const result = await save.execute(
+      "save-headless",
+      { kind: "context", content: "headless fact" },
+      new AbortController().signal,
+      () => { },
+      ctx,
+    );
+    expect(result.content[0].text).toContain("Saved project memory");
+  });
 });

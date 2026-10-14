@@ -150,7 +150,11 @@ export function registerContextTools(pi: ExtensionAPI): void {
   name: "smart_save_memory",
   label: "Save Project Memory",
   description:
-   "Save or resolve one durable project fact by ref; the host independently asks the user for approval, never claim it. Only durable decisions with rationale, conventions, root causes, gotchas, preferences; never guesses, secrets, logs, TODOs or plans. Report remote state literally (accepted/unknown is not searchable). Resolve only via the ref from a save result or a recall Ref: line; previews are truncated, so retyped content never matches.",
+   "Save or resolve one durable project fact by ref; the host " +
+   (loadConfig().requireApproval
+    ? "independently asks the user for approval, never claim it"
+    : "applies saves and resolves without a dialog (requireApproval is off); never tell the user to approve anything") +
+   ". Only durable decisions with rationale, conventions, root causes, gotchas, preferences; never guesses, secrets, logs, TODOs or plans. Report remote state literally (accepted/unknown is not searchable). Resolve only via the ref from a save result or a recall Ref: line; previews are truncated, so retyped content never matches.",
   parameters: Type.Object({
    kind: Type.Optional(
     StringEnum([
@@ -640,7 +644,7 @@ async function executeSaveMemory(
  const relatedPaths = (params.related_paths ?? []).map(
   (value) => scrubber.scrubText(value).value,
  );
- if (!ctx.hasUI) {
+ if (config.requireApproval && !ctx.hasUI) {
   return textResult(
    "Project memory requires an interactive host confirmation; nothing changed.",
   );
@@ -663,7 +667,7 @@ async function executeSaveMemory(
     "Saving project memory must run from a project directory and needs a persisted session id.",
    );
   }
-  const approved = await ctx.ui.confirm("Save Project Memory", confirmBody);
+  const approved = config.requireApproval ? await ctx.ui.confirm("Save Project Memory", confirmBody) : true;
   if (!approved || signal?.aborted) {
    return textResult("Project memory not changed: user did not approve.", {
     approved: false,
@@ -684,13 +688,13 @@ async function executeSaveMemory(
  if (config.memoryBackend === "mnemopi") {
   const target = mnemopiTarget(config, projectId);
   const memoryId = manualMemoryId(projectId, kind, content);
-  const approved = await ctx.ui.confirm(
+  const approved = config.requireApproval ? await ctx.ui.confirm(
    "Save Project Memory",
    confirmBody +
    "\n\nDestination:\n- Local Mnemopi database " + target.dbPath +
    "\n- Project " + projectId + ", ref mnemopi:" + memoryId + "@" + mnemopiTargetDigest(target.dbPath) +
    "\n- Full-text search only; no embeddings, downloads or model calls. No local-graph copy.",
-  );
+  ) : true;
   if (!approved || signal?.aborted) {
    return textResult("Project memory not changed: user did not approve.", {
     approved: false,
@@ -722,7 +726,7 @@ async function executeSaveMemory(
  const digest = hindsightTargetDigest(
   hindsight.target.baseUrl, hindsight.target.bankId, projectId, memoryId,
  );
- const approved = await ctx.ui.confirm(
+ const approved = config.requireApproval ? await ctx.ui.confirm(
   "Save Project Memory",
   confirmBody +
   "\n\nDestination:\n- Remote Hindsight server " + describeHindsightTarget(hindsight.target) +
@@ -730,7 +734,7 @@ async function executeSaveMemory(
   ", document " + hindsightDocumentId(memoryId) +
   ", ref hindsight:" + memoryId + "@" + digest +
   " (text below is stored server-side and processed by the server's extraction models)",
- );
+ ) : true;
  if (!approved || signal?.aborted) {
   return textResult("Project memory not changed: user did not approve.", {
    approved: false,
@@ -804,7 +808,7 @@ async function resolveMemoryByRef(
   return textResult(mismatch, { ref: params.ref });
  }
  const scrubber = new SecretScrubber(config.scrubSecrets, config.scrubPii);
- if (!ctx.hasUI) {
+ if (config.requireApproval && !ctx.hasUI) {
   return textResult(
    "Project memory requires an interactive host confirmation; nothing changed.",
   );
@@ -827,7 +831,7 @@ async function resolveMemoryByRef(
     { ref: params.ref },
    );
   }
-  const approved = await ctx.ui.confirm(
+  const approved = config.requireApproval ? await ctx.ui.confirm(
    "Resolve Project Memory",
    "Ref: " + params.ref +
    "\nSource: local context graph " + contextGraphFile() + " (project " + projectId + ")" +
@@ -840,7 +844,7 @@ async function resolveMemoryByRef(
    (stored.relatedPaths.length ? "\n\nPaths: " + scrubber.scrubText(stored.relatedPaths.join(", ")).value : "") +
    description +
    "\n\nAction: close this local memory (status=resolved); it stops appearing in recall.",
-  );
+  ) : true;
   if (!approved || signal?.aborted) {
    return textResult("Project memory not changed: user did not approve.", { approved: false });
   }
@@ -881,7 +885,7 @@ async function resolveMemoryByRef(
     { ref: fullRef, mnemopi: inspect },
    );
   }
-  const approved = await ctx.ui.confirm(
+  const approved = config.requireApproval ? await ctx.ui.confirm(
    "Resolve Project Memory",
    "Ref: " +
    fullRef +
@@ -897,7 +901,7 @@ async function resolveMemoryByRef(
    inspect.fact.content +
    description +
    "\n\nAction: DELETE this one fact from the Mnemopi database.",
-  );
+  ) : true;
   if (!approved || signal?.aborted) {
    return textResult("Project memory not changed: user did not approve.", { approved: false });
   }
@@ -933,7 +937,7 @@ async function resolveMemoryByRef(
  }
  const fullRef = "hindsight:" + ref.id + "@" + digest;
  const documentId = hindsightDocumentId(ref.id);
- const approved = await ctx.ui.confirm(
+ const approved = config.requireApproval ? await ctx.ui.confirm(
   "Resolve Project Memory",
   "Ref: " +
   fullRef +
@@ -945,7 +949,7 @@ async function resolveMemoryByRef(
   documentId +
   description +
   "\n\nAction: DELETE this one document from the server. Server backups are outside this guarantee.",
- );
+ ) : true;
  if (!approved || signal?.aborted) {
   return textResult("Project memory not changed: user did not approve.", { approved: false });
  }

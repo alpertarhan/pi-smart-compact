@@ -273,21 +273,25 @@ export function registerNavigation(pi: ExtensionAPI, options: {
    }
    if (params.action === "anchor") {
     const early = config().contextPressureOnly && !contextPressure(ctx, config()).cleanup;
-    if (early && !ctx.hasUI) throw new Error("No context pressure (or usage is unavailable); early anchor requires host confirmation. No anchor or cleanup requested. A human can use /smart-compact.");
+    if (early && !ctx.hasUI && config().requireApproval) throw new Error("No context pressure (or usage is unavailable); early anchor requires host confirmation. No anchor or cleanup requested. A human can use /smart-compact.");
     let data = anchor(ctx, params.name ?? "", params.summary ?? "");
     let userConfirmed = false;
     if (early) {
      if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority; no anchor or cleanup requested.");
-     const approvalEpoch = epoch;
-     const sessionId = resolveSessionId(ctx);
-     const approved = await ctx.ui.confirm("Save anchor and request early cleanup?",
-      `Anchor: ${data.name}\n\n${data.summary}\n\nAllow this anchor and one safe cleanup without context pressure? Only eligible old tool outputs may be shortened; recent turns, protected prefixes and safety checks stay. No full compaction or file/process rollback. Cleanup can be blocked by prepared work or safety checks. This does not change your settings or authorize future calls.`,
-      { signal });
-     if (approved !== true || signal?.aborted) throw new Error("Anchor not approved or cancelled; no anchor or cleanup requested. Do not retry without a new user request.");
-     if (approvalEpoch !== epoch || sessionId !== resolveSessionId(ctx) || data.targetId !== ctx.sessionManager.getLeafId()
-      || ctx.hasPendingMessages() || !agentAllowed()) throw new Error("Anchor confirmation expired: session, history, pending input or tool permissions changed. Nothing was queued.");
-     data = anchor(ctx, data.name, data.summary); // recheck navigation, running work and name after the dialog
-     userConfirmed = true; // host response only; never read this from model arguments
+     if (!config().requireApproval) {
+      userConfirmed = true; // requireApproval=false is the host's standing approval; no dialog to revalidate
+     } else {
+      const approvalEpoch = epoch;
+      const sessionId = resolveSessionId(ctx);
+      const approved = await ctx.ui.confirm("Save anchor and request early cleanup?",
+       `Anchor: ${data.name}\n\n${data.summary}\n\nAllow this anchor and one safe cleanup without context pressure? Only eligible old tool outputs may be shortened; recent turns, protected prefixes and safety checks stay. No full compaction or file/process rollback. Cleanup can be blocked by prepared work or safety checks. This does not change your settings or authorize future calls.`,
+       { signal });
+      if (approved !== true || signal?.aborted) throw new Error("Anchor not approved or cancelled; no anchor or cleanup requested. Do not retry without a new user request.");
+      if (approvalEpoch !== epoch || sessionId !== resolveSessionId(ctx) || data.targetId !== ctx.sessionManager.getLeafId()
+       || ctx.hasPendingMessages() || !agentAllowed()) throw new Error("Anchor confirmation expired: session, history, pending input or tool permissions changed. Nothing was queued.");
+      data = anchor(ctx, data.name, data.summary); // recheck navigation, running work and name after the dialog
+      userConfirmed = true; // host response only; never read this from model arguments
+     }
     }
     const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal, userConfirmed) ?? "History unchanged; no cleanup controller attached.";
     return { content: [{ type: "text", text: `Anchor: ${data.name}\n\n${data.summary}\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };

@@ -82,7 +82,8 @@ participates only when Pi starts compaction. [Trigger settings](./docs/configura
 For your first run, choose **Compact now**, inspect the plan, then review the
 result. **A** applies it; **C** or **Esc** cancels. **Enter does not apply** on
 the review screen. Approval is required unless you explicitly disable
-`requireApproval`.
+`requireApproval`, which then also skips the early-anchor cleanup and
+project-memory save/resolve confirmations.
 
 ### Optional components
 

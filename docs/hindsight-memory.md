@@ -129,8 +129,9 @@ server's configuration:
 - Enabling `memoryBackend: "hindsight"` is the consent for remote **recall**
   of scrubbed queries.
 - Every **save and resolve** still requires your approval in Pi's
-  confirmation dialog. The dialog shows the kind, title, full scrubbed
-  content, paths, and the destination:
+  confirmation dialog unless `requireApproval: false` (a standing approval:
+  no dialog, and headless hosts may write). The dialog shows the kind, title,
+  full scrubbed content, paths, and the destination:
   - server URL and bank;
   - project tag;
   - document id and the ref;
