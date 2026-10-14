@@ -72,6 +72,7 @@ export interface CompactConfig {
   * min(model.contextWindow, maxContextTokens); hard headroom checks do not.
   */
  maxContextTokens: number;
+ /** Approval gate: manual compaction apply, early anchor cleanup and project-memory save/resolve dialogs. false = standing approval, no dialogs. */
  requireApproval: boolean;
  scrubSecrets: boolean;
  scrubPii: boolean;

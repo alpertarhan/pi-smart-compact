@@ -287,7 +287,7 @@ const CATEGORIES: ReadonlyArray<{
           setting: {
             id: "requireApproval",
             label: "Ask before applying",
-            description: "Shows a manual /smart-compact result for approval before it replaces the conversation.",
+            description: "Shows a manual /smart-compact result for approval before it replaces the conversation. Also gates early-anchor cleanup and project-memory save/resolve dialogs.",
             values: BOOLEAN_VALUES,
           },
         },

@@ -39,7 +39,7 @@ reports describe their own revisions, not necessarily today's behavior.
 | --- | --- | --- |
 | **Context hygiene** | Reduce active tool-output noise while keeping eligible evidence retrievable. Local cleanup needs no summary-model call. | A new conversation summary. |
 | **Session continuity** | Carry constraints, decisions, failures and next steps through research, compaction and reload. | Filesystem rollback or a complete copy of the original history. |
-| **Project memory** | Recall scoped facts through one selected backend; explicit saves require confirmation. The local graph can also index derived compaction state. | Backups, output archives or automatic transcript upload. |
+| **Project memory** | Recall scoped facts through one selected backend; explicit saves require confirmation unless `requireApproval` is off. The local graph can also index derived compaction state. | Backups, output archives or automatic transcript upload. |
 
 The [storage guide](./guide.md#storage-and-privacy) explains where each kind of
 state lives and how long it is retained.
