@@ -96,6 +96,37 @@ describe("verifySummary", () => {
 			label + "Deploy only after approval\n- Deploy without approval",
 		)).toBe(true);
 	});
+	it("scopes subordinate negation to its own clause", () => {
+		const source = "alpha is only used in mode A. so this beta is fine, no need to check config.";
+		const target = "alpha is only used in mode A; beta is fine for other modes.";
+		expect(hasSemanticContradiction(source, target)).toBe(false);
+		expect(
+			hasSemanticContradiction(
+				"beta is fine",
+				"beta is fine, no need to check config.",
+			),
+		).toBe(false);
+		expect(hasSemanticContradiction("beta is not fine", "beta is fine")).toBe(true);
+		expect(
+			hasSemanticContradiction(
+				"The operation is not required.",
+				"The operation is required.",
+			),
+		).toBe(true);
+
+		const extraction = makeExtraction({
+			constraints: [{ index: 0, text: source, category: "requirement", confidence: 1 }],
+		});
+		const summary = assembleFallback([], extraction).replace(source, target);
+		expect(summary).toContain(target);
+		const result = verifySummary(summary, extraction);
+		expect(result.ok).toBe(true);
+		expect(
+			result.gaps.filter(
+				(gap) => gap.kind === "inconsistency" && gap.detail.includes("semantic-contradiction"),
+			),
+		).toEqual([]);
+	});
 
 	it.each([
 		"HOME was a temporary directory during the run, so no user files were touched; the token was never printed.",
