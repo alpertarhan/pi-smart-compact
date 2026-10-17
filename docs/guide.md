@@ -425,8 +425,14 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
   pairs, including supported graph queries, diagnostics and web research.
   It removes intermediate assistant prose, the rewind call itself and this
   extension's pressure hints created during the detour, leaving one handoff.
-  Unrelated extension messages stay. Errors, instruction reads, incomplete exchanges, images, shell
-  commands, writes and unknown tools stay.
+  Unrelated extension messages stay. Errors, instruction reads, incomplete exchanges, images, writes
+  and unknown tools stay. Shell commands stay unless every line and pipeline segment only reads:
+  `rg`, `grep`, `cat`, `head`, `tail`, `wc`, `ls`, `sort`/`uniq` without output files, `sed -n`
+  line ranges (`40,75p`), `find` without `-exec`/`-delete`/`-fprint*`, and `git status/diff/log/show`
+  without `-c`/`--ext-diff`/`--output`. Variables, globs, substitutions, heredocs and redirects other
+  than `/dev/null` keep the command.
+- With signed Anthropic thinking, rewind applies only when nothing it keeps follows what it removes:
+  a writing tool in the detour blocks it, and the refusal names the kept batches.
 - **Files, processes, Git state and external effects are never rolled back.**
 - The report (maximum 8,000 characters) is written by the agent and is not
   verified. It should include findings with evidence paths/identifiers,
@@ -625,7 +631,7 @@ migrated or cleared.
 - Hindsight: Pi Continuity never installs, starts or configures a server. See
   [Hindsight memory backend](./hindsight-memory.md).
 - Mnemopi runs in a bounded `bun --no-install` worker. The engine
-  (`@oh-my-pi/pi-mnemopi` 18.3.1) is an optional component you install into
+  (`@oh-my-pi/pi-mnemopi` 18.11.3) is an optional component you install into
   Pi's package directory; the worker runs on a Bun 1.3.14 or newer from `PATH`,
   or on the optional `bun` (1.4.2) component installed the same way. Nothing is
   downloaded with the extension; **Readiness & details** shows the install

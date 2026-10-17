@@ -30,7 +30,7 @@ checks. Good contributions keep all three in balance.
 
 ## Local setup
 
-Prerequisites: Bun 1.4.2 (the `packageManager` pin), Node >=22.19 with npm on
+Prerequisites: Bun 1.4.3 (the `packageManager` pin), Node >=22.19 with npm on
 `PATH` (the release audit smokes the packed extension under Node), `rg`
 (ripgrep) on `PATH` for the offline task evaluation inside the audit, and
 network access for package installation.

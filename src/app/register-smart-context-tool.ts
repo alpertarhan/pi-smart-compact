@@ -25,7 +25,7 @@ import {
  tryRow,
 } from "../ui/tool-rows.ts";
 import {
-  CONTEXT_CONTROL_TYPE, contextControlEntry, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim, trimRoi,
+  CONTEXT_CONTROL_TYPE, contextControlEntry, describeTrimSkip, inspectContext, lastAnchorBoundary, planContextRewind, planContextTrim, trimRoi,
   thinkingEditReason, trimBreakEvenRequests, trimEntries, trimTokens,
 } from "./context-operations.ts";
 
@@ -564,7 +564,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
       const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
       if (!plan.entries.length || (anchor?.callId && !userConfirmed && plan.automatic !== "ready")) {
-        return { state: "no-eligible", notice: plan.blockedReason ?? (anchor ? "No safe cleanup batch ready; recent turns and protected prefixes stay unchanged." : "No eligible archived output to trim.") };
+        return { state: "no-eligible", notice: plan.blockedReason ?? describeTrimSkip(plan, config().autoTrimMinSavingChars) };
       }
       mark = null;
       queued = {

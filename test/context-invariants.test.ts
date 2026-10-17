@@ -84,6 +84,8 @@ describe("assistant content invariant", () => {
     expect(plan.entries).toEqual([]);
     expect(plan.blockedReason).toContain("signed Anthropic thinking");
     expect(() => planContextRewind(s.getBranch(), s.getSessionId(), "cp", "done")).toThrow("signed Anthropic thinking");
+    // The refusal names what was kept, so the agent knows which batches blocked the rewind.
+    expect(() => planContextRewind(s.getBranch(), s.getSessionId(), "cp", "done")).toThrow("Kept tool batches after the checkpoint:");
     expect(assistantMessages(s)).toEqual(before);
   });
 
@@ -98,6 +100,32 @@ describe("assistant content invariant", () => {
     call(s, "read", { path: "src/pure.ts" }, big("pure"), [thinking("temporary research")]);
     const plan = planContextRewind(s.getBranch(), s.getSessionId(), "pure", "The pure finding.");
     expect(plan.removed).toBe(2);
+    const report = plan.entries.find(entry => entry.type === "custom_message") as { content: string };
+    expect(report.content).toMatch(/2 research messages removed \(\d+ chars of tool output\); kept no tool batches/);
+    apply(s, plan.entries);
+    expect(assistantMessages(s)).toEqual(before);
+  });
+
+  it.each([
+    ["rewinds", "rg -n foo src | head -20"],
+    ["refuses", "rg -n foo src > found.txt"],
+  ])("%s a signed-thinking detour whose shell call is %s", (verdict, command) => {
+    const s = session(true);
+    s.appendCustomEntry(CONTEXT_CONTROL_TYPE, { version: 1, action: "checkpoint", checkpoint: {
+      id: "shell", label: "Shell research", sessionId: s.getSessionId(), originId: s.getLeafId(),
+      snapshot: fingerprintContext(contextMessageEntries(s.getBranch())),
+    } });
+    const before = assistantMessages(s);
+    call(s, "read", { path: "src/d.ts" }, big("d"), [thinking("read first")]);
+    call(s, "bash", { command }, big("rg"), [thinking("then search")]);
+    const rewind = () => planContextRewind(s.getBranch(), s.getSessionId(), "shell", "Found foo in src/d.ts.");
+    if (verdict === "refuses") {
+      // A shell call that writes stays, and the signed thinking after the removed read blocks the rewind.
+      expect(rewind).toThrow("Kept tool batches after the checkpoint: bash.");
+      return;
+    }
+    const plan = rewind();
+    expect(plan.removed).toBe(4); // both call/result pairs
     apply(s, plan.entries);
     expect(assistantMessages(s)).toEqual(before);
   });

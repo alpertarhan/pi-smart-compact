@@ -63,7 +63,9 @@ function providerRoutesWithQuality(rc: StatedRc) {
   (route) => route.stage === "synthesize" && route.successes > 0,
  );
  const initialScore = rc.verificationProvenance?.initialScore;
+ // A summary partly built by deterministic fallback says nothing about the route's own quality.
  if (
+  rc.generationFallbacks?.length ||
   synthesisRoutes.length !== 1 ||
   typeof initialScore !== "number" ||
   !Number.isFinite(initialScore)

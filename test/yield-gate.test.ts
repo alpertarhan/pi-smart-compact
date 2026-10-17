@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { verifyCompactionYield, YieldGateError } from "../src/domain/yield-gate.ts";
+import { exceedsYieldTarget, verifyCompactionYield, YieldGateError } from "../src/domain/yield-gate.ts";
 import type { CompactionWindowPlan } from "../src/app/run-context.ts";
 
 function plan(patch: Partial<CompactionWindowPlan> = {}): CompactionWindowPlan {
@@ -14,11 +14,20 @@ function plan(patch: Partial<CompactionWindowPlan> = {}): CompactionWindowPlan {
 
 describe("post-summary yield gate", () => {
   it("fails closed when the verified summary misses the planned target", () => {
-    expect(() => verifyCompactionYield(1_000, 102, plan())).toThrow(YieldGateError);
-    try { verifyCompactionYield(1_000, 102, plan()); } catch (error) {
-      expect(error).toMatchObject({ name: "YieldGateError", reason: "target-miss", estimatedAfterTokens: 302 });
+    expect(() => verifyCompactionYield(1_000, 116, plan())).toThrow(YieldGateError);
+    try { verifyCompactionYield(1_000, 116, plan()); } catch (error) {
+      expect(error).toMatchObject({ name: "YieldGateError", reason: "target-miss", estimatedAfterTokens: 316 });
       expect(JSON.stringify(error)).not.toContain("summary content");
     }
+  });
+
+  it("accepts an overshoot within 5% of the target, as staged revalidation does", () => {
+    expect(verifyCompactionYield(1_000, 115, plan())).toMatchObject({ estimatedAfterTokens: 315 });
+    expect(exceedsYieldTarget(315, 300)).toBe(false);
+    expect(exceedsYieldTarget(316, 300)).toBe(true);
+    // Small targets keep the one-token rounding allowance.
+    expect(exceedsYieldTarget(11, 10)).toBe(false);
+    expect(exceedsYieldTarget(12, 10)).toBe(true);
   });
 
   it("fails closed below the 10% net-saving policy", () => {

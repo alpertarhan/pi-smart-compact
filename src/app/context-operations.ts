@@ -5,7 +5,7 @@ import {
 import type { ModelCostRates, ToolCall } from "@earendil-works/pi-ai";
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
 import {
-  fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, isShellTool, normalizeToolName, toolCallSubject,
+  fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, isRemovableResearchCall, isShellTool, normalizeToolName, toolCallSubject,
 } from "../domain/tool-semantics.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { extractText, flattenToolCallBlock, type FlatToolCall } from "../utils/extraction.ts";
@@ -20,8 +20,9 @@ export const CONTEXT_REPORT_TYPE = "smart-compact-rewind";
 export const ATTENTION_CUSTOM_TYPE = "smart-compact-attention";
 export const MAX_CONTEXT_EDITS = 512;
 export const MAX_TRIM_EDITS = 32;
-export const MIN_TRIM_CHARS = 4_096;
-const KEEP_RECENT_TURNS = 4;
+// 2 KB keeps every edit worth ≥1.6 KB after its ≤400-char marker while reaching ~60% of output volume (4 KB: ~33%).
+export const MIN_TRIM_CHARS = 2_048;
+export const KEEP_RECENT_TURNS = 4;
 /** Per-line digest budget so a long first line cannot crowd out risk lines. */
 const TRIM_DIGEST_LINE_CHARS = 100;
 const TRIM_RISK_LINES = 3;
@@ -207,7 +208,7 @@ function toolGroups(branch: SessionEntry[], admit: (call: FlatToolCall) => boole
 
 /** Keep complete call/result groups, including all siblings if any tool may have side effects. */
 export function removableResearch(branch: SessionEntry[]): Set<string> {
-  return new Set(toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments)).keys());
+  return new Set(toolGroups(branch, call => isRemovableResearchCall(call.name, call.arguments)).keys());
 }
 
 function digestLine(line: string, max = TRIM_DIGEST_LINE_CHARS): string {
@@ -441,6 +442,27 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
   return { entries, references, archives, savedChars, automatic, cooldownTurns, superseded: supersededCount, blockedReason };
 }
 
+/** Why a trim plan queues nothing, with its numbers, so a skipped cleanup is diagnosable without debug mode. */
+export function describeTrimSkip(plan: { entries: unknown[]; savedChars: number; automatic: string; cooldownTurns: number }, floorChars: number): string {
+  if (!plan.entries.length) {
+    return `No safe cleanup: no eligible tool output (each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
+  }
+  if (plan.automatic === "cooldown") return `No safe cleanup yet: cooldown, ${plan.cooldownTurns} more turn(s) after the last context change.`;
+  return `No safe cleanup: eligible outputs would save ${plan.savedChars} chars, under the ${floorChars}-char floor.`;
+}
+
+/** Tool names of assistant batches after `fromIndex` that a context change keeps, e.g. "bash ×3, edit". */
+function keptBatchSummary(branch: SessionEntry[], fromIndex: number, removed: Set<string>): string {
+  const counts = new Map<string, number>();
+  for (const entry of branch.slice(fromIndex + 1)) {
+    if (entry.type !== "message" || entry.message.role !== "assistant" || removed.has(entry.id)) continue;
+    for (const block of entry.message.content) {
+      if (block.type === "toolCall") counts.set(normalizeToolName(block.name), (counts.get(normalizeToolName(block.name)) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name).join(", ");
+}
+
 /** The plan's context edits followed by a trim control entry recording `cause`. */
 export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references: string[]; archives: ArchiveRecord[] }, cause: TrimCause): SessionBoundaryDraft[] {
   const edits = plan.entries.filter(entry => entry.type === "context_edit");
@@ -516,9 +538,13 @@ export function planContextRewind(branch: SessionEntry[], sessionId: string, che
     archives.push({ id: entry.id, sha256, chars: text.length });
   }
   const entries: SessionBoundaryDraft[] = targets.map(targetId => ({ type: "context_edit", targetId, replacement: null }));
+  const kept = keptBatchSummary(branch, state.checkpointIndex, targetSet);
   const blockedReason = thinkingEditReason(branch, entries, readerApi);
-  if (blockedReason) throw new Error(blockedReason);
-  const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed; errors and potentially side-effecting tool batches kept. Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.${mismatched ? ` ${mismatched} archived outputs no longer match their records and are not offered for recovery.` : ""}`;
+  if (blockedReason) {
+    throw new Error(blockedReason + (kept ? ` Kept tool batches after the checkpoint: ${kept}.` : ""));
+  }
+  const removedChars = archives.reduce((sum, record) => sum + record.chars, 0);
+  const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed (${removedChars} chars of tool output); kept ${kept || "no tool batches"} (errors, shell commands, writes and unknown tools stay). Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.${mismatched ? ` ${mismatched} archived outputs no longer match their records and are not offered for recovery.` : ""}`;
   entries.push({ type: "custom_message", customType: CONTEXT_REPORT_TYPE, content, display: true });
   entries.push(contextControlEntry({ version: 1, action: "rewind", references, archives }));
   return { entries, removed: targets.length };

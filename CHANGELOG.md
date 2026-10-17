@@ -1,5 +1,72 @@
 # Changelog
 
+## [Unreleased]
+
+## [10.6.0] - 2026-10-17
+
+### Added
+
+- `providerContextEditing` (`Anthropic server cleanup`, default `"off"`): for
+  direct Anthropic sessions, adds Anthropic context editing to the session
+  model's requests. Old shell and read-only research tool results are cleared
+  server-side from the cleanup band; `"tool-results-and-thinking"` also clears
+  thinking older than the last 4 turns. The session history is unchanged and
+  signed thinking stays valid, which local trims cannot provide there.
+- Research rewind removes shell commands that only read: allowlisted commands
+  (`rg`, `grep`, `cat`, `sed -n` ranges, `git diff/log/show`, ...) without
+  variables, globs, substitutions, heredocs or file redirects. With signed
+  Anthropic thinking, a detour that only reads can therefore be rewound.
+
+### Changed
+
+- Trims consider tool outputs from 2,048 characters (previously 4,096).
+- Anchors, trims and rewinds report why nothing was cleaned up (no eligible
+  output, savings under the floor, or cooldown) with their numbers. A rewind
+  report states the characters removed and the tool batches kept; a refused
+  rewind names the kept batches.
+- The context-pressure hint no longer suggests an anchor when cleanup is
+  blocked. It states when a rewind can still apply.
+
+- Optional component pins: `@oh-my-pi/pi-mnemopi` 18.11.3 and `bun` 1.4.3.
+  The install commands in readiness messages and the README use these versions.
+  The Pi peer floor stays `>=0.87.1`. Development now runs against Pi 1.3.0.
+- The yield check accepts a verified summary up to 5% over the planned
+  post-compaction target (previously 1 token). Staged candidates are
+  revalidated with the same rule.
+- Constraint findings from the verification gate name their origin: `message
+  #N`, `continuity state`, `focus`, or `compaction note`.
+
+### Fixed
+
+- Synthetic compaction anchors no longer repeat the compaction summary in the
+  model context. The summary stays in the anchor's details for navigation.
+- `smart_navigation` anchor results no longer repeat the summary passed in the
+  call.
+- Heredoc bodies are no longer parsed as shell, so `x => y` in a heredoc no
+  longer records `y` as a modified file.
+- Smart Compact's own context-pressure hints are no longer summarized as open
+  loops.
+- Runs with deterministic fallback batches no longer credit the synthesis
+  route with the summary's quality score in metrics.
+- MiniMax-M3 compaction calls no longer end at `max_tokens` without text. A
+  `minimal` thinking level is now sent without thinking: MiniMax-M3 thinks only
+  when asked, and enabled thinking ignored `budget_tokens`. The `minimax`
+  output cap is raised from 4096 to 8192, so the 6000-token balanced summary
+  budget is no longer cut.
+- The verification gate no longer fails every run on evidence it can never
+  accept. The floor's own "Topics Covered" lines are not mined as rules. Of
+  two required rules the gate reads as contradicting, the newer one retires
+  the older. A steering focus can no longer be scored as contradicted.
+- `smart_compact` metrics reports now list recent issues. Gate failures
+  record their first findings there.
+- Summary-route, explore, batch, single-pass and assembly fallbacks now show
+  their literal cause in the TUI and in Recent issues, once per session per
+  cause. Verbose or debug mode is no longer needed.
+- `smart_compact`'s own failures are no longer carried into summaries as
+  unresolved session errors.
+- Only the Constraints section of a host compaction summary is mined for
+  rules. Its other sections are history.
+
 ## [10.5.0] - 2026-10-14
 
 ### Release approval

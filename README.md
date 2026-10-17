@@ -93,8 +93,8 @@ your behalf.
 
 | Feature (off by default) | Component | Approximate disk use¹ |
 | --- | --- | --- |
-| Mnemopi memory store | `@oh-my-pi/pi-mnemopi@18.3.1` and its engine packages | 195 MB |
-| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.2` | 60 MB |
+| Mnemopi memory store | `@oh-my-pi/pi-mnemopi@18.11.3` and its engine packages | 195 MB |
+| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.3` | 60 MB |
 | Image snapshots (`visualArchiveEnabled`) | `@resvg/resvg-js@2.6.2` | 3.5 MB |
 
 ¹ Measured on macOS arm64; not download sizes or cross-platform guarantees.
@@ -103,7 +103,7 @@ your behalf.
 missing component and your Pi install root. A typical Mnemopi setup is:
 
 ```bash
-npm install @oh-my-pi/pi-mnemopi@18.3.1 bun@1.4.2 --prefix ~/.pi/agent/npm --legacy-peer-deps
+npm install @oh-my-pi/pi-mnemopi@18.11.3 bun@1.4.3 --prefix ~/.pi/agent/npm --legacy-peer-deps
 ```
 
 Pi uses `--legacy-peer-deps`, so optional peers are not pulled in automatically.

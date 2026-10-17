@@ -15,7 +15,7 @@ import type { LlmMessage } from "../src/types.ts";
 import { fingerprintContext } from "../src/app/pending-slot.ts";
 import { formatDeferredTrim, registerSmartContextTool } from "../src/app/register-smart-context-tool.ts";
 import {
-  CONTEXT_CONTROL_TYPE, inspectContext, planContextTrim, planContextRewind, readContextReference,
+  CONTEXT_CONTROL_TYPE, describeTrimSkip, inspectContext, planContextTrim, planContextRewind, readContextReference,
   lastAnchorBoundary, MAX_CONTEXT_EDITS, buildTrimMarker,
 } from "../src/app/context-operations.ts";
 import { contextEvidence } from "../src/app/context-evidence.ts";
@@ -953,6 +953,10 @@ describe("anchor consolidation", () => {
     expect(h.prompts[0]).toContain("reviewed");
     expect(h.prompts[0]).toContain("Preserve constraints");
     expect(batch.response.details.userConfirmed).toBe(true);
+    // The summary lives in the call arguments and details; the result must not bill it a second time.
+    expect(batch.response.content[0].text).toContain("Anchor saved: reviewed");
+    expect(batch.response.content[0].text).not.toContain("Preserve constraints");
+    expect(batch.response.details.anchor.summary).toContain("Preserve constraints");
     expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
     h.boundary(batch);
     expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(true);
@@ -1331,8 +1335,17 @@ describe("manual trim controller", () => {
     anchorBatch(empty.session, "gate");
     tail(empty.session);
     expect(empty.controller.requestManualTrim(empty.ctx)).toEqual({
-      state: "no-eligible", notice: "No eligible archived output to trim.",
+      state: "no-eligible", notice: describeTrimSkip({ entries: [], savedChars: 0, automatic: "insufficient-savings", cooldownTurns: 0 }, h.cfg.autoTrimMinSavingChars),
     });
+  });
+
+  it("names why a trim plan queues nothing, with its numbers", () => {
+    expect(describeTrimSkip({ entries: [], savedChars: 0, automatic: "insufficient-savings", cooldownTurns: 0 }, 16_384))
+      .toContain("no eligible tool output");
+    expect(describeTrimSkip({ entries: [1], savedChars: 5_000, automatic: "insufficient-savings", cooldownTurns: 0 }, 16_384))
+      .toBe("No safe cleanup: eligible outputs would save 5000 chars, under the 16384-char floor.");
+    expect(describeTrimSkip({ entries: [1], savedChars: 50_000, automatic: "cooldown", cooldownTurns: 3 }, 16_384))
+      .toBe("No safe cleanup yet: cooldown, 3 more turn(s) after the last context change.");
   });
 });
 

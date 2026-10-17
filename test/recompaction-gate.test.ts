@@ -6,9 +6,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { mineConstraints, isNonLiveConstraintText } from "../src/utils/extraction.ts";
+import { catalogErrors, mineConstraints, isNonLiveConstraintText } from "../src/utils/extraction.ts";
 import { retireSupersededConstraints, buildCompactionState } from "../src/utils/state.ts";
-import { verifySummary, releasesConstraint } from "../src/phases/verify.ts";
+import { formatVerificationGap, verifySummary, releasesConstraint } from "../src/phases/verify.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
 import { buildState } from "../src/app/steps/state.ts";
 import { createServices } from "../src/infra/services.ts";
@@ -93,6 +93,51 @@ describe("mineConstraints skips non-live text (issue #72 poison classes)", () =>
 		expect(mined.some((item) => item.text.includes("audit log table"))).toBe(true);
 	});
 
+	it("does not re-mine the floor's own Topics Covered lines, so the floor passes its own gate", () => {
+		const failedChunk = (summary: string) => ({
+			topic: "Working on featured-strip-density.spec.ts",
+			startIndex: 0,
+			endIndex: 1,
+			summary,
+			keyDecisions: [],
+			filesModified: [],
+			filesRead: [],
+			filesDeleted: [],
+			priority: "normal" as const,
+		});
+		const prior = assembleFallback([
+			failedChunk("[Failed] Ran the density spec; the strip must use the compact rail layout"),
+			failedChunk("[Failed] Ran the density spec; the strip must not use the compact rail layout"),
+		], makeExtraction());
+		expect(prior).toContain("**Working on featured-strip-density.spec.ts** [normal]: [Failed]");
+		const mined = mineConstraints([user(prior)]);
+		expect(mined).toEqual([]);
+		const extraction = makeExtraction({ constraints: mined });
+		expect(verifySummary(assembleFallback([], extraction), extraction, null).ok).toBe(true);
+	});
+
+	it("mines only the Constraints section of a host compaction summary", () => {
+		const summary = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n" +
+			"## Goal\nShip the rail\n## Constraints\n- Never push to main\n## Progress\n- [ ] Old anchor must not be reused\n## Next Steps\n1. Do not touch BRIEF.md yet\n</summary>";
+		expect(mineConstraints([user(summary)]).map((item) => item.text)).toEqual(["Never push to main"]);
+	});
+
+	it("does not catalog this extension's own failure as session work", () => {
+		const msgs = [
+			{ role: "assistant", content: [{ type: "toolCall", id: "c1", name: "smart_compact", arguments: {} }] },
+			{ role: "toolResult", toolCallId: "c1", isError: true, content: [{ type: "text", text: "Verification stopped apply at the post-synthesis gate: 0/100. Conversation unchanged." }] },
+		] as unknown as LlmMessage[];
+		expect(catalogErrors(msgs)).toEqual([]);
+	});
+
+	it("names where a required rule came from in gate findings", () => {
+		const extraction = makeExtraction({
+			constraints: [{ text: "Never push to main", index: 2, category: "prohibition", confidence: 0.85 }],
+		});
+		const result = verifySummary(assembleFallback([], makeExtraction()), extraction, null);
+		expect(result.gaps.map(formatVerificationGap)).toContain("Missing constraint: Never push to main [message #2]");
+	});
+
 	it("still mines genuine user rules", () => {
 		const mined = mineConstraints([user("Never use tabs in this codebase, spaces only")]);
 		expect(mined.length).toBe(1);
@@ -105,6 +150,8 @@ describe("mineConstraints skips non-live text (issue #72 poison classes)", () =>
 		expect(isNonLiveConstraintText("npm error code ELIFECYCLE")).toBe(true);
 		expect(isNonLiveConstraintText("EESV Compact completed at 12:00")).toBe(true);
 		expect(isNonLiveConstraintText("Do not deploy on Fridays")).toBe(false);
+		expect(isNonLiveConstraintText("- **Working on a.ts** [high]: must use tabs")).toBe(true);
+		expect(isNonLiveConstraintText("**Important**: must use tabs")).toBe(false);
 	});
 
 	it("keeps a genuine standalone user rule that shares words with this extension's prose (A05)", () => {
@@ -193,6 +240,39 @@ describe("retireSupersededConstraints", () => {
 		const msgs = [user(rule), user("reminder: do not push until tests pass, still waiting")];
 		const overrides = retireSupersededConstraints([{ text: rule, index: 0 }], msgs, []);
 		expect(overrides).toEqual([]);
+	});
+
+	it("retires the older of two required rules the gate reads as contradicting, so the floor passes", () => {
+		const older = "Do not use the old arrow-polish anchor for the featured rail";
+		const newer = "Use the old arrow-polish anchor for the featured rail";
+		const rule = (text: string, index: number) => ({ text, index, category: "requirement" as const, confidence: 0.85 });
+		const extraction = makeExtraction({ constraints: [rule(older, 2), rule(newer, 9)] });
+		// Without retirement both rules are required and no summary can satisfy them.
+		expect(verifySummary(assembleFallback([], extraction), extraction, null).ok).toBe(false);
+		const overrides = retireSupersededConstraints(extraction.constraints, [], []);
+		expect(overrides.map((item) => [item.summaryKey, item.status, item.replacement])).toEqual([
+			[normalizeFactKey(older), "superseded", newer],
+		]);
+		const floor = assembleFallback([], extraction, undefined, undefined, null, overrides);
+		expect(verifySummary(floor, extraction, null, { factOverrides: overrides }).ok).toBe(true);
+		// A state-carried rule is older than any mined one; a same-message tie goes to the later line.
+		expect(retireSupersededConstraints([{ text: older }, { text: newer, index: 0 }], [], []).length).toBe(1);
+		expect(retireSupersededConstraints([{ text: newer, index: 0 }, { text: older, index: 0 }], [], [])[0]?.summaryKey).toBe(normalizeFactKey(newer));
+	});
+
+	it("does not let a question or a non-required rule supersede a required rule", () => {
+		const rule = { text: "Do not use the old arrow-polish anchor for the featured rail", index: 2, confidence: 0.85 };
+		expect(retireSupersededConstraints([rule, { text: "Must we use the old arrow-polish anchor for the featured rail?", index: 9, confidence: 0.85 }], [], [])).toEqual([]);
+		expect(retireSupersededConstraints([rule, { text: "I want to use the old arrow-polish anchor for the featured rail", index: 9, confidence: 0.6 }], [], [])).toEqual([]);
+	});
+
+	it("a steering focus names a subject and cannot contradict a rule", () => {
+		const extraction = makeExtraction({
+			constraints: [{ text: "BRIEF.md must keep the wider rail priority history", index: 2, category: "requirement", confidence: 0.85 }],
+		});
+		const steering = { focus: "BRIEF.md must not keep the wider rail priority history" };
+		const floor = assembleFallback([], extraction, steering);
+		expect(verifySummary(floor, extraction, null, { steering }).ok).toBe(true);
 	});
 
 	it("ignores messages older than the constraint itself", () => {

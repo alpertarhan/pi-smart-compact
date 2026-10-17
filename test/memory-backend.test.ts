@@ -157,7 +157,7 @@ describe("describeMemoryBackendReadiness", () => {
     const missing = await describeMnemopiRuntime(pathToFileURL(path.join(dir, "probe.js")).href);
     expect(missing).toEqual({
       ready: false,
-      reason: "unavailable: the optional @oh-my-pi/pi-mnemopi component is not installed. Install it with: npm install @oh-my-pi/pi-mnemopi@18.3.1 --prefix " + dir + " --legacy-peer-deps",
+      reason: "unavailable: the optional @oh-my-pi/pi-mnemopi component is not installed. Install it with: npm install @oh-my-pi/pi-mnemopi@18.11.3 --prefix " + dir + " --legacy-peer-deps",
     });
   });
 

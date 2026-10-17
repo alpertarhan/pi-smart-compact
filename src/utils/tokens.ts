@@ -63,7 +63,8 @@ const PROVIDER_MAP: Record<string, ProviderCapabilities> = {
   // Passive caching (M3); explicit cache_control exists only on M2.x via the
   // Anthropic-compatible API. Hit price is ~0.2x input.
   "minimax": {
-    maxOutputTokens: 4096, supportsTools: "probe", jsonReliability: "medium",
+    // 4096 cut the 6000-token balanced summary budget; M2.7/M3 allow 131k+.
+    maxOutputTokens: 8192, supportsTools: "probe", jsonReliability: "medium",
     instructionFollowing: "medium", tokenRatioEstimate: 3.8, concurrencyLimit: 2,
     cacheStrategy: "anthropic", timeoutMultiplier: 1.6, singlePassTokenMultiplier: 0.8, multimodal: "metadata-only",
     cacheControl: { level: "implicit", ttlOptionsMs: [], writeMultiplier: 1, readMultiplier: 0.2, routingKey: null },

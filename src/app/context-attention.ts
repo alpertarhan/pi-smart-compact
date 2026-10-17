@@ -104,6 +104,7 @@ function renderAttention(
   const history = load("history", CONTEXT_TOOL_NAME);
   let checkpointLabel: string | undefined;
   let trimmable = 0;
+  let cleanupBlocked: string | undefined;
   if (history !== null) {
     try {
       const branch = ctx.sessionManager.getBranch();
@@ -112,13 +113,17 @@ function renderAttention(
       if (canCleanup && !checkpoint) {
         const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
+        else cleanupBlocked = plan.blockedReason;
       }
     } catch {
       // Advice must not turn an unavailable plan into permission to edit history.
     }
   }
   if (navigation !== null && checkpointLabel === undefined) {
-    lines.push(`- Finishing a unit of work? ${NAVIGATION_TOOL_NAME} anchor with a concise handoff (done / in progress / next step). An anchor alone does not reduce context; cleanup depends on safety and preparation gates.${navigation}`);
+    // Suggesting an anchor whose cleanup cannot run only adds tokens; say so instead.
+    lines.push(cleanupBlocked
+      ? `- ${NAVIGATION_TOOL_NAME} anchor cannot clean up here: ${cleanupBlocked} An anchor would only add a recall point.${navigation}`
+      : `- Finishing a unit of work? ${NAVIGATION_TOOL_NAME} anchor with a concise handoff (done / in progress / next step). An anchor alone does not reduce context; cleanup depends on safety and preparation gates.${navigation}`);
   }
   if (history !== null) {
     if (checkpointLabel !== undefined) {
@@ -129,7 +134,7 @@ function renderAttention(
     } else {
       if (trimmable > 0) lines.push(`- ${CONTEXT_TOOL_NAME} trim: ${trimmable} archived tool output${trimmable === 1 ? "" : "s"} eligible now.${history}`);
       // Checkpoints are metadata; a safe plan today cannot promise a safe rewind later.
-      lines.push(`- Starting a large read-only detour? ${CONTEXT_TOOL_NAME} checkpoint first; rewind(report) afterward before implementation or your final answer. No pressure required; safety checks still apply. Keep findings and evidence in the report.${trimmable > 0 ? "" : history}`);
+      lines.push(`- Starting a large read-only detour? ${CONTEXT_TOOL_NAME} checkpoint first; rewind(report) afterward before implementation or your final answer. No pressure required; safety checks still apply. Keep findings and evidence in the report.${cleanupBlocked ? " With signed thinking, rewind applies only when every batch after the checkpoint is read-only research." : ""}${trimmable > 0 ? "" : history}`);
     }
   }
   if (band === "compaction" && !settings.autoTrigger) {

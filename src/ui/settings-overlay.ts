@@ -473,6 +473,16 @@ const CATEGORIES: ReadonlyArray<{
         {
           kind: "choice",
           setting: {
+            id: "providerContextEditing",
+            label: "Anthropic server cleanup",
+            description: "Direct Anthropic sessions only. From the cleanup band, the API clears old shell/research tool results (keeping the last 8 tool uses; reads, writes and user answers stay) before the model sees them; your session history is unchanged. With thinking, old turns' thinking is cleared too (last 4 turns kept). Works with signed thinking, where local cleanup cannot. Clearing rebuilds the prompt cache from the cleared point.",
+            values: ["off", "tool-results", "tool-results-and-thinking"],
+            labels: { off: "Off", "tool-results": "Tool results", "tool-results-and-thinking": "Tool results + thinking" },
+          },
+        },
+        {
+          kind: "choice",
+          setting: {
             id: "artifactOffloadEnabled",
             label: "Offload huge outputs",
             description: "Stores very large tool outputs outside the context and keeps a searchable preview.",
