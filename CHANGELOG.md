@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Context pressure no longer drops after a trim or rewind and jumps back on the
+  next response. Pi's `getContextUsage()` stops using the measured usage once a
+  context edit follows it and counts only visible text (missing encrypted and
+  signed reasoning); on real rewinds it read 14–33% below what the provider
+  measured next. Smart Compact now keeps the last measured usage and applies
+  only the edits' estimated change (0.3–2% from the next measured input), with
+  Pi's own estimate as the floor. Pi's footer is unchanged.
+- Research rewind also archives large research outputs inside batches it keeps
+  (a batch stays when it contains an instruction read, an error or a
+  side-effecting call). Those outputs become recoverable markers; the report
+  states how many were archived and their size. Under signed Anthropic thinking
+  the markers are skipped when they would invalidate it.
+
 ## [10.6.0] - 2026-10-17
 
 - The release owner approved `10.6.0` as a stable minor release to `latest`

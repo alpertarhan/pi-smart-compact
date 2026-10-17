@@ -1,5 +1,6 @@
 /** Session-scoped pending compaction store with TTL and bounded memory. */
 
+import { contextUsage } from "./context-usage.ts";
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MIN_COMPACTION_SAVING_RATIO } from "../constants.ts";
@@ -35,7 +36,7 @@ export function readerSignature(ctx: Pick<ExtensionContext, "model"> & Partial<P
 /** Shared final gate for foreground and background candidates. Missing proof fails closed. */
 export function revalidatePending(pending: PendingCompaction, ctx: ExtensionContext, reserveTokens = 0): PendingCompaction | null {
   const model = ctx.model;
-  const tokens = ctx.getContextUsage()?.tokens;
+  const tokens = contextUsage(ctx)?.tokens;
   const estimatedAfter = pending.details.estimatedAfterTokens;
   if (!model || !pending.readerSignature || pending.readerSignature !== readerSignature(ctx)
     || pending.sessionId !== resolveSessionId(ctx) || !pendingMatchesBranch(pending, ctx.sessionManager.getBranch())

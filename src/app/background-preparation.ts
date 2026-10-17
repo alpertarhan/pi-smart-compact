@@ -1,4 +1,5 @@
 /** Opt-in speculative preparation. Application stays in Pi's native compaction lifecycle. */
+import { contextUsage } from "./context-usage.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LONG_CONTEXT_PRICING_THRESHOLD_TOKENS, MIN_TOKEN_THRESHOLD, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { resolveSessionId, isUnresolvedSessionId } from "../infra/session-identity.ts";
@@ -56,7 +57,7 @@ export function contextPressure(
  ctx: Pick<ExtensionContext, "model" | "getContextUsage">,
  config: Pick<CompactConfig, "minContextPercent" | "prepareContextPercent" | "maxContextTokens">,
 ) {
- const raw = ctx.getContextUsage?.()?.tokens;
+ const raw = contextUsage(ctx)?.tokens;
  const tokens = typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
  const rawWindow = effectiveContextWindow(ctx.model, config);
  const policyWindow = typeof rawWindow === "number" && Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : null;
@@ -89,7 +90,7 @@ function snapshotContext(ctx: ExtensionContext): ExtensionContext {
  const branch = structuredClone(ctx.sessionManager.getBranch());
  const sessionId = resolveSessionId(ctx);
  const sessionFile = ctx.sessionManager.getSessionFile?.();
- const usage = structuredClone(ctx.getContextUsage());
+ const usage = structuredClone(contextUsage(ctx));
  const systemPrompt = ctx.getSystemPrompt?.() ?? "";
  const sessionManager = new Proxy(ctx.sessionManager, {
   get(target, key) {
@@ -215,7 +216,7 @@ export function createBackgroundPreparation(options: {
   const sessionId = resolveSessionId(ctx);
   if (isUnresolvedSessionId(sessionId)
    || (lastAttempt?.sessionId === sessionId && now() - lastAttempt.at < cooldownMs)) return;
-  const tokens = ctx.getContextUsage()?.tokens;
+  const tokens = contextUsage(ctx)?.tokens;
   const window = effectiveContextWindow(ctx.model, config);
   if (typeof tokens !== "number" || !Number.isFinite(tokens)
    || typeof window !== "number" || !Number.isFinite(window) || window <= 0) return;

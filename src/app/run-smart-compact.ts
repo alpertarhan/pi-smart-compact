@@ -17,6 +17,7 @@
  * dependency is data on the stage type, every conditional is a boolean flag.
  */
 
+import { contextUsage } from "./context-usage.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import type { Cell, PendingCompaction, SmartCompactDetails } from "../types.ts";
@@ -143,7 +144,7 @@ function makeBase(opts: SmartCompactOptions): RcBase {
  const vlog = (msg: string) => { if (opts.verbose) log.info(msg); };
  const pipelineStart = Date.now();
  const requestedMode = opts.mode ?? modeFromLegacyProfile(opts.profile ?? "balanced");
- const usage = opts.ctx.getContextUsage();
+ const usage = contextUsage(opts.ctx);
  const reportedPercent = usage?.percent;
  const contextPercent = Number.isFinite(reportedPercent) && (reportedPercent ?? 0) >= 0
   ? reportedPercent as number
@@ -265,7 +266,7 @@ export async function runSmartCompact(opts: SmartCompactOptions): Promise<Compac
   base.notify(
    (engines[0] === "native" ? "Native Compact (" + nativeRouteLabelOf(base.ctx) : "EESV Compact (" + base.modelLabel) +
    ", " + base.mode + ") — " +
-   ((base.ctx.getContextUsage()?.tokens ?? 0)).toLocaleString() + "t",
+   ((contextUsage(base.ctx)?.tokens ?? 0)).toLocaleString() + "t",
    "info",
   );
 

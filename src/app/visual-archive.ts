@@ -1,4 +1,5 @@
 /** Bounded supplementary evidence, never a replacement for verified text. */
+import { contextUsage } from "./context-usage.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { estimateTokens, type ContextEvent, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -149,7 +150,7 @@ export function injectVisualArchive(messages: ContextEvent["messages"], branch: 
     && message.summary === entry.summary && message.timestamp === Date.parse(entry.timestamp));
   // Respect earlier context hooks that remove or replace the summary.
   if (summaryIndex < 0 || messages.some(message => message.role === "custom" && message.customType === VISUAL_CONTEXT_TYPE)) return messages;
-  const usage = ctx.getContextUsage()?.tokens;
+  const usage = contextUsage(ctx)?.tokens;
   const tokens = Math.max(Number.isFinite(usage) ? usage ?? 0 : 0, messages.reduce((sum, message) => sum + estimateTokens(message), 0));
   if (!Number.isFinite(ctx.model.contextWindow) || tokens + archive.estimatedTokens + 256 >= ctx.model.contextWindow - Math.max(8_192, ctx.model.maxTokens ?? 0)) return messages;
   const evidence: ContextEvent["messages"][number] = {
