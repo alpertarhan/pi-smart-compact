@@ -76,6 +76,7 @@ import { createSmartCompactPolicy } from "./app/smart-compact-policy.ts";
 import { createContextToolExposure, registerContextToolLoader } from "./app/lazy-tools.ts";
 import { registerNavigation, type NavigationController } from "./app/register-navigation.ts";
 import { registerAnchorCache } from "./app/anchor-cache.ts";
+import { registerProviderContextEditing } from "./app/provider-context-editing.ts";
 import { applyCacheRoutingKey } from "./app/cache-routing.ts";
 import { buildSummaryAnchor } from "./app/summary-anchor.ts";
 export { findModelById, resolveModels } from "./app/model-routing.ts";
@@ -206,6 +207,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  // Native engine: tools for the nested request, replay of stored native state.
  setNativeToolSource(activeToolDefinitions);
  registerAnchorCache(pi, { config: loadConfig });
+ registerProviderContextEditing(pi, { config: loadConfig });
  // Cache routing stickiness (opt-in): stamp prompt_cache_key on OpenAI-shaped
  // session payloads. In-place and undefined-returning so it cannot fight the
  // replay and anchor hooks over the returned payload.

@@ -11,7 +11,7 @@ import {
 } from "../ui/metrics-report.ts";
 import { formatCompactErrorForUi } from "../ui/error-format.ts";
 import { loadConfig } from "../utils/config.ts";
-import { errorDetail, recordIssue } from "../utils/issues.ts";
+import { errorDetail, formatRecentIssues, recordIssue } from "../utils/issues.ts";
 import { effectiveContextWindow, safeContextPercent } from "../utils/tokens.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import { resolveModels } from "./model-routing.ts";
@@ -142,7 +142,8 @@ export function registerSmartCompactTool(
         timeoutMs: maxLatencyMs,
       } = parsedInput.value;
       if (action === "metrics" || action === "dashboard") {
-        const report = buildMetricsReport();
+        // A failed run tells the agent to review metrics; the findings live in recent issues.
+        const report = formatRecentIssues() + "\n\n" + buildMetricsReport();
         const dashboard =
           action === "dashboard" ? writeMetricsDashboard() : null;
         return textResult(

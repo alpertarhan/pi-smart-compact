@@ -80,8 +80,8 @@ export function loadExtractionContinuity(
  const previousState = loadScopedCompactionState(continuityScope, ancestryIds, options);
  // A released user constraint must not return through an older snapshot.
  const factOverrides = retireSupersededConstraints([
-  ...extraction.constraints.map(item => ({ text: item.text, index: item.index })),
-  ...(previousState?.constraints ?? []).map(item => ({ text: item.text })),
+  ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence })),
+  ...(previousState?.constraints ?? []).map(item => ({ text: item.text, confidence: item.confidence })),
  ], rc.llmMessages, previousState?.factOverrides ?? []);
  // Synthesis and both verification gates must agree on the required evidence;
  // the state step's merge is the authority, so preview it here.

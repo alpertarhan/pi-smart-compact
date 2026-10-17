@@ -2,7 +2,8 @@
 
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ESTIMATOR_ROUNDING_TOLERANCE_TOKENS, MIN_COMPACTION_SAVING_RATIO } from "../constants.ts";
+import { MIN_COMPACTION_SAVING_RATIO } from "../constants.ts";
+import { exceedsYieldTarget } from "../domain/yield-gate.ts";
 import type { PendingCompaction, SessionMessageEntry } from "../types.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { branchEntryIds, resolveSessionId, type SessionIdentityContext } from "../infra/session-identity.ts";
@@ -48,7 +49,7 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
   const target = pending.details.targetAfterTokens;
   if (!Number.isFinite(reserve) || after >= model.contextWindow - reserve
     || (tokens - after) / tokens < MIN_COMPACTION_SAVING_RATIO
-    || (typeof target === "number" && (!Number.isFinite(target) || after > target + ESTIMATOR_ROUNDING_TOLERANCE_TOKENS))) return null;
+    || (typeof target === "number" && (!Number.isFinite(target) || exceedsYieldTarget(after, target)))) return null;
   const details = {
     ...pending.details, tokensBefore: tokens, estimatedAfterTokens: after,
     retainedTailTokens: (pending.details.retainedTailTokens ?? 0) + growth,

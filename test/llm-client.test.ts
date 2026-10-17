@@ -9,6 +9,7 @@ import {
   resolveCodexWatchdogMs,
   resolveProviderWatchdogMs,
   withCodexWireLimit,
+  withMinimalThinkingWire,
   withProviderDeadline,
 } from "../src/infra/llm-client.ts";
 import type { LlmCompleteOptions } from "../src/infra/llm-client.ts";
@@ -274,6 +275,17 @@ describe("llm-client seam", () => {
       chained: true,
       max_output_tokens: 1234,
     });
+  });
+
+  it("omits minimal thinking for MiniMax-M3, whose enabled thinking ignores budget_tokens", () => {
+    const m3 = { ...model, provider: "minimax", api: "anthropic-messages", id: "MiniMax-M3" } as Model<Api>;
+    const minimal: LlmCompleteOptions = { maxTokens: 2_400, reasoning: "minimal" };
+    expect(withMinimalThinkingWire(m3, minimal)).toEqual({ maxTokens: 2_400 });
+    // An explicit thinking level, other MiniMax models, and other hosts keep the request.
+    const low: LlmCompleteOptions = { reasoning: "low" };
+    expect(withMinimalThinkingWire(m3, low)).toBe(low);
+    expect(withMinimalThinkingWire({ ...m3, id: "MiniMax-M2.7" } as Model<Api>, minimal)).toBe(minimal);
+    expect(withMinimalThinkingWire({ ...m3, provider: "fireworks", api: "openai-completions" } as Model<Api>, minimal)).toBe(minimal);
   });
 
   it("derives a bounded Codex watchdog and accepts a calibrated override", () => {

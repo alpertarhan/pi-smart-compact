@@ -1,4 +1,4 @@
-import { ESTIMATOR_ROUNDING_TOLERANCE_TOKENS, MIN_COMPACTION_SAVING_RATIO } from "../constants.ts";
+import { ESTIMATOR_ROUNDING_TOLERANCE_TOKENS, MIN_COMPACTION_SAVING_RATIO, YIELD_TARGET_TOLERANCE_RATIO } from "../constants.ts";
 import type { CompactionWindowPlan } from "../app/run-context.ts";
 
 export interface CompactionYieldEstimate {
@@ -41,6 +41,17 @@ export class YieldGateError extends Error implements CompactionYieldEstimate {
   hardBoundaryAdjusted!: boolean;
 }
 
+/**
+ * A summary a few percent over the planned target still frees most of the
+ * context; rejecting it discards the run while the context keeps growing.
+ */
+export function exceedsYieldTarget(afterTokens: number, targetAfterTokens: number): boolean {
+  return afterTokens > targetAfterTokens + Math.max(
+    ESTIMATOR_ROUNDING_TOLERANCE_TOKENS,
+    Math.floor(targetAfterTokens * YIELD_TARGET_TOLERANCE_RATIO),
+  );
+}
+
 export function verifyCompactionYield(
   totalTokens: number,
   summaryTokens: number,
@@ -63,7 +74,7 @@ export function verifyCompactionYield(
     relaxedSoftBoundaries: plan.relaxedSoftBoundaries,
     hardBoundaryAdjusted: plan.hardBoundaryAdjusted,
   };
-  if (estimatedAfterTokens > plan.targetAfterTokens + ESTIMATOR_ROUNDING_TOLERANCE_TOKENS) {
+  if (exceedsYieldTarget(estimatedAfterTokens, plan.targetAfterTokens)) {
     throw new YieldGateError("target-miss", estimate);
   }
   if (estimatedYield < MIN_COMPACTION_SAVING_RATIO) {

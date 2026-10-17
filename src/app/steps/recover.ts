@@ -15,20 +15,28 @@ import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { asBranchMessage } from "../../infra/ai-messages.ts";
 import type { LlmMessage } from "../../types.ts";
 import { hasTruncatedMessages, resolveCompactionMessages } from "../../utils/session-log.ts";
+import { ATTENTION_CUSTOM_TYPE } from "../context-operations.ts";
+
+/** Our own context-pressure hints describe a past moment of this session, never work to carry. */
+function isPressureHint(message: unknown): boolean {
+ const custom = message as { role?: unknown; customType?: unknown } | null | undefined;
+ return custom?.role === "custom" && custom.customType === ATTENTION_CUSTOM_TYPE;
+}
 
 /** Read-only source recovery shared by preflight and execution. */
 export async function recoverSourceMessages(
  sessionId: string, entries: WindowedRc["toCompact"], cwd: string,
 ): Promise<{ messages: Array<{ entryId: string; message: LlmMessage }>; fromLog: boolean }> {
+ const hints = new Set(entries.flatMap(entry => entry.id && isPressureHint(entry.message) ? [entry.id] : []));
  const resolved = entries.flatMap(entry => {
-  if (!entry.id) return [];
+  if (!entry.id || hints.has(entry.id)) return [];
   return (convertToLlm([asBranchMessage(entry.message)]) as LlmMessage[])
    .map(message => ({ entryId: entry.id, message }));
  });
 
  if (hasTruncatedMessages(resolved.map(item => item.message))) {
   const fromLog = await resolveCompactionMessages(sessionId, entries, cwd);
-  if (fromLog) return { messages: fromLog, fromLog: true };
+  if (fromLog) return { messages: fromLog.filter(item => !hints.has(item.entryId)), fromLog: true };
  }
  return { messages: resolved, fromLog: false };
 }

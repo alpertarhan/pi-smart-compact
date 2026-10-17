@@ -9,7 +9,7 @@
 //
 // Fixture notes: KEEP_RECENT_TURNS=4 keeps the last four assistant turns, so
 // sessions carry 6+ rounds with only the earliest rounds eligible, and every
-// output clears MIN_TRIM_CHARS=4096.
+// output clears MIN_TRIM_CHARS=2048.
 import { describe, expect, it } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";

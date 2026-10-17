@@ -36,6 +36,14 @@ describe("buildSummaryAnchor", () => {
     expect(anchorFromEntry(sm.getEntries().at(-1)!)?.synthetic).toBe(true);
   });
 
+  it("keeps the summary in details only, so the model context does not carry it twice", () => {
+    const sm = seeded();
+    const entry = buildSummaryAnchor(sm, { summary: "Parser work done.\n- details follow" })!;
+    expect(entry.content).toContain(entry.details.anchor.name);
+    expect(entry.content).not.toContain("details follow");
+    expect(entry.details.anchor.summary).toContain("details follow");
+  });
+
   it("keeps names within 120 printable characters", () => {
     const sm = seeded();
     appendSummaryAnchor(sm, { summary: "L".repeat(300) });

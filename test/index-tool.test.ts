@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resetConfigCache } from "../src/utils/config.ts";
+import { recordIssue, resetIssuesForTests } from "../src/utils/issues.ts";
 
 describe("smart_compact tool cancellation", () => {
   it("explains the actual threshold, model window, and manual early-compaction option", async () => {
@@ -25,6 +26,27 @@ describe("smart_compact tool cancellation", () => {
     expect(result.content[0].text).not.toContain("tool=97%");
     expect(tool.description).toContain("stages");
   });
+  it("includes recent issues in the agent's metrics report so a gate failure is diagnosable", async () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "smart-compact-tool-report-"));
+    resetIssuesForTests();
+    try {
+      let tool: any;
+      registerSmartCompactTool({ registerTool: (definition: any) => { tool = definition; } } as any, {
+        pendingRef: { peek: () => undefined } as any, runLock: {} as any,
+        onNativeApplyError: () => false, policy: { isAgentToolEnabled: () => true } as any,
+      });
+      recordIssue({ key: "verify.gate", message: "Verification gate rejected summary (60/100, 2 unresolved gaps): Inconsistency: rule A" });
+      const result = await tool.execute("report", { report: true }, undefined, () => {}, {});
+      expect(result.content[0].text).toContain("Recent issues (1)");
+      expect(result.content[0].text).toContain("Inconsistency: rule A");
+    } finally {
+      resetIssuesForTests();
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
+  });
+
   it("measures the agent-tool threshold against maxContextTokens when set", async () => {
     const originalHome = process.env.HOME;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "smart-compact-tool-cap-"));

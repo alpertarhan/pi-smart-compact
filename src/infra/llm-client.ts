@@ -105,6 +105,26 @@ export function withCodexWireLimit(
   };
 }
 
+/**
+ * MiniMax-M3 thinks only when asked, and its enabled thinking ignores
+ * budget_tokens while counting toward max_tokens, so a "minimal" request
+ * ends at max_tokens without text. Omitting thinking is its real minimum.
+ */
+export function withMinimalThinkingWire(
+  model: Model<Api>,
+  opts: LlmCompleteOptions,
+): LlmCompleteOptions {
+  if (
+    opts.reasoning !== "minimal" ||
+    model.api !== "anthropic-messages" ||
+    !/^minimax/i.test(model.provider) ||
+    !/^minimax-m3$/i.test(model.id)
+  )
+    return opts;
+  const { reasoning: _reasoning, ...withoutThinking } = opts;
+  return withoutThinking;
+}
+
 export function resolveCodexWatchdogMs(
   maxTokens: number | undefined,
   configuredMs = 0,
@@ -252,7 +272,7 @@ async function completeChatGptCodex(
 export function createModelRuntimeLlmClient(runtime: LlmModelRuntime): LlmClient {
   return {
     complete: async (model, body, originalOpts) => {
-      const opts = withCodexWireLimit(model, originalOpts);
+      const opts = withCodexWireLimit(model, withMinimalThinkingWire(model, originalOpts));
       return withProviderDeadline(
         opts,
         async (bounded) => {

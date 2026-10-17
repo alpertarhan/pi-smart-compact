@@ -294,7 +294,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
      }
     }
     const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal, userConfirmed) ?? "History unchanged; no cleanup controller attached.";
-    return { content: [{ type: "text", text: `Anchor: ${data.name}\n\n${data.summary}\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
+    // The summary is already in this call's arguments; echoing it would put it in context twice.
+    return { content: [{ type: "text", text: `Anchor saved: ${data.name} (${data.summary.length} chars; read it with smart_navigation view)\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
    }
    const operation = preparePivot(ctx, params.target ?? "", params.carryover ?? "", params.message);
    operation.callId = callId;
