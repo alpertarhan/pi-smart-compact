@@ -4,6 +4,15 @@
 
 ## [10.6.0] - 2026-10-17
 
+- The release owner approved `10.6.0` as a stable minor release to `latest`
+  without a canary cohort. Default cleanup behavior changes (trims consider
+  outputs from 2,048 characters; research rewind removes read-only shell
+  commands); Anthropic server-side context editing stays `off` by default. The
+  deterministic release gate covers the touched paths. Evidence limits: no
+  external canary cohort, no live provider-quality evidence, and Anthropic
+  `context_management` was not exercised against the live API; recorded here
+  as the owner exception required by `docs/RELEASE.md`.
+
 ### Added
 
 - `providerContextEditing` (`Anthropic server cleanup`, default `"off"`): for
