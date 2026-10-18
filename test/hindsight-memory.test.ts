@@ -176,6 +176,20 @@ describe("hindsight memory backend", () => {
     expect(text2).toContain("Ref: " + saved.details.ref);
   });
 
+  it("resubmits with a fresh operation id when the prior attempt failed definitively", async () => {
+    const harness = setup(hindsightSettings());
+    fake.retainStatus = "failed";
+    const failed = await harness.save({ content: FACT });
+    expect(failed.content[0].text).toContain("Hindsight: FAILED");
+    const failedOperationId = failed.details.remote.operationId;
+
+    fake.retainStatus = "completed";
+    const resaved = await harness.save({ content: FACT });
+    expect(resaved.details.remote.state).toBe("completed");
+    expect(resaved.details.remote.operationId).not.toBe(failedOperationId);
+    expect(fake.operations.size).toBe(2);
+  });
+
   it("reports definite server failure as FAILED and writes nothing to any other store", async () => {
     const harness = setup(hindsightSettings());
     fake.failNext.set("POST memories", 503);
