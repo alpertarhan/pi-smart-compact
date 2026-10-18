@@ -182,6 +182,11 @@ export function listReceipts(
   );
 }
 
+/** Every receipt in the ledger, across scopes; for orphan-target draining. */
+export function listAllReceipts(file = hindsightReceiptsFile()): HindsightReceipt[] {
+  return readAll(file);
+}
+
 export class ReceiptLedgerFullError extends Error {
   constructor(file = hindsightReceiptsFile()) {
     super(
