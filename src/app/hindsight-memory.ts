@@ -241,6 +241,7 @@ export async function saveHindsightMemory(
  target: HindsightTarget,
  memory: HindsightMemoryInput,
  signal?: AbortSignal,
+ resubmitAfterFailure = false,
 ): Promise<RemoteSaveOutcome> {
  const scope = receiptScope(target, memory.projectId);
  const documentId = hindsightDocumentId(memory.memoryId);
@@ -280,8 +281,13 @@ export async function saveHindsightMemory(
     return { state: "accepted", receipt: refreshed, operationStatus: "pending" };
    }
    if (refreshed.state === "failed") {
-    // Report; the next confirmed save gets a new generation/operation id.
-    return { state: "failed", receipt: refreshed, reason: refreshed.detail ?? "operation failed" };
+    // The failed receipt advanced the ledger generation, so one recursive
+    // retry submits a fresh operation id now instead of reporting a failure
+    // the caller would have to save again. Bounded to a single round.
+    if (resubmitAfterFailure) {
+     return { state: "failed", receipt: refreshed, reason: refreshed.detail ?? "operation failed" };
+    }
+    return saveHindsightMemory(target, memory, signal, true);
    }
   } catch (error) {
    const mapped = stateForError(error);

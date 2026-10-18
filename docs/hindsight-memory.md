@@ -181,7 +181,10 @@ What to save:
   document, content revision and generation. Resending the same confirmed save
   after an unknown outcome is idempotent: the server answers 409, which is
   treated as "already accepted". After a confirmed deletion or a definite
-  failure, the generation advances, so a later save gets a new operation id.
+  failure, the generation advances, so a later save gets a new operation id;
+  when a save's own status check uncovers that definite failure, it resubmits
+  once with the fresh id in the same call instead of reporting a failure the
+  caller would have to save again.
   If the server acknowledges a different operation id, the receipt stores it
   and status checks use the server's id.
 - **Receipts:** stored at `~/.pi/agent/.cache/smart-compact/hindsight-receipts.json`
