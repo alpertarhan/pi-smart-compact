@@ -18,24 +18,30 @@ function estimatedTokens(entries: readonly unknown[], estimate: Estimate): numbe
   return contextMessageEntries(entries).reduce((sum, entry) => sum + estimate(entry.message as Parameters<Estimate>[0]), 0);
 }
 
+/** Context a finished response measured; 0 for aborted or failed responses, which Pi does not trust either. */
+function measuredTokens(entry: SessionEntry): number {
+  if (entry.type !== "message" || entry.message.role !== "assistant") return 0;
+  const { stopReason, usage } = entry.message;
+  return stopReason === "aborted" || stopReason === "error" || !usage ? 0 : calculateContextTokens(usage);
+}
+
 /**
  * Last measured usage plus the estimated change since: edits to messages it covered and messages
  * added after it. Null when Pi's own figure is already right (no edit newer than the measurement)
  * or nothing can anchor it (no measured response, or a compaction replaced the measured window).
+ * The measured response may itself be edited away: a rewind removes its own call with the research.
  * Pi's own estimator measured the edits most accurately on real rewinds (the provider-calibrated
  * one overcounted removed tool output by up to 8%).
  */
 export function anchoredContextTokens(branch: SessionEntry[], estimate: Estimate = estimateTokens): number | null {
-  const anchor = branch.findLastIndex(entry => entry.type === "message" && entry.message.role === "assistant"
-    && calculateContextTokens(entry.message.usage) > 0);
-  const measured = branch[anchor];
-  if (measured?.type !== "message" || measured.message.role !== "assistant") return null;
+  const anchor = branch.findLastIndex(entry => measuredTokens(entry) > 0);
+  if (anchor < 0) return null;
   const later = branch.slice(anchor + 1);
   if (!later.some(entry => entry.type === "context_edit") || later.some(entry => entry.type === "compaction")) return null;
   // What the measured request carried versus what the next one carries.
   const then = estimatedTokens(branch.slice(0, anchor + 1), estimate);
   const now = estimatedTokens(branch, estimate);
-  return Math.max(0, Math.round(calculateContextTokens(measured.message.usage) + now - then));
+  return Math.max(0, Math.round(measuredTokens(branch[anchor]) + now - then));
 }
 
 type UsageContext = Partial<Pick<ExtensionContext, "getContextUsage" | "sessionManager">>;
@@ -45,7 +51,7 @@ function editedSinceMeasurement(sessionManager: ExtensionContext["sessionManager
   for (let entry = sessionManager.getLeafEntry(); entry; entry = entry.parentId ? sessionManager.getEntry(entry.parentId) : undefined) {
     if (entry.type === "context_edit") return true;
     if (entry.type === "compaction") return false;
-    if (entry.type === "message" && entry.message.role === "assistant" && calculateContextTokens(entry.message.usage) > 0) return false;
+    if (measuredTokens(entry) > 0) return false;
   }
   return false;
 }

@@ -25,10 +25,10 @@ const MARKER = "[Archived read output, 42000 chars.]";
 function session() {
   const s = SessionManager.inMemory();
   s.appendMessage({ role: "user", content: "Find the parser bug", timestamp: 1 });
-  s.appendMessage(measured(100_000, [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "src/parser.ts" } }]));
+  const call = s.appendMessage(measured(100_000, [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "src/parser.ts" } }]));
   const result = s.appendMessage({ role: "toolResult", toolName: "read", toolCallId: "c1", content: [{ type: "text", text: OUTPUT }], isError: false, timestamp: 1 });
-  s.appendMessage(measured(110_000));
-  return { s, result };
+  const answer = s.appendMessage(measured(110_000));
+  return { s, call, result, answer };
 }
 
 describe("anchoredContextTokens", () => {
@@ -52,6 +52,26 @@ describe("anchoredContextTokens", () => {
     s.appendCustomMessageEntry("smart-compact-rewind", "R".repeat(4_000), true);
     expect(anchoredContextTokens(s.getBranch(), estimate))
       .toBe(110_000 - Math.ceil(OUTPUT.length / 4) + Math.ceil(MARKER.length / 4) + 1_000);
+  });
+
+  it("never anchors on an aborted or failed response, like Pi", () => {
+    const { s, result } = session();
+    for (const stopReason of ["error", "aborted"] as const) {
+      const failed = measured(900_000);
+      failed.stopReason = stopReason;
+      s.appendMessage(failed);
+    }
+    s.appendContextEdit(result, { content: MARKER });
+    const tokens = anchoredContextTokens(s.getBranch(), estimate)!;
+    expect(tokens).toBeGreaterThan(95_000); // anchored on the 110k response
+    expect(tokens).toBeLessThan(110_000);
+  });
+
+  it("anchors on a response the edit removes, as a rewind removes its own call with the research", () => {
+    const { s, call, result, answer } = session();
+    for (const id of [call, result, answer]) s.appendContextEdit(id, null);
+    // Measured 110k minus the call's arguments (6), the output (10,500) and the measured response (1).
+    expect(anchoredContextTokens(s.getBranch(), estimate)).toBe(110_000 - 6 - Math.ceil(OUTPUT.length / 4) - 1);
   });
 
   it("defers to Pi when no edit is newer than the measurement, nothing was measured, or a compaction replaced the window", () => {
