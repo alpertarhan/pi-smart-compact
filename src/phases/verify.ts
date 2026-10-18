@@ -673,6 +673,11 @@ function semanticTokens(text: string): string[] {
   .filter((token) => token.length > 2 || NEGATION_MARKERS.has(token));
 }
 
+interface SemanticFragment {
+ tokens: string[];
+ polarityClauses: string[][];
+}
+
 interface SemanticShape {
  sourceTokens: string[];
  concepts: string[];
@@ -682,9 +687,9 @@ interface SemanticShape {
 }
 
 const semanticShapeCache = new Map<string, SemanticShape>();
-const semanticFragmentCache = new Map<string, string[][]>();
+const semanticFragmentCache = new Map<string, SemanticFragment[]>();
 
-function semanticFragments(text: string): string[][] {
+function semanticFragments(text: string): SemanticFragment[] {
  const cached = lruGet(semanticFragmentCache, text);
  if (cached) return cached;
  const fragments = Array.from(
@@ -695,7 +700,14 @@ function semanticFragments(text: string): string[][] {
     .map((part) => part.replace(/^\s*[-*\d.)]+\s*/, "").trim())
     .filter(Boolean),
   ),
- ).map(semanticTokens);
+ ).map((part) => ({
+  tokens: semanticTokens(part),
+  polarityClauses: part
+   .split(/[,;.!?]+/)
+   .map((clause) => clause.trim())
+   .filter(Boolean)
+   .map(semanticTokens),
+ }));
  lruSet(semanticFragmentCache, text, fragments, 256);
  return fragments;
 }
@@ -758,6 +770,42 @@ function hasEffectiveTargetNegation(tokens: string[], anchor: string): boolean {
  });
 }
 
+function hasScopedNegation(clauses: string[][], anchor: string): boolean {
+ return clauses.some(
+  (tokens) =>
+   tokens.includes(anchor) && hasEffectiveTargetNegation(tokens, anchor),
+ );
+}
+
+function hasNoNeedPhrase(tokens: string[]): boolean {
+ return tokens.some(
+  (token, index) => token === "no" && tokens[index + 1] === "need",
+ );
+}
+
+function sourcePolarity(
+ fragments: SemanticFragment[],
+ concepts: string[],
+): { anchor: string; negative: boolean } {
+ let scopedPolarity: { anchor: string; negative: boolean } | null = null;
+ for (const fragment of fragments) {
+  for (const clause of fragment.polarityClauses) {
+   if (hasNoNeedPhrase(clause)) continue;
+   const anchor = concepts.find(
+    (concept) =>
+     clause.includes(concept) && hasNearbyMarker(clause, concept, NEGATION_MARKERS),
+   );
+   if (anchor) {
+    scopedPolarity = {
+     anchor,
+     negative: hasEffectiveTargetNegation(clause, anchor),
+    };
+   }
+  }
+ }
+ return scopedPolarity ?? { anchor: concepts[0] ?? "", negative: false };
+}
+
 /** Conservative deterministic semantic evidence for goals/constraints/decisions. */
 function semanticShape(source: string): SemanticShape {
  const cached = lruGet(semanticShapeCache, source);
@@ -774,14 +822,8 @@ function semanticShape(source: string): SemanticShape {
    ),
   ),
  );
- const negative = sourceTokens.some((token) => NEGATION_MARKERS.has(token));
+ const { anchor, negative } = sourcePolarity(semanticFragments(source), concepts);
  const conditional = sourceTokens.some((token) => CONDITION_MARKERS.has(token));
- const anchor =
-  concepts.find((concept) =>
-   hasNearbyMarker(sourceTokens, concept, NEGATION_MARKERS),
-  ) ??
-  concepts[0] ??
-  "";
  const shape = { sourceTokens, concepts, anchor, negative, conditional };
  lruSet(semanticShapeCache, source, shape, 512);
  return shape;
@@ -796,7 +838,8 @@ function hasSemanticEvidence(source: string, target: string): boolean {
   Math.max(1, Math.ceil(concepts.length * 0.6)),
  );
  const verbatim = sourceTokens.join(" ");
- return semanticFragments(target).some((tokens) => {
+ return semanticFragments(target).some((fragment) => {
+  const { tokens } = fragment;
   // A fragment that normalizes to the exact source token sequence is
   // faithful evidence by definition; anchor/negation heuristics must not
   // reject a verbatim rule. The separate contradiction scan still checks
@@ -804,7 +847,7 @@ function hasSemanticEvidence(source: string, target: string): boolean {
   if (tokens.join(" ") === verbatim) return true;
   const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
   if (overlap < required) return false;
-  const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
+  const targetNegative = hasScopedNegation(fragment.polarityClauses, anchor);
   if (negative && !targetNegative) {
    // A conditional prohibition ("do not X without Y") may be faithfully
    // restated positively as "X only after/with Y".
@@ -825,46 +868,66 @@ function hasSemanticEvidence(source: string, target: string): boolean {
  });
 }
 
-export function hasSemanticContradiction(
- source: string,
- target: string,
- exempt?: ReadonlySet<string>,
-): boolean {
+/**
+ * The target fragment that flips the source constraint's polarity, or null
+ * when the target agrees. Shared by the gate and its debug trace so the log
+ * can name the exact pair that fired.
+ */
+function findContradictingFragment(
+	source: string,
+	target: string,
+	exempt?: ReadonlySet<string>,
+): string | null {
  // Do not apply a whole instruction's polarity to one of its own clauses.
  // Other target fragments remain checked, even beside a verbatim copy.
  // `exempt` holds fragments of required evidence lines that share the
  // source's sentence-level polarity: a summary cannot contradict evidence by
  // quoting evidence that agrees with it.
- const sourceFragments = new Set(semanticFragments(source).map(tokens => tokens.join(" ")));
+ const sourceFragments = new Set(
+  semanticFragments(source).map((fragment) => fragment.tokens.join(" ")),
+ );
  const { sourceTokens, concepts, anchor, negative, conditional } =
   semanticShape(source);
- if (!anchor) return false;
+ if (!anchor) return null;
  const required = Math.min(
   concepts.length,
   Math.max(1, Math.ceil(concepts.length * 0.6)),
  );
- return semanticFragments(target).some((tokens) => {
+ for (const fragment of semanticFragments(target)) {
+  const { tokens } = fragment;
   const key = tokens.join(" ");
-  if (!tokens.includes(anchor) || sourceFragments.has(key) || exempt?.has(key)) return false;
+  if (!tokens.includes(anchor) || sourceFragments.has(key) || exempt?.has(key)) continue;
   const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
   // Sharing a generic anchor such as "release" or "file" is not enough:
   // another constraint in the same section must overlap the actual concepts.
-  if (overlap < required) return false;
-  const targetNegative = hasEffectiveTargetNegation(tokens, anchor);
+  if (overlap < required) continue;
+  const targetNegative = hasScopedNegation(fragment.polarityClauses, anchor);
   if (negative && !targetNegative) {
    const validConditional =
     sourceTokens.includes("without") &&
     tokens.some((token) => CONDITION_MARKERS.has(token)) &&
     overlap >= Math.min(2, concepts.length);
-   return !validConditional;
+   if (validConditional) continue;
+   return key;
   }
-  if (!negative && targetNegative) return true;
-  return (
+  if (!negative && targetNegative) return key;
+  if (
    conditional &&
    !negative &&
    !tokens.some((token) => CONDITION_MARKERS.has(token))
-  );
- });
+  ) {
+   return key;
+  }
+ }
+ return null;
+}
+
+export function hasSemanticContradiction(
+	source: string,
+	target: string,
+	exempt?: ReadonlySet<string>,
+): boolean {
+ return findContradictingFragment(source, target, exempt) !== null;
 }
 
 /**
@@ -1676,8 +1739,8 @@ function requiredEvidenceKeysByPolarity(
  const addVariants = (text: string, buckets: Set<string>[]) => {
   const variants = [text, ...EVIDENCE_RENDER_LIMITS.map((max) => summaryEvidenceLine(text, max))];
   for (const variant of variants) {
-   for (const tokens of semanticFragments(variant)) {
-    for (const bucket of buckets) bucket.add(tokens.join(" "));
+   for (const fragment of semanticFragments(variant)) {
+    for (const bucket of buckets) bucket.add(fragment.tokens.join(" "));
    }
   }
  };
@@ -1706,7 +1769,21 @@ function verifySemanticCoverage(
    addGap(accumulator, { kind: "missing-constraint", text: constraint.text, ...(constraint.origin ? { origin: constraint.origin } : {}) }, 8);
   }
   // The steering focus names a subject (polarity-free evidence), so it cannot be contradicted either.
-  if (!constraint.topic && hasSemanticContradiction(constraint.text, constraintTarget, exemptFor(constraint.text))) {
+  const contradiction = constraint.topic
+   ? null
+   : findContradictingFragment(constraint.text, constraintTarget, exemptFor(constraint.text));
+  if (contradiction !== null) {
+   const { anchor, negative, conditional } = semanticShape(constraint.text);
+   log.debug(
+    "semantic-contradiction:",
+    JSON.stringify({
+     source: constraint.text.slice(0, TRUNC.SNIPPET),
+     fragment: contradiction.slice(0, TRUNC.SNIPPET),
+     anchor,
+     negative,
+     conditional,
+    }),
+   );
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: constraint contradicts "

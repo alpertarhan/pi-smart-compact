@@ -7,6 +7,7 @@ import {
 	formatVerificationGap,
 	hasSemanticContradiction,
 	isDeterministicallyPatchable,
+	supersedesConstraint,
 	patchSummary,
 	releasesConstraint,
 } from "../src/phases/verify.ts";
@@ -95,6 +96,37 @@ describe("verifySummary", () => {
 			"Deploy only after approval",
 			label + "Deploy only after approval\n- Deploy without approval",
 		)).toBe(true);
+	});
+	it("scopes subordinate negation to its own clause", () => {
+		const source = "alpha is only used in mode A. so this beta is fine, no need to check config.";
+		const target = "alpha is only used in mode A; beta is fine for other modes.";
+		expect(hasSemanticContradiction(source, target)).toBe(false);
+		expect(
+			hasSemanticContradiction(
+				"beta is fine",
+				"beta is fine, no need to check config.",
+			),
+		).toBe(false);
+		expect(hasSemanticContradiction("beta is not fine", "beta is fine")).toBe(true);
+		expect(
+			hasSemanticContradiction(
+				"The operation is not required.",
+				"The operation is required.",
+			),
+		).toBe(true);
+
+		const extraction = makeExtraction({
+			constraints: [{ index: 0, text: source, category: "requirement", confidence: 1 }],
+		});
+		const summary = assembleFallback([], extraction).replace(source, target);
+		expect(summary).toContain(target);
+		const result = verifySummary(summary, extraction);
+		expect(result.ok).toBe(true);
+		expect(
+			result.gaps.filter(
+				(gap) => gap.kind === "inconsistency" && gap.detail.includes("semantic-contradiction"),
+			),
+		).toEqual([]);
 	});
 
 	it.each([
@@ -2221,5 +2253,34 @@ describe("deterministic floor never fails its own gate", () => {
 			checked++;
 		}
 		expect(checked).toBe(512);
+	});
+});
+
+describe("supersedesConstraint", () => {
+	it("retires the older rule when two constraints flip polarity on the same concepts", () => {
+		expect(
+			supersedesConstraint("do not deploy on fridays", "deploys are allowed on fridays"),
+		).toBe(true);
+	});
+
+	it("keeps both rules when polarity agrees", () => {
+		expect(
+			supersedesConstraint("do not deploy on fridays", "never deploy on fridays"),
+		).toBe(false);
+	});
+
+	it("treats a question as superseding nothing", () => {
+		expect(
+			supersedesConstraint("do not deploy on fridays", "can we deploy on fridays?"),
+		).toBe(false);
+	});
+
+	it("ignores subordinate no-need negation when comparing polarity", () => {
+		expect(
+			supersedesConstraint(
+				"alpha is only used in mode A, no need to check config.",
+				"alpha is only used in mode A; beta is fine for other modes.",
+			),
+		).toBe(false);
 	});
 });
