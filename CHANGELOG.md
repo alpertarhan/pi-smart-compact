@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [10.6.1] - 2026-10-18
+
+- The release owner approved `10.6.1` as a stable patch release to `latest`
+  without a canary cohort. Context pressure after a trim or rewind now comes
+  from the last measured usage instead of Pi's text-only estimate, which can
+  change when automatic cleanup and compaction start. Evidence: replay of 7 real
+  rewinds (anchored figure 0.3–2% from the next measured input), the
+  deterministic release gate, and minimum-Pi (0.87.1) compatibility. Evidence
+  limits: no external canary cohort and no live session run of this version;
+  recorded here as the owner exception required by `docs/RELEASE.md`.
+
+### Changed
+
+- Optional component pin: `@oh-my-pi/pi-mnemopi` 18.12.1 (was 18.11.3). Its
+  source and types are unchanged; its own dependencies moved to 18.12.1. An
+  installed 18.11.3 keeps working, because Smart Compact checks that the
+  component is present, not its version. Readiness shows the 18.12.1 install
+  command. The README disk-use figure is corrected to 140 MB, measured on
+  macOS arm64 with the documented install command (both pins measure the same).
+
+### Fixed
+
+- Context pressure no longer drops after a trim or rewind and jumps back on the
+  next response. Pi's `getContextUsage()` stops using the measured usage once a
+  context edit follows it and counts only visible text (missing encrypted and
+  signed reasoning); on real rewinds it read 14–33% below what the provider
+  measured next. Smart Compact now keeps the last measured usage and applies
+  only the edits' estimated change (0.3–2% from the next measured input), with
+  Pi's own estimate as the floor. Pi's footer is unchanged.
+- Research rewind also archives large research outputs inside batches it keeps
+  (a batch stays when it contains an instruction read, an error or a
+  side-effecting call). Those outputs become recoverable markers; the report
+  states how many were archived and their size. Under signed Anthropic thinking
+  the markers are skipped when they would invalidate it.
+
 ## [10.6.0] - 2026-10-17
 
 - The release owner approved `10.6.0` as a stable minor release to `latest`

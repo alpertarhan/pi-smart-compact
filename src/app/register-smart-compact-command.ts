@@ -1,3 +1,4 @@
+import { contextUsage } from "./context-usage.ts";
 import type {
  ExtensionAPI,
  ExtensionCommandContext,
@@ -412,7 +413,7 @@ async function showStorage(ctx: ExtensionCommandContext): Promise<void> {
 /** Value of the Home "Compact now" row, or why it cannot run. */
 function compactNowState(ctx: ExtensionCommandContext, dependencies: SmartCompactCommandDependencies): { value: string; blocked?: string } {
  const config = loadConfig();
- const tokens = ctx.getContextUsage()?.tokens;
+ const tokens = contextUsage(ctx)?.tokens;
  const window = effectiveContextWindow(ctx.model, config);
  const value = tokens == null ? "not measured yet"
   : Math.round(tokens / 1000) + "k tokens · " + Math.round(safeContextPercent(tokens, window)) + "%"
@@ -480,7 +481,7 @@ async function runInteractiveCompaction(
  config: CompactConfig,
  dependencies: SmartCompactCommandDependencies,
 ): Promise<boolean> {
- const usage = ctx.getContextUsage();
+ const usage = contextUsage(ctx);
  const totalTokens = usage?.tokens ?? 0;
  const contextPercent = Math.round(
   safeContextPercent(totalTokens, ctx.model?.contextWindow),

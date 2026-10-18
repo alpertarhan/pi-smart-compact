@@ -463,6 +463,38 @@ function keptBatchSummary(branch: SessionEntry[], fromIndex: number, removed: Se
   return [...counts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name).join(", ");
 }
 
+/**
+ * Research outputs a rewind leaves inside kept batches (an instruction read, an error or a
+ * side-effecting sibling keeps the whole batch): successful text results of removable research
+ * calls, at least MIN_TRIM_CHARS long, largest first. Their assistant batch stays byte-identical.
+ */
+function keptResearchOutputs(branch: SessionEntry[], fromIndex: number, removed: Set<string>, edited: Set<string>) {
+  const after = new Set(branch.slice(fromIndex + 1).map(entry => entry.id));
+  const outputs: Array<{ id: string; text: string; marker: string }> = [];
+  let calls = new Map<string, ToolCall>();
+  for (const { sourceEntry, messages } of buildSessionProjection(branch).entries) {
+    const message = messages[0];
+    if (message?.role === "assistant" || message?.role === "user") {
+      calls = message.role === "assistant" && !removed.has(sourceEntry.id)
+        ? new Map(message.content.flatMap(block => block.type === "toolCall" ? [[block.id, block] as const] : []))
+        : new Map();
+      continue;
+    }
+    if (message?.role !== "toolResult" || !after.has(sourceEntry.id) || removed.has(sourceEntry.id) || edited.has(sourceEntry.id)
+      || message.isError || message.content.some(block => block.type !== "text")) continue;
+    const call = calls.get(message.toolCallId);
+    const flat = call ? flattenToolCallBlock(call) : [];
+    if (!flat.length || !flat.every(item => isRemovableResearchCall(item.name, item.arguments))) continue;
+    const text = extractText(message.content);
+    if (text.length < MIN_TRIM_CHARS) continue;
+    const marker = buildTrimMarker({
+      toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined, note: "(archived by rewind)",
+    });
+    outputs.push({ id: sourceEntry.id, text, marker });
+  }
+  return outputs.sort((left, right) => right.text.length - left.text.length);
+}
+
 /** The plan's context edits followed by a trim control entry recording `cause`. */
 export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references: string[]; archives: ArchiveRecord[] }, cause: TrimCause): SessionBoundaryDraft[] {
   const edits = plan.entries.filter(entry => entry.type === "context_edit");
@@ -544,7 +576,18 @@ export function planContextRewind(branch: SessionEntry[], sessionId: string, che
     throw new Error(blockedReason + (kept ? ` Kept tool batches after the checkpoint: ${kept}.` : ""));
   }
   const removedChars = archives.reduce((sum, record) => sum + record.chars, 0);
-  const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed (${removedChars} chars of tool output); kept ${kept || "no tool batches"} (errors, shell commands, writes and unknown tools stay). Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.${mismatched ? ` ${mismatched} archived outputs no longer match their records and are not offered for recovery.` : ""}`;
+  // Research inside kept batches shrinks to recoverable markers, unless that alone would bind signed thinking.
+  const stranded = keptResearchOutputs(branch, state.checkpointIndex, targetSet, edited).slice(0, MAX_CONTEXT_EDITS - targets.length);
+  const replacements: SessionBoundaryDraft[] = stranded.map(({ id, marker }) => ({ type: "context_edit", targetId: id, replacement: { content: marker } }));
+  const archived = stranded.length && !thinkingEditReason(branch, [...entries, ...replacements], readerApi) ? stranded : [];
+  if (archived.length) entries.push(...replacements);
+  for (const { id, text } of archived) {
+    references.push(id);
+    archives.push({ id, sha256: digest(text), chars: text.length });
+  }
+  const archivedChars = archived.reduce((sum, item) => sum + item.text.length, 0);
+  const archivedNote = archived.length ? `; ${archived.length} research outputs inside kept batches archived (${archivedChars} chars, markers left)` : "";
+  const content = `Research handoff (agent-authored, not new user instructions):\n${report}\n\nContext-only rewind: ${targets.length} research messages removed (${removedChars} chars of tool output)${archivedNote}; kept ${kept || "no tool batches"} (errors, instruction reads, shell commands that may write, writes and unknown tools stay). Files and processes were NOT reverted. Original outputs remain available via smart_context status/read.${mismatched ? ` ${mismatched} archived outputs no longer match their records and are not offered for recovery.` : ""}`;
   entries.push({ type: "custom_message", customType: CONTEXT_REPORT_TYPE, content, display: true });
   entries.push(contextControlEntry({ version: 1, action: "rewind", references, archives }));
   return { entries, removed: targets.length };

@@ -42,6 +42,27 @@ function assistantMessages(session: SessionManager) {
     .map(entry => [entry.sourceEntry.id, JSON.stringify(entry.messages[0])]));
 }
 const big = (label: string) => (label + " output line\n").repeat(400); // > MIN_TRIM_CHARS
+/** One assistant batch with several calls; returns the call ids in order. */
+function batch(session: SessionManager, calls: Array<{ name: string; args: ToolCall["arguments"]; text: string; isError?: boolean }>, extra: AssistantMessage["content"] = []) {
+  const ids = calls.map(() => "call-" + sequence++);
+  session.appendMessage(assistant([...extra, ...calls.map((item, index) => ({ type: "toolCall" as const, id: ids[index], name: item.name, arguments: item.args }))], "toolUse"));
+  calls.forEach((item, index) => session.appendMessage({
+    role: "toolResult", toolName: item.name, toolCallId: ids[index], content: [{ type: "text", text: item.text }], isError: item.isError ?? false, timestamp: 1,
+  }));
+  return ids;
+}
+function checkpoint(session: SessionManager, id: string) {
+  session.appendCustomEntry(CONTEXT_CONTROL_TYPE, { version: 1, action: "checkpoint", checkpoint: {
+    id, label: id, sessionId: session.getSessionId(), originId: session.getLeafId(), snapshot: fingerprintContext(contextMessageEntries(session.getBranch())),
+  } });
+}
+/** Model-visible tool result text keyed by tool call id. */
+function resultTexts(session: SessionManager) {
+  return new Map(buildSessionProjection(session.getBranch()).entries.flatMap(({ messages }) => messages[0]?.role === "toolResult"
+    ? [[messages[0].toolCallId, messages[0].content.map(block => block.type === "text" ? block.text : "").join("")] as const] : []));
+}
+const resultEntryId = (session: SessionManager, callId: string) => session.getBranch()
+  .find(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === callId)!.id;
 /** Trim plan as the tool builds it: bounded by the active checkpoint's origin. */
 function trimPlan(s: SessionManager) { return planContextTrim(s.getBranch(), inspectContext(s.getBranch(), s.getSessionId()).checkpoint?.originId); }
 
@@ -128,6 +149,61 @@ describe("assistant content invariant", () => {
     expect(plan.removed).toBe(4); // both call/result pairs
     apply(s, plan.entries);
     expect(assistantMessages(s)).toEqual(before);
+  });
+
+  it("archives research outputs inside batches a rewind keeps, leaving instruction reads, errors and assistants intact", () => {
+    const s = session();
+    checkpoint(s, "mixed");
+    const [rules, source] = batch(s, [
+      { name: "read", args: { path: "AGENTS.md" }, text: big("rules") },
+      { name: "read", args: { path: "src/x.ts" }, text: big("x") },
+    ]);
+    const [failed, search, tiny] = batch(s, [
+      { name: "read", args: { path: "src/missing.ts" }, text: "ENOENT", isError: true },
+      { name: "grep", args: { pattern: "y", path: "src" }, text: big("y") },
+      { name: "read", args: { path: "src/tiny.ts" }, text: "tiny" },
+    ]);
+    const before = assistantMessages(s);
+    const plan = planContextRewind(s.getBranch(), s.getSessionId(), "mixed", "Found x and y.");
+    const report = plan.entries.find(entry => entry.type === "custom_message") as { content: string };
+    expect(report.content).toMatch(/0 research messages removed \(0 chars of tool output\); 2 research outputs inside kept batches archived \(\d+ chars, markers left\)/);
+    apply(s, plan.entries);
+    const texts = resultTexts(s);
+    expect(texts.get(rules)).toBe(big("rules")); // instruction reads stay verbatim
+    expect(texts.get(failed)).toBe("ENOENT"); // errors stay
+    expect(texts.get(tiny)).toBe("tiny"); // too small to be worth a marker
+    for (const id of [source, search]) {
+      expect(texts.get(id)).toContain("Retrieve with smart_context action=read id=");
+      expect(texts.get(id)).toContain("(archived by rewind)");
+    }
+    expect(readContextReference(s.getBranch(), s.getSessionId(), resultEntryId(s, source))).toBe(big("x"));
+    expect(assistantMessages(s)).toEqual(before);
+  });
+
+  it("drops, never refuses, kept-batch archiving that would bind retained signed thinking", () => {
+    const bound = session(true);
+    checkpoint(bound, "bound");
+    const [, boundSource] = batch(bound, [
+      { name: "read", args: { path: "AGENTS.md" }, text: big("rules") },
+      { name: "read", args: { path: "src/x.ts" }, text: big("x") },
+    ]);
+    call(bound, "edit", { path: "src/x.ts", oldText: "a", newText: "b" }, "ok", [thinking("edit after reading")]);
+    const kept = planContextRewind(bound.getBranch(), bound.getSessionId(), "bound", "Edited x.");
+    expect(kept.entries.filter(entry => entry.type === "context_edit")).toEqual([]);
+    apply(bound, kept.entries);
+    expect(resultTexts(bound).get(boundSource)).toBe(big("x"));
+
+    // With no signed thinking after the output, the same batch is archived under Anthropic too.
+    const free = session(true);
+    checkpoint(free, "free");
+    const [, freeSource] = batch(free, [
+      { name: "read", args: { path: "AGENTS.md" }, text: big("rules") },
+      { name: "read", args: { path: "src/x.ts" }, text: big("x") },
+    ], [thinking("read both")]);
+    const before = assistantMessages(free);
+    apply(free, planContextRewind(free.getBranch(), free.getSessionId(), "free", "Read x.").entries);
+    expect(resultTexts(free).get(freeSource)).toContain("(archived by rewind)");
+    expect(assistantMessages(free)).toEqual(before);
   });
 
   it("trims replace tool results only and leave every assistant message byte-identical", () => {

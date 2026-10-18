@@ -1,5 +1,6 @@
 /** Step 2: select and validate the active-context prefix to summarize. */
 
+import { contextUsage } from "../context-usage.ts";
 import { nativeCompactionCut, nativeRouteLabel } from "../native-compaction.ts";
 import { isNativeApi } from "../../infra/native-protocol.ts";
 import type {
@@ -367,7 +368,7 @@ function nativeOverridePlan(
 }
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
- const totalTokens = rc.ctx.getContextUsage()?.tokens ?? 0;
+ const totalTokens = contextUsage(rc.ctx)?.tokens ?? 0;
  const branch = rc.ctx.sessionManager.getBranch();
  const msgs = contextMessageEntries(branch);
  if (msgs.length < 3) {
