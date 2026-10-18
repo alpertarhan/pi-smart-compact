@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+## [10.6.2] - 2026-10-18
+
+- The release owner approved `10.6.2` as a stable patch release to `latest`
+  without a canary cohort. Evidence: the deterministic release gate
+  (source/scripts/test/bench typechecking, the full suite, the adversarial
+  gate, bench, build, packed-install audit, latest-Pi compatibility),
+  minimum-Pi (0.87.1) compatibility, `bun audit`, and per-pull-request CI on
+  the exact merged commits. Evidence limits: no external canary cohort and no
+  live session run of this version; recorded here as the owner exception
+  required by `docs/RELEASE.md`.
+
+### Fixed
+
+- The verification gate no longer reports a `semantic-contradiction` for a
+  self-consistent constraint whose only negation sits in a subordinate clause
+  such as "no need to check config" (issue #116, fix #117). Source polarity is
+  now derived from the clause containing the semantic anchor, and target
+  negation is scoped the same way. Known limit: a real negation sharing the
+  same punctuation-free clause as a "no need" phrase is skipped with it, and
+  polarity only counts within two tokens of the anchor — accepted as a
+  conservative trade-off. `DEBUG=smart-compact` now traces every
+  `semantic-contradiction` decision with the source/target fragment pair, the
+  anchor and the polarity flags, and `supersedesConstraint` is covered by
+  direct polarity tests.
+- A Hindsight save whose same-revision status check uncovers a definite
+  server-side failure now resubmits once with a fresh operation id in the same
+  call instead of reporting a failure the caller had to save again (#120).
+  Unknown outcomes keep the old operation id and stay idempotent.
+- Open Hindsight receipts saved against a server or bank that is no longer
+  the configured target drained nowhere: every recall filtered them out by
+  scope, so they could never refresh and held ledger capacity forever (#121).
+  A recall now drains them locally to `failed` after the same 24-hour window,
+  without contacting the old server. The recall footer "Prior saves" is
+  renamed to "Receipts refreshed" because it counts only the receipts that
+  call refreshed.
+
 ## [10.6.1] - 2026-10-18
 
 - The release owner approved `10.6.1` as a stable patch release to `latest`

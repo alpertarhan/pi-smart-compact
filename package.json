@@ -1,7 +1,7 @@
 {
 	"name": "pi-smart-compact",
-	"version": "10.6.1",
-	"description": "Pi Continuity — context hygiene and session continuity for Pi Coding Agent: recoverable cleanup, checkpoints, memory and verified compaction.",
+	"version": "10.6.2",
+	"description": "Pi Continuity \u2014 context hygiene and session continuity for Pi Coding Agent: recoverable cleanup, checkpoints, memory and verified compaction.",
 	"type": "module",
 	"packageManager": "bun@1.4.3",
 	"engines": {
