@@ -193,7 +193,10 @@ What to save:
   another server's state. There are at most 500 receipts. Completed, failed
   and deleted receipts are pruned oldest-first. Open receipts are never
   evicted: new remote saves are refused until they are refreshed, and the
-  refusal names the receipts file.
+  refusal names the receipts file. An open receipt whose target (server or
+  bank) is no longer the configured one can never be refreshed by any
+  project's recall, so after the same 24-hour window a recall drains it
+  locally to `failed` without contacting that server.
 
 Receipt states and how the tools report them:
 

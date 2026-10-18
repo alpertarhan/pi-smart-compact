@@ -259,6 +259,38 @@ describe("hindsight memory backend", () => {
     expect(again.details.remote.state).toBe("completed");
     expect(again.details.remote.operationId).not.toBe(saved.details.remote.operationId);
   });
+  it("drains stale open receipts whose target is no longer configured, without contacting that server", async () => {
+    const harness = setup(hindsightSettings());
+    const stale = Date.now() - 48 * 3_600_000;
+    const receipts = [
+      {
+        key: "orphan-stale", baseUrl: "https://old.example", bankId: "bank-old",
+        projectId: "proj-x", documentId: "psc-cg-orphan1", revision: "r1",
+        operationId: "op-orphan-1", kind: "decision", title: "orphan stale",
+        state: "unknown", createdAt: stale, updatedAt: stale,
+      },
+      {
+        key: "orphan-fresh", baseUrl: "https://old.example", bankId: "bank-old",
+        projectId: "proj-x", documentId: "psc-cg-orphan2", revision: "r2",
+        operationId: "op-orphan-2", kind: "decision", title: "orphan fresh",
+        state: "accepted", createdAt: Date.now() - 60_000, updatedAt: Date.now() - 60_000,
+      },
+    ];
+    fs.mkdirSync(path.dirname(hindsightReceiptsFile()), { recursive: true });
+    fs.writeFileSync(hindsightReceiptsFile(), JSON.stringify({ version: 1, receipts }));
+
+    const recalled = await harness.recall({ query: "strict project tags" });
+    expect(recalled.content[0].text).toContain("Hindsight Recall");
+    const after: Array<{ key: string; state: string; detail?: string }> =
+      JSON.parse(fs.readFileSync(hindsightReceiptsFile(), "utf8")).receipts;
+    const drained = after.find((receipt) => receipt.key === "orphan-stale");
+    const fresh = after.find((receipt) => receipt.key === "orphan-fresh");
+    expect(drained?.state).toBe("failed");
+    expect(drained?.detail).toContain("no longer configured");
+    expect(fresh?.state).toBe("accepted");
+    expect(fake.requests.some((request) => request.path.includes("op-orphan"))).toBe(false);
+  });
+
   it("includes unknown receipts in the bounded recall refresh and frees them only on terminal status", async () => {
     const harness = setup(hindsightSettings({ hindsightTimeoutMs: 1_000 }));
     fake.failNext.set("POST memories", -3);

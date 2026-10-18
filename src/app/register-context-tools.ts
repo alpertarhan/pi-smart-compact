@@ -579,10 +579,10 @@ export async function executeRecall(
   .filter((fact) => !kinds || !fact.metadata.kind || kinds.has(fact.metadata.kind))
   .slice(0, params.limit ?? 5);
  // Receipt counts come from the refresh that already ran — no extra status
- // calls — so the agent sees prior-save completion state alongside results.
+ // calls — so the agent sees refreshed receipt state alongside results.
  const buckets = receiptBuckets(refreshed);
  const receiptSummary = refreshed.length
-  ? "Prior saves: " + buckets.done + " completed, " + buckets.pending +
+  ? "Receipts refreshed: " + buckets.done + " completed, " + buckets.pending +
   " pending, " + buckets.failed + " failed, " + buckets.unknown + " unknown."
   : "";
  return textResult(formatHindsightFacts(hindsight.target, projectId, facts) + pendingNote + (receiptSummary ? "\n" + receiptSummary : ""), {

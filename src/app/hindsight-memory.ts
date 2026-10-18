@@ -28,6 +28,7 @@ import {
  type HindsightReceiptScope,
  type HindsightReceiptState,
  isOpenReceipt,
+ listAllReceipts,
  listReceipts,
  NOT_FOUND_DRAIN_HOURS,
  operationIdFor,
@@ -490,6 +491,22 @@ export async function refreshPendingReceipts(
   } catch {
    refreshed.push(receipt);
   }
+ }
+ // Open receipts bound to a target that is no longer configured can never be
+ // refreshed by any project's recall and would hold ledger capacity forever.
+ // Drain them locally after the same give-up window, without contacting any
+ // server: the selected backend never reads that target again.
+ const staleBefore = Date.now() - NOT_FOUND_DRAIN_HOURS * 3_600_000;
+ for (const receipt of listAllReceipts()) {
+  if (!isOpenReceipt(receipt)) continue;
+  if (receipt.baseUrl === target.baseUrl && receipt.bankId === target.bankId) continue;
+  if (receipt.updatedAt > staleBefore) continue;
+  const drained = tryUpdateReceipt(
+   receipt.key,
+   "failed",
+   "target " + receipt.baseUrl + "/" + receipt.bankId + " no longer configured",
+  );
+  if ("receipt" in drained && drained.receipt) refreshed.push(drained.receipt);
  }
  return refreshed;
 }
