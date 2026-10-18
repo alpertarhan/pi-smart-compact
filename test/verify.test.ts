@@ -7,6 +7,7 @@ import {
 	formatVerificationGap,
 	hasSemanticContradiction,
 	isDeterministicallyPatchable,
+	supersedesConstraint,
 	patchSummary,
 	releasesConstraint,
 } from "../src/phases/verify.ts";
@@ -2252,5 +2253,34 @@ describe("deterministic floor never fails its own gate", () => {
 			checked++;
 		}
 		expect(checked).toBe(512);
+	});
+});
+
+describe("supersedesConstraint", () => {
+	it("retires the older rule when two constraints flip polarity on the same concepts", () => {
+		expect(
+			supersedesConstraint("do not deploy on fridays", "deploys are allowed on fridays"),
+		).toBe(true);
+	});
+
+	it("keeps both rules when polarity agrees", () => {
+		expect(
+			supersedesConstraint("do not deploy on fridays", "never deploy on fridays"),
+		).toBe(false);
+	});
+
+	it("treats a question as superseding nothing", () => {
+		expect(
+			supersedesConstraint("do not deploy on fridays", "can we deploy on fridays?"),
+		).toBe(false);
+	});
+
+	it("ignores subordinate no-need negation when comparing polarity", () => {
+		expect(
+			supersedesConstraint(
+				"alpha is only used in mode A, no need to check config.",
+				"alpha is only used in mode A; beta is fine for other modes.",
+			),
+		).toBe(false);
 	});
 });

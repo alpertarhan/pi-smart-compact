@@ -868,11 +868,16 @@ function hasSemanticEvidence(source: string, target: string): boolean {
  });
 }
 
-export function hasSemanticContradiction(
- source: string,
- target: string,
- exempt?: ReadonlySet<string>,
-): boolean {
+/**
+ * The target fragment that flips the source constraint's polarity, or null
+ * when the target agrees. Shared by the gate and its debug trace so the log
+ * can name the exact pair that fired.
+ */
+function findContradictingFragment(
+	source: string,
+	target: string,
+	exempt?: ReadonlySet<string>,
+): string | null {
  // Do not apply a whole instruction's polarity to one of its own clauses.
  // Other target fragments remain checked, even beside a verbatim copy.
  // `exempt` holds fragments of required evidence lines that share the
@@ -883,34 +888,46 @@ export function hasSemanticContradiction(
  );
  const { sourceTokens, concepts, anchor, negative, conditional } =
   semanticShape(source);
- if (!anchor) return false;
+ if (!anchor) return null;
  const required = Math.min(
   concepts.length,
   Math.max(1, Math.ceil(concepts.length * 0.6)),
  );
- return semanticFragments(target).some((fragment) => {
+ for (const fragment of semanticFragments(target)) {
   const { tokens } = fragment;
   const key = tokens.join(" ");
-  if (!tokens.includes(anchor) || sourceFragments.has(key) || exempt?.has(key)) return false;
+  if (!tokens.includes(anchor) || sourceFragments.has(key) || exempt?.has(key)) continue;
   const overlap = concepts.filter((concept) => tokens.includes(concept)).length;
   // Sharing a generic anchor such as "release" or "file" is not enough:
   // another constraint in the same section must overlap the actual concepts.
-  if (overlap < required) return false;
+  if (overlap < required) continue;
   const targetNegative = hasScopedNegation(fragment.polarityClauses, anchor);
   if (negative && !targetNegative) {
    const validConditional =
     sourceTokens.includes("without") &&
     tokens.some((token) => CONDITION_MARKERS.has(token)) &&
     overlap >= Math.min(2, concepts.length);
-   return !validConditional;
+   if (validConditional) continue;
+   return key;
   }
-  if (!negative && targetNegative) return true;
-  return (
+  if (!negative && targetNegative) return key;
+  if (
    conditional &&
    !negative &&
    !tokens.some((token) => CONDITION_MARKERS.has(token))
-  );
- });
+  ) {
+   return key;
+  }
+ }
+ return null;
+}
+
+export function hasSemanticContradiction(
+	source: string,
+	target: string,
+	exempt?: ReadonlySet<string>,
+): boolean {
+ return findContradictingFragment(source, target, exempt) !== null;
 }
 
 /**
@@ -1752,7 +1769,21 @@ function verifySemanticCoverage(
    addGap(accumulator, { kind: "missing-constraint", text: constraint.text, ...(constraint.origin ? { origin: constraint.origin } : {}) }, 8);
   }
   // The steering focus names a subject (polarity-free evidence), so it cannot be contradicted either.
-  if (!constraint.topic && hasSemanticContradiction(constraint.text, constraintTarget, exemptFor(constraint.text))) {
+  const contradiction = constraint.topic
+   ? null
+   : findContradictingFragment(constraint.text, constraintTarget, exemptFor(constraint.text));
+  if (contradiction !== null) {
+   const { anchor, negative, conditional } = semanticShape(constraint.text);
+   log.debug(
+    "semantic-contradiction:",
+    JSON.stringify({
+     source: constraint.text.slice(0, TRUNC.SNIPPET),
+     fragment: contradiction.slice(0, TRUNC.SNIPPET),
+     anchor,
+     negative,
+     conditional,
+    }),
+   );
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: constraint contradicts "
