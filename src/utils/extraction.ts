@@ -366,7 +366,9 @@ export function isTransientToolDiagnostic(text: string): boolean {
       /(?:audit|existing lockfile|loadVirtual)/i.test(candidate)) ||
     /^Found \d+ occurrences? of edits\[\d+\](?!\w)/i.test(candidate) ||
     (/^Unknown JSON field:/i.test(candidate) &&
-      /Available fields:/i.test(candidate))
+      /Available fields:/i.test(candidate)) ||
+    // This extension's own failure output is not session work to carry.
+    OWN_OUTPUT_CONTEXT_RE.test(candidate)
   );
 }
 
@@ -643,6 +645,9 @@ const OWN_OUTPUT_PHRASE_RE = /do not bypass verification/i;
 /** `[x] Did the thing` is a completion record, not a live rule. `[ ]` stays. */
 const COMPLETED_CHECKLIST_RE = /^\[[xX✓✔]\]\s*\S/;
 
+/** The floor's own "Topics Covered" line (`**topic** [priority]: ...`) quotes raw segment text, not rules. */
+const FLOOR_TOPIC_LINE_RE = /^\*\*.+?\*\* \[(?:critical|high|normal|low)\]: /;
+
 /**
  * Text that must never become a constraint: tool noise, this extension's own
  * output, compaction status lines, and completed checklist items. Constraints
@@ -655,7 +660,8 @@ export function isNonLiveConstraintText(text: string): boolean {
     isDiagnosticConstraintText(candidate) ||
     isCompactionStatusText(candidate) ||
     OWN_OUTPUT_CONTEXT_RE.test(candidate) ||
-    COMPLETED_CHECKLIST_RE.test(candidate)
+    COMPLETED_CHECKLIST_RE.test(candidate) ||
+    FLOOR_TOPIC_LINE_RE.test(candidate)
   );
 }
 
@@ -682,7 +688,12 @@ export function mineConstraints(
     // A prior compaction is represented as one multiline user message. Match
     // individual bullets/lines so an npm error later in that recap cannot turn
     // the entire recap (including notices) into one bogus constraint.
-    for (const raw of text.split(/\n+/)) {
+    // A host compaction summary contributes only its Constraints section, as it
+    // contributes only its Goal to extractMainGoal: other sections are history.
+    const source = HISTORY_SUMMARY_RE.test(text)
+      ? (findSection(text, "constraints")?.body ?? "")
+      : text;
+    for (const raw of source.split(/\n+/)) {
       const candidate = raw
         .replace(/^\s*[-*]\s+/, "")
         .trim()

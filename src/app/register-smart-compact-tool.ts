@@ -1,3 +1,4 @@
+import { contextUsage } from "./context-usage.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -11,7 +12,7 @@ import {
 } from "../ui/metrics-report.ts";
 import { formatCompactErrorForUi } from "../ui/error-format.ts";
 import { loadConfig } from "../utils/config.ts";
-import { errorDetail, recordIssue } from "../utils/issues.ts";
+import { errorDetail, formatRecentIssues, recordIssue } from "../utils/issues.ts";
 import { effectiveContextWindow, safeContextPercent } from "../utils/tokens.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import { resolveModels } from "./model-routing.ts";
@@ -142,7 +143,8 @@ export function registerSmartCompactTool(
         timeoutMs: maxLatencyMs,
       } = parsedInput.value;
       if (action === "metrics" || action === "dashboard") {
-        const report = buildMetricsReport();
+        // A failed run tells the agent to review metrics; the findings live in recent issues.
+        const report = formatRecentIssues() + "\n\n" + buildMetricsReport();
         const dashboard =
           action === "dashboard" ? writeMetricsDashboard() : null;
         return textResult(
@@ -160,7 +162,7 @@ export function registerSmartCompactTool(
         );
       }
 
-      const usage = ctx.getContextUsage?.();
+      const usage = contextUsage(ctx);
       const totalTokens = usage?.tokens ?? 0;
       const window = effectiveContextWindow(ctx.model, config);
       const contextPercent = safeContextPercent(totalTokens, window);

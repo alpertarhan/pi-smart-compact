@@ -184,6 +184,10 @@ describe("context attention", () => {
     expect(h.sent[0].message.content).not.toMatch(/stays (warm|cached)|queued automatically/);
     expect(h.sent[0].message.content).toContain("checkpoint"); // metadata still allowed
     expect(h.sent[0].message.content).toContain("safety checks still apply");
+    // No anchor suggestion whose cleanup cannot run, and the rewind condition is stated.
+    expect(h.sent[0].message.content).not.toContain("Finishing a unit of work?");
+    expect(h.sent[0].message.content).toContain("anchor cannot clean up here");
+    expect(h.sent[0].message.content).toContain("every batch after the checkpoint is read-only research");
   });
 
   it("history guidance works with navigation disabled", () => {

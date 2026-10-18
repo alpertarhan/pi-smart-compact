@@ -123,6 +123,8 @@ export interface CompactConfig {
  contextHygieneEnabled: boolean;
  /** Require pressure for automatic cleanup and agent-requested history reduction; human commands bypass it. */
  contextPressureOnly: boolean;
+ /** Anthropic server-side context editing for the session model (default off): clears old shell/research tool results, optionally old thinking. */
+ providerContextEditing: "off" | "tool-results" | "tool-results-and-thinking";
  /**
   * Warm-cache payback ceiling (requests) for an automatic trim; batches beyond
   * this payback wait for a cold prompt cache instead of rewriting a warm one.
@@ -553,7 +555,7 @@ export type VerificationGap =
  | { kind: "missing-read-file"; path: string }
  | { kind: "missing-deleted-file"; path: string }
  | { kind: "missing-error"; message: string; resolved?: boolean }
- | { kind: "missing-constraint"; text: string }
+ | { kind: "missing-constraint"; text: string; /** Where the required rule came from, for diagnosis. */ origin?: string }
  | { kind: "missing-decision"; summary: string; answer?: string }
  | { kind: "missing-goal"; goal: string }
  | { kind: "fabricated-file"; ref: string }

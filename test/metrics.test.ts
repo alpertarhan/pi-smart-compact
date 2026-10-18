@@ -100,8 +100,7 @@ describe("metrics reporting", () => {
         success: true,
       });
     }
-    const snapshot = buildSuccessMetrics(
-      {
+    const rc = {
         runId: "run-stage-quality",
         services: svc,
         flags: { skipCompact: false, autoTriggered: false },
@@ -142,9 +141,8 @@ describe("metrics reporting", () => {
           relaxedSoftBoundaries: ["anchor"],
           hardBoundaryAdjusted: true,
         },
-      } as any,
-      "success",
-    );
+      } as any;
+    const snapshot = buildSuccessMetrics(rc, "success");
     expect(snapshot.runId).toBe("run-stage-quality");
     expect(snapshot).toMatchObject({
       tokensSaved: 500,
@@ -169,6 +167,9 @@ describe("metrics reporting", () => {
       snapshot.providerRoutes?.find((route) => route.stage === "verify")
         ?.qualityScore,
     ).toBeUndefined();
+    // A run with deterministic fallback must not credit the route with the summary's coverage.
+    const degraded = buildSuccessMetrics({ ...rc, generationFallbacks: ["1 synthesis batch fallback"] }, "success");
+    expect(degraded.providerRoutes?.find((route) => route.stage === "synthesize")?.qualityScore).toBeUndefined();
   });
 
   it("persists schema-v2 failure taxonomy without error text", async () => {

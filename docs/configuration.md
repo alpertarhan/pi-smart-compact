@@ -376,6 +376,7 @@ stay on disk and manual `/smart-compact trim` still works.
 | --- | --- | --- | --- |
 | `contextHygieneEnabled` | `Automatic cleanup` | `true` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction. Works with `autoTrigger: false`. |
 | `contextPressureOnly` | `Cleanup timing` | `true` | Automatic cleanup and autonomous agent trim/anchor requests require the early pressure gate. Human commands and one host-confirmed anchor can bypass timing, never safety checks. Checkpoint/rewind research round trips are independent of pressure. `false` opts into the legacy early/economic timing below; no switch is needed for a user-confirmed anchor. |
+| `providerContextEditing` | `Anthropic server cleanup` | `"off"` | Direct Anthropic sessions only. `"tool-results"` adds Anthropic context editing (`clear_tool_uses_20250919`, beta `context-management-2025-06-27`) to the session model's requests: from the cleanup band, the API clears old shell and read-only research tool results, keeping the last 8 tool uses; reads, writes, user answers and unknown tools stay. `"tool-results-and-thinking"` also clears thinking older than the last 4 turns (`clear_thinking_20251015`). The session history is unchanged and signed thinking stays valid, unlike local trims. Each clearing rebuilds the prompt cache from the cleared point. |
 | `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
@@ -393,7 +394,7 @@ These limits are not configurable. Behavior and examples are in the guide's
 
 | Item | Limit |
 | --- | --- |
-| Trim per boundary | At most 32 outputs of 4,096+ characters; the latest four assistant turns stay |
+| Trim per boundary | At most 32 outputs of 2,048+ characters; the latest four assistant turns stay |
 | Trimmed output types | Successful text from read-only tools, shell (`bash`) output whose call stays in context, and `smart_context` `read` pages (their markers point back at the source ID). Errors, writes, unknown tools and mixed turns stay whole. |
 | Digest marker | At most 6 lines and 400 characters: retrieval line, call subject, first output line, up to three error/warning lines |
 | Order within the 32 | Read-only outputs whose path a later call writes, edits or deletes; then those read again in full later (a plain `read` without `offset`/`limit`); then the rest, each in session order. Markers note `(superseded: edited later)` or `(superseded: read again in full later)`. Paths compare after `path.normalize` only (relative never matches absolute). This changes order and the note, not eligibility. |
@@ -561,6 +562,7 @@ Hindsight setup, data flow and troubleshooting:
 | `promptCacheRoutingEnabled` | boolean | `false` | `Stamp per-session prompt_cache_key on OpenAI-shaped requests` |
 | `contextHygieneEnabled` | boolean | `true` | `Automatic cleanup` |
 | `contextPressureOnly` | boolean | `true` | `Cleanup timing` |
+| `providerContextEditing` | `"off"` \| `"tool-results"` \| `"tool-results-and-thinking"` | `"off"` | `Anthropic server cleanup` |
 | `artifactOffloadEnabled` | boolean | `false` | `Offload huge outputs` |
 | `visualArchiveEnabled` | boolean | `false` | `Image snapshots` |
 | `pinPaths` | string array | `[]` | `Always-kept files` |

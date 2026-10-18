@@ -51,5 +51,8 @@ export function buildSummaryAnchor(sm: SummaryAnchorSession, details: { summary:
   if (taken.has(name)) return null;
   const summary = details.summary.slice(0, ANCHOR_SUMMARY_LIMIT);
   const anchor: AnchorState = { name, summary, targetId, synthetic: true };
-  return { customType: ANCHOR_CUSTOM_TYPE, content: `Anchor: ${name}\n\n${summary}`, display: false, details: { anchor } };
+  // The compaction summary is already in context; repeating it here would bill it twice per request.
+  // Every reader (lists, recall, pivot) uses details.anchor, so content is only a pointer.
+  const content = `Anchor: ${name} (marks the compaction summary above; read it with smart_navigation view)`;
+  return { customType: ANCHOR_CUSTOM_TYPE, content, display: false, details: { anchor } };
 }

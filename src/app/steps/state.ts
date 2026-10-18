@@ -21,6 +21,7 @@ import {
 } from "../../utils/state.ts";
 import { extractOpenLoops } from "../../utils/extraction.ts";
 import { readRemediationHints } from "../../utils/damage.ts";
+import { recordIssue } from "../../utils/issues.ts";
 import type { SmartCompactDetails, OpenLoop, CompactionState } from "../../types.ts";
 import { TRUNC, VERSION } from "../../constants.ts";
 import {
@@ -146,7 +147,10 @@ export function buildState(rc: VerifiedRc): StatedRc {
     remainingGaps: postVerification.gaps,
   };
   const failure = verificationFailureMessage(postVerification);
-  if (failure) throw new VerificationGateError(postVerification, postInitialScore, "post-state");
+  if (failure) {
+    recordIssue({ key: "verify.gate", message: failure });
+    throw new VerificationGateError(postVerification, postInitialScore, "post-state");
+  }
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;

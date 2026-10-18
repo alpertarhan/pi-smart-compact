@@ -1,5 +1,116 @@
 # Changelog
 
+## [Unreleased]
+
+## [10.6.1] - 2026-10-18
+
+- The release owner approved `10.6.1` as a stable patch release to `latest`
+  without a canary cohort. Context pressure after a trim or rewind now comes
+  from the last measured usage instead of Pi's text-only estimate, which can
+  change when automatic cleanup and compaction start. Evidence: replay of 7 real
+  rewinds (anchored figure 0.3–2% from the next measured input), the
+  deterministic release gate, and minimum-Pi (0.87.1) compatibility. Evidence
+  limits: no external canary cohort and no live session run of this version;
+  recorded here as the owner exception required by `docs/RELEASE.md`.
+
+### Changed
+
+- Optional component pin: `@oh-my-pi/pi-mnemopi` 18.12.1 (was 18.11.3). Its
+  source and types are unchanged; its own dependencies moved to 18.12.1. An
+  installed 18.11.3 keeps working, because Smart Compact checks that the
+  component is present, not its version. Readiness shows the 18.12.1 install
+  command. The README disk-use figure is corrected to 140 MB, measured on
+  macOS arm64 with the documented install command (both pins measure the same).
+
+### Fixed
+
+- Context pressure no longer drops after a trim or rewind and jumps back on the
+  next response. Pi's `getContextUsage()` stops using the measured usage once a
+  context edit follows it and counts only visible text (missing encrypted and
+  signed reasoning); on real rewinds it read 14–33% below what the provider
+  measured next. Smart Compact now keeps the last measured usage and applies
+  only the edits' estimated change (0.3–2% from the next measured input), with
+  Pi's own estimate as the floor. Pi's footer is unchanged.
+- Research rewind also archives large research outputs inside batches it keeps
+  (a batch stays when it contains an instruction read, an error or a
+  side-effecting call). Those outputs become recoverable markers; the report
+  states how many were archived and their size. Under signed Anthropic thinking
+  the markers are skipped when they would invalidate it.
+
+## [10.6.0] - 2026-10-17
+
+- The release owner approved `10.6.0` as a stable minor release to `latest`
+  without a canary cohort. Default cleanup behavior changes (trims consider
+  outputs from 2,048 characters; research rewind removes read-only shell
+  commands); Anthropic server-side context editing stays `off` by default. The
+  deterministic release gate covers the touched paths. Evidence limits: no
+  external canary cohort, no live provider-quality evidence, and Anthropic
+  `context_management` was not exercised against the live API; recorded here
+  as the owner exception required by `docs/RELEASE.md`.
+
+### Added
+
+- `providerContextEditing` (`Anthropic server cleanup`, default `"off"`): for
+  direct Anthropic sessions, adds Anthropic context editing to the session
+  model's requests. Old shell and read-only research tool results are cleared
+  server-side from the cleanup band; `"tool-results-and-thinking"` also clears
+  thinking older than the last 4 turns. The session history is unchanged and
+  signed thinking stays valid, which local trims cannot provide there.
+- Research rewind removes shell commands that only read: allowlisted commands
+  (`rg`, `grep`, `cat`, `sed -n` ranges, `git diff/log/show`, ...) without
+  variables, globs, substitutions, heredocs or file redirects. With signed
+  Anthropic thinking, a detour that only reads can therefore be rewound.
+
+### Changed
+
+- Trims consider tool outputs from 2,048 characters (previously 4,096).
+- Anchors, trims and rewinds report why nothing was cleaned up (no eligible
+  output, savings under the floor, or cooldown) with their numbers. A rewind
+  report states the characters removed and the tool batches kept; a refused
+  rewind names the kept batches.
+- The context-pressure hint no longer suggests an anchor when cleanup is
+  blocked. It states when a rewind can still apply.
+
+- Optional component pins: `@oh-my-pi/pi-mnemopi` 18.11.3 and `bun` 1.4.3.
+  The install commands in readiness messages and the README use these versions.
+  The Pi peer floor stays `>=0.87.1`. Development now runs against Pi 1.3.0.
+- The yield check accepts a verified summary up to 5% over the planned
+  post-compaction target (previously 1 token). Staged candidates are
+  revalidated with the same rule.
+- Constraint findings from the verification gate name their origin: `message
+  #N`, `continuity state`, `focus`, or `compaction note`.
+
+### Fixed
+
+- Synthetic compaction anchors no longer repeat the compaction summary in the
+  model context. The summary stays in the anchor's details for navigation.
+- `smart_navigation` anchor results no longer repeat the summary passed in the
+  call.
+- Heredoc bodies are no longer parsed as shell, so `x => y` in a heredoc no
+  longer records `y` as a modified file.
+- Smart Compact's own context-pressure hints are no longer summarized as open
+  loops.
+- Runs with deterministic fallback batches no longer credit the synthesis
+  route with the summary's quality score in metrics.
+- MiniMax-M3 compaction calls no longer end at `max_tokens` without text. A
+  `minimal` thinking level is now sent without thinking: MiniMax-M3 thinks only
+  when asked, and enabled thinking ignored `budget_tokens`. The `minimax`
+  output cap is raised from 4096 to 8192, so the 6000-token balanced summary
+  budget is no longer cut.
+- The verification gate no longer fails every run on evidence it can never
+  accept. The floor's own "Topics Covered" lines are not mined as rules. Of
+  two required rules the gate reads as contradicting, the newer one retires
+  the older. A steering focus can no longer be scored as contradicted.
+- `smart_compact` metrics reports now list recent issues. Gate failures
+  record their first findings there.
+- Summary-route, explore, batch, single-pass and assembly fallbacks now show
+  their literal cause in the TUI and in Recent issues, once per session per
+  cause. Verbose or debug mode is no longer needed.
+- `smart_compact`'s own failures are no longer carried into summaries as
+  unresolved session errors.
+- Only the Constraints section of a host compaction summary is mined for
+  rules. Its other sections are history.
+
 ## [10.5.0] - 2026-10-14
 
 ### Release approval

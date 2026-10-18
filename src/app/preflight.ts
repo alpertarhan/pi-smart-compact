@@ -1,3 +1,4 @@
+import { contextUsage } from "./context-usage.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { PROFILES } from "../constants.ts";
@@ -126,7 +127,7 @@ export function prepareManualPreflightContext(
 ): ManualPreflightContext {
   const branch = ctx.sessionManager.getBranch();
   const msgs = contextMessageEntries(branch);
-  const totalTokens = ctx.getContextUsage()?.tokens ?? 0;
+  const totalTokens = contextUsage(ctx)?.tokens ?? 0;
   const modelContextWindow = ctx.model?.contextWindow;
   const contextWindowTokens =
     Number.isFinite(modelContextWindow) && (modelContextWindow ?? 0) > 0

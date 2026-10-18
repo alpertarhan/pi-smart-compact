@@ -43,7 +43,7 @@ import {
  resolveMode,
 } from "../mode-policy.ts";
 import { createBatches } from "../../utils/helpers.ts";
-import { errorDetail, recordIssue } from "../../utils/issues.ts";
+import { errorDetail, reportIssue } from "../../utils/issues.ts";
 import type { ExtractedRc, SynthesizedRc } from "../run-context.ts";
 import { advance, markMeasuredPhase } from "../run-context.ts";
 import {
@@ -216,7 +216,7 @@ export async function summarizeConversation(
   rc.cancellation.signal.throwIfAborted();
   cacheable = false;
   generationFallbacks.push("summary route unavailable");
-  recordIssue({ key: "synth.route", message: "Summary route unavailable (" + errorDetail(error) + ").", error: error });
+  reportIssue({ key: "synth.route", message: "Summary route unavailable (" + errorDetail(error) + ").", error: error }, rc.ctx);
   rc.notify(
    "Summary route unavailable · using deterministic fallback [" + formatGenerationFailureForUi(error) + "]",
    "warning",
@@ -261,7 +261,7 @@ export async function summarizeConversation(
    rc.cancellation.signal.throwIfAborted();
    cacheable = false;
    generationFallbacks.push("single-pass generation failed");
-   recordIssue({ key: "synth.single-pass", message: "Single-pass synthesis used deterministic fallback (" + errorDetail(err) + ").", error: err });
+   reportIssue({ key: "synth.single-pass", message: "Single-pass synthesis used deterministic fallback (" + errorDetail(err) + ").", error: err }, rc.ctx);
    rc.notify(
     "Single-pass generation stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]",
     "info",
@@ -331,7 +331,7 @@ export async function summarizeConversation(
     rc.cancellation.signal.throwIfAborted();
     cacheable = false;
     generationFallbacks.push("exploration unavailable");
-    recordIssue({ key: "synth.explore", message: "Explore used deterministic topic boundaries (" + errorDetail(err) + ").", error: err });
+    reportIssue({ key: "synth.explore", message: "Explore used deterministic topic boundaries (" + errorDetail(err) + ").", error: err }, rc.ctx);
     rc.notify(
      "Explore unavailable · using deterministic topic boundaries",
      "info",
@@ -454,7 +454,7 @@ export async function summarizeConversation(
       summaries.push(...single.map((ch) => failedChunkSummary(ch)));
       cacheable = false;
       generationFallbacks.push("1 synthesis batch fallback");
-      recordIssue({ key: "synth.batch", message: "Synthesis batch used deterministic fallback (" + errorDetail(err) + ").", error: err });
+      reportIssue({ key: "synth.batch", message: "Synthesis batch used deterministic fallback (" + errorDetail(err) + ").", error: err }, rc.ctx);
       rc.notify(
        "Synthesis batch stopped · deterministic evidence fallback preserved coverage [" + formatGenerationFailureForUi(err) + "]",
        "info",
@@ -573,7 +573,7 @@ export async function summarizeConversation(
    for (const r of results) if (r) summaries.push(...r);
    const failedBatches = errors.filter(Boolean);
    for (const error of failedBatches)
-    recordIssue({ key: "synth.batch", message: "Synthesis batch used deterministic fallback (" + errorDetail(error) + ").", error: error });
+    reportIssue({ key: "synth.batch", message: "Synthesis batch used deterministic fallback (" + errorDetail(error) + ").", error: error }, rc.ctx);
    if (failedBatches.length) {
     cacheable = false;
     generationFallbacks.push(
@@ -627,7 +627,7 @@ export async function summarizeConversation(
    rc.cancellation.signal.throwIfAborted();
    cacheable = false;
    generationFallbacks.push("assembly generation failed");
-   recordIssue({ key: "synth.assembly", message: "Assembly used deterministic fallback (" + errorDetail(err) + ").", error: err });
+   reportIssue({ key: "synth.assembly", message: "Assembly used deterministic fallback (" + errorDetail(err) + ").", error: err }, rc.ctx);
    rc.notify("Assembly stopped · using deterministic fallback [" + formatGenerationFailureForUi(err) + "]", "info");
    method = "heuristic";
    finalSummary = assembleFallback(

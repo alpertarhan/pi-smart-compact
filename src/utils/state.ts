@@ -33,7 +33,7 @@ import {
  extractText,
  collapseDecisionsByQuestion,
 } from "./extraction.ts";
-import { releasesConstraint } from "../phases/verify.ts";
+import { releasesConstraint, supersedesConstraint } from "../phases/verify.ts";
 import { errorDetail, recordIssue, reportIssue } from "./issues.ts";
 import * as log from "./logger.ts";
 import {
@@ -360,9 +360,11 @@ export function upsertContinuityOverride(
  *
  * Only *later* user messages count, and only an explicit polarity flip on the
  * same concepts (the same check the gate uses) — a restatement does not retire.
+ * A newer required rule the gate reads as contradicting an older one retires it
+ * too: the gate can never accept both.
  */
 export function retireSupersededConstraints(
- constraints: ReadonlyArray<{ text: string; index?: number }>,
+ constraints: ReadonlyArray<{ text: string; index?: number; confidence?: number }>,
  msgs: LlmMessage[],
  overrides: ContinuityOverride[],
 ): ContinuityOverride[] {
@@ -375,19 +377,30 @@ export function retireSupersededConstraints(
   if (isNonLiveConstraintText(text)) continue;
   userTexts.push({ index: i, text: text.slice(0, TRUNC.MESSAGE) });
  }
- if (!userTexts.length) return overrides;
+ // The gate's evidence threshold: only rules it requires can block it.
+ const required = (item: { confidence?: number }) => (item.confidence ?? 1) >= 0.8;
  let next = overrides;
- for (const constraint of constraints) {
+ for (const [position, constraint] of constraints.entries()) {
   // A state-carried constraint has no index: every current message is newer.
   const from = constraint.index ?? -1;
-  const release = userTexts.find(
-   (msg) =>
-    msg.index > from && releasesConstraint(constraint.text, msg.text),
-  );
+  const release =
+   userTexts.find(
+    (msg) =>
+     msg.index > from && releasesConstraint(constraint.text, msg.text),
+   )?.text ??
+   (required(constraint)
+    ? constraints.find(
+     (other, otherPosition) =>
+      other.index !== undefined &&
+      (other.index > from || (other.index === from && otherPosition > position)) &&
+      required(other) &&
+      supersedesConstraint(constraint.text, other.text),
+    )?.text
+    : undefined);
   if (!release) continue;
   next = upsertContinuityOverride(next, "constraint", constraint.text, {
    status: "superseded",
-   replacement: release.text.slice(0, TRUNC.CONSTRAINT_TEXT),
+   replacement: release.slice(0, TRUNC.CONSTRAINT_TEXT),
   });
  }
  return next;

@@ -29,6 +29,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { resetIssuesForTests } from "../src/utils/issues.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -605,11 +606,14 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
         );
       },
     });
+    resetIssuesForTests();
+    const toasts: string[] = [];
     const notices: string[] = [];
     const warnings: string[] = [];
     const makeExtracted = () => {
       const tiered = makeTieredRc(messages);
       tiered.sessionId = "one-batch-fallback-session";
+      (tiered.ctx as any).ui.notify = (message: string) => { toasts.push(message); };
       tiered.notify = (message, type) => { notices.push(message); if (type === "warning") warnings.push(message); };
       tiered.profileCfg.singlePassMaxTokens = 1;
       tiered.profileCfg.batchMaxTokens = 100_000;
@@ -621,6 +625,8 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
 
     const first = await summarizeConversation(makeExtracted());
     expect(first.generationFallbacks).toContain("1 synthesis batch fallback");
+    // Visible without verbose mode: the literal cause reaches the TUI and Recent issues.
+    expect(toasts.join("\n")).toContain("Synthesis batch used deterministic fallback");
     expect(notices.join("\n")).toContain("Synthesis batch stopped · deterministic evidence fallback preserved coverage");
     expect(warnings).toEqual([]);
     expect(calls).toBe(2);

@@ -10,20 +10,22 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "10.5.0";
+export const VERSION = "10.6.1";
 /**
  * Opt-in components that are not installed with the extension: optional peer
  * dependencies in package.json, pinned to the versions the release audit
  * exercises. The audit fails if these drift from the manifest.
  */
 export const OPTIONAL_COMPONENTS = {
- mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "18.3.1", enables: "Mnemopi memory store" },
- bun: { name: "bun", version: "1.4.2", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
+ mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "18.12.1", enables: "Mnemopi memory store" },
+ bun: { name: "bun", version: "1.4.3", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
  resvg: { name: "@resvg/resvg-js", version: "2.6.2", enables: "image snapshots" },
 } as const;
 export const CHARS_PER_TOKEN = 3.8;
 export const MIN_COMPACTION_SAVING_RATIO = 0.1;
 export const ESTIMATOR_ROUNDING_TOLERANCE_TOKENS = 1;
+/** Share of the planned post-compaction target a verified summary may overshoot. */
+export const YIELD_TARGET_TOLERANCE_RATIO = 0.05;
 /** Space reserved in the window plan for deterministic verification/state sections added after LLM synthesis. */
 export const POST_SUMMARY_RESERVE_RATIO = 0.25;
 /** Maximum number of open-loop records retained in durable continuity state. */
@@ -184,6 +186,7 @@ export const DEFAULT_CONFIG = {
  artifactOffloadEnabled: false,
  contextHygieneEnabled: true,
  contextPressureOnly: true, // false opts into legacy break-even/cold-cache cleanup.
+ providerContextEditing: "off" as const,
  autoTrimBreakEvenRequests: AUTO_TRIM_BREAK_EVEN_REQUESTS,
  autoTrimMinSavingChars: 16_384,
  contextNavigationEnabled: true,

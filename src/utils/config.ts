@@ -21,6 +21,7 @@ import { errorDetail, reportIssue } from "./issues.ts";
 const VALID_PROFILES = ["light", "balanced", "aggressive"] as const;
 const VALID_MODES = ["auto", "fast", "balanced", "thorough"] as const;
 const VALID_AUTO_TRIGGER_STRATEGIES = ["native-hook", "settled", "background"] as const;
+const VALID_PROVIDER_CONTEXT_EDITING = ["off", "tool-results", "tool-results-and-thinking"] as const;
 const VALID_AGENT_TOOL_ACCESS = ["inherit", "enabled", "disabled"] as const;
 const VALID_TOOL_LOADING = ["lazy", "eager", "off"] as const;
 const VALID_THINKING_LEVELS = [
@@ -315,6 +316,18 @@ function validateBasicFields(sc: Record<string, unknown>): void {
    ". Using default '" +
    DEFAULT_CONFIG.autoTriggerStrategy +
    "'.",
+  );
+ }
+ if (
+  "providerContextEditing" in sc &&
+  !VALID_PROVIDER_CONTEXT_EDITING.includes(sc.providerContextEditing as never)
+ ) {
+  discard(
+   sc,
+   "providerContextEditing",
+   "smart-compact config: providerContextEditing must be off|tool-results|tool-results-and-thinking, got " +
+   String(sc.providerContextEditing) +
+   ". Using default 'off'.",
   );
  }
  for (const key of BOOLEAN_KEYS) {

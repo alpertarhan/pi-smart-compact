@@ -436,7 +436,7 @@ export function formatVerificationGap(gap: VerificationGap): string {
     gap.message.slice(0, TRUNC.SNIPPET)
    );
   case "missing-constraint":
-   return "Missing constraint: " + gap.text.slice(0, TRUNC.TOPIC_LABEL);
+   return "Missing constraint: " + gap.text.slice(0, TRUNC.TOPIC_LABEL) + (gap.origin ? " [" + gap.origin + "]" : "");
   case "missing-decision":
    return (
     "Missing decision: " +
@@ -1166,6 +1166,19 @@ export function releasesConstraint(constraint: string, release: string): boolean
  return positiveImperativeEvidence(release, anchor, true);
 }
 
+/**
+ * Two required rules of opposite polarity on the same concepts fail the gate
+ * whatever the summary says, the floor included, so the newer one wins. A
+ * question is not a rule and supersedes nothing.
+ */
+export function supersedesConstraint(older: string, newer: string): boolean {
+ return (
+  !looksLikeQuestion(newer) &&
+  semanticShape(older).negative !== semanticShape(newer).negative &&
+  (hasSemanticContradiction(older, newer) || hasSemanticContradiction(newer, older))
+ );
+}
+
 export function isDeterministicallyPatchable(gap: VerificationGap): boolean {
  if (gap.kind === "fabricated-file") return true;
  if (gap.kind === "inconsistency")
@@ -1217,7 +1230,7 @@ export interface CollectedVerificationEvidence {
  unresolved: Array<{ message: string }>;
  resolved: Array<{ message: string }>;
  /** `topic` marks the steering focus: a subject pointer, not a rule with polarity. */
- constraints: Array<{ text: string; topic?: boolean }>;
+ constraints: Array<{ text: string; topic?: boolean; origin?: string }>;
  decisions: Array<{ summary: string; answer: string | null }>;
  goal: string | null;
 }
@@ -1481,15 +1494,16 @@ export function collectVerificationEvidence(
   ],
   (item) => item.message,
  ).slice(-5);
- const steeringConstraints: Array<{ text: string; topic?: boolean }> = [];
+ const steeringConstraints: Array<{ text: string; topic?: boolean; origin?: string }> = [];
  if (evidence.steering?.focus?.trim()) {
   steeringConstraints.push({
    text: "Preserve detail about: " + evidence.steering.focus,
    topic: true,
+   origin: "focus",
   });
  }
  if (evidence.steering?.note?.trim()) {
-  steeringConstraints.push({ text: evidence.steering.note });
+  steeringConstraints.push({ text: evidence.steering.note, origin: "compaction note" });
  }
  // A constraint the user has since released is not evidence the summary must
  // match: state legitimately changes mid-session, and re-mining it from an
@@ -1501,11 +1515,12 @@ export function collectVerificationEvidence(
  );
  const constraints = uniqueByText(
   [
+   // Origin labels let a rejected run name where each required rule came from.
    ...extraction.constraints.flatMap((item) =>
-    item.confidence >= 0.8 ? [{ text: item.text }] : [],
+    item.confidence >= 0.8 ? [{ text: item.text, origin: "message #" + item.index }] : [],
    ),
    ...(continuity?.constraints ?? []).flatMap((item) =>
-    item.confidence >= 0.8 ? [{ text: item.text }] : [],
+    item.confidence >= 0.8 ? [{ text: item.text, origin: "continuity state" }] : [],
    ),
    ...steeringConstraints,
   ],
@@ -1734,13 +1749,15 @@ function verifySemanticCoverage(
  ].join("\n");
  for (const constraint of collected.constraints) {
   if (!hasSemanticEvidence(constraint.text, constraintTarget)) {
-   addGap(accumulator, { kind: "missing-constraint", text: constraint.text }, 8);
+   addGap(accumulator, { kind: "missing-constraint", text: constraint.text, ...(constraint.origin ? { origin: constraint.origin } : {}) }, 8);
   }
-  if (hasSemanticContradiction(constraint.text, constraintTarget, exemptFor(constraint.text))) {
+  // The steering focus names a subject (polarity-free evidence), so it cannot be contradicted either.
+  if (!constraint.topic && hasSemanticContradiction(constraint.text, constraintTarget, exemptFor(constraint.text))) {
    addGap(accumulator, {
     kind: "inconsistency",
     detail: "semantic-contradiction: constraint contradicts "
-     + constraint.text.slice(0, TRUNC.SNIPPET),
+     + constraint.text.slice(0, TRUNC.SNIPPET)
+     + (constraint.origin ? " [" + constraint.origin + "]" : ""),
    }, 20);
   }
  }

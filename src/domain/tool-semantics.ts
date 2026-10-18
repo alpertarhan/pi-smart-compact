@@ -124,12 +124,33 @@ export interface ShellFileOperations {
 }
 
 interface ShellToken {
-  kind: "word" | "separator" | "redirect";
+  /** `heredoc` carries the delimiter; its body is skipped, never tokenized as shell. */
+  kind: "word" | "separator" | "redirect" | "heredoc";
   value: string;
+}
+
+interface PendingHeredoc {
+  delimiter: string;
+  stripTabs: boolean;
+}
+
+/** Index just past the terminator line of each pending heredoc, in order; the command end if one is missing. */
+function skipHeredocBodies(command: string, start: number, heredocs: PendingHeredoc[]): number {
+  let cursor = start;
+  for (const { delimiter, stripTabs } of heredocs) {
+    while (cursor < command.length) {
+      const end = command.indexOf("\n", cursor);
+      const line = command.slice(cursor, end < 0 ? command.length : end);
+      cursor = end < 0 ? command.length : end + 1;
+      if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
+    }
+  }
+  return cursor;
 }
 
 function tokenizeShell(command: string): ShellToken[] {
   const tokens: ShellToken[] = [];
+  const heredocs: PendingHeredoc[] = [];
   let word = "";
   let quote: "'" | "\"" | null = null;
   const flush = () => {
@@ -154,7 +175,37 @@ function tokenizeShell(command: string): ShellToken[] {
     }
     if (/\s/.test(char)) {
       flush();
-      if (char === "\n") tokens.push({ kind: "separator", value: char });
+      if (char === "\n") {
+        tokens.push({ kind: "separator", value: char });
+        // Heredoc bodies are data (scripts, test files), not shell: `x => y` there is no redirect.
+        if (heredocs.length) index = skipHeredocBodies(command, index + 1, heredocs.splice(0)) - 1;
+      }
+      continue;
+    }
+    if (char === "<" && command[index + 1] === "<" && command[index + 2] !== "<") {
+      flush();
+      let cursor = index + 2;
+      const stripTabs = command[cursor] === "-";
+      if (stripTabs) cursor++;
+      while (command[cursor] === " " || command[cursor] === "\t") cursor++;
+      let delimiter = "";
+      let delimiterQuote: string | null = null;
+      for (; cursor < command.length; cursor++) {
+        const next = command[cursor];
+        if (delimiterQuote) {
+          if (next === delimiterQuote) delimiterQuote = null;
+          else delimiter += next;
+        } else if (next === "'" || next === "\"") {
+          delimiterQuote = next;
+        } else if (/[\s;&|<>()]/.test(next)) {
+          break;
+        } else if (next !== "\\") {
+          delimiter += next;
+        }
+      }
+      tokens.push({ kind: "heredoc", value: delimiter });
+      if (delimiter) heredocs.push({ delimiter, stripTabs });
+      index = cursor - 1;
       continue;
     }
     if (char === ">" || char === ";" || char === "|"
@@ -232,6 +283,117 @@ function commandFileOperations(words: string[]): ShellFileOperations {
 }
 
 /** Extract only explicit literal file targets from common mutating shell forms. */
+// Commands whose plain use only reads. Anything else (interpreters, xargs, tee, awk, wrappers) stays unknown.
+const READ_ONLY_SHELL_COMMANDS = new Set([
+  "rg", "grep", "egrep", "fgrep", "cat", "head", "tail", "wc", "nl", "ls", "pwd", "cd", "echo", "printf", "true",
+  "cut", "tr", "column", "jq", "diff", "cmp", "comm", "stat", "file", "du", "basename", "dirname", "realpath",
+  "readlink", "which", "shasum", "sha256sum", "md5", "sort", "uniq", "find", "git", "sed",
+]);
+const READ_ONLY_GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "grep", "blame", "ls-files", "rev-parse"]);
+// find actions that run, delete or write; `-fprint*` covers -fprint, -fprint0 and -fprintf.
+const FIND_UNSAFE_RE = /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/;
+// sed is accepted only as a line-range printer: `w`, `e`, `r` and `s///w` can write, run or read.
+const SED_PRINT_SCRIPT_RE = /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/;
+const INSTRUCTION_TEXT_RE = /(?:AGENTS|CLAUDE|GEMINI|SKILL|copilot-instructions)\.md|(?:^|[\s/'"])skills?\//i;
+
+/** Unquoted globs, any expansion or substitution, or unbalanced quotes make a command's effect unknowable here. */
+function hasShellExpansion(command: string): boolean {
+  let quote: "'" | "\"" | null = null;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === "\\") {
+      index++;
+      continue;
+    }
+    if (char === "`" || (char === "$" && /[\w{(@*#?!$-]/.test(command[index + 1] ?? ""))) return true;
+    if (quote === "\"") {
+      if (char === "\"") quote = null;
+      continue;
+    }
+    if (char === "'" || char === "\"") quote = char;
+    else if (char === "*" || char === "?" || char === "[") return true;
+    else if ((char === "<" || char === ">") && command[index + 1] === "(") return true;
+  }
+  return quote !== null;
+}
+
+function readOnlySedArgs(args: string[]): boolean {
+  let quiet = false;
+  const scripts: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "-n" || arg === "--quiet" || arg === "--silent") quiet = true;
+    else if (arg === "-e") scripts.push(args[++index] ?? "");
+    else if (arg === "-E" || arg === "-r") continue;
+    else if (arg.startsWith("-")) return false;
+    else if (!scripts.length) scripts.push(arg);
+  }
+  return quiet && scripts.length > 0 && scripts.every(script => SED_PRINT_SCRIPT_RE.test(script));
+}
+
+function readOnlyGitArgs(args: string[]): boolean {
+  let index = 0;
+  while (args[index] === "-C" || args[index] === "--no-pager") index += args[index] === "-C" ? 2 : 1;
+  // `-c` can set core.pager or diff.external, so any other global option is unknown.
+  if (!READ_ONLY_GIT_SUBCOMMANDS.has(args[index] ?? "")) return false;
+  return args.slice(index + 1).every(arg => !/^(?:--ext-diff|--textconv|--output|-O|--open-files-in-pager)/.test(arg));
+}
+
+function readOnlyShellSegment(words: string[]): boolean {
+  if (!words.length) return true;
+  const [head, ...args] = words;
+  // Bare names only: `./rg` or `/tmp/cat` could be anything; `X=1 cmd` and `&` change how it runs.
+  if (head.includes("/") || head.includes("=") || !READ_ONLY_SHELL_COMMANDS.has(head) || args.includes("&")) return false;
+  switch (head) {
+    case "find": return !args.some(arg => FIND_UNSAFE_RE.test(arg));
+    case "rg": return !args.some(arg => arg.startsWith("--pre"));
+    case "sort": return !args.some(arg => /^-[A-Za-z]*o/.test(arg) || arg.startsWith("--output"));
+    case "uniq": return args.filter(arg => !arg.startsWith("-")).length < 2; // a second operand is an output file
+    case "sed": return readOnlySedArgs(args);
+    case "git": return readOnlyGitArgs(args);
+    default: return true;
+  }
+}
+
+/**
+ * True only when every pipeline segment and line provably just reads: an allowlisted command, no
+ * expansion, substitution, glob or heredoc, and redirects only to /dev/null or a file descriptor.
+ * Fails closed; used to let a research rewind remove read-only shell exchanges.
+ */
+export function isReadOnlyShellCommand(command: string): boolean {
+  if (!command.trim() || hasShellExpansion(command)) return false;
+  const tokens = tokenizeShell(command);
+  let words: string[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.kind === "heredoc") return false;
+    if (token.kind === "redirect") {
+      const target = tokens[index + 1];
+      if (target?.kind !== "word" || !(target.value === "/dev/null" || /^&[\d-]$/.test(target.value))) return false;
+      index++;
+    } else if (token.kind === "separator") {
+      if (!readOnlyShellSegment(words)) return false;
+      words = [];
+    } else {
+      words.push(token.value);
+    }
+  }
+  return readOnlyShellSegment(words);
+}
+
+/** Calls a research rewind may remove: read-only research tools, plus shell commands that provably only read. */
+export function isRemovableResearchCall(toolName: string, input: Args): boolean {
+  if (isReadOnlyResearchTool(toolName, input)) return true;
+  if (!isShellTool(toolName)) return false;
+  const command = COMMAND_KEYS.map(key => input[key]).find((value): value is string => typeof value === "string");
+  // Instruction reads stay in context whichever tool made them.
+  return command !== undefined && !INSTRUCTION_TEXT_RE.test(command) && isReadOnlyShellCommand(command);
+}
+
 export function extractShellFileOperations(args: unknown): ShellFileOperations {
   const record = args && typeof args === "object" ? args as Args : null;
   const command = record
@@ -250,6 +412,7 @@ export function extractShellFileOperations(args: unknown): ShellFileOperations {
   };
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
+    if (token.kind === "heredoc") continue;
     if (token.kind === "separator") {
       flushCommand();
     } else if (token.kind === "redirect") {
