@@ -1,6 +1,6 @@
 # Support
 
-For usage questions or bug reports about **Pi Continuity** (the
+For usage questions or bug reports about **Smart Compact** (the
 `pi-smart-compact` package), open an issue in this repository:
 
 <https://github.com/alpertarhan/pi-smart-compact/issues>
@@ -26,8 +26,8 @@ Helpful things to include:
   `smart_recall` or `smart_save_memory`), or automatic compaction (and which
   `autoTriggerStrategy`)
 - the selected memory backend, if memory is involved
-- other context-editing or compaction extensions you have loaded; Pi
-  Continuity warns at session start when it recognizes one
+- other context-editing or compaction extensions you have loaded; Smart
+  Compact warns at session start when it recognizes one
 - relevant non-secret `smartCompact` configuration
 - redacted error output or logs
 

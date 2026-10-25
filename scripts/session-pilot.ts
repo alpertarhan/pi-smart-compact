@@ -1,6 +1,6 @@
 /** Full AgentSession pilot with scripted model transport and real tools/storage.
  * bun scripts/session-pilot.ts
- * Loads only Pi Continuity against this checkout's Pi host, with eager tool loading so
+ * Loads only Smart Compact against this checkout's Pi host, with eager tool loading so
  * smart_navigation anchors/pivots are callable without a smart_tools load step.
  * No provider traffic, installed settings changes, or claims about model decision quality.
  */

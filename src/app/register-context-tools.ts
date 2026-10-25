@@ -50,7 +50,9 @@ import {
  resolveHindsightRefTarget,
  resolveHindsightTarget,
  saveHindsightMemory,
+ type RemoteSaveOutcome,
 } from "./hindsight-memory.ts";
+import { registerHindsightTracking } from "./hindsight-tracking.ts";
 import { inactiveBackendRefusal } from "./memory-backend.ts";
 import { formatMnemopiOutcome, mnemopiTarget, runMnemopi } from "./mnemopi-memory.ts";
 import {
@@ -100,6 +102,7 @@ export function resolveGraphScope(
 }
 
 export function registerContextTools(pi: ExtensionAPI): void {
+ const tracking = registerHindsightTracking(pi);
 
  pi.registerTool({
   name: "smart_recall",
@@ -154,7 +157,7 @@ export function registerContextTools(pi: ExtensionAPI): void {
    (loadConfig().requireApproval
     ? "independently asks the user for approval, never claim it"
     : "applies saves and resolves without a dialog (requireApproval is off); never tell the user to approve anything") +
-   ". Only durable decisions with rationale, conventions, root causes, gotchas, preferences; never guesses, secrets, logs, TODOs or plans. Report remote state literally (accepted/unknown is not searchable). Resolve only via the ref from a save result or a recall Ref: line; previews are truncated, so retyped content never matches.",
+   ". Only durable decisions with rationale, conventions, root causes, gotchas, preferences; never guesses, secrets, logs, TODOs or plans. Report remote state literally (accepted/unknown is not searchable). Hindsight pending saves are tracked in the background; updates do not start a turn. Resolve only via the ref from a save result or a recall Ref: line; previews are truncated, so retyped content never matches.",
   parameters: Type.Object({
    kind: Type.Optional(
     StringEnum([
@@ -192,7 +195,7 @@ export function registerContextTools(pi: ExtensionAPI): void {
   }),
   async execute(_id, params, signal, _onUpdate, ctx) {
    if (loadConfig().toolLoading === "off" || !pi.getActiveTools().includes("smart_save_memory")) throw new Error("smart_save_memory is disabled in Pi settings or /tools.");
-   return executeSaveMemory(params, signal, ctx);
+   return executeSaveMemory(params, signal, ctx, tracking.observe);
   },
   renderCall(args, theme) {
    const label = theme.fg("toolTitle", "smart_save_memory ");
@@ -448,6 +451,7 @@ function renderSaveRow(
   } else {
    lines.push(statusLabel(theme, "pending") + " " + theme.fg("muted", "outcome unknown"));
   }
+  if (details.backgroundTracking === true) lines.push(theme.fg("dim", "tracking in background; update will not start a turn"));
   if (remote.title) lines.push(metaLine(theme, "fact", remote.title));
   // Refs are expanded-only in the human view (UUID noise when collapsed);
   // they are always present in the model-facing content. The native
@@ -620,6 +624,7 @@ async function executeSaveMemory(
  params: SaveParams,
  signal: AbortSignal | undefined,
  ctx: ExtensionContext,
+ observe?: (outcome: RemoteSaveOutcome, ctx: ExtensionContext) => boolean,
 ): Promise<ToolResult> {
  if (signal?.aborted) return textResult("Cancelled");
  const config = loadConfig();
@@ -745,7 +750,9 @@ async function executeSaveMemory(
   { projectId, memoryId, kind, title, content, relatedPaths },
   signal,
  );
+ const backgroundTracking = observe?.(outcome, ctx) ?? false;
  const details: Record<string, unknown> = {
+  backgroundTracking,
   redactions: scrubber.count(),
   ref: "hindsight:" + memoryId + "@" + digest,
   remote:
@@ -777,6 +784,7 @@ async function executeSaveMemory(
     ? " (accepted, NOT yet searchable; resolves only after the server completes indexing)"
     : "");
  }
+ if (backgroundTracking) text += "\nBackground status tracking is active; a completion/failure update will be added without starting a turn.";
  return textResult(text, details);
 }
 

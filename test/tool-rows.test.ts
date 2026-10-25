@@ -272,11 +272,13 @@ describe("tool row rendering (all six tools, native hooks)", () => {
       content: text("Hindsight: accepted"),
       details: {
         ref: "hindsight:cg-y@digest",
+        backgroundTracking: true,
         remote: { state: "accepted", title: "Release flow", documentId: "psc-cg-y", operationId: "op-2", target: "server/bank" },
       },
     }).join("\n");
     expect(accepted).toContain("<warning>pending</>");
     expect(accepted).toContain("not yet searchable");
+    expect(accepted).toContain("tracking in background");
     expect(accepted).not.toContain("hindsight:cg-y@digest");
     expect(accepted).not.toContain("<success>");
 

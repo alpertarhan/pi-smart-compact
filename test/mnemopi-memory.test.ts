@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import smartCompactExtension from "../src/index.ts";
 import { contextGraphFile } from "../src/infra/paths.ts";
-import { mnemopiTarget, runMnemopi } from "../src/app/mnemopi-memory.ts";
+import { formatMnemopiOutcome, mnemopiTarget, runMnemopi } from "../src/app/mnemopi-memory.ts";
 import { resolveBunExecutable } from "../src/app/memory-backend.ts";
 import { deriveProjectIdFromCwd } from "../src/utils/fingerprint.ts";
 import { resetConfigCache } from "../src/utils/config.ts";
@@ -241,6 +241,14 @@ describe("Mnemopi confirmed project memory", () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+
+  it("never claims an uncertain locked write changed nothing", () => {
+    const text = formatMnemopiOutcome({ state: "unknown", reason: "database is locked", dbPath: "/tmp/fixture.sqlite" });
+    expect(text).toContain("write outcome remains unknown");
+    expect(text).not.toContain("Nothing was changed");
+    expect(text).toContain("lock was NOT removed automatically");
+    expect(formatMnemopiOutcome({ state: "failed", reason: "database lock busy" })).toContain("Nothing was changed");
   });
 
   it("surfaces a busy database lock cause without stealing or removing it", async () => {

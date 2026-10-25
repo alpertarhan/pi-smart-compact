@@ -70,6 +70,7 @@ import { showNavigationPanel } from "../ui/navigation-overlay.ts";
 import { showHandoffPanel } from "../ui/handoff-overlay.ts";
 import type { NavigationController } from "./register-navigation.ts";
 interface SmartCompactCommandDependencies {
+ runManualCompaction?: typeof runSmartCompact;
  pendingRef: PendingSlot;
  runLock: SessionRunLock;
  onNativeApplyError: (runId: string) => boolean;
@@ -531,7 +532,7 @@ async function runInteractiveCompaction(
    return false;
   }
  }
- await runSmartCompact({
+ await (dependencies.runManualCompaction ?? runSmartCompact)({
   ctx,
   config,
   summaryModel: sumModel,
@@ -705,7 +706,7 @@ export function registerSmartCompactCommand(
      notifyUser(ctx, NO_USABLE_MODEL, "error");
      return;
     }
-    await runSmartCompact({
+    await (dependencies.runManualCompaction ?? runSmartCompact)({
      ctx,
      summaryModel: sumModel,
      segModel: segModel ?? sumModel,

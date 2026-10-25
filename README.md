@@ -1,178 +1,179 @@
 <p align="center">
-  <img src="./docs/assets/banner.png?v=2" alt="Pi Continuity — context hygiene and session continuity for Pi" width="960" height="240" />
+  <img src="./docs/assets/banner.png?v=3" alt="Smart Compact: a paper-filled coding workspace becomes a concise working folio, with a return thread to archived evidence." width="960" height="432" />
 </p>
 
-# Pi Continuity
+# Smart Compact
 
-**Keep useful context. Keep the way back.**
+**Less context noise. More room for the work.**
 
-Pi Continuity helps long-running [Pi Coding Agent](https://github.com/earendil-works/pi)
-sessions manage noisy tool output, recover evidence, and carry goals, constraints,
-decisions and unfinished work through compaction. Pi owns the session lifecycle;
-this extension adds context hygiene and continuity policies around it.
+Smart Compact is a context-management extension for
+[Pi Coding Agent](https://github.com/earendil-works/pi). It clears recoverable
+tool-output noise, turns long conversations into checked working summaries,
+and keeps evidence, decisions and unfinished work within reach.
 
 [Get started](#get-started) · [User guide](./docs/guide.md) ·
-[Configuration](./docs/configuration.md) · [Documentation index](./docs/README.md)
-
-> **Pi Continuity is the product name; `pi-smart-compact` is the package.**
-> `/smart-compact`, `smart_*` tools and `smartCompact` settings are unchanged.
-> The TUI still says **Smart Compact**. No data or configuration migration is
-> needed. [Identity and naming](./docs/identity.md).
->
-> **Upgrading from 9.x?** Update Pi to 0.87.1 or newer
-> and read the [upgrade notes](./docs/guide.md#upgrade-from-9x). Optional memory
-> engines and image rendering are installed separately. The
-> [changelog](./CHANGELOG.md) records the full release and its evidence limits.
->
-> **New in 10.4.0 — cache-aware economics:** configurable trim limits with a
-> tail-aware planning frontier, an opt-in fingerprint-aware pending lifetime,
-> a provider cache-capability matrix, cache-inactive route detection, opt-in
-> `prompt_cache_key` routing, long-context pricing visibility, trim ROI in
-> `smart_context status`, and automatic anchors for committed compactions.
-> See the [changelog](./CHANGELOG.md) and
-> [configuration](./docs/configuration.md#automatic-trim-timing).
-
-## What it does
-
-| Task | Use | Boundary |
-| --- | --- | --- |
-| Reduce old tool-output noise | **Context hygiene**: archive eligible output behind retrievable references | Protected instructions, failures and recent work stay in context. |
-| Finish a research detour | **Checkpoint and rewind**: retain a report and a path back to evidence | Not a filesystem or side-effect rollback. |
-| Make room for the next stage | **Verified compaction**: extract working state, synthesize a bounded summary, check it before apply | Verification catches known gaps; it does not guarantee semantic truth. |
-| Revisit a milestone | **Session navigation**: named anchors, read-only cross-session search, return on a new branch with carryover | Files, processes and external services are unchanged. |
-| Continue in a fresh session | **Handoff**: seed a new session from recorded state, without a model call | Not a new summary of the entire transcript; parent evidence remains retrievable. |
-| Reuse an approved fact | **Project memory**: scoped recall through one selected backend | Separate from session state, output archives and backups. |
-
-The goal is a smaller **working set**, not an inaccessible history. Compaction
-uses **Extract → Explore → Synthesize → Verify (EESV)**; exploration depends on
-the mode, and verification is primarily deterministic.
-[How it works](./docs/guide.md#how-it-works-in-one-minute) · [Architecture](./ARCHITECTURE.md)
+[Configuration](./docs/configuration.md) · [Documentation](./docs/README.md)
 
 ## Get started
 
-Requires **Pi 0.87.1+** and **Node.js 22.19+**.
+Requires **Pi 0.87.1+** and **Node.js 22.19+**. No memory server is required.
 
 ```bash
 pi install npm:pi-smart-compact
 ```
 
-Then, in Pi's interactive TUI:
+Inside Pi, open the extension:
 
 ```text
 /smart-compact
 ```
 
-Opening Home changes nothing. Without a UI (print, RPC or SDK), the bare command
-instead runs a compaction with your configured defaults.
+1. **Open Home.** See context usage, effective permissions and available actions.
+   Opening Home changes nothing.
+2. **Choose how it runs.** Settings → **How it runs** offers manual, agent-assisted,
+   cleanup-only and automatic operation. The default is pressure-first:
+   recoverable cleanup under pressure, then compaction when idle at 80%.
+3. **Try Compact now.** Review the plan and summary. **A** applies; **C** or
+   **Esc** cancels. **Enter does not apply** on the review screen.
 
-Open **Settings → How it runs** to choose your level of control:
+Review is on by default. Turning off `requireApproval` also removes the
+confirmation dialogs for early-anchor cleanup and memory save/resolve.
+Without a UI, the bare command runs compaction rather than opening Home.
+[First-run details](./docs/guide.md#install-and-first-run)
 
-| Preset | Behavior |
+> **Release channels:** the command above installs npm `latest`. A release
+> candidate is installed explicitly with `pi install npm:pi-smart-compact@next`.
+> Check the [changelog](./CHANGELOG.md) for the scope of each version.
+
+## What it does
+
+### Keep the useful parts in view
+
+Long test logs and repeated research reads do not need to occupy every request.
+Smart Compact can archive eligible old output behind a small retrieval marker.
+Instructions, failures, recent work and other protected content stay in context.
+The agent can search and read the recorded evidence again.
+
+[Cleanup and archives](./docs/guide.md#clean-up-tool-output)
+
+### Carry the task through compaction
+
+Compaction extracts goals, constraints, decisions, files, errors and open work
+before generating a summary. Deterministic checks look for missing facts and
+unsupported claims before Pi applies it. Recent turns stay raw within the
+planned budget; backups are enabled by default.
+
+**Extract → Explore → Synthesize → Verify.** Exploration and model use depend
+on the mode. Verification is a guard, not a promise of lossless memory.
+[Compaction workflow](./docs/guide.md#compact-now) · [Architecture](./ARCHITECTURE.md)
+
+### Take a detour without losing the route back
+
+Checkpoint a read-only investigation, explore, then rewind with a findings
+report. Name milestones with anchors, revisit one on a new branch with explicit
+carryover, or hand recorded state to a fresh session. These operations move
+conversation context—not files, processes or external side effects.
+
+[Checkpoint and rewind](./docs/guide.md#checkpoint-and-rewind) ·
+[Navigation and handoff](./docs/guide.md#session-navigation)
+
+### Remember project facts deliberately
+
+Use one selected store: the built-in local graph, an optional local Mnemopi
+engine, or your existing Hindsight server. Stores are project-scoped and never
+silently fall back to one another. Explicit saves follow your approval policy;
+only the local graph can also index state from confirmed compactions.
+
+Hindsight submissions are tracked in the background for up to two minutes.
+A later status message distinguishes completion from acceptance without waking
+the agent. No automatic resubmission or remote transcript upload is performed.
+[Memory workflows](./docs/guide.md#memory-what-is-stored-where)
+
+### Let notifications wait for a safe boundary
+
+Participating extensions can queue messages during summary preparation and
+native compaction. Delivery waits for a safe boundary; cancelled compaction
+keeps messages for a natural continuation or successful retry. Healthy senders
+are not blocked by a failed sender.
+
+This is an **opt-in extension protocol**, not interception of every Pi message.
+Both sender and receiver need compatible versions. The queue is in memory and
+does not survive reload. [Message delivery](./docs/message-delivery.md)
+
+## One Home, five choices
+
+| Action | Use it when… |
 | --- | --- |
-| **Manual only** | You start compaction or cleanup; no extension-scheduled work. |
-| **Manual + agent** | You or the agent can request compaction. |
-| **Cleanup only** | Local, recoverable cleanup; no automatic summary generation. |
-| **Fully automatic** | Cleanup plus compaction requests when idle at the configured context threshold. |
+| **Compact now** | You need a smaller working summary and want to review it. |
+| **Clean up tool output** | Old output is noisy, but a summary is not needed yet. |
+| **Settings** | You want to choose automation, models, memory or permissions. |
+| **History & recovery** | You need an anchor, backup, archived source or handoff. |
+| **Status & help** | You need readiness checks, effective settings or diagnostics. |
 
-Pi's own compaction setting is separate. **Pressure-first (default)** keeps
-roomy history unchanged, allows cleanup at an early pressure gate, then requests
-compaction when idle at 80% if still needed. The optional `native-hook` strategy
-participates only when Pi starts compaction. [Trigger settings](./docs/configuration.md).
+Useful shortcuts:
 
-For your first run, choose **Compact now**, inspect the plan, then review the
-result. **A** applies it; **C** or **Esc** cancels. **Enter does not apply** on
-the review screen. Approval is required unless you explicitly disable
-`requireApproval`, which then also skips the early-anchor cleanup and
-project-memory save/resolve confirmations.
+```text
+/smart-compact trim              Queue recoverable cleanup; no model call
+/smart-compact context           Browse anchors and session navigation
+/smart-compact handoff dry-run   Preview a fresh-session handoff
+/smart-compact metrics           Inspect outcomes and cache estimates
+/smart-compact storage           Inspect archives; never deletes them
+```
 
-### Optional components
+Cleanup is queued: the first next request remains untrimmed, and the edit commits
+at the next natural completed-turn boundary. Agent tools are normally visible
+from session start to keep tool definitions stable; action permissions and
+pressure gates still apply.
+[All commands](./docs/guide.md#command-reference) · [Agent tools](./docs/guide.md#agent-tools)
 
-A normal Pi install does **not** install these opt-in components. Enable them
-only for the feature you need; nothing is downloaded, started or configured on
-your behalf.
+## Optional components
 
-| Feature (off by default) | Component | Approximate disk use¹ |
-| --- | --- | --- |
-| Mnemopi memory store | `@oh-my-pi/pi-mnemopi@18.12.1` and its engine packages | 140 MB |
-| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.3` | 60 MB |
-| Image snapshots (`visualArchiveEnabled`) | `@resvg/resvg-js@2.6.2` | 3.5 MB |
+The default installation works without these components. Nothing installs a
+memory server, downloads a model or enables an optional engine on your behalf.
 
-¹ Measured on macOS arm64; not download sizes or cross-platform guarantees.
+| Feature | Install only when needed |
+| --- | --- |
+| Separate local Mnemopi store | `@oh-my-pi/pi-mnemopi@18.12.1` |
+| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.3` |
+| Experimental image snapshots of old output | `@resvg/resvg-js@2.6.2` |
 
-**Status & help → Readiness & details** shows the exact install command for a
-missing component and your Pi install root. A typical Mnemopi setup is:
+**Status & help → Readiness & details** provides the exact command for your
+Pi package directory. For a standard npm-managed installation, Mnemopi uses:
 
 ```bash
 npm install @oh-my-pi/pi-mnemopi@18.12.1 bun@1.4.3 --prefix ~/.pi/agent/npm --legacy-peer-deps
 ```
 
-Pi uses `--legacy-peer-deps`, so optional peers are not pulled in automatically.
-Installing them explicitly records them in that package directory; they survive
-`pi update`. For a bun- or pnpm-managed Pi install, use the equivalent add command
-in the same directory. [Memory setup](./docs/guide.md#memory-store-memorybackend).
-
-## One Home, five choices
-
-**Compact now** · **Clean up tool output** · **Settings** ·
-**History & recovery** · **Status & help**
-
-Use arrows and Enter to navigate, Esc to go back, and **D** for planning or
-result details. Home shows context usage and effective permissions; unavailable
-actions explain why.
-
-| Direct command | What happens |
-| --- | --- |
-| `/smart-compact trim` | Queues local cleanup without a model call. The next request is still untrimmed; the edit commits at the next natural completed-turn boundary. |
-| `/smart-compact storage` | Reports archived output; never deletes it. A scan cannot prove that an unreferenced artifact is safe to remove. |
-| `/smart-compact context` | Opens anchors, cross-session search and branch navigation. |
-| `/smart-compact handoff dry-run` | Previews a new-session seed without opening one. Use `handoff [-- note]` to proceed. |
-| `/smart-compact metrics` | Shows effective state, run outcomes, recent issues and the host prompt-cache ledger. |
-
-By default permitted agent tools stay visible from session start, avoiding late
-schema changes to cached prefixes. Actions, not visibility, are pressure-gated;
-read-only recovery and metadata checkpoints remain available while roomy.
-Optional lazy loading uses `smart_tools`. The context guide is read on request,
-not injected. Tool availability and compaction permission are separate controls.
-[Agent tools](./docs/guide.md#agent-tools) · [All commands](./docs/guide.md#command-reference)
-
-## Memory is optional; continuity is the core
-
-No remote memory service is needed for session continuity. **Local graph** is
-the default for on-machine scoped recall. Choose **Mnemopi** for a separate local
-engine, or **Hindsight** for your existing server and bank. Only the selected
-backend is read or written; failures never silently fall back to another store.
-
-Explicit saves require confirmation. When enabled, the local graph also indexes
-derived state after host-confirmed compactions. None of these stores replaces
-session backups or archived tool output.
-[Memory workflows](./docs/guide.md#memory-what-is-stored-where) · [Hindsight and privacy](./docs/hindsight-memory.md)
+Pi's `--legacy-peer-deps` installation does not pull optional peers in by itself.
+Explicitly added components survive `pi update`.
+[Memory setup](./docs/guide.md#memory-store-memorybackend)
 
 ## Boundaries worth knowing
 
-- **Recovery is bounded.** Rewind does not undo file changes. Archives cannot
-  restore bytes omitted before Pi recorded the output.
-- **Review the summary.** Extraction and deterministic verification can miss
-  information. A verifier score is not a measure of task success.
-- **Experimental formats are opt-in.** Provider-native summaries are not
-  EESV-verified. Image snapshots need a supported reader and a cost check;
-  otherwise text is used.
-- **Claude OAuth needs a compatible adapter.** The published
-  `pi-claude-oauth-adapter@0.2.2` normalizes Pi's own requests, not all nested
-  model-runtime calls. Full coverage needs final-payload normalization
-  ([upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
-  [Compatibility details](./docs/guide.md#summary-format-provider-compaction-and-images).
-- **Cost and quality need live evidence.** Cancelled or discarded preparation
-  still costs. Offline pilots do not establish billed savings, model fidelity
-  or production readiness. [Evaluation limits](./docs/evaluation.md).
+- **Recovery is bounded.** Archived evidence contains what Pi actually recorded;
+  it cannot recover bytes a tool omitted. Rewind is not filesystem rollback.
+- **A smaller prompt is not proof of savings.** Retrieval, cache rebuilds and
+  discarded summary preparation can cost. [Evaluation limits](./docs/evaluation.md)
+- **Verification is not semantic proof.** Review important constraints and
+  decisions. Provider-native summaries are experimental and not EESV-verified.
+- **Privacy has limits.** Secret scrubbing reduces exposure; it is not a DLP
+  system. Raw session logs and debug output may contain sensitive content.
+  [Security](./SECURITY.md) · [Storage](./docs/guide.md#storage-and-privacy)
+- **Provider integrations differ.** Claude OAuth needs a compatible adapter
+  for nested requests; image snapshots need a supported reader and cost check.
+  [Compatibility details](./docs/guide.md#summary-format-provider-compaction-and-images)
 
 ## Documentation and development
 
-| Need | Start here |
+| For | Start here |
 | --- | --- |
-| Use, configure or recover a session | [User guide](./docs/guide.md) · [Configuration](./docs/configuration.md) |
-| Understand internals or evaluate behavior | [Architecture](./ARCHITECTURE.md) · [Evaluation](./docs/evaluation.md) |
-| Contribute or prepare a package | [Contributing](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md) · [Release checklist](./docs/RELEASE.md) |
-| Report a problem safely | [Support](./SUPPORT.md) · [Security](./SECURITY.md) |
-| Browse every guide and historical report | [Documentation index](./docs/README.md) |
+| Everyday use and recovery | [User guide](./docs/guide.md) |
+| Settings, defaults and model routes | [Configuration](./docs/configuration.md) |
+| Design and extension integrations | [Architecture](./ARCHITECTURE.md) · [Message delivery](./docs/message-delivery.md) |
+| Development and releases | [Contributing](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md) · [Release checklist](./docs/RELEASE.md) |
+| Help, naming and visual assets | [Support](./SUPPORT.md) · [Identity](./docs/identity.md) · [All docs](./docs/README.md) |
+
+**One name throughout:** Smart Compact. Package `pi-smart-compact`, command
+`/smart-compact`, tools `smart_*`, settings `smartCompact`. No data migration.
 
 [MIT](./LICENSE) © [Alper Tarhan](https://github.com/alpertarhan).

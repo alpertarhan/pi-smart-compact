@@ -1,16 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 320 320" role="img" aria-labelledby="title description">
-  <title id="title">Pi Continuity</title>
-  <desc id="description">One unbroken line through compaction, ending at a gold anchor.</desc>
-  <rect width="320" height="320" rx="64" fill="#F3F8F9"/>
-  <g id="continuity-mark">
-        <path fill="none" stroke="#183e4b" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M 87 82
-L 233 82
-L 233 206"/>
-        <path fill="none" stroke="#183e4b" stroke-width="30" stroke-linecap="round" d="M 130 82
-L 130 154"/>
-        <path fill="none" stroke="#147d88" stroke-width="26" stroke-linecap="round" d="M 233 214
-C 233 234 210 242 178 242
-L 158 242"/>
-        <circle cx="122" cy="240" r="15" fill="#e8b55b" stroke="none"/>
-    </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title"><title id="title">Smart Compact package image</title><rect width="512" height="512" rx="112" fill="#EEF3FA"/><g transform="translate(96 80) scale(2)"><path d="M26 20H118L142 44V126L118 148H26L8 130V38Z" fill="#17314B"/>
+<path d="M32 14H114L136 36V122L114 140H32L16 124V30Z" fill="#315CCB"/>
+<path d="M42 37H112V57H61L44 75H96L113 91V112H42V92H94L77 75H42Z" fill="#F7F9FC"/>
+<path d="M114 14V36H136Z" fill="#9BADCA"/>
+<path d="M24 140H116V148H26L8 130V38L16 30V124Z" fill="#17314B"/>
+<path d="M102 110V152L112 144L122 152V110Z" fill="#DCA653"/></g></svg>

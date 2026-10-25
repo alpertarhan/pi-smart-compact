@@ -134,7 +134,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  };
  const reply = (text: string, details: unknown = undefined) => ({ content: [{ type: "text" as const, text: scrub(text) }], details });
  const enabled = () => {
-  if (!config().contextNavigationEnabled) throw new Error("Context navigation is disabled in Pi Continuity settings.");
+  if (!config().contextNavigationEnabled) throw new Error("Context navigation is disabled in Smart Compact settings.");
  };
  const busy = (ctx: ExtensionContext) => queued || applying ? "Another context pivot is pending." : options.mutationBlocked?.(ctx);
  const cancel = (ctx?: ExtensionContext, reason?: string) => {
@@ -180,7 +180,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  };
  const preparePivot = (ctx: ExtensionContext, target: string, carryover: string, message?: string): Pivot => {
   enabled();
-  if (!config().contextPivotEnabled) throw new Error("Context pivots are disabled in Pi Continuity settings.");
+  if (!config().contextPivotEnabled) throw new Error("Context pivots are disabled in Smart Compact settings.");
   const reason = busy(ctx);
   if (reason) throw new Error(reason);
   if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority over a pivot.");
@@ -226,7 +226,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  };
  const queryRecall = (ctx: ExtensionContext, query: Parameters<NavigationPanelActions["recall"]>[0] = {}) => {
   enabled();
-  if (!config().contextRecallEnabled) throw new Error("Cross-session anchor recall is disabled in Pi Continuity settings.");
+  if (!config().contextRecallEnabled) throw new Error("Cross-session anchor recall is disabled in Smart Compact settings.");
   return recallAnchors({ ...query, sessionsDir: path.join(getAgentDir(), "sessions"), cwd: ctx.cwd });
  };
 

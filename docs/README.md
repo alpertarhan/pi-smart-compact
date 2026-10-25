@@ -1,64 +1,64 @@
-# Pi Continuity documentation
+# Smart Compact documentation
 
 [Project overview](../README.md) · [User guide](./guide.md) · [Configuration](./configuration.md)
 
-Pi Continuity is the product name; `pi-smart-compact` remains the package,
-command family and repository. [Identity and naming](./identity.md).
+Find the workflow first, then the reference. These pages describe the current
+checkout; the [changelog](../CHANGELOG.md) separates released versions from
+candidates and unpublished work.
 
-These guides follow the **current source checkout**, including unreleased work.
-Compare your installed version with the [changelog](../CHANGELOG.md). Dated
-reports describe their own revisions, not necessarily today's behavior.
+## Use Smart Compact
 
-## Start with your task
-
-| I want to… | Read |
+| Your next action | Read |
 | --- | --- |
-| Install and choose how the extension runs | [Get started](../README.md#get-started) |
-| Clean up output, compact or recover evidence | [User guide](./guide.md) |
-| Use anchors or move work to a fresh session | [Session navigation and handoff](./guide.md#session-navigation) |
-| Understand a setting, trigger, model route or budget | [Configuration reference](./configuration.md) |
-| Choose where project memory lives | [Memory stores](./guide.md#memory-store-memorybackend) |
-| Connect an existing Hindsight server | [Hindsight setup and privacy](./hindsight-memory.md) |
-| Diagnose unexpected behavior | [Troubleshooting](./guide.md#troubleshooting) · [Support](../SUPPORT.md) |
-| Report sensitive information privately | [Security policy](../SECURITY.md) |
+| Install and choose how it runs | [Get started](../README.md#get-started) |
+| Reduce noise or compact a long conversation | [User guide](./guide.md) |
+| Recover evidence, revisit an anchor or hand off a task | [Recovery](./guide.md#recovery) · [Navigation](./guide.md#session-navigation) |
+| Set a model, permission, threshold or budget | [Configuration reference](./configuration.md) |
+| Choose a memory store | [Memory workflows](./guide.md#memory-what-is-stored-where) · [Hindsight setup](./hindsight-memory.md) |
 
-## Understand or contribute
+## Understand the boundaries
 
-| Document | Scope |
+| Question | Read |
 | --- | --- |
-| [Architecture](../ARCHITECTURE.md) | Ownership, preservation rules, apply boundaries and module responsibilities. |
-| [Evaluation](./evaluation.md) | Available checks and experiments; what quality, cost and timing evidence can establish. |
-| [Contributing](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md) | Development setup, repository map and pull-request expectations. |
-| [Release checklist](./RELEASE.md) | Package validation, compatibility and publication gates. |
-| [Identity and assets](./identity.md) | Product naming, logo sources, palette and reproducible image exports. |
-| [Changelog](../CHANGELOG.md) | Versioned changes and unpublished work. |
+| What changes when context is cleaned or compacted? | [Architecture](../ARCHITECTURE.md) |
+| Where does data live, and what leaves the machine? | [Storage and privacy](./guide.md#storage-and-privacy) · [Security](../SECURITY.md) |
+| What happens to incoming notifications during compaction? | [Message delivery](./message-delivery.md) |
+| What do tests, scores and cost estimates actually prove? | [Evaluation and evidence](./evaluation.md) |
+| Something did not work—what should I inspect? | [Troubleshooting](./guide.md#troubleshooting) · [Support](../SUPPORT.md) |
 
-## Keep these concepts separate
+## Build and ship
 
-| Concept | Purpose | Not a substitute for… |
-| --- | --- | --- |
-| **Context hygiene** | Reduce active tool-output noise while keeping eligible evidence retrievable. Local cleanup needs no summary-model call. | A new conversation summary. |
-| **Session continuity** | Carry constraints, decisions, failures and next steps through research, compaction and reload. | Filesystem rollback or a complete copy of the original history. |
-| **Project memory** | Recall scoped facts through one selected backend; explicit saves require confirmation unless `requireApproval` is off. The local graph can also index derived compaction state. | Backups, output archives or automatic transcript upload. |
+| Task | Reference |
+| --- | --- |
+| Develop or review a change | [Contributing](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md) |
+| Understand modules and invariants | [Architecture](../ARCHITECTURE.md) |
+| Validate and publish a package | [Release checklist](./RELEASE.md) |
+| Reuse or update the visual identity | [Identity and assets](./identity.md) |
+| Compare versions | [Changelog](../CHANGELOG.md) |
 
-The [storage guide](./guide.md#storage-and-privacy) explains where each kind of
-state lives and how long it is retained.
+## A small vocabulary
 
-## Historical evidence
+**Cleanup** replaces eligible old output with retrievable references. It makes
+no summary-model call. **Compaction** replaces older conversation with a checked
+summary; it is lossy. **Recovery** reads recorded evidence or navigates recorded
+session state—it does not undo file or process changes.
 
-Research reports and review findings are local, ignored artifacts under
-`docs/reports/` and `docs/findings/`, not tracked repository or npm content.
-Their dated measurements and revision limits are not current setup instructions
-or product guarantees. Earlier copies can still exist in Git history; removing
-tracking does not erase them. See the
-[evaluation guide](./evaluation.md#pilots-and-dated-reports) for evidence limits.
+**Project memory** is a separate, selected store for facts across sessions.
+It is not the archive, a backup, or an automatic remote transcript upload.
+Explicit writes follow `requireApproval`; only the local graph can also index
+state from confirmed compactions.
 
-- [v7 → v8 migration](./MIGRATING_TO_V8.md): instructions for that historical
-  transition, **not** the current installation baseline.
+**Staged** means prepared, not applied. **Accepted** means acknowledged, not
+completed. Those distinctions are intentional in both tools and the UI.
 
-User guides and brand assets ship with the package; developer source, tests
-and evaluation scripts do not.
+## Historical material
 
-A green scripted pilot does not establish live-model fidelity, billed savings
-or production readiness. Use the [evaluation limits](./evaluation.md) and
-[release checklist](./RELEASE.md) before making those claims.
+- [v7 → v8 migration](./MIGRATING_TO_V8.md) applies only to that old transition.
+  Use the current guide for installation and configuration.
+- Dated research and review material under `docs/reports/` and `docs/findings/`
+  is local, ignored and not shipped. Its evidence belongs to its stated date
+  and revision; earlier copies may still exist in Git history.
+
+User guides and brand assets ship in the npm package. Developer source, tests
+and evaluation scripts do not. A green offline run establishes neither live
+model quality nor billed savings; see the [evidence limits](./evaluation.md).

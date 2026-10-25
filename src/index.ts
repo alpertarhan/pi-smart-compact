@@ -20,6 +20,7 @@ import { loadConfig } from "./utils/config.ts";
 import { effectiveContextWindow, getProviderCaps, safeContextPercent } from "./utils/tokens.ts";
 import { appendMetricsSnapshot } from "./utils/cache.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
+import { registerCompactionDelivery } from "./app/compaction-delivery.ts";
 import { applyGlobalSettingsRuntime } from "./app/global-settings-runtime.ts";
 import {
  clearCompactProgress,
@@ -138,6 +139,7 @@ function unwrapConsumed(
 }
 
 export default function smartCompactExtension(pi: ExtensionAPI) {
+ const delivery = registerCompactionDelivery(pi);
  // Encapsulated slot: producers call `.set(...)`, the event handler calls
  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
  // entirely inside the slot factory — see src/app/pending-slot.ts.
@@ -154,7 +156,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  const pivotQueued = (ctx: ExtensionContext) => navigation?.isPending(ctx) ?? false;
  let preparationGeneration = 0;
  const damageMonitor = new OnlineDamageMonitor();
- const settledAutoTrigger = createSettledAutoTrigger();
+ const settledAutoTrigger = createSettledAutoTrigger({ compact: delivery.compact });
  const hostCache = createHostCacheLedger();
  const policy = createSmartCompactPolicy(pi, () => toolExposure.apply());
  const toolExposure = createContextToolExposure(pi, { compactionAccess: () => policy.snapshot().agentToolAccess });
@@ -370,6 +372,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  });
 
  registerSmartCompactCommand(pi, {
+  runManualCompaction: delivery.runManual,
   pendingRef,
   runLock: isRunning,
   onNativeApplyError,
@@ -723,7 +726,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   const { foreign } = hostCache.summary().rebuilds;
   recordIssue({
    key: "cache.foreign-rebuilds",
-   message: "Pi reported " + foreign.count + " large uncached prompts this session with no Continuity edit before them (" + foreign.uncached.toLocaleString("en-US") + " uncached prompt tokens). Their cause is unknown; model/tool changes and Pi's built-in compaction can also change the prefix. Home › Readiness & details lists rebuild estimates.",
+   message: "Pi reported " + foreign.count + " large uncached prompts this session with no Smart Compact edit before them (" + foreign.uncached.toLocaleString("en-US") + " uncached prompt tokens). Their cause is unknown; model/tool changes and Pi's built-in compaction can also change the prefix. Home › Readiness & details lists rebuild estimates.",
   });
  });
 

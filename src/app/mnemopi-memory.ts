@@ -107,8 +107,9 @@ function contentionNote(outcome: Extract<MnemopiOutcome, { state: "failed" | "un
   if (!CONTENTION_PATTERN.test(outcome.reason)) return "";
   return (
     "\nCause: the memory database is locked, busy, or recovering — most likely another " +
-    "session is writing it, or a crashed run left the lock behind. Nothing was changed " +
-    "and the lock was NOT removed automatically." +
+    "session is writing it, or a crashed run left the lock behind. " +
+    (outcome.state === "unknown" ? "The write outcome remains unknown; " : "Nothing was changed and ") +
+    "the lock was NOT removed automatically." +
     (outcome.dbPath
       ? " After verifying no other session is running, remove " + outcome.dbPath + ".lock manually to recover."
       : "")

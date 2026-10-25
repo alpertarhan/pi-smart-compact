@@ -241,7 +241,7 @@ export function updateReceiptState(
   key: string,
   state: HindsightReceiptState,
   detail?: string,
-  extra: Pick<HindsightReceipt, "serverOperationId"> = {},
+  extra: Pick<HindsightReceipt, "serverOperationId"> & { onlyIfOpen?: boolean } = {},
   file = hindsightReceiptsFile(),
 ): HindsightReceipt | null {
   const release = acquireLockSync(file);
@@ -249,6 +249,7 @@ export function updateReceiptState(
     const receipts = readAll(file);
     const receipt = receipts.find((item) => item.key === key);
     if (!receipt) return null;
+    if (extra.onlyIfOpen && !isOpenReceipt(receipt)) return receipt;
     receipt.state = state;
     receipt.updatedAt = Date.now();
     if (detail) receipt.detail = detail;
