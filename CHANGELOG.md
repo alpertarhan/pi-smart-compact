@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [10.7.0] - 2026-10-25
+
+The release owner requested `10.7.0` as a **stable release on npm `latest`**,
+instead of remaining on the preceding RC. This is the version-specific owner
+exception allowed by `docs/RELEASE.md`: no external canary cohort or live
+provider-quality evaluation is available. It is not a telemetry `PROMOTE`
+result and does not waive the deterministic release gate or required PR CI.
+
+- Ships the Smart Compact documentation and visual identity, compaction-safe
+  notification delivery, background Hindsight tracking, and memory-outcome fixes
+  described in `10.7.0-rc.1` below.
+- Only the version metadata and this release record differ from the RC; no
+  runtime behavior, defaults, supported host versions or data formats change.
+  No migration is required. The existing RC remains on npm `next`.
+
 ## [10.7.0-rc.1] - 2026-10-25
 
 Release candidate on npm `next`, not a stable promotion. No external canary
