@@ -1,6 +1,6 @@
 {
 	"name": "pi-smart-compact",
-	"version": "10.7.0-rc.1",
+	"version": "10.7.0",
 	"description": "Smart Compact — recoverable context cleanup, verified compaction, session navigation and project memory for Pi Coding Agent.",
 	"type": "module",
 	"packageManager": "bun@1.4.3",
