@@ -1,25 +1,23 @@
-# Pi Continuity user guide
+# Smart Compact user guide
 
-Pi Continuity keeps a long Pi Coding Agent session usable: it keeps the working
-context small, keeps removed evidence retrievable, and carries goals, decisions,
-errors and next steps across compaction. Compaction and project memory are the
-mechanisms; context hygiene and session continuity are the goal.
+[Overview](../README.md) · [Documentation](./README.md) · [Configuration](./configuration.md)
 
-Pi Continuity is the product name. Everything you type or configure keeps the
-existing technical names: the npm package `pi-smart-compact`, the
-`/smart-compact` command, the `smart_*` agent tools and the `smartCompact`
-settings key. The UI title still reads "Smart Compact".
+Keep a long coding session useful: reduce old output, retrieve evidence when
+needed, and carry the task into the next stage. Start with the action that
+matches your problem—not with a setting.
 
-This guide is task oriented. For every setting, default and range, see the
-[configuration reference](./configuration.md). For measurements, pilots and
-release evidence, see [evaluation](./evaluation.md).
+| Your situation | Start here |
+| --- | --- |
+| Old logs are filling the context | [Clean up tool output](#clean-up-tool-output) |
+| The conversation needs a smaller working summary | [Compact now](#compact-now) |
+| A research detour is finished | [Checkpoint and rewind](#checkpoint-and-rewind) |
+| You need an earlier milestone or a fresh session | [Session navigation](#session-navigation) |
+| A fact should be available in later sessions | [Project memory](#memory-what-is-stored-where) |
 
-> [!NOTE]
-> **Which version this describes.** This guide describes the `10.1.0` shipped
-> defaults, including the pressure-first changes and native tool rows. The earlier
-> `9.8.0-canary.*` entries in the changelog are historical local candidates,
-> not npm releases. See [upgrade notes](#upgrade-from-9x) when coming from 9.x
-> and [the changelog](../CHANGELOG.md) for the release scope and evidence limits.
+This guide follows the current checkout. Installed releases may differ; compare
+with the [changelog](../CHANGELOG.md). Commands, settings and stored data retain
+their existing names: `/smart-compact`, `smart_*` and `smartCompact`.
+For evidence and measurement limits, see [evaluation](./evaluation.md).
 
 ## Contents
 
@@ -44,7 +42,7 @@ release evidence, see [evaluation](./evaluation.md).
 
 ## How it works in one minute
 
-Pi Continuity works in four layers. Prefer the cheaper, recoverable ones
+Smart Compact works in four layers. Prefer the cheaper, recoverable ones
 before a lossy compaction when they fit the task; each can be used on its own.
 
 | Layer | What you use | Model call? |
@@ -93,16 +91,17 @@ background preparation remain optional; no extra model calls run while roomy.
 
 ## Upgrade from 9.x
 
-10.0.0 is the Pi Continuity product and workflow rework. The npm package,
+The 10.x series introduced the current Home and pressure-first workflow. The npm package,
 `/smart-compact` commands, `smart_*` tools, `smartCompact` settings namespace
 and stored paths keep their names; do not rename existing data directories.
 
 1. Update Pi to **0.87.1+** and use **Node.js 22.19+**. Install the release with
-   `pi install npm:pi-smart-compact@10.1.0`, then reload or restart Pi.
+   `pi install npm:pi-smart-compact`, then reload or restart Pi. Release
+   candidates use `npm:pi-smart-compact@next` instead.
 2. Open `/smart-compact` in the TUI. The bare command now opens Home; **Compact
    now** starts the interactive compaction flow. Print/RPC/SDK use still runs
    compaction directly. Review requires **A** to apply, not Enter.
-3. 10.1.0 uses the pressure-first default: **Always available** tool exposure
+3. Current releases use the pressure-first default: **Always available** tool exposure
    to keep tool definitions stable. Existing explicit `toolLoading: "lazy"`
    settings remain respected.
 4. Review **Memory store** if you use project memory. Exactly one backend is
@@ -110,7 +109,7 @@ and stored paths keep their names; do not rename existing data directories.
    [separately installed optional components](../README.md#optional-components);
    the default local memory store does not.
 
-In the 10.1.0 defaults, cleanup is pressure-gated and enabled. Early
+By default, cleanup is pressure-gated and enabled. Early
 offload, background preparation, provider-native compaction and images remain opt-in. Existing compaction permissions
 are preserved. Claude subscription routes still need the compatible separate
 adapter described under [provider compaction](#summary-format-provider-compaction-and-images).
@@ -156,7 +155,7 @@ Or Home → **Clean up tool output**. Either one:
 - makes no model call and does not force a new turn;
 - is queued, not applied: **the first next provider request is still sent
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
-- replaces old successful text results of at least 4,096 characters with a
+- replaces old successful text results of at least 2,048 characters with a
   digest marker, up to 32 outputs per boundary: read-only tools, shell
   (`bash`) output and `smart_context` `read` pages;
 - keeps the latest four assistant turns, an active checkpoint's prefix, errors,
@@ -235,7 +234,7 @@ compaction threshold lets context relief take priority over cache cost.
   request keeps sending it, and the edits commit at the next completed turn
   that nothing else claims.
 
-While a batch is held, Pi Continuity stops Pi's cache warming once another
+While a batch is held, Smart Compact stops Pi's cache warming once another
 refresh no longer pays for itself, because the held batch will rewrite that
 cache anyway. Home notes the stop on **Clean up tool output**, and Pi's
 `/session` shows warming as stopped by an extension.
@@ -408,7 +407,7 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
 
 - `checkpoint` and `rewind` do **not** require context pressure or an available
   usage reading. Autonomous agent trim/anchor requests and automatic cleanup
-  still do by default; an early user-requested anchor requires host confirmation.
+  still do by default; early user-requested anchors follow `requireApproval`.
   Research return is a separate operation, not a cleanup trigger.
 - Check `status` when blocked. Tool permissions, prepared/running compaction,
   a pending pivot and signed-thinking safety checks still apply. Keep/report
@@ -451,7 +450,7 @@ anchor prefixes stay protected. It is not a full compaction; the response says
 whether cleanup was queued, blocked or unnecessary. A human may mark a milestone
 earlier. Append-only anchors do not discard an already prepared summary.
 
-Since 10.4.0, a committed Continuity compaction also records a **synthetic
+Since 10.4.0, a committed Smart Compact compaction also records a **synthetic
 anchor** at the post-compaction boundary automatically: the summary becomes a
 recall surface and pivot target without a manual step. In-session lists show
 only the newest two synthetic anchors; cross-session recall shows all of them.
@@ -460,13 +459,15 @@ only the newest two synthetic anchors; cross-session recall shows all of them.
 
 With `contextPressureOnly: true`, you can ask the agent to mark a milestone
 before the pressure gate (including when usage is unknown). The agent prepares
-an anchor name and summary; Pi shows them in a native confirmation dialog.
-Approval authorizes **that anchor and one safe cleanup only**. It changes no
-settings, grants no future permission and needs no extra summarizer request.
-The model cannot authorize itself with a `userConfirmed` argument.
+an anchor name and summary. With `requireApproval: true`, Pi shows them in a
+native confirmation dialog; approval authorizes **that anchor and one safe
+cleanup only**. With `requireApproval: false`, standing host approval skips the
+dialog, including in headless use. Neither path changes settings or needs an
+extra summarizer request. The model cannot grant itself a `userConfirmed` override.
 
-- Rejecting/cancelling the dialog leaves the anchor and cleanup unrequested.
-  Non-interactive hosts cannot grant this exception; RPC supports the dialog.
+- When a dialog is required, rejection/cancellation leaves the anchor and
+  cleanup unrequested. Hosts without confirmation support cannot grant that
+  exception; RPC supports the dialog.
 - Session/branch changes, new history/input, revoked navigation/tool access and
   cancellation invalidate pending approval. Cleanup rechecks the originating
   successful tool batch and all safety/preparation gates at commit.
@@ -525,7 +526,7 @@ browse and search.
 
 Opens a new Pi session seeded with one handoff message assembled from what
 this session already recorded, in this order: your note, the latest anchor on
-the branch, the continuity ledger (from the last Continuity compaction, else
+the branch, the continuity ledger (from the last Smart Compact compaction, else
 the saved state for this branch), always-kept files (`pinPaths`), a memory
 recall through the selected store (up to 5 results; the query is the note,
 else the anchor, else the ledger goal), and pointers back to this session. No
@@ -575,7 +576,7 @@ earlier request bytes disappear.
 | `smart_navigation` | `navigation` | View or search anchors, record an anchor, return to one with required carryover | A return ends the turn and is revalidated by the host after the tool batch settles |
 | `smart_context` | `history` | Status, search, read, plan, trim, checkpoint, rewind | Queued edits apply at the end of the current tool batch |
 | `smart_recall` | `memory` | Searches this project's memory in the selected store | Immediately; read-only |
-| `smart_save_memory` | `memory` | Saves or resolves one durable fact | Only after **you** approve the host confirmation dialog |
+| `smart_save_memory` | `memory` | Saves or resolves one durable fact | Host confirmation by default; no dialog when `requireApproval: false` |
 | `smart_compact` | `compaction` | Prepares a verified summary and stages it | Never mid-turn. Staged for `pendingTtlMs` (default 5 minutes); applied by the next `/compact` or a compaction Pi starts. |
 
 **Tool rows.** Every Smart Compact tool renders a native, compact status row:
@@ -583,8 +584,9 @@ queued, staged, dry-run, skipped, pending, failed and cancelled states are
 labeled as such and never displayed as done, applied or saved. Collapsed rows
 show bounded previews and hide long identifiers behind the native expansion
 key (the configured keybinding, shown as a hint); expanding shows the full
-original result text. Rows are call-time snapshots — they never poll or refresh
-on their own.
+original result text. Rows are call-time snapshots, not live status displays.
+Hindsight background tracking appends a separate completion/failure message;
+see [receipt tracking](./hindsight-memory.md#identity-refs-and-lifecycle).
 
 Approval and gates:
 
@@ -593,15 +595,17 @@ Approval and gates:
   context fullness. If a summary is already staged, it reports that and makes
   no calls. With automatic compaction off, nothing consumes the staged summary
   unless you run `/compact`.
-- `smart_save_memory` always opens a confirmation showing the scrubbed kind,
-  title, content, paths and the exact destination. Without an interactive UI
-  it changes nothing. The agent cannot approve on your behalf.
+- With `requireApproval: true` (default), `smart_save_memory` shows the scrubbed
+  kind, title, content, paths and exact destination for confirmation. Without an
+  interactive UI it changes nothing. With `requireApproval: false`, the host
+  permits the write without a dialog, including in headless use. The agent
+  cannot grant itself approval or change that policy.
 - Recall results are untrusted history: the agent is told not to follow
   instructions inside them.
 
 ## Memory: what is stored where
 
-Pi Continuity keeps several kinds of state. Only one of them is cross-session
+Smart Compact keeps several kinds of state. Only one of them is cross-session
 project memory.
 
 | State | Purpose | Scope | Removed by |
@@ -628,12 +632,12 @@ migrated or cleared.
 | `Hindsight server` | Your existing Hindsight server and bank only; confirmed saves only, never transcripts | Strict project-tag-scoped section of that bank | **Not supported**: reads nothing |
 | `Mnemopi (local SQLite)` | A separate SQLite database per project | Bounded full-text search, no embeddings | **Not supported**: skipped, nothing else is read |
 
-- Hindsight: Pi Continuity never installs, starts or configures a server. See
+- Hindsight: Smart Compact never installs, starts or configures a server. See
   [Hindsight memory backend](./hindsight-memory.md).
 - Mnemopi runs in a bounded `bun --no-install` worker. The engine
   (`@oh-my-pi/pi-mnemopi` 18.12.1) is an optional component you install into
   Pi's package directory; the worker runs on a Bun 1.3.14 or newer from `PATH`,
-  or on the optional `bun` (1.4.2) component installed the same way. Nothing is
+  or on the optional `bun` (1.4.3) component installed the same way. Nothing is
   downloaded with the extension; **Readiness & details** shows the install
   command (see [Optional components](../README.md#optional-components)).
   Missing pieces fail before any request is sent. Embeddings, model calls,
@@ -674,20 +678,20 @@ state, backups and artifacts are not affected.
 
 Pi applies one compaction per request: the last extension to answer
 `session_before_compact` wins, and with no answer Pi's built-in summarizer
-runs. When something other than Pi Continuity applies the compaction:
+runs. When something other than Smart Compact applies the compaction:
 
-- A summary Pi Continuity had already prepared for that session is discarded
+- A summary Smart Compact had already prepared for that session is discarded
   and recorded in `/smart-compact metrics` as `discarded` with reason
   `native-apply:foreign`; its continuity state is not saved. A notice names
   the winner and the model calls that were wasted.
 - Another extension's compaction shows a once-per-session notice even when
-  nothing was prepared, because Pi Continuity recorded no state or metrics
+  nothing was prepared, because Smart Compact recorded no state or metrics
   for it.
 - Pi's built-in compaction shows a notice only while automatic compaction is
   on (nothing was ready when Pi asked); earlier continuity state still carries
   over through the capsule.
 
-Provider usage of the summary Pi Continuity applies (its own explore,
+Provider usage of the summary Smart Compact applies (its own explore,
 synthesize and verify calls, or the provider-native compaction request) is
 returned to Pi with the compaction, so Pi's session totals and cost include
 that work at the route model's catalog rates. Runs that reused a cached
@@ -695,9 +699,20 @@ summary report no usage; work whose usage a provider did not report is left
 out rather than estimated. Discarded preparations are only in
 `/smart-compact metrics`, never in Pi's totals.
 
+### Messages arriving during compaction
+
+Compatible notification extensions can defer delivery while Smart Compact
+prepares a manual summary or Pi applies a compaction. The inbox counter shows
+how many callbacks are waiting. Delivery resumes at a safe host boundary;
+cancellation keeps them for the next natural run or a successful retry.
+
+This is opt-in: an unmodified sender is not intercepted. The queue is in memory,
+so do not reload while messages are waiting. No new turn is started merely to
+empty the queue. [Protocol and recovery rules](./message-delivery.md)
+
 ### Host prompt-cache ledger
 
-For each assistant response in the current session, Pi Continuity records the
+For each assistant response in the current session, Smart Compact records the
 prompt usage the provider reported for Pi's own request: uncached input, cache
 reads and cache writes. Those token counts are measured; rebuild detection and
 cause labels are estimates. Responses without reported usage, or with zero
@@ -708,14 +723,14 @@ first and its uncached tokens (input + cache writes) are at least 16,384 and at
 least half of its prompt tokens. Timing labels are checked in this order; they
 are not provider-confirmed root causes:
 
-- **continuity**: a Continuity edit reached the branch since the previous
-  request (an output trim or checkpoint rewind, a navigation pivot, or a Pi
-  Continuity compaction). Edits that were queued but not committed do not
+- **continuity**: a Smart Compact edit reached the branch since the previous
+  request (an output trim or checkpoint rewind, a navigation pivot, or a
+  Smart Compact compaction). Edits that were queued but not committed do not
   count.
 - **possible idle-expiry**: the gap since the previous request or cache-warming
   refresh exceeded the model's longest advertised cache lifetime, extended by
   any observed 1h writes. Unknown lifetime metadata never implies expiry.
-- **foreign / cause unknown**: neither. The ledger did not observe a Continuity
+- **foreign / cause unknown**: neither. The ledger did not observe a Smart Compact
   edit or a known expiry horizon; this does not prove another extension changed
   the prompt. Tool changes, Pi's built-in compaction or provider eviction are
   possible explanations, not assigned causes. A model switch starts a new
@@ -729,7 +744,7 @@ it does not duplicate Pi's cache-miss notification. Since 10.4.0, a
 provider-documented caching route that keeps serving large requests with zero
 reads is flagged once as cache-inactive in readiness and metrics; cache hits
 and write-dominant rebuilds do not count toward it. The ledger is session-local: it resets on a new or switched session,
-is not persisted, and covers only Pi's own requests; Pi Continuity's summary
+is not persisted, and covers only Pi's own requests; Smart Compact's summary
 calls are in `/smart-compact metrics` instead.
 
 ## Experimental features
@@ -758,7 +773,7 @@ package's `dist/rtk.js` by file path. Keep the core extension loaded as well.
   together with the upstream RTK Pi hook.
 - A failed filtered command is never retried as the original. `RTK_DISABLED=1`
   disables it; `command git status` bypasses it for one call.
-- RTK's own recall store is separate: Pi Continuity neither reads nor scrubs it.
+- RTK's own recall store is separate: Smart Compact neither reads nor scrubs it.
 
 ### Summary format: provider compaction and images
 
@@ -775,11 +790,11 @@ Provider (native) compaction:
 - Supported routes: Anthropic Messages (API key or Claude subscription),
   OpenAI Codex subscription and the OpenAI Responses API with an API key.
   Other routes are skipped with a notice.
-- The provider state is opaque and **not verified** by Pi Continuity. It is
+- The provider state is opaque and **not verified** by Smart Compact. It is
   replayed only to the same provider and model. With another model, or when
   replay is not possible, the model reads the text summary instead; on OpenAI
   routes that is only the retained user messages.
-- Claude subscription requests that Pi Continuity makes itself (summaries and
+- Claude subscription requests that Smart Compact makes itself (summaries and
   provider compaction) go through Pi's model runtime, so a provider registered
   by the separate `pi-claude-oauth-adapter` package handles their transport.
   The published adapter `0.2.2` rewrites the request body only inside Pi's
@@ -825,12 +840,12 @@ current session is not modified. Backups contain text, not binary attachments.
 
 ### Where files live
 
-Everything is under `~/.pi/agent/`. Directories Pi Continuity creates are `0700`
+Everything is under `~/.pi/agent/`. Directories Smart Compact creates are `0700`
 and its files are `0600`; a custom backup folder gets the same protection.
 
 | Path | Contents | Growth |
 | --- | --- | --- |
-| `settings.json` | Pi's settings; Pi Continuity only edits its `smartCompact` section | Host-owned |
+| `settings.json` | Pi's settings; Smart Compact only edits its `smartCompact` section | Host-owned |
 | `compact-backups/` | Scrubbed pre-compaction text backups | Retention-pruned |
 | `smart-compact-artifacts/<session-hash>/` | Archived tool output | **No automatic expiry** |
 | `smart-compact-memory/mnemopi/<projectId>/memory.sqlite` | Mnemopi facts (only when selected) | Until resolved |
@@ -870,7 +885,7 @@ What is not covered:
 
 - Raw history stays in Pi's session JSONL; trimming and rewind do not delete it.
 - `DEBUG=smart-compact` logs can contain private conversation text.
-- The RTK recall store is outside Pi Continuity.
+- The RTK recall store is outside Smart Compact.
 
 ## Troubleshooting
 
@@ -885,6 +900,8 @@ What is not covered:
 | `smart_context`, `smart_recall`, `smart_save_memory` or `smart_navigation` missing | With **On demand**, the agent loads a group through `smart_tools`; with **Off**, no context tool is shown; see [agent tools](#agent-tools). Check `/tools`. |
 | Memory tools say they "must run from a project directory" | Start Pi from inside a project, not from your home directory or `/`. |
 | Recall with `scope: "session"` returns nothing | Not supported on Hindsight or Mnemopi; use project scope. |
+| Compaction inbox stays paused | After cancellation, continue the conversation or retry compaction. Do not reload a nonempty queue: it is not durable. Only participating senders can defer messages. |
+| Hindsight remains accepted | Watch for a separate background status update. Tracking stops after two minutes; `smart_recall` can refresh the receipt again. Acceptance is not completion. |
 | Hindsight save refused, `FAILED` or "outcome unknown" | See [Hindsight troubleshooting](./hindsight-memory.md#troubleshooting). No other store is used as a fallback. |
 | Mnemopi lock error | Another writer is active. Retry later. Remove `memory.sqlite.lock` only after confirming no process writes that database. |
 | Settings do not save; `settings.json.lock` exists | A Pi process died while writing. Verify no Pi process is writing settings, then remove the lock directory by hand. |

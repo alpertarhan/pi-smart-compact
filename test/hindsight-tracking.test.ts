@@ -1,0 +1,229 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerHindsightTracking } from "../src/app/hindsight-tracking.ts";
+import { registerCompactionDelivery } from "../src/app/compaction-delivery.ts";
+import { registerContextTools } from "../src/app/register-context-tools.ts";
+import { refreshReceipt, saveHindsightMemory } from "../src/app/hindsight-memory.ts";
+import { listReceipts, updateReceiptState } from "../src/infra/hindsight-receipts.ts";
+import { manualMemoryId } from "../src/infra/context-graph.ts";
+import { resetConfigCache } from "../src/utils/config.ts";
+import { deriveProjectIdFromCwd } from "../src/utils/fingerprint.ts";
+import { startHindsightFake, type HindsightFake } from "./hindsight-fake.ts";
+
+const originalHome = process.env.HOME;
+let home: string;
+let fake: HindsightFake;
+const cleanups: Array<() => Promise<void>> = [];
+beforeEach(() => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), "psc-hindsight-tracking-"));
+  process.env.HOME = home;
+  fake = startHindsightFake({ token: null });
+  fake.retainStatus = "pending";
+  configure();
+});
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+  fake.stop();
+  if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+  resetConfigCache();
+  fs.rmSync(home, { recursive: true, force: true });
+});
+function configure(bankId = "tracking") {
+  const dir = path.join(home, ".pi", "agent");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ smartCompact: {
+    memoryBackend: "hindsight", hindsightBaseUrl: fake.url, hindsightBankId: bankId,
+    hindsightApiKeyEnv: null, hindsightTimeoutMs: 1000, requireApproval: false,
+  } }));
+  resetConfigCache();
+}
+function fixture(maxTrackingMs = 500) {
+  const cwd = path.join(home, "project");
+  fs.mkdirSync(cwd, { recursive: true });
+  const projectId = deriveProjectIdFromCwd(cwd)!;
+  const target = { baseUrl: fake.url, bankId: "tracking", timeoutMs: 1000 };
+  const scope = { ...target, projectId };
+  const memory = { projectId, memoryId: manualMemoryId(projectId, "decision", "Use isolated test data."),
+    kind: "decision", title: "Fixture decision", content: "Use isolated test data.", relatedPaths: [] };
+  let sessionId = "tracking-session";
+  const ctx = { cwd, hasUI: false, isIdle: () => true,
+    sessionManager: { getSessionId: () => sessionId, getBranch: () => [{ id: "branch-head" }] },
+    ui: { notify() {}, setStatus() {} } } as unknown as ExtensionContext;
+  const events = createEventBus();
+  const handlers = new Map<string, Array<(event: any, ctx: ExtensionContext) => unknown>>();
+  const messages: Array<{ message: any; options: any }> = [];
+  const delivered = Promise.withResolvers<void>();
+  const tools = new Map<string, any>();
+  const pi = { events,
+    registerTool(definition: any) { tools.set(definition.name, definition); },
+    getActiveTools: () => ["smart_save_memory", "smart_recall"],
+    on(name: string, handler: (event: any, ctx: ExtensionContext) => unknown) {
+      handlers.set(name, [...handlers.get(name) ?? [], handler]); return () => {};
+    },
+    sendMessage(message: unknown, options: unknown) { messages.push({ message, options }); delivered.resolve(); },
+  } as unknown as ExtensionAPI;
+  registerCompactionDelivery(pi);
+  const tracker = registerHindsightTracking(pi, { pollIntervalMs: 5, maxTrackingMs });
+  const emit = async (name: string, event = {}) => {
+    for (const fn of handlers.get(name) ?? []) await fn(event, ctx);
+  };
+  cleanups.push(() => emit("session_shutdown"));
+  const save = () => saveHindsightMemory(target, memory);
+  return { pi, tools, ctx, target, scope, memory, events, tracker, emit, save, messages, delivered,
+    switchSession() { sessionId = "new-session"; } };
+}
+
+describe("background Hindsight tracking", () => {
+  it("the actual save tool starts tracking without delaying its accepted result", async () => {
+    const f = fixture();
+    registerContextTools(f.pi);
+    await f.emit("session_start");
+    const result = await f.tools.get("smart_save_memory").execute("save", {
+      kind: "decision", title: f.memory.title, content: f.memory.content,
+    }, undefined, undefined, f.ctx);
+    expect(result.details.remote.state).toBe("accepted");
+    expect(result.details.backgroundTracking).toBe(true);
+    expect(result.content[0].text).toContain("Background status tracking is active");
+    expect(f.messages).toHaveLength(0);
+    fake.operations.set(listReceipts(f.scope)[0].operationId, "completed");
+    await f.delivered.promise;
+    expect(f.messages[0].message.content).toContain("completed");
+  }, 10000);
+
+  it("reports completion once without another recall, retain or agent wake", async () => {
+    const f = fixture();
+    await f.emit("session_start");
+    const outcome = await f.save();
+    expect(outcome.state).toBe("accepted");
+    expect(f.tracker.observe(outcome, f.ctx)).toBe(true);
+    expect(f.tracker.observe(outcome, f.ctx)).toBe(true);
+    expect(f.messages).toHaveLength(0);
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].options).toEqual({ triggerTurn: false });
+    expect(f.messages[0].message.content).toContain("completed");
+    expect(f.messages[0].message.content).toContain("Ref: hindsight:");
+    expect(listReceipts(f.scope)[0].state).toBe("completed");
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("resumes open receipts for the same configured project on session start", async () => {
+    const f = fixture();
+    const outcome = await f.save();
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    await f.emit("session_start");
+    await f.delivered.promise;
+    expect(f.messages[0].message.content).toContain("completed");
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("reports a terminal server failure without automatically retaining again", async () => {
+    const f = fixture();
+    await f.emit("session_start");
+    const outcome = await f.save();
+    f.tracker.observe(outcome, f.ctx);
+    fake.operations.set(outcome.receipt!.operationId, "failed");
+    await f.delivered.promise;
+    expect(f.messages[0].message.content).toContain("FAILED");
+    expect(listReceipts(f.scope)[0].state).toBe("failed");
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("bounds tracking but never turns a still-pending operation into a failure", async () => {
+    const f = fixture(15);
+    await f.emit("session_start");
+    const outcome = await f.save();
+    f.tracker.observe(outcome, f.ctx);
+    await f.delivered.promise;
+    expect(f.messages[0].message.content).toContain("NOT yet searchable");
+    expect(f.messages[0].message.content).toContain("tracking stopped");
+    expect(f.messages[0].message.content).not.toContain("FAILED");
+    expect(listReceipts(f.scope)[0].state).toBe("accepted");
+  });
+
+  it("keeps known acceptance distinct from an unavailable completion status", async () => {
+    const f = fixture(50);
+    await f.emit("session_start");
+    const outcome = await f.save();
+    fake.failNext.set("GET operations/:id", -2);
+    f.tracker.observe(outcome, f.ctx);
+    await f.delivered.promise;
+    expect(f.messages[0].message.details.state).toBe("accepted");
+    expect(f.messages[0].message.content).toContain("Last observed memory state");
+    expect(f.messages[0].message.content).toContain("Last status check failed");
+    expect(listReceipts(f.scope)[0].state).toBe("accepted");
+  });
+
+  it("queues completion during compaction without delaying receipt persistence", async () => {
+    const f = fixture();
+    await f.emit("session_start");
+    await f.emit("session_before_compact");
+    const queued = Promise.withResolvers<void>();
+    f.events.on("smart-compact:defer-delivery", (value: any) => { if (value.deferred) queued.resolve(); });
+    const outcome = await f.save();
+    f.tracker.observe(outcome, f.ctx);
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    await queued.promise;
+    expect(listReceipts(f.scope)[0].state).toBe("completed");
+    expect(f.messages).toHaveLength(0);
+    await f.emit("session_compact");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].options.triggerTurn).toBe(false);
+  });
+
+  it.each(["shutdown", "switch", "retarget"])("never delivers a queued completion after %s", async action => {
+    const f = fixture();
+    await f.emit("session_start");
+    const held = Promise.withResolvers<() => void>();
+    f.events.on("smart-compact:defer-delivery", (value: any) => { value.deferred = true; held.resolve(value.deliver); });
+    const outcome = await f.save();
+    f.tracker.observe(outcome, f.ctx);
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    const deliver = await held.promise;
+    if (action === "shutdown") await f.emit("session_shutdown");
+    else if (action === "switch") f.switchSession();
+    else configure("other-bank");
+    deliver();
+    expect(f.messages).toHaveLength(0);
+  });
+
+  it("aborts in-flight status checks on shutdown", async () => {
+    const f = fixture();
+    await f.emit("session_start");
+    const outcome = await f.save();
+    const checking = Promise.withResolvers<void>();
+    fake.beforeNext.set("GET operations/:id", () => { fake.failNext.set("GET operations/:id", -2); checking.resolve(); });
+    f.tracker.observe(outcome, f.ctx);
+    await checking.promise;
+    await f.emit("session_shutdown");
+    expect(f.messages).toHaveLength(0);
+  });
+
+  it("a repeated save cannot undo a resolve that wins during its status check", async () => {
+    const f = fixture();
+    const outcome = await f.save();
+    const receipt = outcome.receipt!;
+    fake.operations.set(receipt.operationId, "completed");
+    fake.beforeNext.set("GET operations/:id", () => { updateReceiptState(receipt.key, "deleted"); });
+    const repeated = await f.save();
+    expect(repeated.state).toBe("failed");
+    expect("reason" in repeated && repeated.reason).toContain("resolved while checking status");
+    expect(listReceipts(f.scope)[0].state).toBe("deleted");
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("a late status response cannot resurrect a receipt deleted during the check", async () => {
+    const f = fixture();
+    const outcome = await f.save();
+    const receipt = outcome.receipt!;
+    fake.operations.set(receipt.operationId, "completed");
+    fake.beforeNext.set("GET operations/:id", () => { updateReceiptState(receipt.key, "deleted"); });
+    expect((await refreshReceipt(f.target, receipt)).state).toBe("deleted");
+    expect(listReceipts(f.scope)[0].state).toBe("deleted");
+  });
+});

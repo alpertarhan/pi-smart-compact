@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible Pi Continuity (pi-smart-compact) problem
+description: Report a reproducible Smart Compact problem
 title: "bug: "
 labels: [bug]
 body:
@@ -19,7 +19,7 @@ body:
     attributes:
       label: pi-smart-compact version
       description: Shown in the `/smart-compact` command description. Say whether it is an npm release or a source checkout.
-      placeholder: "e.g. 9.7.1 from npm"
+      placeholder: "e.g. 10.6.2 from npm latest"
     validations:
       required: true
   - type: input

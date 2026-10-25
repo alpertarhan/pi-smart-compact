@@ -1,6 +1,6 @@
 # Security Policy
 
-This policy covers **Pi Continuity**, published as the npm package
+This policy covers **Smart Compact**, published as the npm package
 `pi-smart-compact`.
 
 ## Supported versions
@@ -42,7 +42,7 @@ Operational guidance:
   compaction; summaries are produced by the configured model provider.
 - Memory uses exactly one selected backend. The default local backend
   (`contextGraphEnabled`, on by default) indexes facts derived from confirmed
-  compactions in a local SQLite store; manual saves always need confirmation.
+  compactions in a local SQLite store; manual saves require confirmation by default (`requireApproval: true`).
   Mnemopi also stores locally. Remote memory is opt-in: with the Hindsight
   backend, confirmed facts and recall queries go to the configured server,
   which may store raw text and run its own models; see
@@ -54,9 +54,11 @@ contain the complete selected pre-prune conversation after configured
 secret/PII scrubbing. Opt-in tool-output artifacts are scrubbed before they are
 written. Scrubbing is pattern-based and PII scrubbing is opt-in; it reduces
 exposure but is not a guarantee. Project-memory writes fail closed when the
-working directory is exactly `HOME` or the filesystem root, require interactive
-confirmation of the complete scrubbed content, and are capped at 500 active
-manual facts per project. The optional RTK companion's own recall store is
+working directory is exactly `HOME` or the filesystem root. With
+`requireApproval: true`, they require interactive confirmation of the complete
+scrubbed content. Disabling that setting permits headless writes without a
+confirmation dialog. The local store is capped at 500 active manual facts per
+project. The optional RTK companion's own recall store is
 outside this extension's scrubbing and retention.
 
 File locations and retention are listed in the guide's

@@ -1,12 +1,12 @@
 # Contributing
 
-Thanks for contributing to **Pi Continuity**, published as the npm package
-`pi-smart-compact`.
+Build **Smart Compact**, the `pi-smart-compact` extension for Pi Coding Agent.
 
-Pi Continuity is the product name used in documentation. The package name,
-`/smart-compact` command, `smart_*` tools, `smartCompact` configuration key,
-runtime and UI names, repository URL and stored paths are unchanged. Do not
-rename them in code, tests or examples.
+[Documentation](./docs/README.md) · [Architecture](./ARCHITECTURE.md) · [Release checklist](./docs/RELEASE.md)
+
+Use one public name: **Smart Compact**. Keep the established package name,
+`/smart-compact` command, `smart_*` tools, `smartCompact` settings, stored paths
+and reference formats unchanged. Branding is not a data migration.
 
 The project sits between product UX, LLM orchestration and deterministic safety
 checks. Good contributions keep all three in balance.
@@ -21,12 +21,12 @@ checks. Good contributions keep all three in balance.
    constraints and open loops must survive; verification is a guard, not a
    guarantee that every detail survives.
 4. **Memory stays confined and confirmed.** Cross-session memory uses one
-   selected backend; explicit saves need host confirmation, and only the local
+   selected backend; explicit saves follow `requireApproval`, and only the local
    backend indexes derived facts, from confirmed compactions.
 5. **Minimize documentation drift.** Update docs in the same change as
    behavior or metadata.
 6. **Edit the source of truth.** `dist/` is build output; brand exports come
-   from the SVG master in [the identity guide](./docs/identity.md#regenerate-the-exports).
+   from the editable SVG masters in [the identity guide](./docs/identity.md#regenerate-the-exports).
 
 ## Local setup
 
@@ -53,6 +53,11 @@ dispatched CI job runs `bun run compat:pi` against the latest Pi in an isolated
 workspace. The full local `bun run release:check` includes that compatibility
 check as well; the locked minimum host is checked with
 `bun run compat:pi 0.87.1`.
+
+The development install overrides `undici` to `8.12.2` because the supported Pi
+SDKs still pin vulnerable `8.10.2`. Remove the override once the pinned SDK's
+own dependency is patched. This fixes the checkout/CI dependency tree, not
+an installed user's Pi host; npm does not inherit a dependency's overrides.
 
 To try a checkout in Pi, run `bun run build` and install the checkout path
 (`pi install /path/to/pi-smart-compact`; Pi loads `dist/index.js` through
@@ -104,7 +109,7 @@ guide, with absolute GitHub URLs; other links stay relative.
 ### 1. Edit the source of truth
 
 Runtime behavior belongs in `src/`; never patch `dist/` by hand. For a docs-only
-change, edit the page that owns the topic (below). For branding, edit the master
+change, edit the page that owns the topic (below). For branding, edit the appropriate master
 SVG and regenerate its exports using [the identity guide](./docs/identity.md#regenerate-the-exports).
 
 ### 2. Keep version metadata synchronized
@@ -129,6 +134,7 @@ Update the page that owns the topic:
 | Evaluation commands and evidence limits | `docs/evaluation.md` |
 | System design and invariants | `ARCHITECTURE.md` |
 | Hindsight backend | `docs/hindsight-memory.md` |
+| Compaction-safe notifications | `docs/message-delivery.md` |
 | Release process | `docs/RELEASE.md` |
 | Contributor workflow | `CONTRIBUTING.md` |
 | Vulnerability reporting, data handling | `SECURITY.md` |

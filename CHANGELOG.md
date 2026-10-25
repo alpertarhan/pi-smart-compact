@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [10.7.0-rc.1] - 2026-10-25
+
+Release candidate on npm `next`, not a stable promotion. No external canary
+cohort or live provider-quality evaluation is claimed. The previous stable
+release remains on `latest`. Package, command, settings, paths and memory ref
+formats are unchanged; no migration is required.
+
+### Changed
+
+- Restore **Smart Compact** as the single product name across the README,
+  guides, package metadata, support and runtime messages. Historical release
+  notes keep their original names.
+- Replace the old header with an original illustrated workbench: session pages,
+  a binding press, a checked working folio and retrievable evidence. Add a
+  distinct bound-folio emblem, light/dark wordmarks and package artwork, all
+  reproducible from a self-contained vector master with `bun run brand`.
+- Reorganize the README and documentation index around reader tasks. Correct
+  stale cleanup limits, version guidance and `requireApproval` explanations;
+  add documentation-link and visual-asset regression checks.
+
+### Security
+
+- Override the development/CI install's `undici` to `8.12.2`, fixing the three
+  advisories reported against the Pi SDK's exact `8.10.2` dependency. Supported
+  Pi versions and runtime dependencies are unchanged. This override does not
+  patch a user's separately installed Pi host.
+
+### Fixed
+
+- Participating notification extensions can defer delivery throughout manual
+  summary preparation and native compaction using a session-bound FIFO queue.
+  Delivery waits for a safe post-compaction boundary instead of treating the
+  commit hook as idle; cancellation retains queued messages for the next natural
+  run or a successful retry. Silent-host watchdog recovery waits for real idle
+  and cannot release another request's scope. Failed senders no longer block
+  healthy notifications. A queue counter and cancellation guidance make the
+  waiting state visible, with an explicit in-memory/reload warning. This opt-in
+  protocol does not intercept unmodified senders or add disk durability.
+  On older supported Pi hosts, delivery waits for `turn_start` when the
+  pre-start hook still reports idle, preventing a nested prompt after cancellation.
+  Passive messages remain recorded for the next request without an extra wake.
+  See [message delivery](./docs/message-delivery.md).
+- Hindsight accepted/unknown submissions now receive bounded background status
+  tracking and non-waking completion/failure updates, instead of looking pending
+  until a later recall. Tracking resumes current-project receipts on session
+  start, respects compaction and target changes, and never submits new memories.
+  Late status checks cannot undo a concurrently resolved receipt.
+- Mnemopi lock guidance preserves an unknown write outcome instead of incorrectly
+  claiming nothing changed. Background memory-status notices cannot replace the
+  real task goal or become extracted constraints.
+
 ## [10.6.2] - 2026-10-18
 
 - The release owner approved `10.6.2` as a stable patch release to `latest`

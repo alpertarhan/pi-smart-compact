@@ -1,127 +1,122 @@
-# Pi Continuity: identity and naming
+# Smart Compact identity
 
-[Documentation](./README.md) · [Project overview](../README.md)
+[Overview](../README.md) · [Documentation](./README.md) · [Contributing](https://github.com/alpertarhan/pi-smart-compact/blob/main/CONTRIBUTING.md)
 
-## Product name
+**Smart Compact** is the product, the UI name and the name used in documentation.
+The visual identity makes the work tangible: a crowded session becomes a small
+working folio, while a visible thread leads back to recorded evidence.
 
-**Pi Continuity** describes the goal: keep useful working context and a way back
-to evidence through long coding sessions. Context hygiene, recoverable research,
-compaction and optional project memory support that goal.
+## Name and technical identifiers
 
-The name does not promise lossless compression, perfect recall, persistent model
-attention or an independent session engine. Pi owns the session lifecycle.
-
-## What changed—and what did not
-
-This is a product-identity and documentation change, not a package migration.
-
-| Surface | Name |
+| Surface | Use |
 | --- | --- |
-| Product identity and visual assets | **Pi Continuity** |
-| npm package | `pi-smart-compact` |
-| Repository | `alpertarhan/pi-smart-compact` |
-| Command and current TUI title | `/smart-compact` / Smart Compact |
-| Agent tool family | `smart_*`: loader, navigation, history, memory and compaction tools |
-| Settings namespace | `smartCompact` |
-| Runtime directories, record types and reference formats | Unchanged |
+| Product, prose and UI | **Smart Compact** |
+| npm package and repository | `pi-smart-compact` |
+| Command and tool family | `/smart-compact` and `smart_*` |
+| Configuration namespace | `smartCompact` |
+| Existing paths, refs and compatibility keys | Preserve exactly; no migration |
 
-Install with `pi install npm:pi-smart-compact`. Do not install `pi-continuity`
-or rename settings, directories, memory tags or references because of the
-branding. Existing state needs no migration.
+Earlier documentation used **Pi Continuity**. That was a documentation brand,
+not a different package. The current identity reunifies the name; historical
+changelog entries keep the names used at their publication date. The legacy
+`semanticCompact` configuration alias and internal continuity terminology are
+not renamed. “Continuity” remains a useful description of behavior, not a
+second product name.
 
-The npm name-availability check on 2026-09-27 was an observation, not a
-reservation, trademark clearance or guarantee of future availability. No new
-package is published by this identity change.
+## The bound folio
 
-## Visual language
+<p>
+  <img src="./assets/emblem.png" alt="Smart Compact emblem: a folded blue folio with a white S-shaped page and a gold bookmark." width="132" height="132" />
+</p>
 
-The mark is **one unbroken line**: kept context runs straight, turns down
-through compaction, and continues as the summary — the stroke changes color
-exactly there (ink to teal) — and comes to rest on a gold anchor. Nothing
-else. The line never lifts, because the product's promise is that nothing
-useful is ever lost: compacted, re-colored, still one line, still on its way
-back. It avoids the generic compression arrow, database stack and infinity
-symbol, and it reads at 16 px.
+The emblem is a **bound folio**: a stack reduced to an addressable working
+object, not a disappearing history. Its folded page makes an angular **S**;
+a gold bookmark preserves a place to return to. The dark fore-edge gives it
+the same physical construction as the workbench illustration.
 
-| Role | Color | Use |
+Use the emblem alone where space is limited. Use the wordmark when the project
+needs to introduce itself. Neither requires a font at display time.
+
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-dark.png" />
+    <img src="./assets/logo.png" alt="Smart Compact wordmark with the bound-folio emblem." width="600" height="120" />
+  </picture>
+</p>
+
+## The illustrated workbench
+
+The header is an original vector illustration, not a stock icon arrangement or
+a screenshot. Its objects explain the workflow:
+
+- **Loose session pages:** tool output, source evidence and conversation history.
+- **Binding press and checked folio:** compacting the working set, with review
+  before apply—not a claim that every detail survives.
+- **Gold return thread and drawers:** retrievable recorded evidence and recovery.
+- **Separate green card box:** optional project memory, distinct from archives.
+
+The drawing deliberately does not show files being undone or a transcript being
+uploaded to a remote brain. Those would misrepresent the product. The banner's
+text alternative describes the same scene for readers who cannot see it.
+
+## Visual system
+
+| Role | Value | Use |
 | --- | --- | --- |
-| Deep ink | `#183E4B` | Kept context: the bar and the retained tail |
-| Return teal | `#147D88` | The summary continuing after compaction |
-| Anchor gold | `#E8B55B` | The point the line ends on; never body text |
-| Supporting ink | `#466674` | Banner descriptor |
-| Mist | `#F3F8F9` | Banner and rounded catalog tile |
+| Ink | `#17314B` | Wordmark, foreground and structural edges |
+| Binding blue | `#315CCB` | Folio, press and the main point of emphasis |
+| Steel | `#9BADCA` | Page rules, secondary geometry and depth |
+| Paper | `#F7F9FC` | Reading surface and high-contrast negative space |
+| Bookmark gold | `#DCA653` | Return thread and saved place |
+| Memory green | `#367D77` | The separate project-memory object |
 
-The wordmark uses **Avenir Next Demi Bold**; the descriptor uses **Avenir Next
-Regular**. Both are converted to vector paths in the master artwork. Rendering
-and PNG export require no installed fonts, network requests or embedded font
-files. Documentation body type follows the reader's GitHub/npm renderer; the
-runtime's separate DejaVu font is not a branding font.
-
-Keep the supplied proportions and clear space. Use the catalog tile on light or
-dark surfaces rather than recoloring the mark. Use at least **32×32** for a
-standalone icon; the banner is a wordmark, not a place for essential instructions.
-Installation steps, controls and warnings must remain available as text.
+Lettering uses outlined Avenir Next Regular and Demi Bold. Font files are not
+redistributed and exports make no system-font or network requests. Body copy
+uses the reader's Markdown renderer; there is no custom documentation theme to
+install. Prefer sentence case, plain verbs, meaningful diagrams and generous
+spacing over decorative badges or unsupported performance claims.
 
 ## Visual assets
 
-<p>
-  <img src="./assets/pi-smart-compact.png?v=2" alt="Pi Continuity: one unbroken line through compaction, ending at a gold anchor" width="128" height="128" />
-</p>
-
-| File | Dimensions | Purpose |
+| File | Role | Size |
 | --- | --- | --- |
-| [`banner.svg`](./assets/banner.svg) | 1280×320 | **Editable master**: mark, outlined wordmark and descriptor. Self-contained SVG with a title and description. |
-| [`banner.png`](./assets/banner.png) | 1280×320 | README banner; raster compatibility without a font dependency. |
-| [`pi-smart-compact.svg`](./assets/pi-smart-compact.svg) | 512×512 | Generated catalog tile; vector reuse at any size. |
-| [`pi-smart-compact.png`](./assets/pi-smart-compact.png) | 512×512 | Generated catalog image at the established `package.json` → `pi.image` URL. |
+| [`banner.svg`](./assets/banner.svg) | Editable master: illustration, emblem and outlined wordmark | 1600 × 720 |
+| [`banner.png`](./assets/banner.png) | README/header export; baked-in light surface | 1600 × 720 |
+| [`emblem.svg`](./assets/emblem.svg), [`emblem.png`](./assets/emblem.png) | Transparent standalone emblem | 176 × 176 |
+| [`logo.svg`](./assets/logo.svg), [`logo.png`](./assets/logo.png) | Transparent horizontal wordmark for light surfaces | 720 × 144 |
+| [`logo-dark.svg`](./assets/logo-dark.svg), [`logo-dark.png`](./assets/logo-dark.png) | Light-lettering wordmark for dark surfaces | 720 × 144 |
+| [`pi-smart-compact.svg`](./assets/pi-smart-compact.svg), [`pi-smart-compact.png`](./assets/pi-smart-compact.png) | Package catalog tile; baked-in light surface | 512 × 512 |
 
-The master replaces the former separately generated PNG artwork. All exports
-now share its geometry and palette. Keep the existing filenames and catalog URL;
-there is no separate theme-specific logo to maintain.
+These assets are original project artwork under the repository's
+[MIT license](../LICENSE). Give the wordmark a light surface; do not put its
+ink lettering directly on a dark background—use `logo-dark` there instead. The opaque banner and package tile
+work in both light and dark Markdown renderers. Keep the emblem's aspect ratio
+and clear space; do not crop away the bookmark.
 
-### Regenerate the exports
+## Regenerate the exports
 
-From a source checkout with development dependencies installed
-(`bun install --frozen-lockfile`), run the following with the pinned
-`@resvg/resvg-js@2.6.2`. It uses no system fonts and makes no network request:
+Edit **`docs/assets/banner.svg`**, then run from a development checkout:
 
 ```bash
-bun --eval '
-import { readFileSync, writeFileSync } from "node:fs";
-import { Resvg } from "@resvg/resvg-js";
-
-const root = "docs/assets/";
-const banner = readFileSync(root + "banner.svg", "utf8");
-const mark = banner.match(/<g id="continuity-mark">[\s\S]*?<\/g>/)?.[0];
-if (!mark) throw new Error("Missing continuity-mark group in banner.svg");
-const icon = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 320 320" role="img" aria-labelledby="title description">
-  <title id="title">Pi Continuity</title>
-  <desc id="description">One unbroken line: kept context turns down through compaction and continues as the summary, ending at a gold anchor.</desc>
-  <!-- Generated from banner.svg; regenerate using docs/identity.md. -->
-  <rect width="320" height="320" rx="64" fill="#F3F8F9"/>
-  <g>${mark}</g>
-</svg>
-`;
-writeFileSync(root + "pi-smart-compact.svg", icon);
-for (const [name, svg] of [["banner", banner], ["pi-smart-compact", icon]]) {
-  const image = new Resvg(svg, { font: { loadSystemFonts: false } }).render();
-  writeFileSync(root + name + ".png", image.asPng());
-}
-'
+bun run brand
+bun test test/docs-brand.test.ts
 ```
 
-Edit `banner.svg`, not the generated files. Keep `continuity-mark` as a flat
-group: the export command extracts that group and centers it on the catalog tile.
-If you change the lettering, convert it to paths again before export. Review the
-banner at README width and the icon at 32 and 64 pixels on light and dark surfaces.
-Do not add generated previews to the repository.
+`scripts/render-brand.ts` extracts the master’s two named flat groups,
+`smart-compact-mark` and `smart-compact-wordmark`, and creates the standalone
+SVGs plus all PNGs with the pinned development renderer. Do not edit those
+exports independently. Keep the groups flat and uniquely named; the generator
+fails rather than silently exporting an incomplete mark.
 
-## A full rename would be a separate release
+The master contains outlined lettering. Change it in a vector editor and
+outline replacement text before exporting; no font installation is needed to
+render committed artwork. Update the README dimensions and `package.json#pi.image`
+cache suffix when changing the public header or package tile. The regression
+checks cover image dimensions, self-contained SVGs, names and local doc links.
 
-No package rename is scheduled here. A future rename would need explicit
-release-owner approval, ownership checks, a complete public-interface cutover,
-and a tested migration for existing settings, sessions, references and stored
-state. Renaming a directory is not a data migration.
+## Historical and runtime assets
 
-There are no new command aliases, runtime shims, automatic data moves or
-duplicate packages in this branding change.
+Preserve dated evidence and release history rather than rewriting old claims.
+Runtime assets under [`assets/`](../assets/README.md) serve a different purpose:
+the optional visual archive font and the on-demand agent guide. Do not replace
+that font or rename the guide as part of a visual refresh.

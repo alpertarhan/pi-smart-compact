@@ -23,7 +23,7 @@ export interface LedgerEntry {
   gapMs?: number;
   rebuild: boolean;
   cause?: RebuildCause;
-  /** Most recent Continuity edit before a `continuity` rebuild. */
+  /** Most recent Smart Compact edit before a `continuity` rebuild. */
   editKind?: ContextEditKind;
   /** Set only on the rebuild that makes the foreign count reach FOREIGN_REBUILD_WARN_COUNT. */
   warn?: true;
@@ -59,7 +59,7 @@ export interface HostCacheLedger {
   reset(sessionId: string): void;
   /** Session the ledger currently tracks; null before the first reset. */
   sessionId(): string | null;
-  /** A Continuity edit reached the branch; attributes the next observed rebuild. */
+  /** A Smart Compact edit reached the branch; attributes the next observed rebuild. */
   noteContextEdit(kind: ContextEditKind): void;
   /** Pi sent a `cache_warm` refresh at `at`; it keeps the live prefix alive like a request. */
   noteCacheWarm(at: number): void;
@@ -220,10 +220,10 @@ export function formatCacheLedgerSummary(summary: LedgerSummary): string[] {
   if (continuity.count) {
     const kinds = (Object.entries(summary.continuity) as Array<[ContextEditKind, TokenTally]>)
       .filter(([, tally]) => tally.count).map(([kind, tally]) => `${kind} ${tally.count}`).join(", ");
-    parts.push(`${continuity.count} after Continuity edits (${kinds}): ${tokens(continuity.uncached)} uncached`);
+    parts.push(`${continuity.count} after Smart Compact edits (${kinds}): ${tokens(continuity.uncached)} uncached`);
   }
   if (idle.count) parts.push(`${idle.count} possible idle-expiry: ${tokens(idle.uncached)} uncached`);
-  if (foreign.count) parts.push(`${foreign.count} without a Continuity edit (cause unknown): ${tokens(foreign.uncached)} uncached`);
+  if (foreign.count) parts.push(`${foreign.count} without a Smart Compact edit (cause unknown): ${tokens(foreign.uncached)} uncached`);
   lines.push("Rebuild estimates: " + parts.join(" · "));
   if (summary.cost.total > 0) lines.push(`Cost (Pi model pricing): \$${summary.cost.total.toFixed(4)} total · \$${summary.cost.rebuildUncached.toFixed(4)} uncached input+cache writes on rebuilds`);
   if (summary.inactiveRoutes.length) {

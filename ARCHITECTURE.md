@@ -1,10 +1,9 @@
 # Architecture
 
-Maintainer-facing system design for **Pi Continuity**, published as the npm
-package `pi-smart-compact`. The product name is documentation branding only:
-the package name, `/smart-compact` command, `smart_*` tools, `smartCompact`
-configuration key, runtime and UI names, stored paths and ref prefixes are
-unchanged.
+Maintainer-facing system design for **Smart Compact** (`pi-smart-compact`).
+The command is `/smart-compact`, agent tools use `smart_*`, and configuration
+lives under `smartCompact`. Branding changes never rename stored paths or
+reference formats.
 
 Usage lives in the [user guide](./docs/guide.md), every setting in
 [configuration](./docs/configuration.md), and evidence rules in
@@ -48,7 +47,7 @@ flowchart LR
 | [1. Context hygiene](#1-context-hygiene) | How do we keep noise out of the working set? | `rtk.ts`, `app/tool-artifacts.ts`, `app/context-operations.ts` | Preserve protected content and retain retrieval paths for eligible offloaded output |
 | [2. Recoverable continuity](#2-recoverable-continuity) | How does removed or old evidence stay reachable on the same branch? | `app/register-smart-context-tool.ts`, `app/context-evidence.ts`, `app/artifact-storage.ts` | Access follows active-branch provenance; the host session log stays authoritative |
 | [3. Verified compaction](#3-verified-compaction) | How do we replace history when pressure demands it? | `app/run-smart-compact.ts`, `app/steps/*`, `phases/*` | Facts first, synthesis second, verification before apply; rejected custom summaries are not staged or applied |
-| [4. Cross-session memory](#4-optional-cross-session-memory) | What should a later session know? | `app/memory-backend.ts`, `infra/context-graph.ts`, Hindsight and Mnemopi modules | One selected backend; explicit fact saves require confirmation, while enabled local indexing follows host-confirmed compaction |
+| [4. Cross-session memory](#4-optional-cross-session-memory) | What should a later session know? | `app/memory-backend.ts`, `infra/context-graph.ts`, Hindsight and Mnemopi modules | One selected backend; explicit saves follow `requireApproval`, while enabled local indexing follows host-confirmed compaction |
 
 Quality means retained constraints, trustworthy failure evidence and low
 retrieval churn, not merely fewer tokens. There are no recurring
@@ -99,6 +98,18 @@ Registered in [`src/index.ts`](https://github.com/alpertarhan/pi-smart-compact/b
 | `smart_context` tool | Session-local checkpoint/rewind, safe trimming, and bounded original-output retrieval via native boundary drafts. |
 | `smart_recall` tool | Searches the selected memory backend only. `scope: "session"` is local-graph-only; remote backends skip it and read nothing else. |
 | `smart_save_memory` tool | Saves a host-confirmed scrubbed fact through the selected backend, or resolves the exact store named by a target-bound ref. |
+
+`app/compaction-delivery.ts` coordinates participating notification extensions
+through the optional synchronous `smart-compact:defer-delivery` event. It holds
+session-bound FIFO callbacks across manual preparation and native compaction,
+then waits for actual host idle or a subsequent run boundary before delivery.
+Cancellation waits for the next natural run or successful retry; an automatic
+request watchdog can arm idle-checked recovery of its own delivery scope. Failed
+callbacks are retained without blocking healthy senders. A UI-only counter and
+notices expose waiting state and volatile lifetime. Shutdown discards callbacks
+rather than replaying them into another session. Background preparation and tool
+staging remain non-blocking. This is not a Pi-wide interception layer: senders must opt
+in, and queued callbacks are not durable. See [message delivery](./docs/message-delivery.md).
 
 The table lists the owning surfaces. Other host events support them:
 session switch/fork/tree and `model_select` cancel speculative
@@ -856,10 +867,10 @@ or written. With Hindsight or Mnemopi selected, the local context graph is
 neither indexed by compaction nor consulted, no local copy exists, and inactive
 stores are preserved untouched. Hindsight means the user's existing configured
 server; nothing installs or starts one. Continuity state, backups and artifact
-spill are session mechanisms outside this choice. Manual saves require host
-confirmation of the complete scrubbed content. Only the local backend also
-indexes derived facts, and only from apply-confirmed compactions; remote
-backends receive nothing automatically.
+spill are session mechanisms outside this choice. When `requireApproval` is on,
+manual saves require host confirmation of the complete scrubbed content. Only the
+local backend also indexes derived facts, and only from apply-confirmed
+compactions; remote backends receive no facts automatically.
 
 - **Local** (`infra/context-graph.ts`): project-partitioned SQLite FTS5 facts
   and file edges, indexed from apply-confirmed compactions plus confirmed
@@ -868,8 +879,12 @@ backends receive nothing automatically.
 - **Hindsight** (`app/hindsight-memory.ts`, `infra/hindsight-client.ts`,
   `infra/hindsight-receipts.ts`): four fixed routes (retain, status, recall,
   delete one document), no generic request, origin/bank/project-scoped receipts
-  that never evict unconfirmed operations. Data flow, consent and receipt states
-  are in [Hindsight memory backend](./docs/hindsight-memory.md).
+  that never evict unconfirmed operations. `app/hindsight-tracking.ts` performs
+  bounded background status reads for accepted/unknown receipts and resumes them
+  for the same configured project at session start. Completion messages do not
+  wake the agent, respect the compaction delivery gate, and are excluded from
+  fact extraction. Tracking never resubmits a retain. Data flow, consent and
+  receipt states are in [Hindsight memory backend](./docs/hindsight-memory.md).
 - **Mnemopi** is an optional Bun-only dependency, never imported by the Node
   host. `app/mnemopi-memory.ts` starts a bounded worker and waits for a
   readiness line after its imports before sending any content over stdin.
@@ -891,8 +906,8 @@ backends receive nothing automatically.
 target digests. Local and Mnemopi refs bind their store path; Hindsight also
 binds server, bank, project and document. Resolution compares current target
 configuration rather than reading a destination from untrusted input. These are
-routing checks, not authorization tokens or remote-content attestations; host
-confirmation stays mandatory. Local and Mnemopi resolve inspects the stored
+routing checks, not authorization tokens or remote-content attestations; the
+configured host approval policy remains enforced. Local and Mnemopi resolve inspects the stored
 fact; Hindsight does not claim its confirmation is a document read. Unknown
 retain outcomes, including lost operation status, block remote deletion until
 terminal evidence; bounded recall refresh never evicts uncertainty.
@@ -1129,6 +1144,7 @@ stores by default.
 | `app/native-continuity-bridge.ts` | one-shot continuity handoff keyed by project, session and branch head |
 | `app/memory-backend.ts` | exclusive memory-backend policy, read-only readiness, Mnemopi runtime evidence and Bun resolution |
 | `app/hindsight-memory.ts` | confirmed Hindsight save/resolve/recall flow and honest outcome reporting |
+| `app/hindsight-tracking.ts` | bounded, scoped background receipt refresh and non-waking completion updates |
 | `app/mnemopi-memory.ts` / `mnemopi-worker.ts` / `mnemopi-protocol.ts` | Node-safe optional Bun engine, project-isolated confirmed memory and validated bounded IPC |
 | `app/effective-state.ts` | shared local-only readiness, effective policy and runtime-state view |
 | `app/model-feasibility.ts` | lazy local estimate of planned stage requests for model rows |

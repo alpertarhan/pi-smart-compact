@@ -1,4 +1,4 @@
-// Summary pseudo-anchor (C): after a Continuity compaction commits, the
+// Summary pseudo-anchor (C): after a Smart Compact compaction commits, the
 // summary becomes a synthetic anchor — a recall surface and pivot target for
 // the post-compaction branch. In-session lists keep only the newest two
 // synthetic anchors visible (older ones stay as data); cross-session lineage

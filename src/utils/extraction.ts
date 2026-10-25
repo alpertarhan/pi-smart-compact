@@ -521,12 +521,12 @@ export function collapseDecisionsByQuestion<
 
 /**
  * Text injected by the harness as a `user` message after `convertToLlm`:
- * pi-processes events, this extension's own continuity bridge/ledger, and
+ * process/memory status events, this extension's own continuity bridge/ledger, and
  * agent-mesh envelopes. None of it is human-authored, so it must never be
  * mined as goal, constraint, decision, or recent user request.
  */
 const HARNESS_INJECTED_RE =
-  /^(?:<process_event\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply)\b)/;
+  /^(?:<(?:process_event|memory_status)\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply)\b)/;
 
 export function isHarnessInjectedText(text: string): boolean {
   return HARNESS_INJECTED_RE.test(text.trim());

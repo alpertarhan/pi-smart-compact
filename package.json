@@ -1,7 +1,7 @@
 {
 	"name": "pi-smart-compact",
-	"version": "10.6.2",
-	"description": "Pi Continuity \u2014 context hygiene and session continuity for Pi Coding Agent: recoverable cleanup, checkpoints, memory and verified compaction.",
+	"version": "10.7.0-rc.1",
+	"description": "Smart Compact — recoverable context cleanup, verified compaction, session navigation and project memory for Pi Coding Agent.",
 	"type": "module",
 	"packageManager": "bun@1.4.3",
 	"engines": {
@@ -35,7 +35,7 @@
 		"pi-extension",
 		"pi-coding-agent",
 		"pi-smart-compact",
-		"pi-continuity",
+		"smart-compact",
 		"context-hygiene",
 		"session-continuity",
 		"context-recovery",
@@ -60,6 +60,7 @@
 	],
 	"scripts": {
 		"sync-version": "bun run scripts/sync-version.ts",
+		"brand": "bun run scripts/render-brand.ts",
 		"prebuild": "bun run sync-version",
 		"build": "rm -rf dist && mkdir dist && bun build ./src/index.ts ./src/rtk.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' --external '@resvg/resvg-js' && bun build ./src/app/mnemopi-worker.ts --outfile ./dist/mnemopi-worker.js --target bun --external '@oh-my-pi/pi-mnemopi' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",
 		"test": "bun test",
@@ -80,7 +81,7 @@
 		"extensions": [
 			"./dist/index.js"
 		],
-		"image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/main/docs/assets/pi-smart-compact.png?v=2"
+		"image": "https://raw.githubusercontent.com/alpertarhan/pi-smart-compact/main/docs/assets/pi-smart-compact.png?v=3"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": ">=0.87.1",
@@ -101,6 +102,9 @@
 		"bun": {
 			"optional": true
 		}
+	},
+	"overrides": {
+		"undici": "8.12.2"
 	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "1.3.0",

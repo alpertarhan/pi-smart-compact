@@ -1,8 +1,11 @@
 # Release checklist
 
-Use this checklist before publishing Pi Continuity as the npm package
-`pi-smart-compact`. The package name, command, tool names and configuration
-key do not change with the documentation brand.
+Use this checklist before publishing **Smart Compact** as `pi-smart-compact`.
+
+[Documentation](./README.md) · [Evaluation](./evaluation.md) · [Changelog](../CHANGELOG.md)
+
+The product name, command, tool family and configuration namespace remain
+aligned. A documentation or visual refresh does not migrate stored data.
 
 > **Approval boundary:** validation, packing and isolated installation do not
 > publish anything. Creating a published GitHub release is the explicit

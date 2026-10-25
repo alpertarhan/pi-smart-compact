@@ -104,7 +104,7 @@ export function createContextToolExposure(pi: Pick<ExtensionAPI, "getActiveTools
   apply,
   atBoundary() { loaded.clear(); },
   load(group) {
-   if (!permitted(group, config())) throw new Error(`${group} tools are disabled in Pi Continuity settings or branch policy.`);
+   if (!permitted(group, config())) throw new Error(`${group} tools are disabled in Smart Compact settings or branch policy.`);
    const had = loaded.has(group);
    loaded.add(group);
    try {

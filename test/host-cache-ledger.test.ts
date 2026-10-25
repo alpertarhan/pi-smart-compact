@@ -79,7 +79,7 @@ describe("host prompt-cache ledger", () => {
   it("attributes continuity before idle-expiry before foreign", () => {
     const ledger = warm();
     ledger.noteContextEdit("trim");
-    // Idle gap and a Continuity edit: the edit wins, then is consumed.
+    // Idle gap and a Smart Compact edit: the edit wins, then is consumed.
     expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 10 * MINUTE)).toMatchObject({ cause: "continuity", editKind: "trim" });
     expect(ledger.observe({ usage: usage(0, 0, 90_000) }, 10 * MINUTE + FIVE_MINUTES_MS + 1)?.cause).toBe("idle-expiry");
     const at = 10 * MINUTE + FIVE_MINUTES_MS + 1;
@@ -142,7 +142,7 @@ describe("host prompt-cache ledger", () => {
     expect(summary.cost.rebuildUncached).toBeCloseTo(0.3, 10);
     expect(formatCacheLedgerSummary(summary)).toEqual([
       "Host prompt cache: 4 requests · 16% of prompt tokens read from cache · 2 estimated rebuilds",
-      "Rebuild estimates: 1 after Continuity edits (compaction 1): 32k uncached · 1 possible idle-expiry: 40k uncached",
+      "Rebuild estimates: 1 after Smart Compact edits (compaction 1): 32k uncached · 1 possible idle-expiry: 40k uncached",
       "Cost (Pi model pricing): $0.3320 total · $0.3000 uncached input+cache writes on rebuilds",
     ]);
   });

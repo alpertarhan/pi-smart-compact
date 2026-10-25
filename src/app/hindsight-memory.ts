@@ -207,7 +207,7 @@ function tryUpdateReceipt(
  }
 }
 
-async function refreshReceipt(
+export async function refreshReceipt(
  target: HindsightTarget,
  receipt: HindsightReceipt,
  signal?: AbortSignal,
@@ -234,7 +234,8 @@ async function refreshReceipt(
   // Unchanged: keep updatedAt as the start of the not-found period.
   if (next === receipt.state && receipt.detail === detail) return receipt;
  }
- return updateReceiptState(receipt.key, next, detail) ?? { ...receipt, state: next, detail };
+ // A resolve or another completed refresh can win while the status request is in flight.
+ return updateReceiptState(receipt.key, next, detail, { onlyIfOpen: true }) ?? { ...receipt, state: next, detail };
 }
 
 /** Submit one confirmed memory. Never retried automatically beyond one request. */
@@ -278,6 +279,7 @@ export async function saveHindsightMemory(
   try {
    const refreshed = await refreshReceipt(target, existing, signal);
    if (refreshed.state === "completed") return { state: "completed", receipt: refreshed };
+   if (refreshed.state === "deleted") return { state: "failed", receipt: refreshed, reason: "memory was resolved while checking status; save again only if you intend to restore it" };
    if (refreshed.state === "accepted") {
     return { state: "accepted", receipt: refreshed, operationStatus: "pending" };
    }
@@ -372,8 +374,10 @@ export async function saveHindsightMemory(
   return { state: "accepted", receipt, operationStatus: "status check failed" };
  }
  if (receipt.state === "completed") return { state: "completed", receipt };
- if (receipt.state === "failed") {
-  return { state: "failed", receipt, reason: receipt.detail ?? "operation failed" };
+ if (receipt.state === "failed" || receipt.state === "deleted") {
+  return { state: "failed", receipt, reason: receipt.state === "deleted"
+   ? "memory was resolved while checking status; save again only if you intend to restore it"
+   : receipt.detail ?? "operation failed" };
  }
  return { state: "accepted", receipt, operationStatus: receipt.detail ?? "pending" };
 }

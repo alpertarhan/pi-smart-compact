@@ -1,15 +1,14 @@
-# Pi Continuity configuration reference
+# Smart Compact configuration
+
+[Overview](../README.md) · [Documentation](./README.md) · [User guide](./guide.md)
 
 This page lists every setting, its default and how settings combine. For
 task-oriented instructions, start with the [user guide](./guide.md).
 
-Pi Continuity is the product name only. Settings keep their technical names:
-everything lives under the `smartCompact` key, and the settings screen is opened
-with `/smart-compact settings`.
-
-Defaults describe the shipped `10.1.0` working tree, including the pressure-first
-changes. See [the changelog](../CHANGELOG.md) for the release scope and
-evidence limits before adopting these settings.
+All extension settings live under `smartCompact`. Open
+`/smart-compact settings` to inspect effective values before editing a file.
+Defaults describe the current checkout; use the [changelog](../CHANGELOG.md)
+to compare it with your installed version.
 
 ## Contents
 
@@ -162,7 +161,8 @@ Rules that hold for all strategies:
   the strategy never turns a disabled trigger back on.
 - All strategies use Pi's normal compaction lifecycle. A summary is committed
   only when Pi confirms the matching compaction.
-- `requireApproval` applies to manual runs only.
+- For compaction, `requireApproval` applies to manual runs only. It also controls
+  confirmation for early-anchor cleanup and explicit memory save/resolve.
 
 ### native-hook: passive
 
@@ -381,8 +381,9 @@ stay on disk and manual `/smart-compact trim` still works.
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
 
-User-guided early anchors use Pi's native confirmation, not a new setting or
-model-settable override. The confirmation is scoped to one anchor/cleanup;
+User-guided early anchors use Pi's native confirmation when `requireApproval`
+is on; turning it off provides standing host approval and skips that dialog.
+There is no model-settable override. A dialog approval is scoped to one anchor/cleanup;
 `contextHygieneEnabled: false` disables periodic cleanup, not explicit confirmed
 work. Tool/navigation permissions, prepared work and signed-thinking guards
 still apply. See [user-guided anchors](./guide.md#user-guided-early-anchors).
@@ -516,7 +517,10 @@ Selection rules:
 - Memory readiness never blocks compaction.
 
 Hindsight setup, data flow and troubleshooting:
-[Hindsight memory backend](./hindsight-memory.md).
+[Hindsight memory backend](./hindsight-memory.md). Accepted/unknown saves have
+bounded background status tracking (five-second checks, two-minute lifetime,
+up to 32 receipts and three concurrent reads). These are fixed limits, not
+settings. Tracking does not retry writes or start an agent turn.
 
 ## Privacy and backups
 
@@ -526,7 +530,7 @@ Hindsight setup, data flow and troubleshooting:
 | `scrubPii` | `Scrub personal data` | `false` | Email, phone and card-shaped values |
 | `backupEnabled` | `Backups` | `true` | Prepare a scrubbed backup; written only after Pi confirms the compaction |
 | `backupDir` | `Backup folder` | `""` | Empty uses `~/.pi/agent/compact-backups` |
-| `requireApproval` | `Ask before applying` | `true` | Manual review; only `A` applies. Cancel or error leaves the conversation unchanged. |
+| `requireApproval` | `Ask before applying` | `true` | Manual review; only `A` applies. Also confirms early-anchor cleanup and memory save/resolve. `false` is standing host approval for those operations, including headless memory writes. |
 
 ## All settings
 

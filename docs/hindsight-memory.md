@@ -1,7 +1,8 @@
 # Hindsight memory backend
 
-Cross-session memory is the optional fourth layer of Pi Continuity (the
-`pi-smart-compact` package), after context hygiene, recoverable continuity and
+[Documentation](./README.md) · [Memory workflows](./guide.md#memory-what-is-stored-where) · [Configuration](./configuration.md#memory)
+
+Cross-session memory is the optional fourth layer of Smart Compact, after context hygiene, recoverable continuity and
 compaction. The guide's [memory section](./guide.md#memory-what-is-stored-where)
 compares the three stores; see
 [architecture](../ARCHITECTURE.md#4-optional-cross-session-memory) for how the
@@ -13,7 +14,8 @@ Contents: [Set up](#set-up) · [Configuration](#configuration) ·
 [Consent](#consent) · [Identity, refs, and lifecycle](#identity-refs-and-lifecycle) ·
 [Readiness](#readiness) · [Troubleshooting](#troubleshooting) · [Tests](#tests)
 
-The extension can optionally send **explicitly confirmed** project memories to
+The extension can send explicitly requested project memories, subject to your
+`requireApproval` policy, to
 an existing [Hindsight](https://hindsight.vectorize.io) server, and include a
 bounded, project-scoped Hindsight recall in `smart_recall`. The default backend
 is `local`, which never contacts any server.
@@ -30,8 +32,8 @@ untouched, until that backend is selected again.
 What this feature does **not** do:
 
 - No automatic retain. Transcripts, compaction summaries, tool output and
-  recalled text are never uploaded. Only the single fact shown in a
-  confirmation dialog is sent.
+  recalled text are never uploaded. Only the single scrubbed fact in the
+  explicit save request is sent; the confirmation dialog shows it when enabled.
 - No `reflect`, mental models, or prompt injection of remote memory. It never
   changes bank missions or server settings.
 - No provider-opaque memory upload.
@@ -45,8 +47,8 @@ What this feature does **not** do:
 
 ## Set up
 
-1. Have a Hindsight server running and a bank for these memories. Pi
-   Continuity never creates either.
+1. Have a Hindsight server running and a bank for these memories. Smart
+   Compact never creates either.
 2. If the server needs a key, export it in the environment Pi starts from,
    for example `export HINDSIGHT_API_TOKEN=…`. Only the variable's **name**
    goes into settings.
@@ -57,8 +59,8 @@ What this feature does **not** do:
 4. Open Home → **Status & help** → **Readiness & details**. `configuration
    complete` means the values are present; it does not prove the server is
    reachable or the key is valid.
-5. Ask the agent to save one fact. Approve the confirmation dialog, then
-   check the reported receipt state (see [receipt states](#identity-refs-and-lifecycle)).
+5. Ask the agent to save one fact. Approve the dialog if `requireApproval`
+   is enabled, then check the reported receipt state (see [receipt states](#identity-refs-and-lifecycle)).
 
 ## Configuration
 
@@ -104,8 +106,8 @@ compaction-state indexing). Saves and recalls contact only the server.
   the related paths. It is sent with tags `psc-project:<hashed project id>`,
   `psc-kind:<kind>` and `psc-source:smart-compact`, plus metadata (kind, hashed
   project id, local memory id, revision). The raw working directory is not
-  sent. `scrubSecrets` and `scrubPii` apply before the confirmation, so the
-  user approves exactly what is sent.
+  sent. `scrubSecrets` and `scrubPii` apply before any confirmation and before
+  the request; when enabled, the dialog shows exactly what will be sent.
 - **Recall:** the scrubbed query (at most 500 characters), restricted to the
   current project tag with
   `tags_match: "all_strict"`, `budget: "low"`, and no chunks, source facts or
@@ -136,8 +138,9 @@ server's configuration:
   - project tag;
   - document id and the ref;
   - for resolve, "DELETE this one document".
-- Sessions without an interactive UI (print, RPC, SDK) are refused, and
-  nothing is sent.
+- With `requireApproval: true`, sessions without an interactive UI (print,
+  RPC, SDK) cannot save or resolve; nothing is sent. Read-only recall is
+  still available. With `requireApproval: false`, headless writes are allowed.
 
 What to save:
 
@@ -149,8 +152,8 @@ What to save:
 
 ## Identity, refs, and lifecycle
 
-- **Memory refs:** saves and recall results for facts confirmed through Pi
-  Continuity carry a ref naming the backend, stable id, and a mandatory
+- **Memory refs:** saves and recall results for facts confirmed through Smart
+  Compact carry a ref naming the backend, stable id, and a mandatory
   96-bit target digest: `local:cg-…@…`, `mnemopi:cg-…@…`,
   `hindsight:cg-…@…`. The target is the local graph file, Mnemopi database
   path, or Hindsight server+bank respectively. Hindsight additionally binds
@@ -211,7 +214,20 @@ Receipt states and how the tools report them:
 
 Status checks are bounded:
 
-- A save makes one status check right after acceptance.
+- A save makes one status check right after acceptance and still returns promptly.
+  Accepted/unknown receipts are then tracked in the background for up to two
+  minutes, checking every five seconds with at most three status requests in
+  flight. Up to 32 receipts are tracked at once. A timeout reports the last known
+  state, never a fabricated failure or completion; `smart_recall` can check again.
+- Session start resumes the newest open receipts for the selected target and
+  current project, within that same limit. Shutdown aborts checks; changing the
+  target stops the old work without contacting another backend. No background
+  retain, resubmission, resolve, or deletion is performed.
+- Completion/failure is appended as a non-waking memory-status message, queued
+  behind compaction when necessary. The original save row is a submission-time
+  snapshot; the later status message is the update. Status envelopes are excluded
+  from goal/constraint extraction. Late responses cannot overwrite a receipt that
+  another operation already completed or deleted.
 - `smart_recall` refreshes at most 3 open receipts per call — including
   `unknown` ones, which also count against the ledger cap — and lists
   documents that are not yet searchable. An `unknown` receipt stays `unknown`
@@ -222,7 +238,7 @@ Status checks are bounded:
   never auto-retried as writes.
 - If a retain completed but the local receipt could not be updated (for
   example, another process held the ledger lock), the save reports `unknown`
-  and the next `smart_recall` refresh reconciles the receipt.
+  and background tracking or the next `smart_recall` refresh reconciles the receipt.
 
 **Resolve safety:**
 
@@ -264,7 +280,7 @@ for the selected store only. It is read-only and sends nothing:
 | --- | --- |
 | "Project memory not changed: Hindsight is not usable (…)" or "Hindsight recall not contacted: …" | The reason names the problem: missing or invalid URL, missing bank, or a named key variable that is not set in Pi's environment. Fix the setting, or export the variable and restart Pi. |
 | URL rejected | Use HTTPS. Plain `http` works only for `localhost`, `127.x` and `::1`; credentials, query and fragment are not allowed, and redirects are refused. |
-| Save reports "accepted, NOT yet searchable" | Hindsight extracts asynchronously. The next `smart_recall` refreshes up to 3 open receipts and reports when the document is searchable. |
+| Save reports "accepted, NOT yet searchable" | Hindsight extracts asynchronously. Background tracking posts completion/failure without starting a turn. If tracking expires or is unavailable, `smart_recall` refreshes up to 3 open receipts. |
 | Save reports "outcome unknown … safe to retry" | A timeout or network error after sending. Retrying the same confirmed save is idempotent (the server answers 409 for an operation it already accepted). |
 | New saves refused, naming the receipts file | 500 receipts are open. Run `smart_recall` so open receipts are refreshed; receipts the server has reported missing for 24 hours are marked `failed` and free their slot. |
 | Resolve refused because a retain is still open | A submitted, accepted or unknown save of that document could recreate it. Retry later; verify the operation on the server if its status was lost. |

@@ -1,6 +1,6 @@
 /** Proactive auto-compaction request that delegates all EESV work to Pi's host lifecycle. */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { CompactOptions, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactConfig } from "../types.ts";
 import { AUTO_TRIGGER_TIMEOUT_CAP_MS, SETTLED_TRIGGER_COOLDOWN_MS } from "../constants.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
@@ -14,6 +14,8 @@ export interface SettledAutoTrigger {
 }
 
 export interface SettledAutoTriggerOptions {
+  /** A guarded request may return an idle-checked delivery recovery action for its watchdog. */
+  compact?: (ctx: ExtensionContext, options: CompactOptions) => (() => void) | void;
   now?: () => number;
   cooldownMs?: number;
   /** Test seam; defaults to the hook budget cap plus the configured run limit. */
@@ -59,11 +61,13 @@ export function createSettledAutoTrigger(
     active.set(sessionId, requestToken);
     await new Promise<void>(resolve => {
       let finished = false;
+      let recoverDelivery: (() => void) | void;
       // Pi normally always answers; a host that never calls back must not pin
       // this session's request slot forever. The budget covers our hook (capped)
       // plus Pi's own summary after a fallback.
       const watchdogMs = options.watchdogMs ?? AUTO_TRIGGER_TIMEOUT_CAP_MS + config.autoTriggerTimeoutMs;
       const watchdog = setTimeout(() => {
+        if (active.get(sessionId) !== requestToken) { finish(); return; }
         // The callback can legitimately arrive after the watchdog (Pi may
         // still be busy) and the summary can still be applied late. Report
         // the pending state accurately; manual retry is suggested only when
@@ -80,6 +84,7 @@ export function createSettledAutoTrigger(
               Math.round(watchdogMs / 1000) +
               "s. Automatic retries wait for the cooldown. Run /smart-compact manually if needed.",
         }, ctx);
+        recoverDelivery?.();
         finish();
       }, watchdogMs);
       watchdog.unref?.();
@@ -95,7 +100,7 @@ export function createSettledAutoTrigger(
         resolve();
       };
       try {
-        ctx.compact({
+        const callbacks: CompactOptions = {
           onComplete: finish,
           onError: error => {
             reportIssue({
@@ -105,7 +110,8 @@ export function createSettledAutoTrigger(
             }, ctx);
             finish();
           },
-        });
+        };
+        recoverDelivery = options.compact ? options.compact(ctx, callbacks) : ctx.compact(callbacks);
       } catch (error) {
         reportIssue({
           key: "auto.settled-apply",
