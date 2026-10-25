@@ -23,6 +23,7 @@ For evidence and measurement limits, see [evaluation](./evaluation.md).
 
 - [How it works in one minute](#how-it-works-in-one-minute)
 - [Install and first run](#install-and-first-run)
+- [Update an existing installation](#update-an-existing-installation)
 - [Upgrade from 9.x](#upgrade-from-9x)
 - [The Home screen](#the-home-screen)
 - [Clean up tool output](#clean-up-tool-output)
@@ -88,6 +89,30 @@ Opening Home changes nothing. With the new defaults, batched cleanup starts
 under early pressure and compaction starts at an idle 80% boundary. A 400k
 policy window means 288k cleanup / 320k compaction. Offload and speculative
 background preparation remain optional; no extra model calls run while roomy.
+
+## Update an existing installation
+
+For an existing 10.x installation on the stable npm channel:
+
+1. Let the active turn and any compaction finish, and let queued notifications
+   arrive before restarting. The notification queue is in memory, not persistent.
+2. Update Smart Compact:
+   ```bash
+   pi install npm:pi-smart-compact
+   ```
+3. Restart Pi and open `/smart-compact` → **Status & help** to check readiness.
+
+The command selects npm `latest`; it does not upgrade Pi itself or your global
+Node.js, Bun or npm. Development SDK and TypeBox pins are not new host
+requirements: Pi `0.87.1+` and Node.js `22.19+` still apply. The 10.7.1
+maintenance patch changes no commands, settings or storage paths and requires
+no application data migration. Existing memory stores are not moved or cleared.
+
+Optional components need a separate, deliberate update. If you use Mnemopi or
+image snapshots, follow [Optional components](../README.md#optional-components)
+and use **Readiness & details** for the command targeting your Pi package
+directory. Do not install or switch to a memory backend just to update the
+extension; the default local store needs none of these components.
 
 ## Upgrade from 9.x
 
@@ -635,9 +660,9 @@ migrated or cleared.
 - Hindsight: Smart Compact never installs, starts or configures a server. See
   [Hindsight memory backend](./hindsight-memory.md).
 - Mnemopi runs in a bounded `bun --no-install` worker. The engine
-  (`@oh-my-pi/pi-mnemopi` 18.12.1) is an optional component you install into
+  (`@oh-my-pi/pi-mnemopi` 18.12.6) is an optional component you install into
   Pi's package directory; the worker runs on a Bun 1.3.14 or newer from `PATH`,
-  or on the optional `bun` (1.4.3) component installed the same way. Nothing is
+  or on the optional `bun` (1.4.4) component installed the same way. Nothing is
   downloaded with the extension; **Readiness & details** shows the install
   command (see [Optional components](../README.md#optional-components)).
   Missing pieces fail before any request is sent. Embeddings, model calls,

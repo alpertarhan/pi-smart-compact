@@ -88,8 +88,8 @@ bun run compat:pi latest
 bun audit
 ```
 
-The compatibility runner temporarily pins only its copied workspace; source
-peer ranges and minimum-version development pins must remain unchanged.
+The compatibility runner temporarily pins only its copied workspace; it must
+leave source peer ranges and checked-in development pins unchanged.
 
 ## 3. Inspect artifacts
 
@@ -199,7 +199,7 @@ See [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/).
 
 No `NPM_TOKEN` or `NODE_AUTH_TOKEN` secret is needed.
 [`publish.yml`](https://github.com/alpertarhan/pi-smart-compact/blob/main/.github/workflows/publish.yml)
-uses a GitHub-hosted runner, `id-token: write`, Node 26.12.0, npm 11.21.1 and
+uses a GitHub-hosted runner, `id-token: write`, Node 26.12.0, npm 12.2.1 and
 the Bun version pinned in `package.json`. npm obtains short-lived OIDC
 credentials and automatically attaches provenance for this public repository.
 Keep these versions and the workflow filename aligned when changing tooling.
@@ -238,13 +238,17 @@ package change needs a new version, not a republish or a moved release tag.
    VERSION=$(node -p 'require("./package.json").version')
    npm view "pi-smart-compact@$VERSION" version dist.integrity dist.attestations _npmUser --json
    npm view pi-smart-compact dist-tags --json
+   curl --fail --silent --show-error "https://registry.npmjs.org/pi-smart-compact/$VERSION"
    ```
 
    The registry records a version some minutes after the workflow prints
    `+ pi-smart-compact@<version>` (about 2 minutes for 10.6.1, 7 for 10.6.2).
    A 404 in that window is not a failed publish: wait, then confirm that
-   `_npmUser.trustedPublisher` is set and `dist.integrity` matches the
-   workflow log's `npm notice integrity` line. Do not rerun the workflow or
+   the **raw registry JSON** has `_npmUser.trustedPublisher.id: "github"`
+   and its `dist.integrity` matches the workflow log's `npm notice integrity`
+   line. `npm view` may format `_npmUser` as a person string and omit its
+   nested publisher metadata; use the raw response above for that check.
+   Do not rerun the workflow or
    publish locally meanwhile; a published version is immutable.
 
 3. Install the exact version through Pi in a clean profile, then re-run tool

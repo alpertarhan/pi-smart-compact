@@ -10,7 +10,7 @@ candidates and unpublished work.
 
 | Your next action | Read |
 | --- | --- |
-| Install and choose how it runs | [Get started](../README.md#get-started) |
+| Install, update or choose how it runs | [Get started](../README.md#get-started) · [Update an existing installation](./guide.md#update-an-existing-installation) |
 | Reduce noise or compact a long conversation | [User guide](./guide.md) |
 | Recover evidence, revisit an anchor or hand off a task | [Recovery](./guide.md#recovery) · [Navigation](./guide.md#session-navigation) |
 | Set a model, permission, threshold or budget | [Configuration reference](./configuration.md) |

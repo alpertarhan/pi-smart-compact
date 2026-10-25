@@ -30,7 +30,7 @@ checks. Good contributions keep all three in balance.
 
 ## Local setup
 
-Prerequisites: Bun 1.4.3 (the `packageManager` pin), Node >=22.19 with npm on
+Prerequisites: Bun 1.4.4 (the `packageManager` pin), Node >=22.19 with npm on
 `PATH` (the release audit smokes the packed extension under Node), `rg`
 (ripgrep) on `PATH` for the offline task evaluation inside the audit, and
 network access for package installation.
@@ -54,7 +54,7 @@ workspace. The full local `bun run release:check` includes that compatibility
 check as well; the locked minimum host is checked with
 `bun run compat:pi 0.87.1`.
 
-The development install overrides `undici` to `8.12.2` because the supported Pi
+The development install overrides `undici` to `8.12.3` because the supported Pi
 SDKs still pin vulnerable `8.10.2`. Remove the override once the pinned SDK's
 own dependency is patched. This fixes the checkout/CI dependency tree, not
 an installed user's Pi host; npm does not inherit a dependency's overrides.
