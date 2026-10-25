@@ -21,7 +21,7 @@ Related pages: [user guide](./guide.md) · [configuration](./configuration.md) �
 [replay estimates](#replay-estimates) ·
 [pilots and dated reports](#pilots-and-dated-reports)
 
-Prerequisites for a source checkout: Bun 1.4.3 (the `packageManager` pin),
+Prerequisites for a source checkout: Bun 1.4.4 (the `packageManager` pin),
 Node >=22.19 with npm on `PATH` for the Node-host smokes in `release:audit`,
 and `rg` (ripgrep) on `PATH` for offline `task-eval` arms, which set
 `PI_OFFLINE=1` and refuse to let Pi download tools.

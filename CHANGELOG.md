@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [10.7.1] - 2026-10-25
+
+Dependency and toolchain maintenance patch. The release owner explicitly
+approved `10.7.1` as a stable release on npm `latest`, under the version-specific
+exception in `docs/RELEASE.md`. No external canary cohort or live
+provider-quality evaluation is available. This is not a telemetry `PROMOTE`
+result and does not waive the deterministic release gate or required PR CI.
+
+### Changed
+
+- Refresh the pinned development Pi SDK trio (`pi-ai`, `pi-coding-agent`,
+  `pi-tui`) to `1.4.0`; the supported host floor remains `0.87.1`.
+- Update the optional Mnemopi engine to `18.12.6`, Bun/runtime types and the
+  CI toolchain to `1.4.4`, and the development `undici` override to `8.12.3`.
+  Keep optional-component peers, readiness commands and setup docs aligned.
+- Update publisher npm to `12.2.1` and align the release checklist.
+- Update development TypeBox to `1.4.3`; retain its wildcard host peer and
+  external bundling. No Pi host or user memory store is automatically
+  upgraded by these project changes.
+- Document how to update an existing installation, refresh optional components
+  deliberately, and inspect raw npm registry metadata after publication.
+
+### Upgrade
+
+- Use `pi install npm:pi-smart-compact` for the stable channel, then restart Pi
+  after the current turn and compaction have finished. See the
+  [update guide](docs/guide.md#update-an-existing-installation).
+- Optional Mnemopi/Bun components are not automatically synchronized by an
+  extension update. Refresh only components you use with the commands in
+  [Optional components](README.md#optional-components).
+- Pi `0.87.1+` and Node.js `22.19+` remain supported. Commands, settings and
+  storage paths are unchanged; this patch requires no application data migration.
+
 ## [10.7.0] - 2026-10-25
 
 The release owner requested `10.7.0` as a **stable release on npm `latest`**,

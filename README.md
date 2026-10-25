@@ -45,6 +45,8 @@ Without a UI, the bare command runs compaction rather than opening Home.
 > candidate is installed explicitly with `pi install npm:pi-smart-compact@next`.
 > Check the [changelog](./CHANGELOG.md) for the scope of each version.
 
+Already installed? Follow [Update an existing installation](./docs/guide.md#update-an-existing-installation).
+
 ## What it does
 
 ### Keep the useful parts in view
@@ -133,19 +135,23 @@ memory server, downloads a model or enables an optional engine on your behalf.
 
 | Feature | Install only when needed |
 | --- | --- |
-| Separate local Mnemopi store | `@oh-my-pi/pi-mnemopi@18.12.1` |
-| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.3` |
+| Separate local Mnemopi store | `@oh-my-pi/pi-mnemopi@18.12.6` |
+| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.4` |
 | Experimental image snapshots of old output | `@resvg/resvg-js@2.6.2` |
 
 **Status & help → Readiness & details** provides the exact command for your
 Pi package directory. For a standard npm-managed installation, Mnemopi uses:
 
 ```bash
-npm install @oh-my-pi/pi-mnemopi@18.12.1 bun@1.4.3 --prefix ~/.pi/agent/npm --legacy-peer-deps
+npm install @oh-my-pi/pi-mnemopi@18.12.6 bun@1.4.4 --prefix ~/.pi/agent/npm --legacy-peer-deps
 ```
 
 Pi's `--legacy-peer-deps` installation does not pull optional peers in by itself.
-Explicitly added components survive `pi update`.
+Explicitly added components survive `pi update`, but are not automatically
+synchronized with the versions listed above. To refresh Mnemopi components you
+already use, rerun the command above; **Readiness & details** supplies the prefix
+for your actual installation. These components live in Pi's package directory,
+not in a global npm install.
 [Memory setup](./docs/guide.md#memory-store-memorybackend)
 
 ## Boundaries worth knowing

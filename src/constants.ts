@@ -10,15 +10,15 @@ import type { CompressionProfile, ProfileConfig } from "./types.ts";
  * `package.json#version`. Do not hand-edit this line for releases; bump
  * package.json and run `bun run sync-version`.
  */
-export const VERSION = "10.7.0";
+export const VERSION = "10.7.1";
 /**
  * Opt-in components that are not installed with the extension: optional peer
  * dependencies in package.json, pinned to the versions the release audit
  * exercises. The audit fails if these drift from the manifest.
  */
 export const OPTIONAL_COMPONENTS = {
- mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "18.12.1", enables: "Mnemopi memory store" },
- bun: { name: "bun", version: "1.4.3", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
+ mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "18.12.6", enables: "Mnemopi memory store" },
+ bun: { name: "bun", version: "1.4.4", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
  resvg: { name: "@resvg/resvg-js", version: "2.6.2", enables: "image snapshots" },
 } as const;
 export const CHARS_PER_TOKEN = 3.8;
