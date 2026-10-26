@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [10.7.2] - 2026-10-26
+
+The release owner requested an immediate stable hotfix on npm `latest` for the
+Hindsight notification flood on resume/reload. This version-specific exception
+under `docs/RELEASE.md` has no external canary or live provider-quality evidence;
+it is not a telemetry `PROMOTE` result. The deterministic gate and required
+PR CI remain mandatory. No server change or application data migration is needed.
+
+### Fixed
+
+- Summarize the older Hindsight receipt group once on session resume/reload,
+  instead of appending one completion message per historical record. Preserve
+  individual notifications for current-session saves, honest mixed outcomes,
+  compaction-safe delivery and suppression after shutdown or target changes.
+  Existing session history and remote memory are not rewritten.
+
 ## [10.7.1] - 2026-10-25
 
 Dependency and toolchain maintenance patch. The release owner explicitly

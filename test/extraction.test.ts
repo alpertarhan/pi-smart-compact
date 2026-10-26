@@ -1124,8 +1124,8 @@ describe("harness-injected user messages", () => {
     expect(ex.lastUserMessages).not.toContain(event);
   });
 
-  it("ignores background memory status for goals, constraints and recent user requests", () => {
-    const notice = '<memory_status backend="hindsight" state="completed">\nSmart Compact: Hindsight completed. Always keep this status.\n</memory_status>';
+  it.each(["completed", "summary"])("ignores background memory %s status for goals, constraints and recent user requests", state => {
+    const notice = `<memory_status backend="hindsight" state="${state}">\nSmart Compact: Hindsight completed. Always keep this status.\n</memory_status>`;
     const ex = extractStructured([msg("user", goal), msg("assistant", "ok"), msg("user", notice)], PROFILES.balanced);
     expect(ex.mainGoal).toBe(goal);
     expect(ex.lastUserMessages).not.toContain(notice);

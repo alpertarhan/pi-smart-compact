@@ -105,8 +105,9 @@ For an existing 10.x installation on the stable npm channel:
 The command selects npm `latest`; it does not upgrade Pi itself or your global
 Node.js, Bun or npm. Development SDK and TypeBox pins are not new host
 requirements: Pi `0.87.1+` and Node.js `22.19+` still apply. The 10.7.1
-maintenance patch changes no commands, settings or storage paths and requires
-no application data migration. Existing memory stores are not moved or cleared.
+dependency refresh and 10.7.2 notification hotfix change no command names,
+settings or storage paths and require no application data migration. Existing
+memory stores are not moved or cleared.
 
 Optional components need a separate, deliberate update. If you use Mnemopi or
 image snapshots, follow [Optional components](../README.md#optional-components)
@@ -610,8 +611,11 @@ labeled as such and never displayed as done, applied or saved. Collapsed rows
 show bounded previews and hide long identifiers behind the native expansion
 key (the configured keybinding, shown as a hint); expanding shows the full
 original result text. Rows are call-time snapshots, not live status displays.
-Hindsight background tracking appends a separate completion/failure message;
-see [receipt tracking](./hindsight-memory.md#identity-refs-and-lifecycle).
+Hindsight background tracking appends a separate completion/failure message
+for a newly observed save. Older records resumed on startup/reload produce one
+short summary after that tracked group finishes or its two-minute tracking
+window expires; messages already stored in session history are not removed.
+See [receipt tracking](./hindsight-memory.md#identity-refs-and-lifecycle).
 
 Approval and gates:
 

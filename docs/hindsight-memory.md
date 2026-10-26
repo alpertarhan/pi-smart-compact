@@ -219,10 +219,16 @@ Status checks are bounded:
   minutes, checking every five seconds with at most three status requests in
   flight. Up to 32 receipts are tracked at once. A timeout reports the last known
   state, never a fabricated failure or completion; `smart_recall` can check again.
-- Session start resumes the newest open receipts for the selected target and
-  current project, within that same limit. Shutdown aborts checks; changing the
-  target stops the old work without contacting another backend. No background
-  retain, resubmission, resolve, or deletion is performed.
+- Session start (including CLI resume and reload) resumes the newest open
+  receipts for the selected target and current project, within that same
+  32-receipt limit. This older group produces **one short summary**, after its
+  tracked operations finish or the two-minute window expires. The summary keeps
+  completed, failed, accepted-but-unconfirmed and unknown counts distinct.
+  A save explicitly observed in the current session still gets its own result.
+  Already-written session messages are not erased, and records beyond the limit
+  are not claimed as checked. Shutdown aborts checks; changing the target stops
+  old work without contacting another backend. No background retain,
+  resubmission, resolve, or deletion is performed.
 - Completion/failure is appended as a non-waking memory-status message, queued
   behind compaction when necessary. The original save row is a submission-time
   snapshot; the later status message is the update. Status envelopes are excluded
