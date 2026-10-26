@@ -71,9 +71,18 @@ function fixture(maxTrackingMs = 500) {
     for (const fn of handlers.get(name) ?? []) await fn(event, ctx);
   };
   cleanups.push(() => emit("session_shutdown"));
-  const save = () => saveHindsightMemory(target, memory);
+  const save = (content = memory.content) => saveHindsightMemory(target, { ...memory, content,
+    memoryId: manualMemoryId(projectId, "decision", content) });
   return { pi, tools, ctx, target, scope, memory, events, tracker, emit, save, messages, delivered,
     switchSession() { sessionId = "new-session"; } };
+}
+
+async function waitUntil(check: () => boolean) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (check()) return;
+    await Bun.sleep(5);
+  }
+  expect(check()).toBe(true);
 }
 
 describe("background Hindsight tracking", () => {
@@ -111,6 +120,25 @@ describe("background Hindsight tracking", () => {
     expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(1);
   });
 
+  it("does not flood a resumed session with separate notices for older project receipts", async () => {
+    const f = fixture();
+    for (const content of ["Older decision A", "Older decision B"]) {
+      const outcome = await f.save(content);
+      expect(outcome.state).toBe("accepted");
+      fake.operations.set(outcome.receipt!.operationId, "completed");
+    }
+    await f.emit("session_start");
+    await f.delivered.promise;
+    expect(listReceipts(f.scope).filter(receipt => receipt.state === "completed")).toHaveLength(2);
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(2);
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details).toMatchObject({ state: "summary", resumed: true, total: 2,
+      counts: { completed: 2, failed: 0, accepted: 0, unknown: 0 } });
+    expect(f.messages[0].message.content).toContain("2 earlier submissions");
+    expect(f.messages[0].message.content).not.toContain("Operation:");
+    expect(f.messages[0].options).toEqual({ triggerTurn: false });
+  });
+
   it("resumes open receipts for the same configured project on session start", async () => {
     const f = fixture();
     const outcome = await f.save();
@@ -119,6 +147,140 @@ describe("background Hindsight tracking", () => {
     await f.delivered.promise;
     expect(f.messages[0].message.content).toContain("completed");
     expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("waits for the whole resumed group instead of reporting each polling wave", async () => {
+    const f = fixture();
+    const first = await f.save("Earlier A");
+    const second = await f.save("Earlier B");
+    fake.operations.set(first.receipt!.operationId, "completed");
+    await f.emit("session_start");
+    await waitUntil(() => listReceipts(f.scope).some(receipt => receipt.state === "completed"));
+    expect(f.messages).toHaveLength(0);
+    fake.operations.set(second.receipt!.operationId, "completed");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details.counts.completed).toBe(2);
+  });
+
+  it("preserves mixed terminal and unconfirmed states in one bounded summary", async () => {
+    const f = fixture(60);
+    for (const state of ["completed", "failed", "pending", "missing"]) {
+      const outcome = await f.save("Earlier " + state);
+      if (state === "missing") fake.operations.delete(outcome.receipt!.operationId);
+      else fake.operations.set(outcome.receipt!.operationId, state);
+    }
+    await f.emit("session_start");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details).toMatchObject({ total: 4,
+      counts: { completed: 1, failed: 1, accepted: 1, unknown: 1 } });
+    expect(f.messages[0].message.content).toContain("completion unconfirmed");
+    expect(f.messages[0].message.content).toContain("smart_recall");
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(4);
+  });
+
+  it("summarizes the bounded 32-record backlog once and only new remaining records on reload", async () => {
+    const f = fixture(5000);
+    for (let i = 0; i < 33; i++) {
+      const outcome = await f.save("Earlier decision " + i);
+      fake.operations.set(outcome.receipt!.operationId, "completed");
+    }
+    await f.emit("session_start");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details.total).toBe(32);
+    expect(f.messages[0].message.details.counts.completed).toBe(32);
+    await f.emit("session_start");
+    await waitUntil(() => f.messages.length === 2);
+    expect(f.messages[1].message.details.total).toBe(1);
+    await f.emit("session_start");
+    await Bun.sleep(20);
+    expect(f.messages).toHaveLength(2);
+    expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(33);
+  });
+
+  it("keeps an explicitly observed save individual when it was already in the resumed group", async () => {
+    const f = fixture();
+    const outcome = await f.save();
+    await f.emit("session_start");
+    expect(f.tracker.observe(outcome, f.ctx)).toBe(true);
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details.state).toBe("completed");
+    expect(f.messages[0].message.content).toContain("Ref: hindsight:");
+  });
+
+  it("queues the resumed summary behind compaction without delaying receipt persistence", async () => {
+    const f = fixture();
+    const outcome = await f.save();
+    await f.emit("session_start");
+    await f.emit("session_before_compact");
+    const queued = Promise.withResolvers<void>();
+    f.events.on("smart-compact:defer-delivery", (value: any) => { if (value.deferred) queued.resolve(); });
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    await queued.promise;
+    expect(listReceipts(f.scope)[0].state).toBe("completed");
+    expect(f.messages).toHaveLength(0);
+    await f.emit("session_compact");
+    await f.delivered.promise;
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details.state).toBe("summary");
+    expect(f.messages[0].options.triggerTurn).toBe(false);
+  });
+
+  it.each([false, true])("rechecks resolved receipts before a deferred summary (all resolved: %s)", async all => {
+    const f = fixture();
+    const first = await f.save("Earlier A");
+    const second = await f.save("Earlier B");
+    fake.operations.set(first.receipt!.operationId, "completed");
+    fake.operations.set(second.receipt!.operationId, "completed");
+    const held = Promise.withResolvers<() => void>();
+    f.events.on("smart-compact:defer-delivery", (value: any) => { value.deferred = true; held.resolve(value.deliver); });
+    await f.emit("session_start");
+    const deliver = await held.promise;
+    expect(f.messages).toHaveLength(0);
+    updateReceiptState(first.receipt!.key, "deleted");
+    if (all) updateReceiptState(second.receipt!.key, "deleted");
+    deliver();
+    deliver();
+    expect(f.messages).toHaveLength(all ? 0 : 1);
+    if (!all) expect(f.messages[0].message.details).toMatchObject({ total: 1, counts: { completed: 1 } });
+  });
+
+  it("does not include a replacement operation in an older deferred summary", async () => {
+    const f = fixture();
+    const first = await f.save("Earlier A");
+    const second = await f.save("Earlier B");
+    fake.operations.set(first.receipt!.operationId, "completed");
+    fake.operations.set(second.receipt!.operationId, "completed");
+    const held = Promise.withResolvers<() => void>();
+    f.events.on("smart-compact:defer-delivery", (value: any) => { value.deferred = true; held.resolve(value.deliver); });
+    await f.emit("session_start");
+    const deliver = await held.promise;
+    updateReceiptState(first.receipt!.key, "deleted");
+    const replacement = await f.save("Earlier A");
+    expect(replacement.state).toBe("accepted");
+    expect(replacement.receipt!.operationId).not.toBe(first.receipt!.operationId);
+    deliver();
+    expect(f.messages).toHaveLength(1);
+    expect(f.messages[0].message.details).toMatchObject({ total: 1, counts: { completed: 1, accepted: 0 } });
+  });
+
+  it.each(["shutdown", "switch", "retarget"])("drops a deferred resumed summary after %s", async action => {
+    const f = fixture();
+    const outcome = await f.save();
+    fake.operations.set(outcome.receipt!.operationId, "completed");
+    const held = Promise.withResolvers<() => void>();
+    f.events.on("smart-compact:defer-delivery", (value: any) => { value.deferred = true; held.resolve(value.deliver); });
+    await f.emit("session_start");
+    const deliver = await held.promise;
+    if (action === "shutdown") await f.emit("session_shutdown");
+    else if (action === "switch") f.switchSession();
+    else configure("other-bank");
+    deliver();
+    expect(f.messages).toHaveLength(0);
   });
 
   it("reports a terminal server failure without automatically retaining again", async () => {

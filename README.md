@@ -88,7 +88,9 @@ only the local graph can also index state from confirmed compactions.
 
 Hindsight submissions are tracked in the background for up to two minutes.
 A later status message distinguishes completion from acceptance without waking
-the agent. No automatic resubmission or remote transcript upload is performed.
+the agent. Resume/reload collects the older tracked group into one short status
+summary, not one message per record. No automatic resubmission or remote
+transcript upload is performed.
 [Memory workflows](./docs/guide.md#memory-what-is-stored-where)
 
 ### Let notifications wait for a safe boundary

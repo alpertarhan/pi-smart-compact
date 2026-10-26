@@ -11,6 +11,7 @@ interface TrackedReceipt {
   receipt: HindsightReceipt;
   startedAt: number;
   epoch: number;
+  resumed: boolean;
   lastError?: string;
 }
 
@@ -23,6 +24,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
   const interval = options.pollIntervalMs ?? 5_000;
   const maxTrackingMs = options.maxTrackingMs ?? 120_000;
   const jobs = new Map<string, TrackedReceipt>();
+  let resumedResults: TrackedReceipt[] = [];
   let active: { ctx: ExtensionContext; sessionId: string; projectId: string } | undefined;
   let epoch = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -74,6 +76,41 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
     if (!request.deferred) deliver();
   }
 
+  function publishResumed(): void {
+    if (!resumedResults.length || [...jobs.values()].some(job => job.resumed)) return;
+    const batch = resumedResults;
+    resumedResults = [];
+    const context = active;
+    if (!context || !targetFor(batch[0].receipt, batch[0].epoch)) return;
+    let delivered = false;
+    const deliver = () => {
+      if (delivered || !targetFor(batch[0].receipt, batch[0].epoch)) return;
+      const latest = new Map(listReceipts(batch[0].receipt).map(receipt => [receipt.key, receipt]));
+      const counts = { completed: 0, failed: 0, accepted: 0, unknown: 0 };
+      for (const job of batch) {
+        const receipt = latest.get(job.receipt.key);
+        if (!receipt || receipt.state === "deleted") continue;
+        if (receipt.state === "completed" || receipt.state === "failed" || receipt.state === "accepted") {
+          counts[receipt.state]++;
+        } else counts.unknown++;
+      }
+      const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+      if (!total) return;
+      const summary = Object.entries(counts).filter(([, count]) => count > 0)
+        .map(([state, count]) => `${count} ${state === "accepted" ? "accepted (completion unconfirmed)" : state}`).join(", ");
+      const content = '<memory_status backend="hindsight" state="summary">\nSmart Compact: Hindsight: '
+        + `${total} earlier submissions — ${summary}.`
+        + (counts.failed || counts.accepted || counts.unknown ? " Use smart_recall to check their status." : "")
+        + "\n</memory_status>";
+      pi.sendMessage({ customType: "smart-compact-memory-status", content, display: true,
+        details: { backend: "hindsight", state: "summary", resumed: true, total, counts } }, { triggerTurn: false });
+      delivered = true;
+    };
+    const request = { version: 1, sessionId: context.sessionId, deliver, deferred: false };
+    pi.events.emit("smart-compact:defer-delivery", request);
+    if (!request.deferred) deliver();
+  }
+
   async function check(job: TrackedReceipt, signal: AbortSignal): Promise<void> {
     if (jobs.get(job.receipt.key) !== job) return;
     const target = targetFor(job.receipt, job.epoch);
@@ -92,7 +129,8 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
     const expired = Date.now() - job.startedAt >= maxTrackingMs;
     if (!isOpenReceipt(job.receipt) || expired) {
       jobs.delete(job.receipt.key);
-      publish(job, expired && isOpenReceipt(job.receipt));
+      if (job.resumed) resumedResults.push(job);
+      else publish(job, expired && isOpenReceipt(job.receipt));
     }
   }
 
@@ -108,6 +146,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
         for (let i = 0; i < batch.length && generation === epoch; i += 3) {
           await Promise.all(batch.slice(i, i + 3).map(job => check(job, controller.signal)));
         }
+        if (generation === epoch) publishResumed();
       })().catch(error => {
         if (active && generation === epoch) reportIssue({ key: "hindsight.tracking", message:
           "Hindsight background status tracking could not finish (" + errorDetail(error) + "). smart_recall can refresh the receipts.", error }, active.ctx);
@@ -120,16 +159,21 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
     timer.unref();
   }
 
-  function add(receipt: HindsightReceipt): boolean {
+  function add(receipt: HindsightReceipt, resumed = false): boolean {
     if (!targetFor(receipt) || !/^psc-cg-[0-9a-f]{24}$/.test(receipt.documentId)) return false;
     if (!isOpenReceipt(receipt)) { jobs.delete(receipt.key); return false; }
-    if (jobs.has(receipt.key)) return true;
+    const existing = jobs.get(receipt.key);
+    if (existing) {
+      // An explicit save in this session gets its own result, not a backlog summary.
+      if (!resumed) existing.resumed = false;
+      return true;
+    }
     if (jobs.size >= MAX_TRACKED) {
       reportIssue({ key: "hindsight.tracking-full", message:
         "Hindsight is already tracking 32 submissions; this receipt remains in the ledger. Use smart_recall to refresh it." }, active?.ctx);
       return false;
     }
-    jobs.set(receipt.key, { receipt, startedAt: Date.now(), epoch });
+    jobs.set(receipt.key, { receipt, startedAt: Date.now(), epoch, resumed });
     schedule();
     return true;
   }
@@ -138,6 +182,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
     epoch++;
     active = undefined;
     jobs.clear();
+    resumedResults = [];
     clearTimeout(timer);
     timer = undefined;
     abort?.abort();
@@ -155,7 +200,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
         .sort((a, b) => b.createdAt - a.createdAt);
       for (const receipt of pending) {
         if (jobs.size >= MAX_TRACKED) break;
-        add(receipt);
+        add(receipt, true);
       }
     } catch (error) {
       reportIssue({ key: "hindsight.tracking-ledger", message:
