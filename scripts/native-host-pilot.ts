@@ -12,7 +12,7 @@
  * approved budget.
  *
  * Other switches: PSC_PILOT_SHORT=1 (six requests per route: no re-compaction or model switch),
- * PSC_CLAUDE_OAUTH_EXTENSION=<adapter>/extensions/index.ts (required for the
+ * PSC_CLAUDE_OAUTH_EXTENSION=<extension-entrypoint> (required for the
  * Anthropic OAuth route), PSC_PILOT_DUMP=<file> (last turn and compaction request, redacted).
  */
 import assert from "node:assert/strict";

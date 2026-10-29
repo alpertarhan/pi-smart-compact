@@ -402,10 +402,15 @@ no provider request.
 | Command | Default | Purpose |
 | --- | --- | --- |
 | `bun scripts/session-pilot.ts` | Offline | Real `AgentSession` with scripted model transport, Smart Compact only: tools, anchor and pivot with carryover, trimming/retrieval, rewind, compaction and reopen |
-| `PSC_CLAUDE_OAUTH_EXTENSION=<pi-claude-oauth-adapter>/extensions/index.ts bun scripts/native-host-pilot.ts` | Offline fake provider | Provider-native compaction on stock Pi; the Anthropic OAuth route needs the standalone adapter (patched final-payload build for billing on nested requests). `PSC_NATIVE_ROUTES=codex-oauth,openai-api-key` runs without it and `PSC_PILOT_SHORT=1` shortens each route. `PSC_NATIVE_LIVE=1` sends real, ledger-capped requests and needs explicit approval |
+| `PSC_CLAUDE_OAUTH_EXTENSION=<extension-entrypoint> bun scripts/native-host-pilot.ts` | Offline fake provider | Provider-native compaction on stock Pi; the Anthropic OAuth route loads a separately supplied compatible adapter that normalizes nested requests and preserves caller hooks. `PSC_NATIVE_ROUTES=codex-oauth,openai-api-key` runs without it and `PSC_PILOT_SHORT=1` shortens each route. `PSC_NATIVE_LIVE=1` sends real, ledger-capped requests and needs explicit approval |
 | `bun run scripts/rtk-pilot.ts /absolute/path/to/rtk` | Local only | Synthetic RTK rewrite contract; characters, not provider tokens |
 | `bun run scripts/visual-pilot.ts --model=provider/id` | Offline planning | Bitmap versus text evidence; `--live` authorizes at most 9 sequential requests and needs explicit approval |
 | `PSC_HINDSIGHT_LIVE=1 … bun run test/hindsight-live.canary.ts` | Not run by `bun test` | Live Hindsight contract with a hard call budget; see [Hindsight memory](./hindsight-memory.md#tests) |
+
+For `PSC_CLAUDE_OAUTH_EXTENSION`, use the adapter's actual extension entrypoint
+from its `package.json` `pi.extensions` manifest; no package name or directory
+layout is hard-coded. Record the adapter build with each pilot result; evidence
+for one adapter does not validate another.
 
 Dated reports record what was measured on their date, with the code and host
 versions stated inside. Preserve their provenance; add dated addenda rather

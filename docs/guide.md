@@ -111,10 +111,13 @@ data migration. Existing memory stores are not moved or cleared.
 
 The 10.7.3 hotfix keeps summary targets unchanged but allows bounded completion
 headroom and a larger-output batch retry when budget permits. Persistent provider
-failures still use deterministic fallback. The separate Claude OAuth adapter's
-cache-prefix fix is not included in the Smart Compact package; see
-[adapter PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11) and
-update that adapter separately after its fix is available.
+failures still use deterministic fallback.
+
+Claude OAuth adapters are installed and updated separately; Smart Compact does
+not bundle or require a specific adapter. If you use `pi-claude-oauth-adapter`,
+its cache-prefix fix is tracked in
+[adapter PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11),
+not included in the Smart Compact package.
 
 Optional components need a separate, deliberate update. If you use Mnemopi or
 image snapshots, follow [Optional components](../README.md#optional-components)
@@ -144,8 +147,8 @@ and stored paths keep their names; do not rename existing data directories.
 
 By default, cleanup is pressure-gated and enabled. Early
 offload, background preparation, provider-native compaction and images remain opt-in. Existing compaction permissions
-are preserved. Claude subscription routes still need the compatible separate
-adapter described under [provider compaction](#summary-format-provider-compaction-and-images).
+are preserved. Claude subscription routes still need a compatible separate
+adapter; see [provider compaction](#summary-format-provider-compaction-and-images).
 
 ## The Home screen
 
@@ -831,12 +834,12 @@ Provider (native) compaction:
   replay is not possible, the model reads the text summary instead; on OpenAI
   routes that is only the retained user messages.
 - Claude subscription requests that Smart Compact makes itself (summaries and
-  provider compaction) go through Pi's model runtime, so a provider registered
-  by the separate `pi-claude-oauth-adapter` package handles their transport.
-  The published adapter `0.2.2` rewrites the request body only inside Pi's
-  `before_provider_request` hook, which Pi does not run for these requests; a
-  build that normalizes the final payload inside its provider is required for
-  full parity ([upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
+  provider compaction) go through Pi's model runtime and the compatible OAuth
+  provider registered there. No specific adapter package is required.
+  The adapter must normalize the final payload inside its provider and preserve
+  caller `onPayload` and `fetch` hooks; Pi does not run `before_provider_request`
+  for these nested requests. Adapter-specific results remain scoped to the
+  builds used in the [recorded pilots](./evaluation.md#pilots-and-dated-reports).
   Anthropic may bill the compaction as extra usage.
 - A native boundary changes the request prefix, so the provider's prompt cache
   is not reused across it.
