@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [10.7.3] - 2026-10-29
+
+The release owner explicitly approved this hotfix on npm `latest` under the
+version-specific stable exception in `docs/RELEASE.md`. No external canary
+cohort or live provider-quality/cache-recovery evaluation is available; this
+is not a telemetry `PROMOTE` result. The deterministic release gate and required
+PR CI remain mandatory. No stored data or stage-model routing is migrated.
+
+### Fixed
+
+- State synthesis output targets in prompts and separate the final summary target
+  from its hard completion ceiling. Single-pass and assembly receive bounded
+  completion headroom; model, provider and run-budget checks remain enforced.
+- Retry a length-truncated batch once with bounded output headroom even when
+  reasoning is already minimal. Preserve the final assembly call and continue to
+  reject malformed or truncated output instead of caching partial summaries.
+
+### Upgrade notes
+
+- Completion headroom can increase actual generated output, within the existing
+  run budgets. Persistent provider truncation still uses deterministic fallback.
+- The separate Claude OAuth adapter cache-prefix fix is not bundled in this
+  package. Updating Smart Compact alone does not fix transient adapter docs
+  injection; see [adapter PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11).
+
 ## [10.7.2] - 2026-10-26
 
 The release owner requested an immediate stable hotfix on npm `latest` for the

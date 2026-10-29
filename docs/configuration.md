@@ -622,6 +622,14 @@ Notes on specific keys:
 | `singlePassMaxTokens` | 1,000–500,000 | 40,000 | 30,000 | 20,000 |
 | `batchMaxTokens` | 1,000–500,000 | 30,000 | 24,000 | 18,000 |
 
+`summaryBudgetTokens` is the requested summary length, not a hard provider cutoff.
+Single-pass and assembly requests allow up to twice that target to finish the
+required format, still subject to provider/model limits and the run output budget.
+Batch prompts state their output budget. A `length` stop may retry once with
+minimal reasoning and up to twice the original output allowance, including when
+reasoning is already minimal; retries must leave the final assembly call available.
+Malformed or still-truncated responses continue to use deterministic fallback.
+
 ## Legacy and removed keys
 
 | Key | Behavior |

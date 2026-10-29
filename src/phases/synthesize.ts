@@ -30,6 +30,7 @@ import {
  type TokenEstimator,
 } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
+import { clampCompletionMaxTokens } from "../domain/model-capacity.ts";
 import { collectVerificationEvidence, patchResponseIsTruncated } from "../phases/verify.ts";
 import * as log from "../utils/logger.ts";
 import { extractText } from "../utils/extraction.ts";
@@ -494,6 +495,7 @@ export function buildSinglePassRequest(
   SESSION_TYPE_INSTRUCTIONS.implementation;
  const adaptedPrefix =
   SINGLE_PASS_PREFIX +
+  "\nTarget summary length: " + budgetTokens + " tokens. Finish every required section; condense repetition rather than ending mid-section.\n" +
   "\nSession-specific instructions:\n" +
   sessionInstruction;
  const dynamicSuffix =
@@ -521,7 +523,8 @@ export function buildSinglePassRequest(
     },
    ],
   },
-  maxTokens: Math.min(budgetTokens, getProviderCaps(model.provider).maxOutputTokens),
+  // The summary target is not a safe hard cutoff for completing the format.
+  maxTokens: Math.min(budgetTokens * 2, getProviderCaps(model.provider).maxOutputTokens),
  };
 }
 
@@ -595,7 +598,10 @@ export function buildBatchRequest(
   })
   .join("\n\n");
 
- const promptPrefix = BATCH_PROMPT_PREFIX;
+ const maxTokens = maxOutputTokens ?? Math.min(Math.max(1_000, batch.length * 250), 4_096, getProviderCaps(model.provider).maxOutputTokens);
+ const promptPrefix = BATCH_PROMPT_PREFIX +
+  "\nTarget at most " + maxTokens + " output tokens across all " + batch.length +
+  " chunk sections. Keep prose concise; do not omit sections or required fields.\n";
 
  const dynamicSuffix = BATCH_PROMPT_SUFFIX.replace(
   "{EXTRACTION_CONTEXT}",
@@ -610,7 +616,7 @@ export function buildBatchRequest(
     { role: "user", content: [{ type: "text", text: dynamicSuffix }], timestamp: Date.now() },
    ],
   },
-  maxTokens: maxOutputTokens ?? Math.min(Math.max(1_000, batch.length * 250), 4_096, getProviderCaps(model.provider).maxOutputTokens),
+  maxTokens,
  };
 }
 
@@ -638,16 +644,18 @@ export async function summarizeBatch(
  const cached = cacheKey ? getCachedBatch(cacheKey) : null;
  if (cached) return cached;
 
+ const svc = services ?? getDefaultServices();
  const baseOpts = { apiKey: auth.apiKey, headers: auth.headers, maxTokens, signal };
 
  const attempt = async (
   reasoning?: "minimal",
+  outputTokens = maxTokens,
  ): Promise<Map<number, string>> => {
   const resp = await trackedComplete(
    "batch",
    model,
    context,
-   reasoning === undefined ? baseOpts : { ...baseOpts, reasoning },
+   reasoning === undefined ? baseOpts : { ...baseOpts, reasoning, maxTokens: outputTokens },
    services,
   );
   const output = resp.content
@@ -683,22 +691,25 @@ export async function summarizeBatch(
  try {
   sectionMap = await attempt();
  } catch (err) {
-  // Self-healing (#62): on many local OpenAI-compatible servers,
-  // reasoning tokens share the batch output budget. A `length` stop
-  // means thinking starved the batch contract before any text was
-  // complete. One retry at minimal reasoning — the configured level
-  // stays untouched for other batches. Never spend the final assembly call
-  // on a retry; deterministic evidence covers failed/unretried batches.
+  // Minimal thinking can still truncate prose. Retry once with output headroom,
+  // without changing configured reasoning or spending the final assembly call.
+  const initialMaxTokens = clampCompletionMaxTokens(model, maxTokens)!;
+  const retryMaxTokens = Math.min(
+   clampCompletionMaxTokens(model, maxTokens * 2)!,
+   getProviderCaps(model.provider).maxOutputTokens,
+   svc.budget.remainingOutputTokens(),
+  );
   if (
    err instanceof BatchSummaryFormatError &&
    /non-terminal stop reason length/.test(err.message) &&
-   services?.thinkingLevels.summaryThinkingLevel !== "minimal" &&
-   (services ?? getDefaultServices()).budget.remainingCalls() > 1
+   retryMaxTokens >= initialMaxTokens &&
+   (retryMaxTokens > initialMaxTokens || svc.thinkingLevels.summaryThinkingLevel !== "minimal") &&
+   svc.budget.remainingCalls() > 1
   ) {
    log.debug(
-    "Batch synthesis exhausted the output budget (reasoning shared it); retrying once with minimal reasoning",
+    "Batch synthesis exhausted its output limit; retrying once with minimal reasoning and " + retryMaxTokens + " output tokens",
    );
-   sectionMap = await attempt("minimal");
+   sectionMap = await attempt("minimal", retryMaxTokens);
   } else {
    throw err;
   }
@@ -824,7 +835,8 @@ export async function assembleLLM(
    messages: [
     {
      role: "user" as const,
-     content: [{ type: "text" as const, text: ASSEMBLY_PROMPT_PREFIX }],
+     content: [{ type: "text" as const, text: ASSEMBLY_PROMPT_PREFIX +
+      "\nTarget summary length: " + budget + " tokens. Finish every required section; condense repetition rather than ending mid-section.\n" }],
      timestamp: Date.now(),
     },
     {
@@ -837,7 +849,7 @@ export async function assembleLLM(
   {
    apiKey: auth.apiKey,
    headers: auth.headers,
-   maxTokens: Math.min(budget, getProviderCaps(model.provider).maxOutputTokens),
+   maxTokens: Math.min(budget * 2, getProviderCaps(model.provider).maxOutputTokens),
    signal,
   },
   services,

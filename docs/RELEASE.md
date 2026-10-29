@@ -39,8 +39,9 @@ package installation.
       `SECURITY.md`; `release:audit` requires it to read ``Latest `<major>.x` ``.
 - [ ] For Claude subscription routes, pair the fresh candidate with the exact
       `pi-claude-oauth-adapter` build used in the proofs (published `0.2.2`
-      plus the final-payload patch, [upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10),
-      until it is released) and record
+      plus the [final-payload patch, upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10),
+      and [cache-stable docs, upstream PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11),
+      until they are released) and record
       the paired archive paths and hashes at final packaging — do not
       reconstruct them from memory.
 - [ ] Confirm Pi remains a host peer (`">=0.87.1"`) and TypeBox a wildcard peer (`"*"`); neither is bundled.

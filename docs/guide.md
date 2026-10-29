@@ -105,9 +105,16 @@ For an existing 10.x installation on the stable npm channel:
 The command selects npm `latest`; it does not upgrade Pi itself or your global
 Node.js, Bun or npm. Development SDK and TypeBox pins are not new host
 requirements: Pi `0.87.1+` and Node.js `22.19+` still apply. The 10.7.1
-dependency refresh and 10.7.2 notification hotfix change no command names,
-settings or storage paths and require no application data migration. Existing
-memory stores are not moved or cleared.
+dependency refresh, 10.7.2 notification hotfix and 10.7.3 synthesis-output hotfix
+change no command names, settings or storage paths and require no application
+data migration. Existing memory stores are not moved or cleared.
+
+The 10.7.3 hotfix keeps summary targets unchanged but allows bounded completion
+headroom and a larger-output batch retry when budget permits. Persistent provider
+failures still use deterministic fallback. The separate Claude OAuth adapter's
+cache-prefix fix is not included in the Smart Compact package; see
+[adapter PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11) and
+update that adapter separately after its fix is available.
 
 Optional components need a separate, deliberate update. If you use Mnemopi or
 image snapshots, follow [Optional components](../README.md#optional-components)
