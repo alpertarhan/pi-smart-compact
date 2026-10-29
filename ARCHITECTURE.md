@@ -659,8 +659,12 @@ budget or LLM call fails. Batch retries and queued workers recheck remaining
 calls before dispatch so they cannot spend the final assembly call.
 Single-pass and final assembly reject known nonterminal stop reasons and
 unclosed Markdown fences before the synthesis cache can retain the result.
-Their existing error paths use deterministic fallback, without extra retries
-or enlarged budgets.
+Prompts state their output targets. Single-pass and assembly allow up to twice
+the desired summary length as completion headroom, within provider/model caps
+and the unchanged aggregate run budget. A length-truncated batch may retry once
+with minimal reasoning and bounded output headroom even when its first attempt
+already used minimal reasoning. Malformed or still-truncated responses continue
+to use deterministic fallback; the final assembly call stays reserved.
 
 ### Verify
 
