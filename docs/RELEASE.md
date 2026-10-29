@@ -37,13 +37,15 @@ package installation.
       it. Existing copies in Git history are not erased by this policy.
 - [ ] On a major version change, update the supported-versions row in
       `SECURITY.md`; `release:audit` requires it to read ``Latest `<major>.x` ``.
-- [ ] For Claude subscription routes, pair the fresh candidate with the exact
-      `pi-claude-oauth-adapter` build used in the proofs (published `0.2.2`
-      plus the [final-payload patch, upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10),
-      and [cache-stable docs, upstream PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11),
-      until they are released) and record
-      the paired archive paths and hashes at final packaging — do not
-      reconstruct them from memory.
+- [ ] For Claude subscription routes, validate the fresh candidate with the
+      chosen compatible OAuth adapter. Record its name, version or commit,
+      and paired archive paths and hashes at final packaging — do not
+      reconstruct them from memory. Switching adapters needs fresh evidence;
+      Smart Compact does not require a specific adapter package. Earlier proofs
+      used `pi-claude-oauth-adapter` based on published `0.2.2` plus the
+      [final-payload patch, upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)
+      and [cache-stable docs, upstream PR #11](https://github.com/minzique/pi-claude-oauth-adapter/pull/11).
+      Keep those build identifiers with their original evidence.
 - [ ] Confirm Pi remains a host peer (`">=0.87.1"`) and TypeBox a wildcard peer (`"*"`); neither is bundled.
 - [ ] Confirm the visual renderer remains optional/external and the font plus its license ship in `assets/`, together with the on-demand context guide `assets/skills/context-management/SKILL.md`. Verify default Node loading without the optional addon and a real PNG render where supported.
 - [ ] Confirm Mnemopi stays an optional external engine with TypeBox external in its worker, and that `bun`, `@oh-my-pi/pi-mnemopi` and `@resvg/resvg-js` remain optional peers pinned to `OPTIONAL_COMPONENTS` (never `optionalDependencies`). Verify a plain install pulls none of them in, the failure names the install command for the install root, the installed Node-host worker runs on the user-installed `bun` component under a Pi-style npm root with no Bun on `PATH`, and the fail-closed missing-engine and missing-Bun failures submit no memory request and create no store.

@@ -812,11 +812,14 @@ Anthropic blocks or opaque OpenAI items, so this extension does both:
   compaction body) go through the requesting session's public model runtime
   (`ctx.modelRegistry.stream`/`streamSimple`, `infra/llm-client.ts`), never
   pi-ai's standalone completers. The runtime applies request-time auth and any
-  provider registered by another extension with `pi.registerProvider`, such as
-  the separate `pi-claude-oauth-adapter`; stock Pi still skips
-  `before_provider_request` for these requests, so an adapter must normalize
-  the final payload inside its own provider (the published `0.2.2` does not;
-  [upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10)).
+  provider registered by another extension with `pi.registerProvider`.
+  Smart Compact does not bundle or require a specific OAuth adapter. Stock Pi
+  skips `before_provider_request` for these nested requests, so a compatible
+  adapter must normalize the final payload inside its own provider while
+  preserving caller `onPayload` and `fetch` hooks. Earlier proofs used a patched
+  `pi-claude-oauth-adapter` because its published `0.2.2` build relied on the
+  skipped hook ([upstream PR #10](https://github.com/minzique/pi-claude-oauth-adapter/pull/10));
+  those results do not validate other adapters.
   Caller `apiKey`/`headers` are stripped so an explicit key never bypasses
   stored OAuth; `app/stage-auth.ts` is an availability preflight only. The
   Anthropic prior-state replay runs in the caller's `onPayload` before any
