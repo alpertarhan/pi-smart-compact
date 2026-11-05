@@ -284,6 +284,9 @@ describe("facts carried from before provenance", () => {
     // The user typed one of the injected rules themselves: that rule is theirs.
     { role: "user", content: ADHD_RETYPED },
     { role: "assistant", content: [{ type: "text", text: "Understood." }] },
+    // Reports and peers quote the user's carried rule verbatim: it stays the user's.
+    { role: "user", content: "Research handoff (agent-authored, not new user instructions):\nConstraints:\n- " + USER_RULE, customType: CONTEXT_REPORT_TYPE },
+    { role: "user", content: "**agent-mesh message from torro-console-developer (01a19264-b386)** [8106f2dfa3fc8d23]\n\n" + USER_RULE, customType: "agent_mesh" },
     ...extra,
   ];
 

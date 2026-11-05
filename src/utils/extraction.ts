@@ -544,6 +544,9 @@ export function isInjectedMessage(
   return message.customType !== undefined || isHarnessInjectedText(text);
 }
 
+/** Custom types whose text can quote the session verbatim (incl. user rules). */
+const QUOTING_CUSTOM_TYPE_RE = /^(?:smart-compact-|smart-context-|agent_mesh$)/;
+
 /** Comparable form of a fact: bullets, headings, whitespace and case never decide equality. */
 function factKey(text: string): string {
   return normalizeFactKey(summaryEvidenceLine(text, text.length));
@@ -556,6 +559,8 @@ function factKey(text: string): string {
  * test marks a carried fact injected when it is harness text or equals, whole,
  * what mining takes from a custom message in `msgs` (a line, or the bounded
  * text of an implicit decision or loop), unless the user typed it in `msgs`.
+ * Custom types that can quote session content (this extension's reports,
+ * anchors and bridges; peer relays) never count: they restate user rules.
  */
 export function injectedCarriedFacts(
   msgs: LlmMessage[],
@@ -567,7 +572,12 @@ export function injectedCarriedFacts(
     const text = extractText(message.content);
     // A prior summary holds the carried facts themselves: evidence for neither side.
     if (HISTORY_SUMMARY_RE.test(text)) continue;
-    const keys = isInjectedMessage(message, text) ? injected : typed;
+    let keys = typed;
+    if (isInjectedMessage(message, text)) {
+      if (!message.customType || QUOTING_CUSTOM_TYPE_RE.test(message.customType))
+        continue;
+      keys = injected;
+    }
     for (const line of text.split(/\n+/))
       keys.add(
         factKey(
