@@ -430,7 +430,8 @@ cleanup below the early gate and deferred cold-cache cleanup; both require
 `contextHygieneEnabled: true`.
 Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
 the estimated tokens of every message from the first trimmed output to the
-end, the part of the prompt cache a trim rewrites. With the active model's
+end, the part of the prompt cache a trim rewrites. For `openai-codex`, `T`
+covers every message: 6 of 11 observed trims there lost the whole cached prompt. With the active model's
 catalog prices, `r = cacheRead / input` and `w = cacheWrite / input` (`w = 1`
 when no write price is listed). The trim pays back after
 `N* = ((w - r) × T) / (r × X)` further requests (`0` when cache reads are

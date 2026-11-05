@@ -253,7 +253,8 @@ replacing up to 32 old read-only results of at least 4096 characters with a
 bounded reference marker. Already-edited entries are not rewritten. Since
 10.4.0, planning is also tail-aware: eligible outputs are scored along a
 prefix-drop frontier (the rewritten cache suffix runs from the first edited
-entry to the branch end), and the largest batch whose first edit still passes
+entry to the branch end; `openai-codex` trims are priced as whole-prompt
+misses, after 6 of 11 observed ones lost the whole cache), and the largest batch whose first edit still passes
 the configured break-even limit wins; without price data the full set is
 returned exactly as before. Automatic trimming runs with `contextHygieneEnabled` independently of compaction, or with
 the effective `background` strategy, and requires `smart_context` reachable

@@ -1427,13 +1427,14 @@ function expectedTrim(session: SessionManager, model: PricedModel) {
   const after = contextMessageEntries(edited.getBranch());
   const targets = new Set(plan.references);
   const tailTokens = after.slice(after.findIndex(entry => targets.has(entry.id))).reduce((sum, entry) => sum + tokens(entry), 0);
+  const promptTokens = after.reduce((sum, entry) => sum + tokens(entry), 0);
   const savedTokens = plan.references.reduce((sum, id) =>
     sum + tokens(before.find(entry => entry.id === id)!) - tokens(after.find(entry => entry.id === id)!), 0);
   const r = model.cost.cacheRead / model.cost.input;
   const w = model.cost.cacheWrite > 0 ? model.cost.cacheWrite / model.cost.input : 1;
   const projected = buildSessionProjection(edited.getBranch()).entries;
   const marker = (id: string) => projected.find(entry => entry.sourceEntry.id === id)!.messages[0];
-  return { plan, savedTokens, tailTokens, breakEvenRequests: ((w - r) * tailTokens) / (r * savedTokens), marker };
+  return { plan, savedTokens, tailTokens, promptTokens, breakEvenRequests: ((w - r) * tailTokens) / (r * savedTokens), marker };
 }
 
 /** An old read-only batch, optionally followed by a large non-trimmable tail, then protected recent turns. */
@@ -1591,6 +1592,30 @@ describe("automatic trim timing", () => {
     expect(expectedTrim(h.session, ANTHROPIC).breakEvenRequests).toBeLessThanOrEqual(AUTO_TRIM_BREAK_EVEN_REQUESTS);
     expect(controlOf(h.turn()?.entries)).toEqual({ version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "break-even" });
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+  });
+
+  it("prices openai-codex trims as full-prompt misses, not a rewritten tail", () => {
+    const codex: PricedModel = { ...OPENAI, provider: "openai-codex", id: "gpt-codex-test", api: "openai-codex-responses" };
+    const fixture = (model: PricedModel) => {
+      const h = harness({ background: true, model });
+      Object.assign(h.cfg, { contextHygieneEnabled: true, contextPressureOnly: false });
+      h.setTokens(100_000);
+      // A large cached prefix before the old output: only a whole-prompt miss sends it again.
+      h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });
+      const old = toolBatch(h.session, "read", "old research".repeat(2_000));
+      for (let i = 0; i < 4; i++) h.session.appendMessage({ ...assistant([{ type: "text", text: "Recent protected turn " + i }]),
+        provider: model.provider, model: model.id, api: model.api! });
+      return { h, old, expected: expectedTrim(h.session, model) };
+    };
+    const openai = fixture(OPENAI);
+    expect(openai.expected.breakEvenRequests).toBeLessThanOrEqual(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    expect(controlOf(openai.h.turn()?.entries)).toMatchObject({ cause: "break-even", references: [openai.old.result] });
+    const { h, expected } = fixture(codex);
+    expect(h.turn()).toBeUndefined();
+    const deferred = h.controller.deferredTrim(h.session.getSessionId())!;
+    expect(deferred).toMatchObject({ savedTokens: expected.savedTokens, tailTokens: expected.promptTokens });
+    expect(deferred.tailTokens).toBeGreaterThan(expected.tailTokens);
+    expect(deferred.breakEvenRequests!).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
   });
 
   it("never commits a break-even trim when the model price is unknown", () => {

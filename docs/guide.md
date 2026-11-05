@@ -253,9 +253,13 @@ A batch needs at least 16,384 characters of net savings and eight assistant
 turns after the last trim, rewind or compaction. In the early cleanup band,
 automatic trims must also pay back their cache rewrite within 24 requests;
 unknown prices or poor payback leave history unchanged. Only reaching the
-compaction threshold lets context relief take priority over cache cost.
+compaction threshold lets context relief take priority over cache cost, and
+only when no automatic compaction is due: with **When idle** or background
+compaction on, that compaction replaces the context, so no trim runs first.
+`openai-codex` trims are priced as rebuilding the whole prompt cache.
 
-- `pressure`: context usage reached the compaction gate.
+- `pressure`: context usage reached the compaction gate while automatic
+  compaction is off or follows Pi (`native-hook`).
 - `break-even`: the model's catalog prices say the trim pays back its prompt
   cache rewrite within 24 further requests. By default this also requires the
   early pressure gate; **Economic (opt-in)** timing (`contextPressureOnly: false`)

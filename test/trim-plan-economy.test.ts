@@ -111,6 +111,23 @@ describe("tail-aware trim plan selection", () => {
     expect(first).toBe(idOf(sm, "call-2"));
   });
 
+  it("prices openai-codex candidates as whole-prompt misses, so dropping stragglers never pays", () => {
+    // The same session where tail pricing drops call-0/call-1 (previous test). A whole-prompt
+    // miss re-sends the filler either way, so no subset pays and the full set comes back for
+    // the caller to hold.
+    const sm = session([
+      { id: "call-0", chars: 5_000, filler: 0 },
+      { id: "call-1", chars: 5_000, filler: 150_000 },
+      { id: "call-2", chars: 30_000, filler: 0 },
+      { id: "call-3", chars: 30_000, filler: 0 },
+      ...Array.from({ length: 4 }, (_, i) => ({ id: `tail-${i}`, chars: 500, filler: 0 })),
+    ]);
+    const plan = planContextTrim(sm.getBranch(), undefined, { minSavingChars: 1_000, economy: { provider: "openai-codex", model: "m", cost: PRICY } });
+    expect(plan.references).toEqual(["call-0", "call-1", "call-2", "call-3"].map(id => idOf(sm, id)!));
+    const codex = trimTokens(sm.getBranch(), plan.entries, "openai-codex", "m");
+    expect(trimBreakEvenRequests(PRICY, codex.savedTokens, codex.tailTokens)).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+  });
+
   it("returns the full plan when no candidate is feasible", () => {
     const sm = session([
       ...Array.from({ length: 6 }, (_, i) => ({ id: `call-${i}`, chars: 5_000, filler: 0 })),
