@@ -157,7 +157,9 @@ function cacheEvidence(branch: SessionEntry[]): CacheEvidence {
 function lifetimeOf(usage: Usage, promptCache: ModelPromptCache | undefined, prior: number | null | undefined): number | null {
   const longest = cacheLifetimeMs(usage, promptCache);
   if (longest === null || num(usage.cacheWrite1h) > 0) return longest;
-  if (num(usage.cacheWrite) > 0 && usage.cacheWrite1h === 0 && num(promptCache?.short) > 0) return promptCache!.short! * 1000;
+  if (num(usage.cacheWrite) > 0 && usage.cacheWrite1h === 0 && num(promptCache?.short) > 0)
+    // A short-tier write must not shorten a longer-lived prefix written earlier on the route.
+    return Math.max(prior ?? 0, promptCache!.short! * 1000);
   return prior ?? longest;
 }
 

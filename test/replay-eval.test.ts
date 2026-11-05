@@ -320,6 +320,51 @@ it("keeps the unseen payload positive after a recorded automatic trim", () => {
   expect(none.prompt).toBe(strippedProjected.reduce((sum, value) => sum + value, 0) + strippedProjected.length * SYSTEM);
 });
 
+/** 1 h write then short-tier writes on the same Anthropic route; a 10-minute gap follows. */
+function hourTierFixture() {
+  const SYSTEM = 5_000;
+  const entries: Record<string, unknown>[] = [];
+  let at = T0;
+  let seq = 0;
+  let previous = 0;
+  let prevAt = at;
+  let horizonMs = 0;
+  const add = (entry: Record<string, unknown>) => entries.push({ id: `h${++seq}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const project = () => contextMessageEntries(entries as never).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+  const request = (gapMinutes: number, hourTier: boolean) => {
+    at += gapMinutes * 60_000;
+    const prompt = SYSTEM + project();
+    const reused = at - prevAt <= horizonMs ? previous : 0;
+    const written = prompt - reused;
+    add({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `Step ${seq}.` }], stopReason: "stop", ...MODEL,
+      usage: { input: 0, cacheRead: reused, cacheWrite: written, cacheWrite1h: hourTier ? written : 0, output: 0, totalTokens: prompt,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: (0.5 * reused + 6.25 * written) / 1_000_000 } }, timestamp: at } });
+    horizonMs = Math.max(horizonMs, hourTier ? 3_600_000 : 300_000);
+    prevAt = at;
+    previous = prompt;
+  };
+  const user = (text: string) => add({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: at } });
+  user("Start.");
+  request(1, true); // 1 h write
+  user("Continue.");
+  request(1, false); // short-tier writes keep the prefix
+  user("Continue.");
+  request(1, false);
+  user("After the gap.");
+  request(10, false); // 10 min later: the 1 h prefix is still cached
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-hour-tier", timestamp: new Date(T0).toISOString(), cwd: root };
+  return [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n";
+}
+
+it("keeps a 1h prefix cached across later short-tier writes", () => {
+  const catalog = () => ({ contextWindow: 200_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+  const result = replaySession(loadSession(hourTierFixture())!, catalog, { policies: [{ name: "none", kind: "none" }], rebuildMin: 1_000 });
+  const none = result.policies[0];
+  expect(result.baseline.misses).toBe(0);
+  expect(none.rebuilds).toBe(0);
+  expect(none.cached).toBeGreaterThan(0);
+});
+
 it("reproduces recorded cache misses and cost for Anthropic 5-minute and openai-codex whole-prompt caches", () => {
   const catalog = (provider: string) => provider === "anthropic"
     ? { contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }
