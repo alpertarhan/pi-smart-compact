@@ -171,6 +171,43 @@ describe("fileOperationPaths", () => {
   });
 });
 
+describe("extractShellFileOperations sed in place", () => {
+  it("never records the sed script as the edited file", () => {
+    // The real 15:34 compaction recorded "s/\\u2192/→/g" as a modified file:
+    // with a non-literal target ($F) the script was the only operand left.
+    expect(extractShellFileOperations({ command: "sed -i 's/\\\\u2192/→/g' $F" })).toEqual({ modified: [], deleted: [] });
+  });
+
+  it("records the literal file when the script is the first operand", () => {
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/g' src/a.ts" })).toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i '' 's/a/b/' src/a.ts" })).toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i.bak 's/a/b/' src/a.ts" })).toEqual({ modified: ["src/a.ts"], deleted: [] });
+  });
+
+  it("treats -e/--expression and -f/--file values as scripts, not files", () => {
+    expect(extractShellFileOperations({ command: "sed -i -e 's/a/b/' -e 's/c/d/' src/a.ts src/b.ts" }))
+      .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed --in-place --expression='s/a/b/' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i -f fixes.sed src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed --file=fixes.sed --in-place src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+  });
+
+  it("records every edited file when the script leaves earlier ones unrecorded", () => {
+    // The old last-operand rule recorded only src/b.ts here.
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
+      .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
+  });
+
+  it("records nothing for read-only sed or in-place sed without a literal file", () => {
+    expect(extractShellFileOperations({ command: "sed -n '40,75p' src/x.ts" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/' *.ts" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/'" })).toEqual({ modified: [], deleted: [] });
+  });
+});
+
 describe("extractShellFileOperations heredocs", () => {
   it("reads a heredoc body as data, so arrow functions in it are not redirects", () => {
     const command = "cat > /tmp/x.test.ts <<\"EOF\"\nconst t = msgs.map(m => m.text);\nconst k = gaps.filter(g => g.kind === \"x\");\nEOF\nbun test /tmp/x.test.ts";

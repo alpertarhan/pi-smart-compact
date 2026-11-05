@@ -269,8 +269,45 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     while (commandIndex < words.length && words[commandIndex].startsWith("-")) commandIndex++;
   }
   const command = words[commandIndex]?.split("/").pop()?.toLowerCase();
+  if (!command) return { modified, deleted };
+  if (command === "sed") {
+    // In-place sed: identify the script operand so it is never recorded as
+    // the edited file. The script is the first operand unless
+    // -e/--expression or -f/--file supplies it; every other literal operand
+    // is an edited file. Backup suffixes (-i.bak, BSD's -i '') are options or
+    // an empty word, so they never reach the operand walk.
+    if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || word.startsWith("--in-place"))) {
+      let scriptSeen = false;
+      let options = true;
+      for (let index = commandIndex + 1; index < words.length; index++) {
+        const word = words[index];
+        if (options && word === "--") {
+          options = false;
+          continue;
+        }
+        if (options && (word === "-e" || word === "--expression" || word === "-f" || word === "--file")) {
+          index++; // the option's value is a script (or script file), never an edited file
+          scriptSeen = true;
+          continue;
+        }
+        if (options && (word.startsWith("--expression=") || word.startsWith("--file="))) {
+          scriptSeen = true;
+          continue;
+        }
+        if (options && word.startsWith("-")) continue;
+        const target = literalShellPath(word);
+        if (!target) continue;
+        if (!scriptSeen) {
+          scriptSeen = true; // first bare operand is the script
+          continue;
+        }
+        modified.push(target);
+      }
+    }
+    return { modified, deleted };
+  }
   const operands = shellOperands(words, commandIndex + 1);
-  if (!command || !operands.length) return { modified, deleted };
+  if (!operands.length) return { modified, deleted };
   if (command === "rm" || command === "unlink") {
     deleted.push(...operands);
   } else if (command === "touch" || command === "tee") {
@@ -279,10 +316,6 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     modified.push(operands[operands.length - 1]);
   } else if (command === "mv") {
     deleted.push(...operands.slice(0, -1));
-    modified.push(operands[operands.length - 1]);
-  } else if (command === "sed" && words.slice(commandIndex + 1).some(word => /^-i|^--in-place/.test(word))) {
-    // The final operand is the edited file; earlier operands may be scripts or
-    // platform-specific empty backup suffixes.
     modified.push(operands[operands.length - 1]);
   }
   return { modified, deleted };
