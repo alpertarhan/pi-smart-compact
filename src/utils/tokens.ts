@@ -482,14 +482,16 @@ export function makeTokenEstimator(
 }
 
 /**
- * Documented thinking-block preservation on the Anthropic API: keep-all models
- * retain prior turns' thinking (billed as input); earlier Opus/Sonnet and Haiku
- * through 4.5 keep only the last turn's blocks and the API strips older ones.
- * Only verified for the Anthropic provider itself; compatible endpoints are not
- * assigned keep-all semantics they may not have (measured-subset rule instead).
+ * Documented thinking-block preservation on the Anthropic Messages API: keep-all
+ * models retain prior turns' thinking (billed as input); earlier Opus/Sonnet and
+ * Haiku through 4.5 keep only the last turn's blocks and the API strips older
+ * ones. Preservation is a MODEL property, so a genuine Claude served behind a
+ * custom provider alias keeps the same behavior; non-Claude models on the same
+ * wire API are unknown and keep the measured-subset rule (never inferred from
+ * the API alone).
  */
-function keepsAllPriorThinking(provider: string, model: string | undefined): boolean {
-  if (provider !== "anthropic" || !model) return false;
+function keepsAllPriorThinking(model: string | undefined): boolean {
+  if (!model) return false;
   const id = model.toLowerCase();
   if (id.startsWith("claude-mythos-preview")) return true;
   const family = /opus|sonnet|haiku|fable|mythos/.exec(id)?.[0];
@@ -530,10 +532,15 @@ function replayProxyTokens(
   if (reader.api === "anthropic-messages") {
     // Keep-all models (and the live tool loop) replay and bill every thinking
     // block: usage.output measured exactly that content at generation time.
-    if (options?.currentTurn || keepsAllPriorThinking(reader.provider, reader.id)) return Math.round(output);
-    // Keep-last-turn models strip prior thinking on replay: the non-reasoning
-    // remainder is a measured subset, when the metadata is a valid one.
-    return measuredSubset ? Math.round(output - reasoning) : null;
+    if (options?.currentTurn || keepsAllPriorThinking(reader.id)) return Math.round(output);
+    // Keep-last-turn models strip prior SIGNED thinking on replay: with every
+    // block signed or redacted, output-reasoning is the exact measured remainder.
+    // Unsigned thinking converts to plain text before the wire and survives the
+    // server-side strip, so its presence breaks the subset and falls back.
+    const unsignedThinking = (Array.isArray(message.content) ? message.content : []).some(block =>
+      block && typeof block === "object" && (block as { type?: string }).type === "thinking"
+      && !(block as { thinkingSignature?: unknown }).thinkingSignature && !(block as { redacted?: unknown }).redacted);
+    return measuredSubset && !unsignedThinking ? Math.round(output - reasoning) : null;
   }
   if (reader.api === "openai-responses" || reader.api === "openai-codex-responses") {
     // Prior-turn reasoning items are discarded on replay; text and tool
@@ -580,7 +587,8 @@ export function makeReaderTokenEstimator(
   const knownApi = reader.api === "anthropic-messages" || reader.api === "openai-responses"
    || reader.api === "openai-codex-responses" || reader.api === "openai-completions";
   const supportsImages = reader.input === undefined || reader.input.includes("image");
-  const charEstimate = (message: SerializableMessage, dropThinking: boolean): number => {
+  /** Per-block replay rule for thinking content: "keep" prices the visible text, "drop" prices nothing. */
+  const charEstimate = (message: SerializableMessage, thinkingRule: (block: { thinkingSignature?: unknown; redacted?: unknown }) => "keep" | "drop"): number => {
     if (!Array.isArray(message.content)) return text(JSON.stringify(serializableMessage(message)));
     let imageTokens = 0;
     const content = message.content.map(block => {
@@ -590,7 +598,7 @@ export function makeReaderTokenEstimator(
         imageTokens += imageBlockTokens(block as { data?: unknown; source?: { data?: unknown } | string }, reader.api, reader.id);
         return { type: "image" };
       }
-      if (type === "thinking" && dropThinking) return { type: "thinking" };
+      if (type === "thinking" && thinkingRule(block as { thinkingSignature?: unknown; redacted?: unknown }) === "drop") return { type: "thinking" };
       if (!SIGNATURE_KEYS.some(key => (block as Record<string, unknown>)[key] !== undefined)) return block;
       const clone: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(block)) {
@@ -621,12 +629,15 @@ export function makeReaderTokenEstimator(
     }
     return { ...message, content } as SerializableMessage;
   };
+  type ThinkingRule = (block: { thinkingSignature?: unknown; redacted?: unknown }) => "keep" | "drop";
+  const keepAll: ThinkingRule = () => "keep";
+  const dropAll: ThinkingRule = () => "drop";
   const estimate = (message: SerializableMessage & AssistantMetadata, options: MessageEstimateOptions | undefined): number => {
     if (message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error")) {
       // transformMessages drops errored/aborted assistant messages on every
       // known API; an unknown compatibility endpoint keeps the conservative
       // character estimate.
-      return knownApi ? 0 : charEstimate(message, false);
+      return knownApi ? 0 : charEstimate(message, keepAll);
     }
     const proxy = replayProxyTokens(message, reader, options);
     if (proxy !== null) return proxy;
@@ -635,18 +646,27 @@ export function makeReaderTokenEstimator(
      && (Array.isArray(message.content) ? message.content : []).some(block =>
        block && typeof block === "object" && (block as { type?: string }).type === "thinking"
        && COMPLETIONS_REASONING_MARKERS.has(String((block as { thinkingSignature?: unknown }).thinkingSignature ?? "")));
-    // Cross-model thinking is dropped before wire conversion on known APIs;
-    // keep-last-turn Anthropic models strip same-model prior thinking. In every
-    // other fallback the visible thinking text stays priced as a lower bound —
-    // signed reasoning replays (encrypted content, never priced as text), and
-    // unsigned thinking becomes plain text on Anthropic's converter.
-    let dropThinking = false;
+    // Per-block replay semantics, mirroring the converters:
+    // - Cross-model thinking is dropped before wire conversion on known APIs.
+    // - Keep-last-turn Anthropic models strip prior SIGNED thinking server-side,
+    //   but the converter turns UNSIGNED thinking into plain text, which the
+    //   strip does not remove — keep exactly those blocks priced.
+    // - Responses discards prior-turn reasoning items (retained text/toolargs
+    //   only); the live turn replays signed reasoning, priced by its visible
+    //   summary as a lower bound (encrypted content is never priced as text).
+    // - Completions replay thinking only through a known marker signature.
+    let thinkingRule: ThinkingRule = keepAll;
     if (knownApi && message.role === "assistant") {
-      if (!sameModel) dropThinking = true;
-      else if (reader.api === "anthropic-messages" && !keepsAllPriorThinking(reader.provider, reader.id) && !options?.currentTurn) dropThinking = true;
-      else if (reader.api === "openai-completions" && !completionsMarker) dropThinking = true;
+      if (!sameModel) thinkingRule = dropAll;
+      else if (reader.api === "anthropic-messages" && !keepsAllPriorThinking(reader.id) && !options?.currentTurn) {
+        thinkingRule = block => block.thinkingSignature || block.redacted ? "drop" : "keep";
+      } else if ((reader.api === "openai-responses" || reader.api === "openai-codex-responses") && !options?.currentTurn) {
+        thinkingRule = dropAll;
+      } else if (reader.api === "openai-completions" && !completionsMarker) {
+        thinkingRule = dropAll;
+      }
     }
-    return charEstimate(withImagePlaceholders(message), dropThinking);
+    return charEstimate(withImagePlaceholders(message), thinkingRule);
   };
   return {
     text,

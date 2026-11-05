@@ -112,9 +112,32 @@ describe("reader token estimator replay proxies", () => {
     // Haiku through 4.5 keeps the last turn only.
     const haiku = makeReaderTokenEstimator({ provider: "anthropic", id: "claude-haiku-4-5", api: "anthropic-messages" }, new TokenCalibrationStore());
     expect(haiku.message(assistant({ ...identity, model: "claude-haiku-4-5" }))).toBe(100);
-    // Compatible endpoints are not assigned invented keep-all semantics.
-    const alias = makeReaderTokenEstimator({ provider: "zai-anthropic", id: "claude-opus-5-5", api: "anthropic-messages" }, new TokenCalibrationStore());
-    expect(alias.message(assistant({ provider: "zai-anthropic", api: "anthropic-messages", model: "claude-opus-5-5" }))).toBe(100);
+    // Preservation is a MODEL property: a genuine Claude behind a custom
+    // provider alias keeps its documented semantics; a non-Claude model on the
+    // same wire API is unknown and keeps the measured-subset rule.
+    const alias = makeReaderTokenEstimator({ provider: "fixture", id: "claude-opus-5-5", api: "anthropic-messages" }, new TokenCalibrationStore());
+    expect(alias.message(assistant({ provider: "fixture", api: "anthropic-messages", model: "claude-opus-5-5" }))).toBe(1000);
+    const glm = makeReaderTokenEstimator({ provider: "zai-anthropic", id: "glm-4.6", api: "anthropic-messages" }, new TokenCalibrationStore());
+    expect(glm.message(assistant({ provider: "zai-anthropic", api: "anthropic-messages", model: "glm-4.6" }))).toBe(100);
+  });
+
+  it("prices unsigned prior thinking as retained text on keep-last-turn models", () => {
+    // The native converter turns unsigned thinking into plain text, which the
+    // server-side prior-turn strip does not remove: it must stay priced, and it
+    // breaks the output-reasoning measured-subset proxy.
+    const reader = makeReaderTokenEstimator({ provider: "anthropic", id: "claude-sonnet-4-5", api: "anthropic-messages" }, new TokenCalibrationStore());
+    const identity = { provider: "anthropic", api: "anthropic-messages", model: "claude-sonnet-4-5" };
+    const unsigned = assistant({ ...identity, content: [{ type: "thinking", thinking: "r".repeat(3600) }, { type: "text", text: "x".repeat(400) }] });
+    expect(reader.message(unsigned)).toBeGreaterThanOrEqual(900);
+    // Mixed signed and unsigned: only the signed part is stripped; the unsigned
+    // text and everything else stays priced.
+    const mixed = assistant({ ...identity, content: [
+      { type: "thinking", thinking: "r".repeat(3600), thinkingSignature: "signed" },
+      { type: "thinking", thinking: "u".repeat(3600) },
+      { type: "text", text: "x".repeat(400) },
+    ], usage: undefined });
+    expect(reader.message(mixed)).toBeGreaterThan(900);
+    expect(reader.message(mixed)).toBeLessThan(2200);
   });
 
   it("never treats dirty reasoning metadata as an exact discard", () => {
@@ -132,7 +155,11 @@ describe("reader token estimator replay proxies", () => {
     // Live Responses thinking with a valid signature but missing metadata keeps
     // its visible replayed summary priced (lower bound), never dropped to 0.
     const signed = assistant({ ...base, usage: undefined, content: [{ type: "thinking", thinking: "visible reasoning summary ".repeat(20), thinkingSignature: "rs_" + "x".repeat(40) }, { type: "text", text: "done" }] });
-    expect(reader.message(signed)).toBeGreaterThan(50);
+    expect(reader.message(signed, { currentTurn: true })).toBeGreaterThan(50);
+    // The same item in a PRIOR turn is discarded on replay: only retained
+    // text and tool arguments are priced, not the ignored reasoning summary.
+    expect(reader.message(signed, { currentTurn: false })).toBeLessThan(300);
+    expect(reader.message(signed)).toBeLessThan(300); // default is prior-turn
   });
 
   it("drops cross-model thinking on known APIs and keeps it as text on unknown APIs", () => {
