@@ -91,6 +91,7 @@ jobs:
     needs: [verify, pi-latest]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       issues: write
     steps:
@@ -101,7 +102,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Scheduled CI failed"
-          number=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+          number=$(gh issue list --state open --limit 100 --search "\"$title\" in:title" --json number,title \
             --jq "map(select(.title == \"$title\")) | .[0].number // empty")
           if [ -n "$number" ]; then
             gh issue comment "$number" --body "Failed again: $RUN_URL"
