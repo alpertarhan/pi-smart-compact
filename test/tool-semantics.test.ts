@@ -248,6 +248,11 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: ["file"], deleted: [] });
     expect(extractShellFileOperations({ command: "sed -i d file" }))
       .toEqual({ modified: ["file"], deleted: [] });
+    // Absolute literal targets are ordinary files, not address scripts.
+    expect(extractShellFileOperations({ command: "sed -i d /tmp/a.ts" }))
+      .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' /tmp/a.ts" }))
+      .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
     // Unambiguous multi-file form is unchanged.
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
       .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
@@ -335,6 +340,8 @@ describe("exitOneIsExpectedNoMatch", () => {
     ["mutating sed before a zero-count grep", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
     ["unknown loop body before a benign terminal", "for i in 1 2 3; do bun test t.test.ts 2>&1 | grep -E \"pass|fail\"; done; git diff main... --name-only | grep -i hindsight"],
     ["unknown ;-joined statement", "python check.py; ls /tmp | grep x"],
+    ["redirect silences an earlier read error", "cat missing 2>/dev/null; grep -q missing file"],
+    ["redirect silences an earlier ||-joined read error", "cat missing 2>/dev/null || grep -q missing file"],
   ])("rejects %s", (_label, command) => {
     expect(exitOneIsExpectedNoMatch(command)).toBe(false);
   });

@@ -350,8 +350,10 @@ function isCleanCommandExitOne(text: string, command?: string): boolean {
   // marker is tested unanchored: the harness appends the exit line after it.
   if (/…✂\d+/.test(text)) return false;
   const body = text.replace(/Command exited with code \d+\s*$/i, "");
-  // Positive evidence a counting terminal actually ran: its zero count line.
-  const terminalCountZero = /(?:^|\n)\s*0\s*(?:\n|$)/.test(body);
+  // Positive evidence a counting terminal actually ran: its zero count must
+  // be the body's LAST non-empty line — an earlier zero proves nothing.
+  const bodyLines = body.split("\n").filter((line) => line.trim().length > 0);
+  const terminalCountZero = bodyLines[bodyLines.length - 1]?.trim() === "0";
   if (!exitOneIsExpectedNoMatch(command, { terminalCountZero })) return false;
   // Zero counts are clean (jest "0 failed", rspec "0 failures") — strip them
   // before the strong-word test so they cannot force a failure.

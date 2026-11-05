@@ -362,6 +362,29 @@ describe("catalogErrors", () => {
     },
   );
 
+  it("preserves a cd failure whose zero line came from an earlier command", () => {
+    const command = "echo 0; cd /dev/null && grep -c x file";
+    const body = "0\nbash: cd: /dev/null: Not a directory\nCommand exited with code 1";
+    for (const isError of [false, true]) {
+      expect(catalogErrors(run("c1", command, body, isError))).toHaveLength(1);
+    }
+    // A matching retry does not resolve it.
+    const errors = catalogErrors([...run("1", command, body, true), ...run("2", command, body, true)]);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
+  it("preserves a hidden read error redirected to null before a benign terminal", () => {
+    const command = "cat missing 2>/dev/null; grep -q missing file";
+    for (const isError of [false, true]) {
+      expect(catalogErrors(run("c1", command, "\nCommand exited with code 1", isError))).toHaveLength(1);
+    }
+    const errors = catalogErrors([
+      ...run("1", command, "Error: cat failed", true),
+      ...run("2", command, "\nCommand exited with code 1", true),
+    ]);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
   it("still catalogs a benign-terminal exit 1 with truncated output", () => {
     // A missing error line could simply have been cut off.
     const truncated = "head of output…✂12345\nCommand exited with code 1";

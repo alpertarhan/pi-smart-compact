@@ -308,8 +308,7 @@ function commandFileOperations(words: string[]): ShellFileOperations {
         if (
           lastRaw !== undefined &&
           literalShellPath(lastRaw) === lastRaw &&
-          !/^(?:s|y)\//.test(lastRaw) &&
-          !lastRaw.startsWith("/")
+          !/^(?:s|y)\//.test(lastRaw)
         ) {
           modified.push(lastRaw);
         }
@@ -620,6 +619,9 @@ export function exitOneIsExpectedNoMatch(
     );
   };
   for (let index = 0; index < statements.length - 1; index++) {
+    // A redirect can silence a read error (cat missing 2>/dev/null); a
+    // hidden earlier failure stays a real failure regardless of boundaries.
+    if (statements[index].redirected) return false;
     const units: string[][] = [[]];
     for (const item of statements[index].words) {
       if (item.kind === "pipe") units.push([]);
