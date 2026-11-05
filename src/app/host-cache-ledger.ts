@@ -73,14 +73,27 @@ const tallies = <K extends string>(keys: readonly K[]) =>
   Object.fromEntries(keys.map(key => [key, { count: 0, uncached: 0 }])) as Record<K, TokenTally>;
 
 /**
- * Best-effort lifetime from Pi's model metadata (seconds). The request's chosen
- * retention is not recorded, so use the longest advertised tier. A reported
- * 1h write can lengthen this estimate, never shorten it. Unknown is not expired.
+ * Best-effort lifetime from Pi's model metadata (seconds), used when no
+ * write-tier evidence exists: the longest advertised tier. A reported 1h
+ * write can lengthen this estimate, never shorten it. Unknown is not expired.
  */
 export function cacheLifetimeMs(usage: Partial<Usage> | undefined, promptCache?: ModelPromptCache): number | null {
   const tiers = [promptCache?.short, promptCache?.long].filter(value => value !== undefined);
   if (!tiers.length || tiers.some(value => !Number.isFinite(value) || value <= 0 || !Number.isFinite(value * 1000))) return null;
   return Math.max(...tiers.map(value => value * 1000), num(usage?.cacheWrite1h) > 0 ? ONE_HOUR_MS : 0);
+}
+
+/**
+ * Tier a request's usage proves it actually wrote: a cache write with a numeric
+ * 1h split sets the tier — 1h when that bucket billed tokens, otherwise the
+ * advertised short tier. Pure reads and writes without the split return null:
+ * they keep the tier already in effect (the caller's sticky state).
+ */
+export function cacheWriteTierMs(usage: Partial<Usage> | undefined, promptCache?: ModelPromptCache): number | null {
+  if (num(usage?.cacheWrite) <= 0 || typeof usage?.cacheWrite1h !== "number" || !Number.isFinite(usage.cacheWrite1h)) return null;
+  if (usage.cacheWrite1h > 0) return ONE_HOUR_MS;
+  const short = promptCache?.short;
+  return typeof short === "number" && Number.isFinite(short) && short > 0 && Number.isFinite(short * 1000) ? short * 1000 : null;
 }
 
 export function createHostCacheLedger(): HostCacheLedger {
@@ -92,6 +105,8 @@ export function createHostCacheLedger(): HostCacheLedger {
   // Keep the longest known lifetime on a route; a short tail write must not
   // retire a longer-lived prefix. Unknown metadata and route changes reset it.
   let lifetimeMs: number | null = null;
+  // Longest tier proven by writes on this route; the advertised fallback never outranks it.
+  let writtenTierMs: number | null = null;
   let previousRoute: string | undefined;
   let pendingEdit: ContextEditKind | undefined;
   // Per-route all-miss streaks: consecutive large requests with zero cache reads.
@@ -102,6 +117,7 @@ export function createHostCacheLedger(): HostCacheLedger {
     previousAt = undefined;
     warmedAt = undefined;
     lifetimeMs = null;
+    writtenTierMs = null;
     previousRoute = undefined;
     pendingEdit = undefined;
     routeStreaks.clear();
@@ -138,13 +154,16 @@ export function createHostCacheLedger(): HostCacheLedger {
       const route = JSON.stringify([message.provider, message.model]);
       const sameRoute = route === previousRoute;
       const currentLifetime = cacheLifetimeMs(usage, promptCache);
+      const writtenTier = cacheWriteTierMs(usage, promptCache);
       if (previousAt !== undefined && sameRoute) {
         entry.gapMs = Math.max(0, time - previousAt);
         if (uncached >= Math.max(REBUILD_MIN_TOKENS, 0.5 * prompt)) {
           entry.rebuild = true;
           const alive = Math.max(previousAt, warmedAt ?? previousAt);
+          // The gap that just ended was governed by the tier already in effect;
+          // this request's own write only sets the tier for future gaps.
           entry.cause = pendingEdit ? "continuity"
-            : lifetimeMs !== null && currentLifetime !== null && time - alive > Math.max(lifetimeMs, currentLifetime) ? "idle-expiry" : "foreign";
+            : lifetimeMs !== null && time - alive > lifetimeMs ? "idle-expiry" : "foreign";
           const cause = summary.rebuilds[entry.cause];
           cause.count++;
           cause.uncached += uncached;
@@ -192,8 +211,12 @@ export function createHostCacheLedger(): HostCacheLedger {
         summary.cost.total += cost.total;
         if (entry.rebuild) summary.cost.rebuildUncached += num(cost.input) + num(cost.cacheWrite);
       }
-      lifetimeMs = sameRoute && lifetimeMs !== null && currentLifetime !== null
-        ? Math.max(lifetimeMs, currentLifetime) : currentLifetime;
+      // Write-tier evidence sets the effective tier, and any 1h write in the
+      // prefix wins over later short writes; a pure read keeps the tier in
+      // effect; without evidence the longest advertised tier governs.
+      if (!sameRoute) writtenTierMs = null; // a route change discards the evidence
+      if (writtenTier !== null) writtenTierMs = Math.max(writtenTierMs ?? 0, writtenTier);
+      lifetimeMs = writtenTierMs ?? (sameRoute ? lifetimeMs ?? currentLifetime : currentLifetime);
       previousRoute = route;
       previousAt = time;
       warmedAt = undefined;

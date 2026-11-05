@@ -156,6 +156,42 @@ describe("cachedPrefix request-start estimate (D1)", () => {
     );
     expect(prefix!.lifetimeMs).toBe(3_600_000);
   });
+
+  it("uses the short tier when every write reports a numeric 0 1h split", () => {
+    const shortWrite = assistant(61_000, {
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 4_000, cacheWrite1h: 0, totalTokens: 0, cost: ZERO_COST },
+    });
+    const prefix = cachedPrefix(
+      [messageEntry("e1", user(1_000)), messageEntry("e2", shortWrite)],
+      prefixModel({ short: 300, long: 3_600 }),
+    );
+    expect(prefix!.lifetimeMs).toBe(300_000);
+  });
+
+  it("keeps an older 1h write winning over a newer short-tier write", () => {
+    const oneHour = assistant(61_000, {
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 4_000, cacheWrite1h: 4_000, totalTokens: 0, cost: ZERO_COST },
+    });
+    const shortTail = assistant(121_000, {
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 500, cacheWrite1h: 0, totalTokens: 0, cost: ZERO_COST },
+    });
+    const prefix = cachedPrefix(
+      [messageEntry("e1", user(1_000)), messageEntry("e2", oneHour), messageEntry("e3", shortTail)],
+      prefixModel({ short: 300, long: 3_600 }),
+    );
+    expect(prefix!.lifetimeMs).toBe(3_600_000);
+  });
+
+  it("keeps the longest advertised tier when no write reports a tier split", () => {
+    const noSplit = assistant(61_000, {
+      usage: { input: 0, output: 0, cacheRead: 8_000, cacheWrite: 4_000, totalTokens: 0, cost: ZERO_COST },
+    });
+    const prefix = cachedPrefix(
+      [messageEntry("e1", user(1_000)), messageEntry("e2", noSplit)],
+      prefixModel({ short: 300, long: 3_600 }),
+    );
+    expect(prefix!.lifetimeMs).toBe(3_600_000);
+  });
 });
 
 describe("inspectContext memo (G)", () => {
