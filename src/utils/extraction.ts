@@ -326,7 +326,22 @@ function isBenignSearchResult(
 }
 
 function hasCommandFailureSignal(text: string): boolean {
-  if (/Command exited with code [1-9]\d*\s*$/i.test(text)) return true;
+  const exit = text.match(/Command exited with code ([1-9]\d*)\s*$/i)?.[1];
+  // A trailing exit 1 is routine shell control flow when every command
+  // succeeded but a last grep/test simply had no match ("25 pass 0 fail",
+  // "0", then exit 1). Only exit 1 WITH an error signal in the output is a
+  // failure; higher exit codes stay failures regardless of the body.
+  if (exit !== undefined && exit !== "1") return true;
+  const body = text.replace(/Command exited with code \d+\s*$/i, "");
+  if (
+    exit === "1" &&
+    (LIKELY_ERROR_RE.test(body) ||
+      /\berror TS\d+\b/.test(body) ||
+      /(?:^|\s)[1-9]\d*\s+(?:fail|failed|failures?)\b/i.test(body) ||
+      /^(?:npm\s+error|fatal:|traceback\b)/im.test(body))
+  )
+    return true;
+  if (exit !== undefined) return false;
   const firstLine =
     text
       .split(/\r?\n/)

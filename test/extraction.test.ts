@@ -293,6 +293,40 @@ describe("trackFileOps", () => {
 });
 
 describe("catalogErrors", () => {
+  const run = (id: string, command: string, output: string, isError = false) =>
+    [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+      },
+      { role: "toolResult", toolCallId: id, isError, content: output },
+    ] as unknown as LlmMessage[];
+
+  it.each([
+    ["passing tests then a no-match trailing command", " 25 pass  0 fail \n 25 pass  0 fail \n 6 files changed, 63 insertions(+), 20 deletions(-)\nCommand exited with code 1"],
+    ["a bare count and a no-match trailing command", "0\n\n\nCommand exited with code 1"],
+    ["diff-style output without error text", "3c3\n< old\n---\n> new\nCommand exited with code 1"],
+  ])("does not catalog a clean-output exit 1 (%s)", (_label, output) => {
+    expect(catalogErrors(run("c1", "bun test && git diff", output))).toEqual([]);
+  });
+
+  it.each([
+    ["failing test count", " 9 pass\n 1 fail \nRan 10 tests\nCommand exited with code 1"],
+    ["failing test count (vitest)", "Tests  1 failed | 9 passed\nCommand exited with code 1"],
+    ["module-not-found body", 'error: Module not found "minimax-probe.mjs"\nCommand exited with code 1'],
+    ["typescript errors", "src/a.ts:1:10: error TS2304: Cannot find name 'x'\nCommand exited with code 1"],
+    ["stack trace", "Traceback (most recent call last):\n  File \"x.py\"\nCommand exited with code 1"],
+  ])("still catalogs a real failure with exit 1 (%s)", (_label, output) => {
+    const errors = catalogErrors(run("c1", "bun test", output));
+    expect(errors.length).toBe(1);
+    expect(errors[0].resolved).toBe(false);
+  });
+
+  it("still catalogs a clean-output exit 2 or higher", () => {
+    expect(catalogErrors(run("c1", "ls missing", "ls: cannot access 'missing': No such file or directory\nCommand exited with code 2")).length).toBe(1);
+    expect(catalogErrors(run("c2", "tsc", "\nCommand exited with code 2")).length).toBe(1);
+  });
+
   it("catalogs tool errors", () => {
     const msgs: LlmMessage[] = [
       {
