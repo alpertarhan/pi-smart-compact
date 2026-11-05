@@ -243,9 +243,21 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: ["file"], deleted: [] });
     expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/'" }))
       .toEqual({ modified: [], deleted: [] });
-    // Slashless one-word scripts are collateral: nothing is recorded for them.
+    // GNU slashless scripts keep main's behavior: the file is recorded.
     expect(extractShellFileOperations({ command: "sed -i '3d' file" }))
-      .toEqual({ modified: [], deleted: [] });
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i d file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    // Unambiguous multi-file form is unchanged.
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
+      .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
+    // Bundled attached suffixes edit the file.
+    expect(extractShellFileOperations({ command: "sed -Ei.bak 's/a/b/' f" }))
+      .toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -ni.bak 's/a/b/' f" }))
+      .toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -Ei~ 's/a/b/' f" }))
+      .toEqual({ modified: ["f"], deleted: [] });
   });
 
   it("records nothing for read-only sed or in-place sed without a literal file", () => {

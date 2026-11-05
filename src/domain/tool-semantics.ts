@@ -284,12 +284,37 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     // -e/--expression or -f/--file supplies it; every other literal operand
     // is an edited file. Backup suffixes (-i.bak, BSD's -i '') are options or
     // an empty word, so they never reach the operand walk.
-    // In-place gate: bare/attached -i ("-i", "-i.bak", BSD's separate
-    // suffix word), or a bundle of sed's value-less flags with i ("-ni",
-    // "-nEi"). The bundle only admits [nErszu], so attached scripts
-    // ("-ffixes.sed", "-fsedscript", "-es/a/b/") never match: they are
-    // read-only -f/-e forms.
-    if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || /^-[nErszu]*i[nErszu]*$/.test(word) || word.startsWith("--in-place"))) {
+    // In-place gate: bare/attached -i ("-i", "-i.bak", BSD's separate suffix
+    // word), or a bundle of sed's value-less flags with i followed only by
+    // more such flags or a suffix separator ("-ni", "-Ei.bak", "-Ei~").
+    // Attached scripts ("-ffixes.sed", "-es/a/b/") never match.
+    if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || /^-[nErszu]*i(?:[nErszu]*$|[^A-Za-z])/.test(word) || word.startsWith("--in-place"))) {
+      // BSD's ambiguous bare suffix (`sed -i bak 's/a/b/' f`: suffix or GNU
+      // script — the dialect cannot be decided). Original last-target
+      // behavior: record the last raw operand when it is a literal path, and
+      // never when it is not (`$F`) or script-like (`s/…/…/`, `/addr/…`).
+      const args = words.slice(commandIndex + 1);
+      const bareIndex = args.indexOf("-i");
+      const ambiguous = args[bareIndex + 1];
+      if (
+        bareIndex !== -1 &&
+        ambiguous !== undefined &&
+        !ambiguous.startsWith("-") &&
+        !ambiguous.startsWith(".") &&
+        !ambiguous.includes("/")
+      ) {
+        const rest = args.slice(bareIndex + 2);
+        const lastRaw = rest[rest.length - 1];
+        if (
+          lastRaw !== undefined &&
+          literalShellPath(lastRaw) === lastRaw &&
+          !/^(?:s|y)\//.test(lastRaw) &&
+          !lastRaw.startsWith("/")
+        ) {
+          modified.push(lastRaw);
+        }
+        return { modified, deleted };
+      }
       let scriptSeen = false;
       let options = true;
       for (let index = commandIndex + 1; index < words.length; index++) {
@@ -298,15 +323,16 @@ function commandFileOperations(words: string[]): ShellFileOperations {
           options = false;
           continue;
         }
-        // shortcut: after a bare -i, BSD's separate suffix (dotted `.bak` or a
-        // bare `bak`) is skipped without consuming the script slot; slashless
-        // one-word scripts (`sed -i d f`) are collateral and record nothing.
+        // shortcut: after a bare -i, a dotted word is BSD's separate suffix
+        // (sed -i .bak 's/a/b/' f); it is skipped, never the script or a file.
+        // (The empty BSD suffix `sed -i '' s/…/ f` never appears as a word:
+        // the tokenizer drops empty quotes.)
         if (
           options &&
           word === "-i" &&
           words[index + 1] !== undefined &&
           !words[index + 1].startsWith("-") &&
-          (words[index + 1].startsWith(".") || !words[index + 1].includes("/"))
+          words[index + 1].startsWith(".")
         ) {
           index++;
           continue;
@@ -329,7 +355,6 @@ function commandFileOperations(words: string[]): ShellFileOperations {
         // The script decision runs on the RAW word, before literalShellPath:
         // scripts freely contain $, [], (), * … and must still consume the
         // script slot, or the real file would be mistaken for the script.
-        if (!word) continue; // BSD's `sed -i ''` empty backup suffix
         if (!scriptSeen) {
           scriptSeen = true; // first bare operand is the script
           continue;
