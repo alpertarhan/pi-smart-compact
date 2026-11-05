@@ -1079,7 +1079,13 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/") || isInjectedMessage(msg, txt))
+    if (
+      txt.length < 10 ||
+      txt.startsWith("/") ||
+      isInjectedMessage(msg, txt) ||
+      // A prior summary's open work is carried by the continuity state.
+      HISTORY_SUMMARY_RE.test(txt)
+    )
       continue;
     if (FOLLOWUP_RE.test(txt)) {
       // Avoid duplicates with errors
@@ -1109,7 +1115,13 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/") || isInjectedMessage(msg, txt))
+    if (
+      txt.length < 10 ||
+      txt.startsWith("/") ||
+      isInjectedMessage(msg, txt) ||
+      // A prior summary's open work is carried by the continuity state.
+      HISTORY_SUMMARY_RE.test(txt)
+    )
       continue;
     if (BLOCKED_RE.test(txt)) {
       const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));

@@ -267,6 +267,21 @@ describe("extractOpenLoops", () => {
     expect(loops.find((l) => l.type === "follow-up")?.status).toBe("resolved");
   });
 
+  it("never turns a prior compaction or branch summary into a loop", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const summary = (prefix: string) =>
+      prefix + "\n\n<summary>\n## Goal\nShip the billing worker\n\n## Blocked\n- Waiting for the DBA\n\n## Next Steps\n1. Next step: add the retry test\n</summary>";
+    const loops = extractOpenLoops(
+      [
+        { role: "user", content: summary("The conversation history before this point was compacted into the following summary:") },
+        { role: "user", content: summary("The following is a summary of a branch that this conversation came back from:") },
+        { role: "assistant", content: "Continuing." },
+      ],
+      extraction,
+    );
+    expect(loops).toEqual([]);
+  });
+
   it("retires follow-ups completed after injected messages", () => {
     const extraction = makeExtraction({ errors: [] });
     const loops = extractOpenLoops(
