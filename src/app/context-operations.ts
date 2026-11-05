@@ -719,13 +719,19 @@ export function trimRoi(branch: SessionEntry[], sessionId: string): {
   return { archivedOutputs, archivedChars, savedCharsEstimate: Math.max(0, archivedChars - markerChars) };
 }
 
+/** Content a trim can archive: a custom message's or a tool result's; nothing else. */
+function archivableContent(entry: SessionEntry | undefined) {
+  if (entry?.type === "custom_message") return entry.content;
+  if (entry?.type === "message" && entry.message.role === "toolResult") return entry.message.content;
+  return undefined;
+}
+
 /** Explicit, branch-local recovery only; never reveal assistant reasoning or arbitrary session entries. */
 export function readContextReference(branch: SessionEntry[], sessionId: string, id: string): string {
   const state = inspectContext(branch, sessionId);
   if (!state.references.has(id)) throw new Error("No archived reference with that ID on the active branch.");
   const entry = branch.find(item => item.id === id);
-  const content = entry?.type === "custom_message" ? entry.content
-    : entry?.type === "message" && entry.message.role === "toolResult" ? entry.message.content : undefined;
+  const content = archivableContent(entry);
   if (content === undefined || (typeof content !== "string" && content.some(block => block.type !== "text"))) throw new Error("Archived text is unavailable.");
   const text = extractText(content);
   const recorded = state.archives.get(id);

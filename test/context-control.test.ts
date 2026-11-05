@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
 import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
   buildSessionProjection, type AgentSession, type ExtensionContext, type SessionBoundaryDraft,
@@ -1940,6 +1940,34 @@ describe("archived process notifications and answered peer messages", () => {
     for (const id of [reply.result, send.result, reply.call]) expect(ids(session)).toContain(id);
     expect(JSON.stringify(buildSessionProjection(session.getBranch()).messages)).toContain("broker_accepted");
     expect(readContextReference(session.getBranch(), session.getSessionId(), answered.id)).toBe(answered.content);
+  });
+
+  it("gives identical same-millisecond notices their own cold-deferred markers", () => {
+    setSystemTime(new Date("2026-11-05T12:00:00.000Z")); // both notices share type, millisecond and content
+    try {
+      const h = harness({ background: true, model: ANTHROPIC });
+      Object.assign(h.cfg, { contextHygieneEnabled: true, contextPressureOnly: false });
+      h.setTokens(100_000);
+      // Half-size notices keep the pair as uneconomic warm as the single notice above, so the trim defers to cold.
+      const first = notice(h.session, {}, "make deploy\n".repeat(1_000));
+      const second = notice(h.session, {}, "make deploy\n".repeat(1_000));
+      h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });
+      for (let i = 0; i < 4; i++) h.session.appendMessage({ ...assistant([{ type: "text", text: "Recent protected turn " + i }]),
+        provider: ANTHROPIC.provider, model: ANTHROPIC.id, api: "anthropic-messages" as const });
+      expect(h.turn()).toBeUndefined();
+      h.setNow(1 + FIVE_MINUTES_MS + 1);
+      const cold = h.request();
+      const targets = cold.messages.flatMap((message: { role: string; content: unknown }, index: number) =>
+        message.role === "custom" && message.content === first.content ? [index] : []);
+      expect(targets).toHaveLength(2);
+      const sent = cold.result!.messages;
+      expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "cold", references: [first.id, second.id] });
+      const committed = h.request();
+      for (const index of targets) expect(sent[index]).toEqual(committed.messages[index]);
+      expect(sent[targets[0]!]).not.toEqual(sent[targets[1]!]);
+    } finally {
+      setSystemTime();
+    }
   });
 
   it("carries a cold-deferred notification trim byte-identically to the committed edit", () => {

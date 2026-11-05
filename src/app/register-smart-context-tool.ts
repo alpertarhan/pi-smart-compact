@@ -399,11 +399,14 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     }
     const { targets } = current;
     let changed = false;
+    // Identical custom messages (same type, millisecond and content) must each take their own target.
+    const used = new Set<(typeof targets)[number]>();
     const messages = event.messages.map(message => {
       if (message.role === "custom") {
-        const target = targets.find(item => "customType" in item && item.customType === message.customType
+        const target = targets.find(item => !used.has(item) && "customType" in item && item.customType === message.customType
           && item.timestamp === message.timestamp && item.content === JSON.stringify(message.content));
         if (!target) return message;
+        used.add(target);
         changed = true;
         // The host projects a custom-message edit's string content unchanged.
         return { ...message, content: target.replacement };
