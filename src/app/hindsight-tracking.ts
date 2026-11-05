@@ -12,6 +12,7 @@ interface TrackedReceipt {
   startedAt: number;
   epoch: number;
   resumed: boolean;
+  checked: boolean;
   lastError?: string;
 }
 
@@ -116,10 +117,13 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
     const target = targetFor(job.receipt, job.epoch);
     if (!target) { jobs.delete(job.receipt.key); return; }
     const remaining = job.startedAt + maxTrackingMs - Date.now();
-    if (remaining > 0) {
+    if (!job.checked || remaining > 0) {
+      // Every receipt gets one status check bounded only by the client request
+      // timeout; the tracking deadline limits later polls, not the first look.
+      const bounded = job.checked ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, remaining))]) : signal;
+      job.checked = true;
       try {
-        job.receipt = await refreshReceipt(target, job.receipt,
-          AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, remaining))]));
+        job.receipt = await refreshReceipt(target, job.receipt, bounded);
         job.lastError = undefined;
       } catch (error) {
         job.lastError = errorDetail(error);
@@ -173,7 +177,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
         "Hindsight is already tracking 32 submissions; this receipt remains in the ledger. Use smart_recall to refresh it." }, active?.ctx);
       return false;
     }
-    jobs.set(receipt.key, { receipt, startedAt: Date.now(), epoch, resumed });
+    jobs.set(receipt.key, { receipt, startedAt: Date.now(), epoch, resumed, checked: false });
     schedule();
     return true;
   }
