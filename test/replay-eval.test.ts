@@ -232,6 +232,21 @@ function calibrationFixture() {
   return [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n";
 }
 
+it("prices with base rates when a long-context tier omits rate fields", () => {
+  const session = loadSession(fixture(false, 6).text)!;
+  // Every replayed prompt is above the tier, which omits cacheRead and cacheWrite.
+  const catalog = () => ({
+    contextWindow: 200_000,
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, tiers: [{ inputTokensAbove: 10_000, input: 6, output: 30 }] },
+  });
+  const result = replaySession(session, catalog, { policies: policiesFor([24]), rebuildMin: 16_384 });
+  for (const policy of result.policies) {
+    expect(policy.cost).not.toBeNull();
+    expect(Number.isFinite(policy.cost)).toBe(true);
+    expect(policy.cost!).toBeGreaterThan(0);
+  }
+});
+
 it("reproduces recorded cache misses and cost for Anthropic 5-minute and openai-codex whole-prompt caches", () => {
   const catalog = (provider: string) => provider === "anthropic"
     ? { contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }

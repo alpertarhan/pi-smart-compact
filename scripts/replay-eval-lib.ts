@@ -177,7 +177,10 @@ function ratesFor(cost: Partial<ModelCost>, tokens: number): Partial<ModelCost> 
   let rates = cost;
   let above = -1;
   for (const tier of cost.tiers ?? []) if (tokens > tier.inputTokensAbove && tier.inputTokensAbove > above) [rates, above] = [tier, tier.inputTokensAbove];
-  return rates;
+  if (rates === cost) return rates;
+  // A tier may omit rate fields; every omitted one falls back to the base cost so no NaN is priced.
+  const present = Object.fromEntries(Object.entries(rates).filter(([, value]) => value !== undefined));
+  return { ...cost, ...present };
 }
 
 
