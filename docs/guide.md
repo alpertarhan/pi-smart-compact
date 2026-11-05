@@ -354,7 +354,10 @@ Two points matter most:
 - **`Fully automatic` works with Pi's auto-compaction off.** It asks Pi to
   compact at the next idle, queue-empty boundary once context reaches
   `Start at context %`, with a 10-minute cooldown after every completed
-  attempt, including failures and missing-callback timeouts.
+  attempt, including failures and missing-callback timeouts. Keeping Pi's
+  auto-compaction on still adds a backstop for long tool runs that reach no
+  idle boundary before the window fills: Smart Compact writes Pi's mid-run
+  compaction at or above `Start at context %`, and always for overflow recovery.
 
 `Start at context %` counts against the model's full window. On a large-window
 model (Home warns above 400k tokens), set `Context cap for start % (tokens)`
