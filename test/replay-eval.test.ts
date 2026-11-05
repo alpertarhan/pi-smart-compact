@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
-import { loadSession, policiesFor, replaySession } from "../scripts/replay-eval-lib.ts";
+import { loadSession, policiesFor, replaySession, type ModelInfo } from "../scripts/replay-eval-lib.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "replay-eval-test-"));
@@ -234,11 +234,10 @@ function calibrationFixture() {
 
 it("prices with base rates when a long-context tier omits rate fields", () => {
   const session = loadSession(fixture(false, 6).text)!;
-  // Every replayed prompt is above the tier, which omits cacheRead and cacheWrite.
-  const catalog = () => ({
-    contextWindow: 200_000,
-    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, tiers: [{ inputTokensAbove: 10_000, input: 6, output: 30 }] },
-  });
+  // Catalogs are data at runtime; a tier may omit rate fields the base cost defines.
+  const cost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75,
+    tiers: [{ inputTokensAbove: 10_000, input: 6, output: 30 }] } as ModelInfo["cost"];
+  const catalog = () => ({ contextWindow: 200_000, cost });
   const result = replaySession(session, catalog, { policies: policiesFor([24]), rebuildMin: 16_384 });
   for (const policy of result.policies) {
     expect(policy.cost).not.toBeNull();
