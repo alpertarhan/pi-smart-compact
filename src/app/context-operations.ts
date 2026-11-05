@@ -398,7 +398,7 @@ export interface TrimEconomy {
  * openai-codex lost the whole cached prompt after 6 of 11 observed trims, even with edits 9–30k
  * tokens from the end, so its trims are priced as full-prompt misses, not as a rewritten tail.
  */
-function missesWholePrompt(provider?: string): boolean {
+export function missesWholePrompt(provider?: string): boolean {
   return provider === "openai-codex";
 }
 

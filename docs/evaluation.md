@@ -388,9 +388,10 @@ policy starts from the same history. Policies:
 - `timed-<N>`: an economic comparison policy with `N` as the break-even limit;
   pressure commits, `N* ≤ N` commits (`break-even`), otherwise the batch is held
   and applied at the first request beyond the model's estimated cache horizon
-  (`cold`). The longest advertised `promptCache` tier is used when the chosen
-  retention is unknown; observed 1h writes can extend it. Missing lifetime
-  metadata never permits a cold trim. Planning, cooldown and protected prefixes use the extension's own
+  (`cold`). The horizon is the tier recorded cache writes report (Anthropic
+  `cacheWrite1h` 0 means the 5-minute tier; a pure read keeps the last one),
+  else the longest advertised `promptCache` tier. Missing lifetime metadata
+  never permits a cold trim. Planning, cooldown and protected prefixes use the extension's own
   `planContextTrim`/`trimEntries`/`trimTokens`.
 
 These are comparison policies, not an exact replay of runtime timing. The
@@ -399,20 +400,29 @@ early gate, requires favorable cache economics between cleanup and compaction,
 and queues no cold-cache trim. Only reaching the compaction gate bypasses
 cache economics for an automatic trim.
 
-Cost model per request: the projected context is estimated per message; the
-cached prefix is the longest run of identical projected messages shared with
-the previous request (0 after the estimated cache horizon, a model switch,
-or when cache lifetime metadata is unknown);
+Cost model per request: the projected context is estimated per message with
+Pi's own estimator (an image is a fixed size, thinking counts as text, never
+base64 or encrypted signatures). Recorded prompt tokens the untrimmed
+projection does not see (system prompt, tool schemas, provider-side tokens)
+are added to every policy's prompt as a policy-independent leading payload,
+so `none` carries the recorded prompt size. The cached prefix is the longest
+run of identical projected messages shared with the previous request, plus
+that payload when any message is reused. It is 0 after the cache horizon, on
+a model switch, on a route that never recorded a cache read, and for
+openai-codex once an earlier message changed (whole-prompt miss, as
+`trimTokens` prices it). An unknown lifetime never expires the prefix.
 `uncached = prompt − cached`; a rebuild is `uncached ≥ max(--rebuild-min,
-0.5 × prompt)`; price = `cacheRead × cached + (cacheWrite, else input) ×
-uncached` at catalog rates. System prompt, tool definitions and output are
-identical across policies and excluded. The recorded baseline (usage and
+0.5 × prompt)`, and the baseline's `misses` applies the same rule to recorded
+`input + cacheWrite`. Price = `cacheRead × cached + (cacheWrite on routes that
+recorded cache writes, else input) × uncached` at catalog rates, with
+long-context tiers chosen as Pi's `calculateCost` does, plus the recorded
+output cost (identical across policies). The recorded baseline (usage and
 `usage.cost.total`) is the only measured figure; subscription requests report
 tokens only. `--json` writes `<out>/replay-eval.json` with session ids and
-numbers, no message text or paths. Absolute estimates are not calibrated to
-recorded usage (a first run over three Codex sessions estimated about 4× the
-recorded `input + cacheRead`); compare policies by their Δ, never by the
-absolute column.
+numbers, no message text or paths. Calibration: on a 6,277-request
+Anthropic/openai-codex session, `none` estimated $576.21 against $577.18
+recorded and 214 rebuilds against 207 observed misses (before: $3,276 and
+2,701). Per route the cost stayed within 15%. Policy deltas remain estimates.
 
 ## Pilots and dated reports
 

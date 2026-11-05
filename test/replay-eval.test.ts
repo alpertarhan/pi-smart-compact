@@ -2,7 +2,9 @@ import { afterAll, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { loadSession, policiesFor, replaySession } from "../scripts/replay-eval-lib.ts";
+import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "replay-eval-test-"));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -73,8 +75,8 @@ it.each([
   const result = replaySession(session, catalog, { policies: policiesFor([24]), rebuildMin: 16_384 });
   expect(result.policies.find(policy => policy.policy === "timed-24")!.trims.cold).toBe(cold);
   if (!promptCache) {
-    expect(result.policies.find(policy => policy.policy === "none")!.cached).toBe(0);
-    expect(result.baseline.cacheRead).toBeGreaterThan(0); // measured data is never rewritten to match an estimate
+    // Unknown lifetime: the recorded reads show a cache, so the unchanged prefix is reused, never expired.
+    expect(result.policies.find(policy => policy.policy === "none")!.cached).toBeGreaterThan(0);
   }
 });
 
@@ -177,4 +179,71 @@ it("selects files by --since and reports per-file progress on stderr", () => {
   const all = run([]);
   expect(all.stderr.toString()).toBe("");
   expect(all.stdout.toString()).toContain("2 session(s) replayed, 0 skipped without a valid header, 0 skipped because they changed");
+});
+
+/**
+ * Calibration fixture: usage is generated from the documented provider cache semantics over the
+ * session's own projected prompt plus a fixed system/tool payload. Anthropic writes report the
+ * 5-minute tier (cacheWrite1h 0) and expire after a 6-minute gap; openai-codex has no catalog
+ * lifetime, keeps its prefix across a 20-minute gap, misses the whole prompt after a context edit
+ * and never bills cache writes.
+ */
+function calibrationFixture() {
+  const SYSTEM = 20_000;
+  const prices = { anthropic: { input: 5, cacheRead: 0.5, cacheWrite: 6.25 }, "openai-codex": { input: 2, cacheRead: 0.2, cacheWrite: 0 } };
+  const entries: Record<string, unknown>[] = [];
+  let at = T0;
+  let seq = 0;
+  let previous: { provider: string; prompt: number; at: number } | undefined;
+  let edited = false;
+  const add = (entry: Record<string, unknown>) => entries.push({ id: `c${++seq}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const message = (message: Record<string, unknown>) => add({ type: "message", message: { ...message, timestamp: at } });
+  const request = (provider: "anthropic" | "openai-codex", minutes: number) => {
+    at += minutes * 60_000;
+    const prompt = SYSTEM + contextMessageEntries(entries).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+    const hit = previous?.provider === provider && !edited && (provider !== "anthropic" || at - previous.at <= 300_000);
+    const reused = hit ? previous!.prompt : 0;
+    const [input, cacheWrite] = provider === "anthropic" ? [0, prompt - reused] : [prompt - reused, 0];
+    const rate = prices[provider];
+    const total = (rate.input * input + rate.cacheRead * reused + rate.cacheWrite * cacheWrite) / 1_000_000;
+    message({
+      role: "assistant", content: [{ type: "text", text: `Step ${seq}.` }], stopReason: "stop", api: provider === "anthropic" ? "anthropic-messages" : "openai-codex-responses",
+      provider, model: provider === "anthropic" ? "claude-cal" : "codex-cal",
+      usage: { input, cacheRead: reused, cacheWrite, ...(provider === "anthropic" ? { cacheWrite1h: 0 } : {}), output: 0, totalTokens: prompt,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } },
+    });
+    previous = { provider, prompt, at };
+    edited = false;
+  };
+  const toolTurn = (n: number) => {
+    message({ role: "user", content: [{ type: "text", text: `Inspect part ${n}.` }] });
+    message({ role: "toolResult", toolCallId: `t${n}`, toolName: "read", isError: false, content: [{ type: "text", text: `part ${n} line\n`.repeat(900) }] });
+  };
+  for (let n = 1; n <= 4; n++) { toolTurn(n); request("anthropic", 1); }
+  toolTurn(5); request("anthropic", 6); // past the 5-minute tier: expired
+  toolTurn(6); request("anthropic", 1);
+  for (let n = 7; n <= 9; n++) { toolTurn(n); request("openai-codex", 1); } // route switch: separate cache
+  toolTurn(10); request("openai-codex", 20); // no catalog lifetime: still cached
+  add({ type: "context_edit", targetId: entries.find(entry => (entry.message as { toolCallId?: string })?.toolCallId === "t8")!.id, replacement: { content: "[archived]" } });
+  edited = true;
+  toolTurn(11); request("openai-codex", 1); // codex: whole prompt after an edit
+  toolTurn(12); request("openai-codex", 1);
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-calibration", timestamp: new Date(T0).toISOString(), cwd: root };
+  return [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n";
+}
+
+it("reproduces recorded cache misses and cost for Anthropic 5-minute and openai-codex whole-prompt caches", () => {
+  const catalog = (provider: string) => provider === "anthropic"
+    ? { contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }
+    // Catalog lists a write price the provider never bills; no promptCache metadata.
+    : { contextWindow: 1_000_000, cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } };
+  const result = replaySession(loadSession(calibrationFixture())!, catalog, { policies: policiesFor([24]), rebuildMin: 1_000 });
+  const { baseline } = result;
+  const none = result.policies.find(policy => policy.policy === "none")!;
+  // Observed misses: expiry after 6 minutes, route switch, codex edit.
+  expect(baseline.misses).toBe(3);
+  expect(none.rebuilds).toBe(baseline.misses);
+  expect(none.prompt).toBe(baseline.input + baseline.cacheRead + baseline.cacheWrite);
+  expect(none.cached / baseline.cacheRead).toBeCloseTo(1, 2);
+  expect(none.cost! / baseline.recordedCost).toBeCloseTo(1, 2);
 });
