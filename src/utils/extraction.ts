@@ -230,12 +230,23 @@ export function trackFileOps(
     )) {
       referencedAt.set(ref, i);
     }
-    if (m.role !== "toolResult" || m.isError) continue;
+    if (m.role !== "toolResult") continue;
     const tc = tcIdx.get(m.toolCallId ?? "");
+    const resultText = extractText(m.content);
+    // A clean-output exit 1 is shell control flow, not a failure: commands
+    // before the trailing no-match grep/test ran, so their file effects stand.
+    if (
+      m.isError &&
+      !(
+        tc &&
+        classifyToolOperation(tc.arguments, tc.name) === "execute" &&
+        isCleanCommandExitOne(resultText)
+      )
+    )
+      continue;
     if (!tc) continue;
     const operation = classifyToolOperation(tc.arguments, tc.name);
     if (operation === "execute") {
-      const resultText = extractText(m.content);
       if (hasCommandFailureSignal(resultText)) continue;
       const shell = extractShellFileOperations(tc.arguments);
       for (const file of shell.modified) {
@@ -259,7 +270,6 @@ export function trackFileOps(
     if (operation === "mutate") {
       // pi-toolkit truncation hides whether a write was a no-op, so a truncated
       // result is treated as modified (safe default); otherwise skip true no-ops.
-      const resultText = extractText(m.content);
       if (isTruncated(resultText) || !NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
         modMap.set(filePath, {
@@ -325,23 +335,31 @@ function isBenignSearchResult(
   return exit === undefined || exit === "1";
 }
 
+/**
+ * pi marks any non-zero exit as `isError` on the tool result. A trailing
+ * exit 1 with no error signal in the output is shell control flow (a last
+ * grep/test with no match after successful commands: "25 pass 0 fail",
+ * "0"), not a session failure. Real signals keep the failure: error
+ * patterns, N>0 fail counts, error TS*, npm error/fatal/Traceback.
+ */
+function isCleanCommandExitOne(text: string): boolean {
+  const exit = text.match(/Command exited with code (\d+)\s*$/i)?.[1];
+  if (exit !== "1") return false;
+  const body = text.replace(/Command exited with code \d+\s*$/i, "");
+  return !(
+    LIKELY_ERROR_RE.test(body) ||
+    /\berror TS\d+\b/.test(body) ||
+    /(?:^|\s)[1-9]\d*\s+(?:fail|failed|failures?)\b/i.test(body) ||
+    // Strong failure words anywhere (bare "fail" excluded: "0 fail" is clean).
+    /\b(?:failed|failures?|fatal|panic|exception)\b/i.test(body) ||
+    /^(?:npm\s+error|fatal:|traceback\b)/im.test(body)
+  );
+}
+
 function hasCommandFailureSignal(text: string): boolean {
   const exit = text.match(/Command exited with code ([1-9]\d*)\s*$/i)?.[1];
-  // A trailing exit 1 is routine shell control flow when every command
-  // succeeded but a last grep/test simply had no match ("25 pass 0 fail",
-  // "0", then exit 1). Only exit 1 WITH an error signal in the output is a
-  // failure; higher exit codes stay failures regardless of the body.
   if (exit !== undefined && exit !== "1") return true;
-  const body = text.replace(/Command exited with code \d+\s*$/i, "");
-  if (
-    exit === "1" &&
-    (LIKELY_ERROR_RE.test(body) ||
-      /\berror TS\d+\b/.test(body) ||
-      /(?:^|\s)[1-9]\d*\s+(?:fail|failed|failures?)\b/i.test(body) ||
-      /^(?:npm\s+error|fatal:|traceback\b)/im.test(body))
-  )
-    return true;
-  if (exit !== undefined) return false;
+  if (exit === "1") return !isCleanCommandExitOne(text);
   const firstLine =
     text
       .split(/\r?\n/)
@@ -433,6 +451,14 @@ export function catalogErrors(
       continue;
 
     if (m.isError) {
+      // pi marks any non-zero exit as isError; a clean-output exit 1 is shell
+      // control flow, not a session failure (see isCleanCommandExitOne).
+      if (
+        tc &&
+        classifyToolOperation(tc.arguments, tc.name) === "execute" &&
+        isCleanCommandExitOne(text)
+      )
+        continue;
       errors.push({
         index: i,
         tool: tc?.name ?? "unknown",

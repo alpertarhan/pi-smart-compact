@@ -307,7 +307,10 @@ describe("catalogErrors", () => {
     ["a bare count and a no-match trailing command", "0\n\n\nCommand exited with code 1"],
     ["diff-style output without error text", "3c3\n< old\n---\n> new\nCommand exited with code 1"],
   ])("does not catalog a clean-output exit 1 (%s)", (_label, output) => {
+    // pi marks the non-zero exit as isError on the tool result; both the
+    // isError path and the error-pattern scan must agree it is not a failure.
     expect(catalogErrors(run("c1", "bun test && git diff", output))).toEqual([]);
+    expect(catalogErrors(run("c2", "bun test && git diff", output, true))).toEqual([]);
   });
 
   it.each([
@@ -317,9 +320,11 @@ describe("catalogErrors", () => {
     ["typescript errors", "src/a.ts:1:10: error TS2304: Cannot find name 'x'\nCommand exited with code 1"],
     ["stack trace", "Traceback (most recent call last):\n  File \"x.py\"\nCommand exited with code 1"],
   ])("still catalogs a real failure with exit 1 (%s)", (_label, output) => {
-    const errors = catalogErrors(run("c1", "bun test", output));
-    expect(errors.length).toBe(1);
-    expect(errors[0].resolved).toBe(false);
+    for (const isError of [false, true]) {
+      const errors = catalogErrors(run("c1", "bun test", output, isError));
+      expect(errors.length).toBe(1);
+      expect(errors[0].resolved).toBe(false);
+    }
   });
 
   it("still catalogs a clean-output exit 2 or higher", () => {
