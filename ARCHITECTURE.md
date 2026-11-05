@@ -249,8 +249,13 @@ edit applies at the next natural completed-turn boundary. A pending return to
 an anchor or newer boundary change cancels it with a visible message.
 
 Trimming protects four recent assistant turns and the active checkpoint prefix,
-replacing up to 32 old read-only results of at least 4096 characters with a
-bounded reference marker. Already-edited entries are not rewritten. Since
+replacing up to 32 old entries of at least 2,048 characters with a bounded
+reference marker: read-only, shell and `process` `output`/`list` results, old
+`ad-process:notification` messages (the marker keeps process name, id, status
+and summary), and `agent_mesh` deliveries a later successful `agent_mesh`
+`reply` answered by `reply_to` (the marker keeps message id, sender and first
+line). Unanswered deliveries, `agent_mesh` tool results and other `process`
+actions stay whole. Already-edited entries are not rewritten. Since
 10.4.0, planning is also tail-aware: eligible outputs are scored along a
 prefix-drop frontier (the rewritten cache suffix runs from the first edited
 entry to the branch end; `openai-codex` trims are priced as whole-prompt
@@ -339,7 +344,7 @@ mutation cap is 512; no partial rewind is applied when it is exceeded. Files
 and processes are untouched.
 
 Reference retrieval is restricted to this extension's branch-local archive
-records and original textual tool results; foreign context edits revoke access
+records and original textual tool results or archived custom messages; foreign context edits revoke access
 until an owned archive record explicitly re-authorizes it. Assistant reasoning
 and arbitrary entries are never exposed. Full text is scrubbed before a bounded
 page is sliced, avoiding cross-page credential reconstruction.

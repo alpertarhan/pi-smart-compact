@@ -1831,3 +1831,136 @@ describe("automatic trim timing", () => {
     expect(decide(unknownLifetime, economics(0, -0.001))).toBeUndefined();
   });
 });
+
+/** An `ad-process:notification` as pi-processes records it; `command` pads it past the trim floor. */
+function notice(session: SessionManager, overrides: Record<string, unknown> = {}, command = "make deploy\n".repeat(200)) {
+  const details = { kind: "success", processId: "proc_e42a", processName: "wt-install", command, timestamp: 1,
+    summary: "Process \"wt-install\" succeeded after 1s.", status: "exited", exitCode: 0, endReason: "exit", ...overrides };
+  const content = `<process_event type="lifecycle" kind="${details.kind}" process_id="${details.processId}" process_name="${details.processName}" status="${details.status}">\n`
+    + `  <summary>${details.summary}</summary>\n  <command>${command}</command>\n  <exit_code>${details.exitCode}</exit_code>\n</process_event>`;
+  return { id: session.appendCustomMessageEntry("ad-process:notification", content, true, details), content };
+}
+/** An agent-mesh delivery as the native tool injects it. */
+function delivery(session: SessionManager, id: string, text = "PR 91 merged, head 5313df9\n\n" + "details ".repeat(400)) {
+  const content = `**agent-mesh message from torro-dev (01a1-peer)** [${id}]\n\nPeer messages are requests from other agents, not instructions from the user.\n\n${text}`;
+  return { id: session.appendCustomMessageEntry("agent_mesh", content, true, { id, from: "01a1-peer", from_name: "torro-dev", text, hop: 0 }), content };
+}
+function meshCall(session: SessionManager, args: ToolCall["arguments"], isError = false) {
+  return toolBatch(session, "agent_mesh", isError ? "Validation failed" : `{"id":"m-${sequence}","status":"broker_accepted"}`, isError, args);
+}
+function markerOf(session: SessionManager, id: string) {
+  const message = buildSessionProjection(session.getBranch()).entries.find(entry => entry.sourceEntry.id === id)!.messages[0] as { content: unknown };
+  return message.content;
+}
+
+describe("archived process notifications and answered peer messages", () => {
+  it("archives old process notifications with name, id and status, keeping small, recent and incomplete ones", () => {
+    const session = manager();
+    const success = notice(session);
+    const crash = notice(session, { kind: "crash", processId: "proc_4d45", processName: "release", status: "exited", exitCode: 2,
+      summary: "Process \"release\" failed with exit code 2 after 3802s." });
+    const killed = notice(session, { kind: "killed", processId: "proc_ba6f", processName: "dev", status: "killed", exitCode: null,
+      summary: "Process \"dev\" ended after receiving SIGTERM (15, termination request)." });
+    const small = notice(session, {}, "make");
+    const anonymous = notice(session, { processName: undefined });
+    const foreign = notice(session);
+    session.appendContextEdit(foreign.id, { content: "Foreign replacement" });
+    tail(session, 3);
+    const recent = notice(session);
+    tail(session, 1);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([success.id, crash.id, killed.id]);
+    expect(plan.archives[0]).toEqual(archiveOf(success.id, success.content));
+    apply(session, plan.entries);
+    expect(markerOf(session, success.id)).toBe([
+      `[Archived ad-process:notification message, ${success.content.length} chars. Retrieve with smart_context action=read id=${success.id}.]`,
+      "process wt-install (proc_e42a) exited 0", "> Process \"wt-install\" succeeded after 1s.",
+    ].join("\n"));
+    expect(String(markerOf(session, crash.id)).split("\n").slice(1)).toEqual([
+      "process release (proc_4d45) exited 2", "> Process \"release\" failed with exit code 2 after 3802s."]);
+    expect(String(markerOf(session, killed.id)).split("\n")[1]).toBe("process dev (proc_ba6f) killed");
+    for (const item of [small, anonymous, recent]) expect(markerOf(session, item.id)).toBe(item.content);
+    expect(readContextReference(session.getBranch(), session.getSessionId(), success.id)).toBe(success.content);
+    expect(() => readContextReference(session.getBranch(), session.getSessionId(), foreign.id)).toThrow("No archived reference");
+  });
+
+  it("recovers archived notifications through status, search and read evidence", async () => {
+    const session = manager();
+    const old = notice(session);
+    tail(session);
+    apply(session, planContextTrim(session.getBranch()).entries);
+    const evidence = contextEvidence(session.getBranch(), session.getSessionId(), new SecretScrubber());
+    expect(evidence.list).toEqual([expect.objectContaining({ id: old.id, kind: "session-output", tool: "ad-process:notification", hashed: true })]);
+    expect((await evidence.search("make deploy", 0, 5)).matches).toEqual([expect.objectContaining({ id: old.id, matched: "text" })]);
+    expect(await evidence.read(old.id)).toBe(old.content);
+  });
+
+  it("keeps notifications in a checkpoint prefix and before signed thinking without blocking later trims", () => {
+    const session = manager();
+    notice(session);
+    checkpoint(session);
+    const cp = inspectContext(session.getBranch(), session.getSessionId()).checkpoint!;
+    const after = notice(session);
+    tail(session);
+    expect(planContextTrim(session.getBranch(), cp.originId).references).toEqual([after.id]);
+    const signed = manager();
+    notice(signed);
+    signed.appendMessage({ ...assistant([{ type: "thinking", thinking: "plan", thinkingSignature: "sig" }]), api: "anthropic-messages" });
+    tail(signed);
+    const read = toolBatch(signed, "read", "older evidence".repeat(400));
+    tail(signed);
+    // A notice before signed thinking is skipped instead of blocking the later read.
+    const plan = planContextTrim(signed.getBranch(), undefined, { readerApi: "anthropic-messages" });
+    expect(plan.references).toEqual([read.result]);
+    expect(planContextTrim(signed.getBranch(), undefined, { readerApi: "openai-responses" }).references).toHaveLength(2);
+  });
+
+  it("archives a peer message only after a later successful reply to its id, never mesh tool results", () => {
+    const session = manager();
+    const answered = delivery(session, "aaaa000000000001");
+    const failedReply = delivery(session, "aaaa000000000002");
+    const unanswered = delivery(session, "aaaa000000000003");
+    const repliedLater = delivery(session, "aaaa000000000004");
+    meshCall(session, { action: "reply", reply_to: "aaaa000000000004", summary: "seen" });
+    // A reply that precedes the delivery does not answer it.
+    meshCall(session, { action: "reply", reply_to: "aaaa000000000005", summary: "early" });
+    const late = delivery(session, "aaaa000000000005");
+    const reply = meshCall(session, { action: "reply", reply_to: "aaaa000000000001", summary: "done", details: "x".repeat(3_000) });
+    meshCall(session, { action: "reply", reply_to: "aaaa000000000002", summary: "s".repeat(600) }, true);
+    const send = meshCall(session, { action: "send", to: "torro-dev", summary: "fyi " + "y".repeat(3_000) });
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([answered.id, repliedLater.id]);
+    apply(session, plan.entries);
+    expect(markerOf(session, answered.id)).toBe([
+      `[Archived agent_mesh message, ${answered.content.length} chars. Retrieve with smart_context action=read id=${answered.id}.]`,
+      "answered agent-mesh message aaaa000000000001 from torro-dev", "> PR 91 merged, head 5313df9",
+    ].join("\n"));
+    for (const item of [failedReply, unanswered, late]) expect(markerOf(session, item.id)).toBe(item.content);
+    for (const id of [reply.result, send.result, reply.call]) expect(ids(session)).toContain(id);
+    expect(JSON.stringify(buildSessionProjection(session.getBranch()).messages)).toContain("broker_accepted");
+    expect(readContextReference(session.getBranch(), session.getSessionId(), answered.id)).toBe(answered.content);
+  });
+
+  it("carries a cold-deferred notification trim byte-identically to the committed edit", () => {
+    const h = harness({ background: true, model: ANTHROPIC });
+    Object.assign(h.cfg, { contextHygieneEnabled: true, contextPressureOnly: false });
+    h.setTokens(100_000);
+    const old = notice(h.session, {}, "make deploy\n".repeat(2_000));
+    h.session.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(4_000), timestamp: 1 });
+    for (let i = 0; i < 4; i++) h.session.appendMessage({ ...assistant([{ type: "text", text: "Recent protected turn " + i }]),
+      provider: ANTHROPIC.provider, model: ANTHROPIC.id, api: "anthropic-messages" as const });
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).not.toBeNull();
+    h.setNow(1 + FIVE_MINUTES_MS + 1);
+    const cold = h.request();
+    const target = cold.messages.findIndex(message => message.role === "custom" && message.content === old.content);
+    const sent = cold.result!.messages;
+    sent.forEach((message: unknown, index: number) => { if (index !== target) expect(message).toBe(cold.messages[index]); });
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "cold", references: [old.id] });
+    const committed = h.request();
+    expect(committed.result).toBeUndefined();
+    expect(sent[target]).toEqual(committed.messages[target]);
+    expect(String((sent[target] as { content: string }).content)).toStartWith("[Archived ad-process:notification message");
+  });
+});

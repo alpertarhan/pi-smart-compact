@@ -193,11 +193,14 @@ Or Home → **Clean up tool output**. Either one:
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
 - replaces old successful text results of at least 2,048 characters with a
   digest marker, up to 32 outputs per boundary: read-only tools, shell
-  (`bash`) output and `smart_context` `read` pages;
+  (`bash`) output, `process` `output`/`list` results, `smart_context` `read`
+  pages, old process notifications and peer (`agent_mesh`) messages the agent
+  already answered with a `reply`;
 - keeps the latest four assistant turns, an active checkpoint's prefix, errors,
   every tool call (including shell commands), writes, unknown tools, turns
   that mix shell or read-only calls with any other tool, instruction/skill-file
-  reads, `smart_context` results other than `read`, and another extension's
+  reads, `smart_context` results other than `read`, `process` actions that
+  change processes, `agent_mesh` tool results, unanswered peer messages, and another extension's
   explicit context edits;
 - is cancelled with a visible notice if a return to an anchor is pending or a
   newer boundary change arrives.

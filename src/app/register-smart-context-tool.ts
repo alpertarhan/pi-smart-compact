@@ -83,7 +83,9 @@ interface TrimMark extends DeferredTrim {
   sessionId: string;
   leafId: string;
   entries: SessionBoundaryDraft[];
-  targets: { targetId: string; toolCallId: string; toolName: string; replacement: string }[];
+  /** Tool results match by call ID and tool; custom messages by type, timestamp and original content (JSON). */
+  targets: Array<{ targetId: string; replacement: string }
+    & ({ toolCallId: string; toolName: string } | { customType: string; timestamp: number; content: string })>;
 }
 
 /**
@@ -398,8 +400,16 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     const { targets } = current;
     let changed = false;
     const messages = event.messages.map(message => {
+      if (message.role === "custom") {
+        const target = targets.find(item => "customType" in item && item.customType === message.customType
+          && item.timestamp === message.timestamp && item.content === JSON.stringify(message.content));
+        if (!target) return message;
+        changed = true;
+        // The host projects a custom-message edit's string content unchanged.
+        return { ...message, content: target.replacement };
+      }
       if (message.role !== "toolResult") return message;
-      const target = targets.find(item => item.toolCallId === message.toolCallId && item.toolName === message.toolName);
+      const target = targets.find(item => "toolCallId" in item && item.toolCallId === message.toolCallId && item.toolName === message.toolName);
       // Byte-identical to the host's projection of the future context_edit.
       const content = target && [{ type: "text" as const, text: target.replacement }];
       if (!content || JSON.stringify(message.content) === JSON.stringify(content)) return message;
@@ -535,8 +545,15 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             mark = {
               sessionId, leafId: branch.at(-1)!.id, entries: trimEntries(plan, "cold"),
               ...economics, breakEvenRequests,
-              targets: branch.flatMap(entry => entry.type === "message" && entry.message.role === "toolResult" && edits.has(entry.id)
-                ? [{ targetId: entry.id, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName, replacement: edits.get(entry.id)! }] : []),
+              targets: branch.flatMap((entry): TrimMark["targets"] => {
+                const replacement = edits.get(entry.id);
+                if (replacement === undefined) return [];
+                if (entry.type === "custom_message") {
+                  return [{ targetId: entry.id, replacement, customType: entry.customType, timestamp: Date.parse(entry.timestamp), content: JSON.stringify(entry.content) }];
+                }
+                return entry.type === "message" && entry.message.role === "toolResult"
+                  ? [{ targetId: entry.id, replacement, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName }] : [];
+              }),
             };
             return;
           }
