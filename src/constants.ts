@@ -34,6 +34,8 @@ export const MAX_STATE_OPEN_LOOPS = 25;
 export const AUTO_TRIGGER_TIMEOUT_CAP_MS = 300_000;
 /** Provider-call ceiling for the synchronous session_before_compact hook. */
 export const AUTO_TRIGGER_MAX_LLM_CALLS = 4;
+/** Reasoning models spend output tokens on thinking before visible text (MiniMax ignores budget_tokens). */
+export const REASONING_OUTPUT_HEADROOM_TOKENS = 16_384;
 /** Suppress proactive settled-trigger churn after any confirmed compaction. */
 export const SETTLED_TRIGGER_COOLDOWN_MS = 10 * 60_000;
 /**

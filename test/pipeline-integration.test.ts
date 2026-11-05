@@ -38,7 +38,7 @@ import { prepareRun } from "../src/app/steps/prepare.ts";
 import { buildState } from "../src/app/steps/state.ts";
 import { verifyAndPatch } from "../src/app/steps/verify.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
-import { AUTO_TRIGGER_MAX_LLM_CALLS, DEFAULT_CONFIG, PROFILES } from "../src/constants.ts";
+import { AUTO_TRIGGER_MAX_LLM_CALLS, DEFAULT_CONFIG, PROFILES, REASONING_OUTPUT_HEADROOM_TOKENS } from "../src/constants.ts";
 import { aggregateProviderRoutes } from "../src/domain/provider-evaluation.ts";
 import { summarizeConversation } from "../src/app/steps/synthesize.ts";
 import { explorationToolSupportKey } from "../src/phases/explore.ts";
@@ -164,6 +164,17 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     await prepareRun(rc);
     for (let i = 0; i < AUTO_TRIGGER_MAX_LLM_CALLS; i++) rc.services.budget.reserveCall(1, 1);
     expect(() => rc.services.budget.reserveCall(1, 1)).toThrow("budget");
+  });
+
+  it.each([false, true])("adds per-call thinking headroom to the run output budget (reasoning: %p)", async (reasoning) => {
+    const rc = makeTieredRc([]);
+    rc.config = { ...DEFAULT_CONFIG, maxLatencyMs: 0, maxLlmCalls: 0 };
+    rc.mode = "fast";
+    rc.flags.autoTriggered = true;
+    rc.summaryModel = { ...rc.summaryModel, reasoning };
+    await prepareRun(rc);
+    // Fast: 20k visible output over 3 automatic calls.
+    expect(rc.services.budget.remainingOutputTokens()).toBe(20_000 + (reasoning ? 3 * REASONING_OUTPUT_HEADROOM_TOKENS : 0));
   });
 
   it.each([
@@ -510,7 +521,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.finalSummary).toContain("src/auth.ts");
   });
 
-  it("refines auto strategy without invalidating the already planned window budget", async () => {
+  it("refines auto strategy without invalidating the planned window budget or reasoning headroom", async () => {
     const messages = [userMsg("Resolve the risky release"), assistantMsg("Working on it")];
     setLlmClient({ complete: async () => makeSummaryResponse(
       "## Goal\nResolve the risky release\n## Progress\n### Done\n- none\n### In Progress\n- release\n### Blocked\n- none\n## Critical Context\n- preserve context",
@@ -520,6 +531,7 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     tiered.mode = "balanced";
     tiered.config.maxLlmCalls = 0;
     tiered.config.maxLlmInputTokens = 0;
+    tiered.summaryModel = { ...tiered.summaryModel, reasoning: true };
     (tiered as any).compactionPlan = { summaryBudgetTokens: tiered.profileCfg.summaryBudgetTokens };
     const extracted = extractWithCache(tiered);
     extracted.extraction.errors = Array.from({ length: 6 }, (_, index) => ({
@@ -533,6 +545,9 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
     expect(synthesized.mode).toBe("thorough");
     expect(synthesized.profile).toBe(plannedProfile);
     expect(synthesized.profileCfg.summaryBudgetTokens).toBe(plannedBudget);
+    // The refined limit replaces the prepared one; thorough is 80k over 8 calls.
+    const budget = synthesized.services.budget;
+    expect(budget.remainingOutputTokens() + budget.outputTokenCount()).toBe(80_000 + 8 * REASONING_OUTPUT_HEADROOM_TOKENS);
   });
 
   it("does not use zero-call for token-dense tool-heavy context", async () => {

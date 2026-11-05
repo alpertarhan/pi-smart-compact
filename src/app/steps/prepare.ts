@@ -8,7 +8,7 @@
 
 import type { RcBase, PreparedRc, ResolvedAuth } from "../run-context.ts";
 import { advance } from "../run-context.ts";
-import { effectiveBudget, resolveCallBudget, MODE_POLICIES } from "../mode-policy.ts";
+import { effectiveBudget, resolveCallBudget, resolveOutputBudget, MODE_POLICIES } from "../mode-policy.ts";
 import { DEFAULT_CONFIG } from "../../constants.ts";
 import { getProviderCaps } from "../../utils/tokens.ts";
 import { loadConfig } from "../../utils/config.ts";
@@ -61,7 +61,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
   rc.timeoutMs,
   rc.services.clock,
   inputBudget,
-  policy.maxOutputTokens,
+  resolveOutputBudget(rc.mode, callBudget, rc.summaryModel.reasoning),
  );
 
  if (rc.timeoutMs > 0) {
