@@ -252,6 +252,8 @@ limit) and the mode budgets below.
   `thorough`, a simple session toward `fast`.
 - `fast` can build the summary with no model call (`Local summaries`,
   `zeroCallEnabled`) when extraction confidence is high.
+- A reasoning summary model adds 16,384 output tokens of thinking headroom per
+  allowed call (automatic `fast`: 20K + 3 × 16,384).
 - The mode's token target is binding. Recent turns stay raw only if they fit
   the planned tail.
 - The summary and tail sizes come from the profile each mode uses (`fast` →
@@ -624,7 +626,10 @@ Notes on specific keys:
 
 `summaryBudgetTokens` is the requested summary length, not a hard provider cutoff.
 Single-pass and assembly requests allow up to twice that target to finish the
-required format, still subject to provider/model limits and the run output budget.
+required format. A reasoning summary model gets 16,384 more tokens per synthesis
+request for thinking; stated targets do not change. Requests stay within the
+model's advertised output limit (the provider table when none is advertised) and
+the run output budget.
 Batch prompts state their output budget. A `length` stop may retry once with
 minimal reasoning and up to twice the original output allowance, including when
 reasoning is already minimal; retries must leave the final assembly call available.

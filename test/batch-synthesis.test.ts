@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { BudgetGuard, createServices } from "../src/infra/services.ts";
+import { REASONING_OUTPUT_HEADROOM_TOKENS } from "../src/constants.ts";
 import { clearSynthesisCache } from "../src/infra/synthesis-cache.ts";
 import {
 	BatchSummaryFormatError,
@@ -389,6 +390,47 @@ describe("synthesis output budgets", () => {
 		expect(limits).toEqual([1_024]);
 		await expect(assembleLLM([], extraction, null, cappedModel, { apiKey: "test" }, 3_000, "", undefined, services)).rejects.toThrow(/budget exhausted/);
 		expect(limits).toHaveLength(1);
+	});
+
+	it("adds thinking headroom for reasoning models but keeps the visible targets", async () => {
+		const limits: number[] = [];
+		const services = createServices({
+			llm: { complete: async (_model, _body, options) => {
+				limits.push(options.maxTokens!);
+				return response(assembleFallback([], extraction));
+			} },
+		});
+		const plain = { ...model, reasoning: false, maxTokens: 64_000 };
+		const thinking = { ...plain, reasoning: true };
+		const batch = buildBatchRequest([chunk], extraction, thinking, 1_000);
+		expect(JSON.stringify(batch.context)).toContain("Target at most 1000 output tokens");
+		expect(batch.maxTokens).toBe(1_000 + REASONING_OUTPUT_HEADROOM_TOKENS);
+		expect(buildBatchRequest([chunk], extraction, plain, 1_000).maxTokens).toBe(1_000);
+		const single = buildSinglePassRequest("Conversation", extraction, null, "", thinking, 6_000);
+		expect(JSON.stringify(single.context)).toContain("Target summary length: 6000 tokens");
+		expect(single.maxTokens).toBe(12_000 + REASONING_OUTPUT_HEADROOM_TOKENS);
+		// Above the 8,192 provider-table default: the model's own limit is the ceiling.
+		expect(buildSinglePassRequest("Conversation", extraction, null, "", plain, 6_000).maxTokens).toBe(12_000);
+		await assembleLLM([], extraction, null, thinking, { apiKey: "test" }, 6_000, "", undefined, services);
+		await assembleLLM([], extraction, null, plain, { apiKey: "test" }, 6_000, "", undefined, services);
+		expect(limits).toEqual([12_000 + REASONING_OUTPUT_HEADROOM_TOKENS, 12_000]);
+	});
+
+	it("caps thinking headroom at the model limit, else at the provider table", async () => {
+		const limits: number[] = [];
+		const services = createServices({
+			llm: { complete: async (_model, _body, options) => {
+				limits.push(options.maxTokens!);
+				return response(assembleFallback([], extraction));
+			} },
+		});
+		const capped = { ...model, reasoning: true, maxTokens: 12_000 };
+		expect(buildBatchRequest([chunk], extraction, capped, 1_000).maxTokens).toBe(12_000);
+		expect(buildSinglePassRequest("Conversation", extraction, null, "", capped, 3_000).maxTokens).toBe(12_000);
+		await assembleLLM([], extraction, null, capped, { apiKey: "test" }, 3_000, "", undefined, services);
+		expect(limits).toEqual([12_000]);
+		// Unknown model limit: the 8,192 default provider table applies.
+		expect(buildBatchRequest([chunk], extraction, { ...model, reasoning: true }, 1_000).maxTokens).toBe(8_192);
 	});
 });
 

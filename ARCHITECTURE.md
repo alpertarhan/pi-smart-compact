@@ -660,8 +660,11 @@ calls before dispatch so they cannot spend the final assembly call.
 Single-pass and final assembly reject known nonterminal stop reasons and
 unclosed Markdown fences before the synthesis cache can retain the result.
 Prompts state their output targets. Single-pass and assembly allow up to twice
-the desired summary length as completion headroom, within provider/model caps
-and the unchanged aggregate run budget. A length-truncated batch may retry once
+the desired summary length as completion headroom. A reasoning summary model
+gets 16,384 more completion tokens per synthesis request for thinking, and the
+run output budget grows by the same amount per allowed call; stated targets do
+not change. Completions stay within the model's advertised output limit (the
+provider table when none is advertised). A length-truncated batch may retry once
 with minimal reasoning and bounded output headroom even when its first attempt
 already used minimal reasoning. Malformed or still-truncated responses continue
 to use deterministic fallback; the final assembly call stays reserved.
@@ -1062,7 +1065,7 @@ with a safe default and fuzzy alias matching for unknowns:
 
 | Capability | Drives |
 | --- | --- |
-| `maxOutputTokens` | caps synthesis / patch budgets |
+| `maxOutputTokens` | caps batch targets and patch budgets; synthesis completions use the model's limit when it is larger |
 | `supportsTools` (`true \| false \| "probe"`) | exploration tool-call probing |
 | `concurrencyLimit` | bounded batch-synthesis worker-pool width |
 | `cacheStrategy` | prompt-cache retention per call |

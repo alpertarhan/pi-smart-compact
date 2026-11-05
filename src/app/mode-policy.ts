@@ -1,7 +1,7 @@
 import type {
   CompactionMode, CompactionState, CompressionProfile, EffectiveCompactionMode, StructuredExtraction,
 } from "../types.ts";
-import { AUTO_TRIGGER_MAX_LLM_CALLS } from "../constants.ts";
+import { AUTO_TRIGGER_MAX_LLM_CALLS, REASONING_OUTPUT_HEADROOM_TOKENS } from "../constants.ts";
 
 export interface ModePolicy {
   profile: CompressionProfile;
@@ -104,4 +104,9 @@ export function effectiveBudget(configured: number, modeDefault: number, overrid
 export function resolveCallBudget(configured: number, mode: EffectiveCompactionMode, override?: number, automatic = false): number {
   const budget = effectiveBudget(configured, MODE_POLICIES[mode].maxLlmCalls, override);
   return automatic ? Math.min(budget, AUTO_TRIGGER_MAX_LLM_CALLS) : budget;
+}
+
+/** Shared like resolveCallBudget. A reasoning summary model reserves thinking headroom on every call. */
+export function resolveOutputBudget(mode: EffectiveCompactionMode, callBudget: number, reasoning: boolean): number {
+  return MODE_POLICIES[mode].maxOutputTokens + (reasoning ? callBudget * REASONING_OUTPUT_HEADROOM_TOKENS : 0);
 }
