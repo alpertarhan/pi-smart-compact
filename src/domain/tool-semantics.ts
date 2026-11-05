@@ -341,12 +341,16 @@ function commandFileOperations(words: string[]): ShellFileOperations {
           options = false;
           continue;
         }
-        // shortcut: after a bare -i, a dotted word is BSD's separate suffix
-        // (sed -i .bak 's/a/b/' f); it is skipped, never the script or a file.
+        // shortcut: after a bare -i with no script yet supplied, a dotted
+        // word is BSD's separate suffix (sed -i .bak 's/a/b/' f); it is
+        // skipped, never the script or a file. With the script already
+        // supplied before the -i, a final dotted word is the GNU input file
+        // (.env, ./src/a.ts): BSD's suffix reading would have to edit stdin.
         // (The empty BSD suffix `sed -i '' s/…/ f` never appears as a word:
         // the tokenizer drops empty quotes.)
         if (
           options &&
+          !scriptBefore &&
           word === "-i" &&
           words[index + 1] !== undefined &&
           !words[index + 1].startsWith("-") &&

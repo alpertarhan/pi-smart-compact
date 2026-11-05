@@ -264,6 +264,13 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
     expect(extractShellFileOperations({ command: "sed 's/a/b/' -i $F" }))
       .toEqual({ modified: [], deleted: [] });
+    // Dotted/relative final targets with the script already supplied.
+    expect(extractShellFileOperations({ command: "sed -e 's/a/b/' -i .env" }))
+      .toEqual({ modified: [".env"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i .env" }))
+      .toEqual({ modified: [".env"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i ./src/a.ts" }))
+      .toEqual({ modified: ["./src/a.ts"], deleted: [] });
     // Unambiguous multi-file form is unchanged.
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
       .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
