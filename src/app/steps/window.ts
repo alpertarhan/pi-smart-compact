@@ -379,23 +379,20 @@ export function estimateReaderMessageTokens(
  readerEstimator: TokenEstimator,
  msgs: ReturnType<typeof contextMessageEntries>,
 ): number[] {
- let lastHumanTurn = -1;
+ // Replay turn accounting follows the WIRE, not human-turn policy: custom and
+ // host-summary messages convert to user items, so every projected user item
+ // starts a new API turn. (Retention protection elsewhere keeps its stricter
+ // human-only boundary.)
+ let lastWireUserItem = -1;
  for (let index = 0; index < msgs.length; index++) {
   const message = msgs[index]!.message;
-  if (
-   isRecord(message) &&
-   message.role === "user" &&
-   !msgs[index]!.customType &&
-   !isInjectedMessage(message as unknown as LlmMessage)
-  ) {
-   lastHumanTurn = index;
-  }
+  if (isRecord(message) && message.role === "user") lastWireUserItem = index;
  }
  return msgs.map((entry, index) =>
   readerEstimator.message(entry.message as LlmMessage, {
    contextEdited: entry.contextEdited,
-   // No human turn anywhere means nothing is provably in the live turn.
-   currentTurn: lastHumanTurn >= 0 && index > lastHumanTurn,
+   // No user item anywhere means nothing is provably in the live turn.
+   currentTurn: lastWireUserItem >= 0 && index > lastWireUserItem,
   }),
  );
 }

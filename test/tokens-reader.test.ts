@@ -35,7 +35,13 @@ function jpegBase64(width: number, height: number): string {
   return buf.toString("base64");
 }
 
-const patch = (width: number, height: number) => Math.ceil(width / 28) * Math.ceil(height / 28);
+// Documented Claude 3-family rule: long edge resizes to 1568px, then 28px patches.
+const patch = (width: number, height: number) => {
+  const scale = Math.min(1, 1568 / Math.max(width, height));
+  const w = Math.max(1, Math.ceil(width * scale));
+  const h = Math.max(1, Math.ceil(height * scale));
+  return Math.ceil(w / 28) * Math.ceil(h / 28);
+};
 
 describe("reader token estimator replay proxies", () => {
   it("uses exact usage.output for same-model anthropic-messages replay", () => {
@@ -164,14 +170,29 @@ describe("reader window estimates (estimateReaderMessageTokens)", () => {
     expect(tokens[3]).toBe(1000); // live turn: full measured output
   });
 
-  it("treats custom messages as non-human for the live-turn boundary", () => {
+  it("prices replay turns by the last WIRE user item, including custom messages", () => {
     const reader = makeReaderTokenEstimator(CODEX, cal);
+    // human -> assistant(reasoning) -> custom user item -> assistant(reasoning):
+    // the custom item is a real wire turn boundary, so the first assistant's
+    // reasoning is prior-turn for the API even though it followed a human.
     const msgs = [
-      { type: "message" as const, id: "1", message: sameModel },
-      { type: "message" as const, id: "2", message: { role: "user", content: [{ type: "text", text: "injected" }] }, customType: "smart-compact-context" },
-      { type: "message" as const, id: "3", message: sameModel },
+      { type: "message" as const, id: "1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+      { type: "message" as const, id: "2", message: sameModel },
+      { type: "message" as const, id: "3", message: { role: "user", content: [{ type: "text", text: "summary injection" }] }, customType: "smart-compact-context" },
+      { type: "message" as const, id: "4", message: sameModel },
     ];
     const tokens = estimateReaderMessageTokens(reader, msgs as any);
-    expect(tokens[2]).toBe(100); // custom turn is not a human turn
+    expect(tokens[1]).toBe(100); // prior turn: output - reasoning
+    expect(tokens[3]).toBe(1000); // live turn after the custom user item
+  });
+
+  it("treats a compaction-summary user item as the live-turn boundary", () => {
+    const reader = makeReaderTokenEstimator(CODEX, cal);
+    const msgs = [
+      { type: "message" as const, id: "1", message: { role: "user", content: [{ type: "text", text: "## Summary" }] }, customType: "summary" },
+      { type: "message" as const, id: "2", message: sameModel },
+    ];
+    const tokens = estimateReaderMessageTokens(reader, msgs as any);
+    expect(tokens[1]).toBe(1000); // the assistant lives in the summary's turn
   });
 });

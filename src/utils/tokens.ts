@@ -273,8 +273,19 @@ export interface TokenEstimator {
 const SIGNATURE_KEYS = ["thinkingSignature", "textSignature", "thoughtSignature"];
 /** Conservative flat image cost when no dimension rule is verified for the API. */
 const IMAGE_BLOCK_TOKENS = 1_200;
-/** Current Claude vision: visual tokens are ⌈w/28⌉·⌈h/28⌉ patches after model-specific resizing. */
-const ANTHROPIC_IMAGE_PATCH_PX = 28;
+/**
+ * Current Claude 3-family vision (documented): the provider resizes the long
+ * edge to at most 1568px, then visual tokens are ⌈w/28⌉·⌈h/28⌉ patches.
+ * Pre-3 Claude and non-Claude models on Anthropic-compatible endpoints have
+ * different, unverified rules and take the flat estimate instead.
+ */
+const CLAUDE_IMAGE_PATCH_PX = 28;
+const CLAUDE_MAX_IMAGE_EDGE_PX = 1_568;
+
+function isPatchGridClaude(model: string | undefined): boolean {
+  if (!model?.toLowerCase().startsWith("claude")) return false;
+  return !/^claude-(?:2|instant)/i.test(model);
+}
 /** openai-completions thinking replay is keyed by these marker signatures (pi-ai converter). */
 const COMPLETIONS_REASONING_MARKERS = new Set(["reasoning", "reasoning_content", "reasoning_text"]);
 
@@ -318,13 +329,25 @@ function parseImageDimensions(source: unknown): { width: number; height: number 
   return null;
 }
 
-/** Visual-token cost of one image block for a reader API (verified rules only). */
-function imageBlockTokens(image: { data?: unknown; source?: { data?: unknown } | string }, api: string | undefined): number {
-  if (api !== "anthropic-messages") return IMAGE_BLOCK_TOKENS;
+/**
+ * Visual-token estimate for one image block: the documented patch rule only
+ * where the reader's API AND model family are verified (current Claude);
+ * otherwise a bounded flat estimate. The flat rate is an estimate with real
+ * uncertainty, not a guaranteed upper bound — an unverified model may bill a
+ * large image above it.
+ */
+function imageBlockTokens(image: { data?: unknown; source?: { data?: unknown } | string }, api: string | undefined, model: string | undefined): number {
   const raw = typeof image.data === "string" ? image.data : typeof image.source === "object" && image.source && typeof image.source.data === "string" ? image.source.data : undefined;
   const dims = parseImageDimensions(raw);
-  if (!dims) return IMAGE_BLOCK_TOKENS;
-  return Math.ceil(dims.width / ANTHROPIC_IMAGE_PATCH_PX) * Math.ceil(dims.height / ANTHROPIC_IMAGE_PATCH_PX);
+  if (api !== "anthropic-messages" || !isPatchGridClaude(model) || !dims) {
+    return IMAGE_BLOCK_TOKENS;
+  }
+  // Provider-side resize first: the long edge is capped before patching, so
+  // a huge source never prices as unbounded patches.
+  const scale = Math.min(1, CLAUDE_MAX_IMAGE_EDGE_PX / Math.max(dims.width, dims.height));
+  const width = Math.max(1, Math.ceil(dims.width * scale));
+  const height = Math.max(1, Math.ceil(dims.height * scale));
+  return Math.ceil(width / CLAUDE_IMAGE_PATCH_PX) * Math.ceil(height / CLAUDE_IMAGE_PATCH_PX);
 }
 
 type SerializableMessage = Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">;
@@ -457,9 +480,9 @@ function replayProxyTokens(
  *   the measured usage.output as the replay proxy (per-API reasoning rules).
  * - Thinking blocks that Pi drops before wire conversion cost 0 on known APIs;
  *   same-model thinking without metadata keeps its visible text as a lower bound.
- * - Opaque signatures never count as text; images follow the API's verified rule
- *   for every role (Claude patch tokens — current 3-family models; flat elsewhere),
- *   with a bounded header parse only.
+ * - Opaque signatures never count as text; images follow the verified rule for
+ *   every role where API and model family are both known (patch-grid Claude with
+ *   provider-side long-edge resize), a bounded flat estimate elsewhere.
  */
 export function makeReaderTokenEstimator(
   reader: ReaderIdentity,
@@ -473,7 +496,7 @@ export function makeReaderTokenEstimator(
       if (!block || typeof block !== "object") return block;
       const type = (block as { type?: unknown }).type;
       if (type === "image") {
-        imageTokens += imageBlockTokens(block as { data?: unknown; source?: { data?: unknown } | string }, reader.api);
+        imageTokens += imageBlockTokens(block as { data?: unknown; source?: { data?: unknown } | string }, reader.api, reader.id);
         return { type: "image" };
       }
       if (type === "thinking" && dropThinking) return { type: "thinking" };
