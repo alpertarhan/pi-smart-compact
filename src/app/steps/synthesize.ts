@@ -29,7 +29,7 @@ import {
  summarizeBatch,
  assembleLLM,
  assembleFallback,
- failedChunkSummary,
+ fallbackChunkSummary,
 } from "../../phases/synthesize.ts";
 import { MAX_EXPLORATION_ROUNDS } from "../../constants.ts";
 import {
@@ -426,7 +426,7 @@ export async function summarizeConversation(
    const single = batches[0];
    if (single) {
     if (rc.services.budget.remainingCalls() <= 1) {
-     summaries.push(...single.map((ch) => failedChunkSummary(ch)));
+     summaries.push(...single.map((ch) => fallbackChunkSummary(ch, extraction, "budget")));
      cacheable = false;
      generationFallbacks.push("call budget reserved for final assembly");
      rc.notify(
@@ -453,7 +453,7 @@ export async function summarizeConversation(
       );
      } catch (err) {
       rc.cancellation.signal.throwIfAborted();
-      summaries.push(...single.map((ch) => failedChunkSummary(ch)));
+      summaries.push(...single.map((ch) => fallbackChunkSummary(ch, extraction, "batch-failed")));
       cacheable = false;
       generationFallbacks.push("1 synthesis batch fallback");
       reportIssue({ key: "synth.batch", message: "Synthesis batch used deterministic fallback (" + errorDetail(err) + ").", error: err }, rc.ctx);
@@ -488,7 +488,7 @@ export async function summarizeConversation(
    );
    for (let index = batchCallLimit; index < totalBatches; index++) {
     results[index] = batches[index].map((chunk) =>
-     failedChunkSummary(chunk),
+     fallbackChunkSummary(chunk, extraction, "budget"),
     );
    }
    if (batchCallLimit < totalBatches) {
@@ -515,7 +515,7 @@ export async function summarizeConversation(
      if (budgetStopped || rc.services.budget.reason() || rc.services.budget.remainingCalls() <= 1) {
       budgetStopped = true;
       results[idx] = batches[idx].map((chunk) =>
-       failedChunkSummary(chunk),
+       fallbackChunkSummary(chunk, extraction, "budget"),
       );
      } else {
       try {
@@ -538,7 +538,7 @@ export async function summarizeConversation(
        rc.cancellation.signal.throwIfAborted();
        errors[idx] = err instanceof Error ? err : new Error(String(err));
        results[idx] = batches[idx].map((chunk) =>
-        failedChunkSummary(chunk),
+        fallbackChunkSummary(chunk, extraction, "batch-failed"),
        );
       }
      }

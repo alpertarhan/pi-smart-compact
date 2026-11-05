@@ -962,7 +962,13 @@ function buildTimeline(
     const m = msgs[i];
     if (m.role === "user") {
       const txt = extractText(m.content);
-      if (!txt.startsWith("/") && !isInjectedMessage(m, txt))
+      // A host compaction summary is carried context, not a user request; the
+      // same boundary extractMainGoal applies.
+      if (
+        !txt.startsWith("/") &&
+        !isInjectedMessage(m, txt) &&
+        !HISTORY_SUMMARY_RE.test(txt)
+      )
         timeline.push({
           index: i,
           event: "user_request",

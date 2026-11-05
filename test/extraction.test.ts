@@ -859,6 +859,21 @@ describe("extractStructured", () => {
     expect(ext.errors.length).toBe(0);
   });
 
+  it("does not record a host compaction summary as a user request in the timeline", () => {
+    const compacted =
+      "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nShip it\n</summary>";
+    const ext = extractStructured(
+      [
+        { role: "user", content: compacted },
+        { role: "user", content: "verify the planner windows" },
+      ],
+      PC,
+    );
+    expect(ext.timeline).toEqual([
+      { index: 1, event: "user_request", summary: "verify the planner windows" },
+    ]);
+  });
+
   it("extracts all facets from a realistic conversation", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "Create a login page" },

@@ -1025,24 +1025,69 @@ export function assembleFallback(
 }
 
 /**
- * Build a placeholder {@link ChunkSummary} when a batch's LLM call failed, so the
- * assembly step still has something deterministic to merge rather than
- * dropping the segment silently. Co-located with `assembleFallback` so both
- * fallback contracts live in the algorithm layer (no I/O, trivially testable).
+ * Build a placeholder {@link ChunkSummary} when a batch never got an LLM
+ * summary, so the assembly step still has something deterministic to merge
+ * rather than dropping the segment silently. Co-located with
+ * `assembleFallback` so both fallback contracts live in the algorithm layer
+ * (no I/O, trivially testable).
+ *
+ * The placeholder text comes from the chunk's structured evidence (user
+ * requests, modified files, decisions, unresolved errors in its index range),
+ * not from raw transcript output. `cause` decides the label: a failed batch
+ * call stays visible as "[Failed]"; a call-budget fallback is not a failure
+ * and carries no failure marker.
  */
-export function failedChunkSummary(ch: LlmChunk): ChunkSummary {
+export function fallbackChunkSummary(
+ ch: LlmChunk,
+ extraction: StructuredExtraction,
+ cause: "batch-failed" | "budget",
+): ChunkSummary {
+ const inRange = (index: number) =>
+  index >= ch.startIndex && index <= ch.endIndex;
+ const line = (text: string) => summaryEvidenceLine(text, TRUNC.TOPIC_LABEL);
+ const requests = extraction.timeline
+  .filter((item) => item.event === "user_request" && inRange(item.index))
+  .map((item) => line(item.summary))
+  .filter(Boolean)
+  .slice(0, 3);
+ const modified = extraction.modifiedFiles
+  .filter((file) => inRange(file.lastModifiedIndex))
+  .map((file) => file.path)
+  .slice(0, 5);
+ const decisions = extraction.decisions
+  .filter((item) => inRange(item.index))
+  .map((item) => line(item.summary))
+  .filter(Boolean)
+  .slice(0, 2);
+ const unresolved = extraction.errors
+  .filter((item) => !item.resolved && inRange(item.index))
+  .map((item) => line(item.message))
+  .filter(Boolean)
+  .slice(0, 2);
+ const evidence = [
+  ...requests.map((item) => "User: " + item),
+  modified.length ? "Modified: " + modified.join(", ") : "",
+  ...decisions.map((item) => "Decision: " + item),
+  ...unresolved.map((item) => "Unresolved: " + item),
+ ]
+  .filter(Boolean)
+  .join("; ")
+  .slice(0, TRUNC.DETAIL);
+ const summary =
+  evidence ||
+  // Extraction found nothing in this range; keep the old raw-evidence line
+  // so the placeholder is never empty.
+  summaryEvidenceLine(
+   ch.messages.map((m) => extractText(m.content)).join("\n"),
+   TRUNC.DETAIL,
+  );
  return {
   topic: ch.topic,
   startIndex: ch.startIndex,
   endIndex: ch.endIndex,
-  summary:
-   "[Failed] " +
-   summaryEvidenceLine(
-    ch.messages.map((m) => extractText(m.content)).join("\n"),
-    TRUNC.DETAIL,
-   ),
-  keyDecisions: [],
-  filesModified: [],
+  summary: cause === "batch-failed" ? "[Failed] " + summary : summary,
+  keyDecisions: decisions,
+  filesModified: modified,
   filesRead: [],
   filesDeleted: [],
   priority: ch.priority,

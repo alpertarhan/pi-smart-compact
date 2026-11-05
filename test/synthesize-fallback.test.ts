@@ -2,7 +2,7 @@
 import { describe, it, expect } from "bun:test";
 import {
 	assembleFallback,
-	failedChunkSummary,
+	fallbackChunkSummary,
 } from "../src/phases/synthesize.ts";
 import type {
 	StructuredExtraction,
@@ -195,7 +195,7 @@ describe("assembleFallback (deterministic fallback when LLM assembly fails)", ()
 	});
 });
 
-describe("failedChunkSummary (per-segment fallback when a batch LLM call fails)", () => {
+describe("fallbackChunkSummary (per-segment placeholder when a batch never got an LLM summary)", () => {
 	const chunk: LlmChunk = {
 		topic: "Auth work",
 		startIndex: 0,
@@ -210,36 +210,61 @@ describe("failedChunkSummary (per-segment fallback when a batch LLM call fails)"
 			} as LlmMessage,
 		],
 	};
+	const extraction = makeExtraction({
+		timeline: [
+			{ index: 1, event: "user_request", summary: "add login with magic links" },
+			{ index: 7, event: "user_request", summary: "OUT OF RANGE request" },
+		],
+		modifiedFiles: [
+			{ path: "src/auth.ts", toolCalls: 1, lastModifiedIndex: 2 },
+			{ path: "src/out.ts", toolCalls: 1, lastModifiedIndex: 9 },
+		],
+		decisions: [{ index: 2, type: "explicit", summary: "Use magic links" }],
+		errors: [{ index: 3, tool: "bash", message: "Command exited with code 1", retryAttempted: false, resolved: false }],
+	});
 
 	it("preserves identity fields (topic / range / priority)", () => {
-		const s = failedChunkSummary(chunk);
+		const s = fallbackChunkSummary(chunk, extraction, "batch-failed");
 		expect(s.topic).toBe("Auth work");
 		expect(s.startIndex).toBe(0);
 		expect(s.endIndex).toBe(3);
 		expect(s.priority).toBe("high");
 	});
 
-	it("prefixes the summary with [Failed] and carries message text", () => {
-		const s = failedChunkSummary(chunk);
-		expect(s.summary.startsWith("[Failed]")).toBe(true);
-		expect(s.summary).toContain("add login");
-		expect(s.summary).toContain("ok doing it");
+	it("builds the text from structured evidence in the chunk's range only", () => {
+		const s = fallbackChunkSummary(chunk, extraction, "batch-failed");
+		expect(s.summary).toContain("User: add login with magic links");
+		expect(s.summary).toContain("Modified: src/auth.ts");
+		expect(s.summary).toContain("Decision: Use magic links");
+		expect(s.summary).toContain("Unresolved: Command exited with code 1");
+		expect(s.summary).not.toContain("OUT OF RANGE");
+		expect(s.summary).not.toContain("src/out.ts");
+		// Raw transcript text is not the placeholder any more.
+		expect(s.summary).not.toContain("ok doing it");
 	});
 
-	it("returns empty decision/file lists (nothing was successfully parsed)", () => {
-		const s = failedChunkSummary(chunk);
-		expect(s.keyDecisions).toEqual([]);
-		expect(s.filesModified).toEqual([]);
+	it("labels a failed batch call [Failed] but not a call-budget fallback", () => {
+		expect(fallbackChunkSummary(chunk, extraction, "batch-failed").summary.startsWith("[Failed]")).toBe(true);
+		const budget = fallbackChunkSummary(chunk, extraction, "budget").summary;
+		expect(budget.startsWith("[Failed]")).toBe(false);
+		expect(budget).toContain("User: add login with magic links");
+	});
+
+	it("carries in-range files and decisions into the structured fields", () => {
+		const s = fallbackChunkSummary(chunk, extraction, "batch-failed");
+		expect(s.filesModified).toEqual(["src/auth.ts"]);
+		expect(s.keyDecisions).toEqual(["Use magic links"]);
 		expect(s.filesRead).toEqual([]);
 	});
 
-	it("truncates very long message text to keep the placeholder bounded", () => {
+	it("falls back to bounded raw evidence when extraction has nothing in range", () => {
 		const long: LlmChunk = {
 			...chunk,
 			messages: [{ role: "user", content: "x".repeat(1000) } as LlmMessage],
 		};
-		const s = failedChunkSummary(long);
+		const s = fallbackChunkSummary(long, makeExtraction(), "batch-failed");
 		// "[Failed] " (9) + up to 300 chars of content
+		expect(s.summary.startsWith("[Failed]")).toBe(true);
 		expect(s.summary.length).toBeLessThanOrEqual(9 + 300);
 	});
 });
