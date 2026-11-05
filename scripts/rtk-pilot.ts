@@ -26,7 +26,7 @@ const oldDisabled = process.env.RTK_DISABLED;
 function run(command: string, args: string[], timeout = 30_000) {
   const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024 });
   if (result.error) throw result.error;
-  return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr, killed: result.signal !== null };
+  return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr, killed: result.signal !== null, truncated: false };
 }
 function setup(command: string, args: string[], timeout = 30_000) {
   const result = run(command, args, timeout);

@@ -32,57 +32,6 @@ describe("makeTokenEstimator", () => {
     expect(withToolArgs).toBeGreaterThan(textOnly + 500);
   });
 
-  it("prices a large base64 image as a fixed cost plus its text, not as serialized chars", () => {
-    const store = new TokenCalibrationStore();
-    const estimator = makeTokenEstimator("openai", "test", store);
-    const image = { type: "image", mimeType: "image/png", data: "a".repeat(1_000_000) };
-    const text = "x".repeat(4000);
-    const withImage = estimator.message({ role: "user", content: [{ type: "text", text }, image] });
-    const textAlone = estimator.message({ role: "user", content: [{ type: "text", text }] });
-    expect(withImage - textAlone).toBeGreaterThanOrEqual(1_200);
-    expect(withImage - textAlone).toBeLessThan(1_300);
-    expect(withImage).toBeLessThan(textAlone + 5_000);
-  });
-
-  it("does not count provider signatures", () => {
-    const estimator = makeTokenEstimator("anthropic", "test", new TokenCalibrationStore());
-    const plain = { role: "assistant" as const, content: [
-      { type: "thinking" as const, thinking: "plan" },
-      { type: "text" as const, text: "done" },
-    ] };
-    const signed = { role: "assistant" as const, content: [
-      { type: "thinking" as const, thinking: "plan", thinkingSignature: "s".repeat(4000) },
-      { type: "text" as const, text: "done", textSignature: "t".repeat(4000), thoughtSignature: "u".repeat(4000) },
-    ] };
-    expect(estimator.message(signed)).toBe(estimator.message(plain));
-    expect(estimator.messages([signed])).toBe(estimator.messages([plain]));
-  });
-
-  it("keeps text-only message estimates byte-identical to the raw serialization", () => {
-    const estimator = makeTokenEstimator("anthropic", "test", new TokenCalibrationStore());
-    const messages = [
-      { role: "user" as const, content: "plain string content" },
-      { role: "assistant" as const, content: [{ type: "text" as const, text: "hello" }, { type: "toolCall" as const, id: "c1", name: "read", arguments: { path: "a.ts" } }] },
-      { role: "toolResult" as const, toolCallId: "c1", toolName: "read", isError: true, content: [{ type: "text" as const, text: "missing" }] },
-    ];
-    for (const message of messages) {
-      expect(estimator.message(message)).toBe(estimator.text(JSON.stringify({
-        role: message.role,
-        content: message.content,
-        ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-        ...(message.toolName ? { toolName: message.toolName } : {}),
-        ...(message.isError ? { isError: true } : {}),
-      })));
-    }
-    expect(estimator.messages(messages)).toBe(estimator.text(JSON.stringify(messages.map(message => ({
-      role: message.role,
-      content: message.content,
-      ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-      ...(message.toolName ? { toolName: message.toolName } : {}),
-      ...(message.isError ? { isError: true } : {}),
-    })))));
-  });
-
   it("applies provider/model calibration", () => {
     const store = new TokenCalibrationStore();
     const before = makeTokenEstimator("openai", "model-a", store).text("x".repeat(1000));

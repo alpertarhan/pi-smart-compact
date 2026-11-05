@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../infra/string-enum.ts";
 import type {
  ExtensionAPI,
  ExtensionContext,
