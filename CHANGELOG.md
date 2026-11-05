@@ -2,6 +2,65 @@
 
 ## [Unreleased]
 
+## [10.8.0] - 2026-11-05
+
+The release owner explicitly approved this release on npm `latest` under the
+version-specific stable exception in `docs/RELEASE.md`. No external canary
+cohort is available; this is not a telemetry `PROMOTE` result. Live evidence is
+limited to dry runs of two real compaction inputs on one summary route, both
+producing LLM summaries, and read-only replays of one real session. The
+deterministic release gate and required PR CI remain mandatory. No stored data
+or stage-model routing is migrated.
+
+### Added
+
+- Trims can archive old `process` output and `list` results, old `ad-process:notification` messages, and
+  `agent_mesh` deliveries that a later successful reply answered. Markers keep the process status, or the sender, id
+  and first line. Unanswered deliveries and `agent_mesh` tool results are never archived. (#133)
+- `summarySource` (`llm` | `fallback` | `zero-call`) on compaction details and metrics. Status, metrics, canary and
+  provider-evaluation reports show the LLM-versus-fallback split. A committed fallback notifies with its cause and
+  route, and warns while fallbacks repeat. A canary is held when fewer than 10% of at least 5 planned LLM summaries
+  succeed. (#136)
+
+### Changed
+
+- `requireApproval: false` now waives only the confirmation dialog for early anchors. Their cleanup must pass the
+  same pressure, readiness and economics gates as agent anchors. (#131)
+- No automatic trim, agent trim or anchor cleanup runs while an automatic `settled`/`background` compaction is due.
+  Human trims and dialog-confirmed anchors are unchanged. Below the compaction gate, agent trims must pay back within
+  `autoTrimBreakEvenRequests`, like automatic trims. (#131)
+- `openai-codex` trims are priced as whole-prompt cache misses. (#131)
+- Custom messages (extensions, peer agents, process notifications) are never mined as the user's goals,
+  constraints, decisions or open loops. LLM transcripts label them `[Extension message: <type>]`. Restored backups
+  stay user turns. (#132)
+- Facts carried from earlier summaries or saved state are dropped when they only repeat injected custom-message text.
+  The user's own rules, and rules quoted by reports, anchors or peers, are kept. Prior summaries never become open
+  loops. (#137)
+
+### Fixed
+
+- Reasoning summary models (for example MiniMax-M3.1-Flash) no longer fall back on every run. Single-pass, batch,
+  assembly, exploration and repair requests reserve thinking headroom above their visible target. The run output
+  budget includes that headroom when any route model reasons. The batch length retry also works for reasoning
+  models. (#130, #134)
+- The prompt-cache tier now comes from the tier actually written (`cacheWrite1h`), so cold trims and `idle-expiry`
+  labels follow 5-minute caches. (#138)
+- The package typechecks against Pi 1.5. Tool enums use a TypeBox string enum that emits the same JSON. (#140)
+- Background Hindsight tracking checks every receipt at least once. (#135)
+- Attention notes name a trim only when it is ready and pays back. The signed-thinking refusal no longer suggests an
+  action the model cannot take. (#131)
+- `replay-eval` reproduces recorded sessions: on a real session, the none policy now estimates within 1% of the
+  recorded cost (it estimated 5.7 times too much). (#139)
+
+### Upgrade notes
+
+- With `requireApproval: false`, an early `smart_navigation anchor` below the pressure band is now only a recall
+  point.
+- Extraction caches whose prefix contains custom messages miss once after the upgrade.
+- Reasoning routes need about 16K more window per request. Feasibility rejects plans that no longer fit.
+- With `autoTriggerStrategy: "settled"`, keep Pi's own auto-compaction enabled as a backstop during long tool runs.
+  Smart Compact still writes the summary at or above `minContextPercent` (docs/guide.md).
+
 ## [10.7.3] - 2026-10-29
 
 The release owner explicitly approved this hotfix on npm `latest` under the
