@@ -344,12 +344,19 @@ function isCleanCommandExitOne(text: string): boolean {
   const exit = text.match(/Command exited with code (\d+)\s*$/i)?.[1];
   if (exit !== "1") return false;
   const body = text.replace(/Command exited with code \d+\s*$/i, "");
+  // Zero counts are clean (jest "0 failed", rspec "0 failures") — strip them
+  // before the strong-word test so they cannot force a failure.
+  const words = body.replace(/\b0\s+(?:fail|failed|failures?|failing)\b/gi, "");
   return !(
     LIKELY_ERROR_RE.test(body) ||
     /\berror TS\d+\b/.test(body) ||
-    /(?:^|\s)[1-9]\d*\s+(?:fail|failed|failures?)\b/i.test(body) ||
+    /(?:^|\s)[1-9]\d*\s+(?:fail|failed|failures?|failing)\b/i.test(body) ||
+    // Go test prints a bare case-sensitive FAIL line; TAP prints "not ok N".
+    /^FAIL\b/m.test(body) ||
+    /--- FAIL:/.test(body) ||
+    /\bnot ok \d+/.test(body) ||
     // Strong failure words anywhere (bare "fail" excluded: "0 fail" is clean).
-    /\b(?:failed|failures?|fatal|panic|exception)\b/i.test(body) ||
+    /\b(?:failed|failures?|fatal|panic|exception)\b/i.test(words) ||
     /^(?:npm\s+error|fatal:|traceback\b)/im.test(body)
   );
 }

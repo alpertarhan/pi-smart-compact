@@ -328,6 +328,8 @@ describe("catalogErrors", () => {
     ["passing tests then a no-match trailing command", " 25 pass  0 fail \n 25 pass  0 fail \n 6 files changed, 63 insertions(+), 20 deletions(-)\nCommand exited with code 1"],
     ["a bare count and a no-match trailing command", "0\n\n\nCommand exited with code 1"],
     ["diff-style output without error text", "3c3\n< old\n---\n> new\nCommand exited with code 1"],
+    ["jest zero failed summary", "Tests: 0 failed, 25 passed, 1 skipped\nCommand exited with code 1"],
+    ["rspec zero failures summary", "0 failures, 42 examples, 0 pending\nCommand exited with code 1"],
   ])("does not catalog a clean-output exit 1 (%s)", (_label, output) => {
     // pi marks the non-zero exit as isError on the tool result; both the
     // isError path and the error-pattern scan must agree it is not a failure.
@@ -338,6 +340,10 @@ describe("catalogErrors", () => {
   it.each([
     ["failing test count", " 9 pass\n 1 fail \nRan 10 tests\nCommand exited with code 1"],
     ["failing test count (vitest)", "Tests  1 failed | 9 passed\nCommand exited with code 1"],
+    ["failing test count (mocha)", "  2 passing\n  2 failing\nCommand exited with code 1"],
+    ["go test FAIL line", "--- FAIL: TestWindow (0.01s)\nFAIL\nexit status 1\nCommand exited with code 1"],
+    ["bare go FAIL line mid-body", "run tests: ok\nFAIL\nCommand exited with code 1"],
+    ["TAP not-ok line", "ok 1 setup\nnot ok 2 computes the window\nCommand exited with code 1"],
     ["module-not-found body", 'error: Module not found "minimax-probe.mjs"\nCommand exited with code 1'],
     ["typescript errors", "src/a.ts:1:10: error TS2304: Cannot find name 'x'\nCommand exited with code 1"],
     ["stack trace", "Traceback (most recent call last):\n  File \"x.py\"\nCommand exited with code 1"],
