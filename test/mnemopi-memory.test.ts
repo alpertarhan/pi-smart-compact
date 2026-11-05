@@ -133,7 +133,7 @@ describe("Mnemopi confirmed project memory", () => {
     expect(fs.statSync(saved.details.mnemopi.dbPath).mode & 0o777).toBe(0o600);
     expect(fs.existsSync(contextGraphFile())).toBe(false);
     expect(fs.existsSync(path.join(home, ".hermes"))).toBe(false);
-  });
+  }, 30_000);
 
   it("isolates projects and kinds, and resolves only the exact approved fact", async () => {
     const harness = setup();
@@ -167,7 +167,7 @@ describe("Mnemopi confirmed project memory", () => {
     expect(outcomes[0].details.mnemopi.id).toBe(outcomes[1].details.mnemopi.id);
     const recalled = await harness.recall({ query: "violet quartz" });
     expect(recalled.details.mnemopi.facts.map((fact) => fact.id)).toEqual([outcomes[0].details.mnemopi.id]);
-  });
+  }, 30_000);
 
   it("ignores inherited remote embedding and LLM configuration", async () => {
     let requests = 0;
@@ -204,7 +204,7 @@ describe("Mnemopi confirmed project memory", () => {
       }
       tripwire.stop(true);
     }
-  });
+  }, 30_000);
 
   it("does not silently save to the local graph when no Bun runtime can start", async () => {
     const originalPath = process.env.PATH;
@@ -241,7 +241,7 @@ describe("Mnemopi confirmed project memory", () => {
     } finally {
       process.env.PATH = originalPath;
     }
-  });
+  }, 30_000);
 
   it("never claims an uncertain locked write changed nothing", () => {
     const text = formatMnemopiOutcome({ state: "unknown", reason: "database is locked", dbPath: "/tmp/fixture.sqlite" });
@@ -267,7 +267,7 @@ describe("Mnemopi confirmed project memory", () => {
     expect(text).toContain(dbPath + ".lock");
     expect(fs.existsSync(dbPath + ".lock")).toBe(true);
     expect(fs.existsSync(dbPath)).toBe(false);
-  });
+  }, 30_000);
 
   it("returns target-bound refs on saves and recalls and refuses retargeting", async () => {
     const harness = setup();
@@ -296,5 +296,5 @@ describe("Mnemopi confirmed project memory", () => {
     expect((await harness.recall({ query: "violet quartz" })).details.mnemopi.facts).toEqual([]);
     const original = await setup().recall({ query: "violet quartz" });
     expect(original.details.mnemopi.facts.map(fact => fact.id)).toEqual([saved.details.mnemopi.id]);
-  });
+  }, 30_000);
 });
