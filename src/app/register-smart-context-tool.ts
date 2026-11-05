@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { StringEnum, type AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { StringEnum } from "../infra/string-enum.ts";
 import type { CacheWarmingDecisionEvent, ContextWithSystemEvent, ExtensionAPI, ExtensionContext, SessionBoundaryDraft, SessionEntry, Theme, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
