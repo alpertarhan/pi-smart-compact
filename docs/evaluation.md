@@ -412,7 +412,7 @@ run of identical projected messages shared with the previous request, plus
 that payload when any message is reused. It is 0 after the cache horizon, on
 a model switch, on a route that never recorded a cache read, and for
 openai-codex once an earlier message changed (whole-prompt miss, as
-`trimTokens` prices it). An unknown lifetime never expires the prefix.
+`trimTokens` prices it by API, `openai-codex-responses`, not provider name). An unknown lifetime never expires the prefix.
 `uncached = prompt − cached`; a rebuild is `uncached ≥ max(--rebuild-min,
 0.5 × prompt)`, and the baseline's `misses` applies the same rule to recorded
 `input + cacheWrite`. Price = `cacheRead × cached + (cacheWrite on routes that
