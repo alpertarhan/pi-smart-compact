@@ -23,6 +23,7 @@ import {
  ASSEMBLY_PROMPT_SUFFIX,
  SESSION_TYPE_INSTRUCTIONS,
  TRUNC,
+ REASONING_OUTPUT_HEADROOM_TOKENS,
 } from "../constants.ts";
 import {
  getProviderCaps,
@@ -477,6 +478,12 @@ export interface SynthesisRequest {
  maxTokens: number;
 }
 
+/** Wire output cap for a visible target; the provider table is a floor when the model advertises more. */
+function outputCeiling(model: Model<Api>, visibleTokens: number): number {
+ const limit = Math.max(getProviderCaps(model.provider).maxOutputTokens, model.maxTokens || 0);
+ return Math.min(visibleTokens + (model.reasoning ? REASONING_OUTPUT_HEADROOM_TOKENS : 0), limit);
+}
+
 /** The same concrete request is inspected by model selection and sent at runtime. */
 export function buildSinglePassRequest(
  convText: string,
@@ -525,7 +532,7 @@ export function buildSinglePassRequest(
    ],
   },
   // The summary target is not a safe hard cutoff for completing the format.
-  maxTokens: Math.min(budgetTokens * 2, getProviderCaps(model.provider).maxOutputTokens),
+  maxTokens: outputCeiling(model, budgetTokens * 2),
  };
 }
 
@@ -599,9 +606,9 @@ export function buildBatchRequest(
   })
   .join("\n\n");
 
- const maxTokens = maxOutputTokens ?? Math.min(Math.max(1_000, batch.length * 250), 4_096, getProviderCaps(model.provider).maxOutputTokens);
+ const visibleTokens = maxOutputTokens ?? Math.min(Math.max(1_000, batch.length * 250), 4_096, getProviderCaps(model.provider).maxOutputTokens);
  const promptPrefix = BATCH_PROMPT_PREFIX +
-  "\nTarget at most " + maxTokens + " output tokens across all " + batch.length +
+  "\nTarget at most " + visibleTokens + " output tokens across all " + batch.length +
   " chunk sections. Keep prose concise; do not omit sections or required fields.\n";
 
  const dynamicSuffix = BATCH_PROMPT_SUFFIX.replace(
@@ -617,7 +624,7 @@ export function buildBatchRequest(
     { role: "user", content: [{ type: "text", text: dynamicSuffix }], timestamp: Date.now() },
    ],
   },
-  maxTokens,
+  maxTokens: outputCeiling(model, visibleTokens),
  };
 }
 
@@ -695,9 +702,12 @@ export async function summarizeBatch(
   // Minimal thinking can still truncate prose. Retry once with output headroom,
   // without changing configured reasoning or spending the final assembly call.
   const initialMaxTokens = clampCompletionMaxTokens(model, maxTokens)!;
+  // A reasoning model's first attempt already carries thinking headroom above the table: retry at that
+  // cap with minimal reasoning instead of doubling it, which would outlast the call watchdog.
+  const retryCeiling = Math.max(getProviderCaps(model.provider).maxOutputTokens, model.reasoning ? initialMaxTokens : 0);
   const retryMaxTokens = Math.min(
    clampCompletionMaxTokens(model, maxTokens * 2)!,
-   getProviderCaps(model.provider).maxOutputTokens,
+   retryCeiling,
    svc.budget.remainingOutputTokens(),
   );
   if (
@@ -850,7 +860,7 @@ export async function assembleLLM(
   {
    apiKey: auth.apiKey,
    headers: auth.headers,
-   maxTokens: Math.min(budget * 2, getProviderCaps(model.provider).maxOutputTokens),
+   maxTokens: outputCeiling(model, budget * 2),
    signal,
   },
   services,

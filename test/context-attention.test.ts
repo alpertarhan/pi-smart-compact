@@ -14,7 +14,10 @@ const settings = (over: Partial<ReturnType<ContextAttentionDeps["config"]>> = {}
   minContextPercent: 80, prepareContextPercent: null, maxContextTokens: 0, autoTrimMinSavingChars: 16_384, autoTrimBreakEvenRequests: 24, ...over,
 });
 
-function harness(opts: { active?: string[]; config?: Partial<ReturnType<ContextAttentionDeps["config"]>>; canAct?: boolean; canCleanup?: boolean; reachable?: boolean; branch?: SessionEntry[] } = {}) {
+// Anthropic-shaped catalog prices: an old output with a short tail pays back its cache rewrite at once.
+const PRICED = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+
+function harness(opts: { active?: string[]; config?: Partial<ReturnType<ContextAttentionDeps["config"]>>; canAct?: boolean; canCleanup?: boolean; reachable?: boolean; branch?: SessionEntry[]; model?: object } = {}) {
   const handlers = new Map<string, Handler[]>();
   const sent: Sent[] = [];
   const pi = {
@@ -30,7 +33,7 @@ function harness(opts: { active?: string[]; config?: Partial<ReturnType<ContextA
   });
   // 200k window, 80% apply: compaction from 160k, cleanup from 140k.
   const ctx = (tokens: number, sessionId = "s1") => ({
-    model: { contextWindow: 200_000, api: "anthropic-messages" },
+    model: { contextWindow: 200_000, api: "anthropic-messages", ...opts.model },
     getContextUsage: () => ({ tokens }),
     sessionManager: { getBranch: () => opts.branch ?? [], getSessionId: () => sessionId },
   });
@@ -48,13 +51,15 @@ function harness(opts: { active?: string[]; config?: Partial<ReturnType<ContextA
   return { sent, assistant, fire, prompt };
 }
 
-function research(signed = false): SessionEntry[] {
+/** One old 27k-char read, then five protected turns; `filler` chars of later user text grow the rewritten tail. */
+function research(signed = false, filler = 0): SessionEntry[] {
   const sm = SessionManager.inMemory();
   const base = { role: "assistant" as const, api: "anthropic-messages" as const, provider: "anthropic", model: "offline", timestamp: 1,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   sm.appendMessage({ role: "user", content: "Inspect evidence", timestamp: 1 });
   sm.appendMessage({ ...base, stopReason: "toolUse", content: [{ type: "toolCall", id: "old", name: "read", arguments: { path: "old.ts" } }] });
   sm.appendMessage({ role: "toolResult", toolName: "read", toolCallId: "old", content: [{ type: "text", text: "evidence ".repeat(3_000) }], isError: false, timestamp: 1 });
+  if (filler) sm.appendMessage({ role: "user", content: "Keep this spec in view. ".repeat(Math.ceil(filler / 24)), timestamp: 1 });
   for (let i = 0; i < 5; i++) sm.appendMessage({ ...base, stopReason: "stop", content: signed
     ? [{ type: "thinking", thinking: "Uses the old evidence", thinkingSignature: "offline-signature" }]
     : [{ type: "text", text: "Recent protected turn" }] });
@@ -172,9 +177,27 @@ describe("context attention", () => {
     const blocked = harness({ canCleanup: false, branch: research() });
     blocked.assistant(150_000);
     expect(blocked.sent[0].message.content).not.toContain("trim:");
-    const ready = harness({ canCleanup: true, branch: research() });
+    const ready = harness({ canCleanup: true, branch: research(), model: { cost: PRICED } });
     ready.assistant(150_000);
     expect(ready.sent[0].message.content).toContain("trim: 1");
+  });
+
+  it.each([
+    ["unpriced", {}, {}, 0],
+    ["below the savings floor", { cost: PRICED }, { autoTrimMinSavingChars: 100_000 }, 0],
+    ["slow to pay back", { cost: PRICED }, {}, 200_000],
+  ] as const)("names no trim when the plan is %s", (_, model, config, filler) => {
+    const h = harness({ branch: research(false, filler), model, config });
+    h.assistant(150_000);
+    expect(h.sent[0].message.content).toContain("smart_context checkpoint");
+    expect(h.sent[0].message.content).not.toContain("trim:");
+  });
+
+  it.each(["settled", "background", "native-hook"] as const)("names a paying trim at the compaction band only when no %s compaction is due", strategy => {
+    const h = harness({ branch: research(), model: { cost: PRICED }, config: { autoTriggerStrategy: strategy } });
+    h.assistant(170_000);
+    expect(h.sent[0].message.content).toContain("compaction band");
+    expect(h.sent[0].message.content.includes("trim: 1")).toBe(strategy === "native-hook");
   });
 
   it("does not promise history cleanup or warm cache when signed thinking blocks edits", () => {

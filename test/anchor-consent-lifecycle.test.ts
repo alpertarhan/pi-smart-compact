@@ -82,17 +82,17 @@ it.each([
     expect(JSON.stringify(requests[5])).toContain("RECOVERABLE_ANCHOR_RESEARCH");
     const after = JSON.stringify(requests[6]);
     const state = inspectContext(manager.getBranch(), manager.getSessionId());
-    const saved = approved || standingApproval;
-    expect(manager.getBranch().some(entry => anchorFromEntry(entry))).toBe(saved);
-    expect(state.references.size).toBe(saved ? 1 : 0);
-    if (saved) {
+    // Standing approval saves the anchor without a dialog; only a real dialog approval lifts the pressure gate.
+    expect(manager.getBranch().some(entry => anchorFromEntry(entry))).toBe(approved || standingApproval);
+    expect(state.references.size).toBe(approved ? 1 : 0);
+    if (approved) {
       expect(after).toContain("[Archived search_graph output");
       expect(after).not.toContain(JSON.stringify(payload).slice(1, -1));
       expect(after).toContain("Keep the async API");
       expect(readContextReference(manager.getBranch(), manager.getSessionId(), [...state.references][0])).toBe(payload);
     } else {
       expect(after).toContain(JSON.stringify(payload).slice(1, -1));
-      expect(after).toContain("not approved");
+      expect(after).toContain(standingApproval ? "Cleanup not requested: no context pressure" : "not approved");
     }
     expect(cfg.contextPressureOnly).toBe(true);
     expect(errors).toEqual([]);

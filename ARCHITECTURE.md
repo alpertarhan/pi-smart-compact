@@ -253,7 +253,8 @@ replacing up to 32 old read-only results of at least 4096 characters with a
 bounded reference marker. Already-edited entries are not rewritten. Since
 10.4.0, planning is also tail-aware: eligible outputs are scored along a
 prefix-drop frontier (the rewritten cache suffix runs from the first edited
-entry to the branch end), and the largest batch whose first edit still passes
+entry to the branch end; `openai-codex` trims are priced as whole-prompt
+misses, after 6 of 11 observed ones lost the whole cache), and the largest batch whose first edit still passes
 the configured break-even limit wins; without price data the full set is
 returned exactly as before. Automatic trimming runs with `contextHygieneEnabled` independently of compaction, or with
 the effective `background` strategy, and requires `smart_context` reachable
@@ -262,7 +263,10 @@ by the model (`canAutoTrim` checks it like artifact offload does).
 least 16,384 net saved characters and eight assistant turns since the last
 owned trim/rewind/compaction; branch history supplies that cooldown across
 reloads and forks. At a completed, uncontested turn boundary a ready batch
-commits with cause `pressure` only at the compaction gate, or `break-even`
+commits with cause `pressure` only at the compaction gate while no automatic
+compaction is due (`autoTrigger` off or `native-hook`; with `settled` or
+`background` the compaction requested when the turn settles replaces the
+context, so automatic and agent trims are skipped there), or `break-even`
 when catalog prices say it pays back within `AUTO_TRIM_BREAK_EVEN_REQUESTS` = 24
 requests. Default pressure-only timing also requires the early cleanup gate:
 in that band, unknown prices or poor payback leave history unchanged, with no
@@ -282,7 +286,13 @@ drop conditions are in [configuration](./docs/configuration.md);
 its labels are temporal observations, not proof of causality. Costs are
 catalog-price estimates, not measured cache billing. Manual and agent trims
 commit at the next boundary with cause `manual` or `agent`; explicit trim
-bypasses batching, not safety.
+bypasses batching, not safety. `manual` also covers an early anchor the user
+confirmed in Pi's dialog. Standing approval (`requireApproval: false`) waives
+only that dialog: the anchor is saved and its cleanup keeps the agent's
+pressure and readiness gates. Below the compaction gate an agent trim or anchor
+cleanup must also pay back within the break-even limit (unknown prices keep
+today's behavior). Attention notes name a trim only for a ready batch that pays
+back within the break-even limit.
 
 Instruction and skill sources stay inline through trim, rewind, artifact,
 bitmap and pre-compaction pruning; recovery tool output is not recursively
@@ -669,8 +679,11 @@ calls before dispatch so they cannot spend the final assembly call.
 Single-pass and final assembly reject known nonterminal stop reasons and
 unclosed Markdown fences before the synthesis cache can retain the result.
 Prompts state their output targets. Single-pass and assembly allow up to twice
-the desired summary length as completion headroom, within provider/model caps
-and the unchanged aggregate run budget. A length-truncated batch may retry once
+the desired summary length as completion headroom. A reasoning summary model
+gets 16,384 more completion tokens per synthesis request for thinking, and the
+run output budget grows by the same amount per allowed call; stated targets do
+not change. Completions stay within the model's advertised output limit (the
+provider table when none is advertised). A length-truncated batch may retry once
 with minimal reasoning and bounded output headroom even when its first attempt
 already used minimal reasoning. Malformed or still-truncated responses continue
 to use deterministic fallback; the final assembly call stays reserved.
@@ -1071,7 +1084,7 @@ with a safe default and fuzzy alias matching for unknowns:
 
 | Capability | Drives |
 | --- | --- |
-| `maxOutputTokens` | caps synthesis / patch budgets |
+| `maxOutputTokens` | caps batch targets and patch budgets; synthesis completions use the model's limit when it is larger |
 | `supportsTools` (`true \| false \| "probe"`) | exploration tool-call probing |
 | `concurrencyLimit` | bounded batch-synthesis worker-pool width |
 | `cacheStrategy` | prompt-cache retention per call |

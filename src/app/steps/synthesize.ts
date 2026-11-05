@@ -38,6 +38,7 @@ import {
  deterministicExtractionConfidence,
  effectiveBudget,
  resolveCallBudget,
+ resolveOutputBudget,
  MODE_POLICIES,
  modeFromLegacyProfile,
  resolveMode,
@@ -74,10 +75,11 @@ export async function summarizeConversation(
   if (refined !== rc.mode) {
    rc.mode = refined;
    const policy = MODE_POLICIES[refined];
+   const callBudget = resolveCallBudget(rc.config.maxLlmCalls, refined, rc.maxLlmCalls, rc.flags.autoTriggered && !rc.flags.skipCompact);
    rc.services.budget.setLimits(
-    resolveCallBudget(rc.config.maxLlmCalls, refined, rc.maxLlmCalls, rc.flags.autoTriggered && !rc.flags.skipCompact),
+    callBudget,
     effectiveBudget(rc.config.maxLlmInputTokens, policy.maxInputTokens, rc.maxLlmInputTokens),
-    policy.maxOutputTokens,
+    resolveOutputBudget(refined, callBudget, rc.summaryModel.reasoning),
    );
    // The retention window and output allowance were already planned before
    // extraction. Refine strategy depth only; changing profileCfg here would
