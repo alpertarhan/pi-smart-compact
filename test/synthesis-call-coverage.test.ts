@@ -28,7 +28,8 @@ import { exploreConversation, SYNTHESIS_CALL_RESERVE } from "../src/phases/explo
 import { BudgetGuard, createServices } from "../src/infra/services.ts";
 import { clearSynthesisCache } from "../src/infra/synthesis-cache.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeTokenEstimator, estimateTokens } from "../src/utils/tokens.ts";
+import { buildBatchRequest } from "../src/phases/synthesize.ts";
 import type { LlmChunk, LlmMessage, StructuredExtraction } from "../src/types.ts";
 import type { TieredRc } from "../src/app/run-context.ts";
 
@@ -293,6 +294,42 @@ describe("synthesis batch re-packing within the call budget", () => {
     const tinyOutput = { ...openAiModel, maxTokens: 128 } as Model<Api>;
     const plan = repackBatchesForCallBudget(batches, unitExtraction, tinyOutput, "fast", 8_192, services, 1);
     expect(plan.length).toBe(2); // wire 128 cannot cover 2*160 required visible tokens
+  });
+
+  it("packs through non-monotone input estimates where a longer group is cheaper than a shorter one", () => {
+    // The estimator samples JSON/language density over a bounded prefix and
+    // the extraction context is range-dependent: a modified path with a
+    // density-triggering character (ğ) only enters the context when its index
+    // falls inside the group's range, so the 3-chunk request can estimate
+    // CHEAPER than the 2-chunk one. A max-fill scan stops at the failing
+    // 2-chunk edge and loses the feasible single-request cover; the DP must
+    // scan past failed ends. The window is derived from the live estimator so
+    // the case tracks estimator changes instead of hard-coding token counts.
+    const services = createServices();
+    const model = { ...openAiModel, maxTokens: 2_000 } as Model<Api>;
+    const densityExtraction: StructuredExtraction = {
+      ...unitExtraction,
+      modifiedFiles: [{ path: "src/ğ.ts", toolCalls: 1, lastModifiedIndex: 50 }],
+      messageCount: 51,
+    };
+    const bulk = () => Array.from({ length: 25 }, () => sizedMsg(1));
+    const chunks: LlmChunk[] = [
+      { topic: "A", startIndex: 0, endIndex: 24, tokenEstimate: 3_000, priority: "normal", messages: bulk() },
+      { topic: "B", startIndex: 25, endIndex: 49, tokenEstimate: 3_000, priority: "normal", messages: bulk() },
+      { topic: "C", startIndex: 50, endIndex: 50, tokenEstimate: 30, priority: "normal", messages: [sizedMsg(2)] },
+    ];
+    const request = (group: LlmChunk[]) => buildBatchRequest(group, densityExtraction, model, 800);
+    const input = (req: { context: unknown }) => estimateTokens(
+      JSON.stringify(services.scrubber.scrubValue(req.context).value), model.provider, model.id, services.tokenCalibration,
+    );
+    const two = request(chunks.slice(0, 2));
+    const three = request(chunks);
+    expect(input(three)).toBeLessThan(input(two)); // fixture depends on the current density adjustment; adapt analogously if the estimator changes
+    const contextWindow = input(two) + two.maxTokens + 4_096 - 1; // 2-chunk fails by one token, 3-chunk fits
+    const original = [[chunks[0]], [chunks[1], chunks[2]]];
+    const plan = repackBatchesForCallBudget(original, densityExtraction, { ...model, contextWindow } as Model<Api>, "fast", 8_192, services, 1);
+    expect(plan.map(group => group.length)).toEqual([3]);
+    expect(plan.flat().map(ch => ch.startIndex)).toEqual([0, 25, 50]);
   });
 
   it("re-packs on every API family with the provider's own caps", () => {

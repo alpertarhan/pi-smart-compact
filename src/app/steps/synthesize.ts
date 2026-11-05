@@ -82,10 +82,16 @@ import type { SmartCompactServices } from "../../infra/services.ts";
  * (`clampCompletionMaxTokens`) still covers that allowance, so a merged
  * request cannot truncate its sections into budget-stealing retries.
  *
- * Admissibility is downward-closed (any contiguous sub-group of an admissible
- * group is admissible), so greedily extending each group as far as it stays
- * admissible yields the minimum request count — a feasible full-coverage
- * plan is always found. A chunk the model cannot serve even alone keeps its
+ * Input-capacity admissibility is NOT monotone in the group extent: the
+ * token estimator samples JSON/language density over a bounded prefix and the
+ * extraction context is range-dependent, so a larger contiguous group can
+ * estimate cheaper than a shorter one. A minimum-count contiguous DP over
+ * all feasible edges therefore finds covers a max-fill scan can miss, and an
+ * input-capacity failure for one candidate end never ends the scan for later
+ * ends. Candidate group length is bounded by the input-independent,
+ * monotone per-chunk visible/output cap (chunks*perChunk <= min(mode max,
+ * provider cap)), which no larger group can ever satisfy. A chunk the model
+ * cannot serve even alone keeps its
  * own request, so the caller's deterministic budget fallback still covers it
  * and nothing oversized is dispatched. The original array is returned
  * unchanged when the plan already fits; when full coverage is impossible the
@@ -102,7 +108,15 @@ export function repackBatchesForCallBudget(
  allowedBatchCalls: number,
 ): import("../../types.ts").LlmChunk[][] {
  if (allowedBatchCalls < 1 || batches.length <= allowedBatchCalls) return batches;
- const perChunk = MODE_POLICIES[mode].batchOutput.perChunk;
+ const batchOutput = MODE_POLICIES[mode].batchOutput;
+ const perChunk = batchOutput.perChunk;
+ // Input-independent monotone bound: chunks*perChunk above
+ // min(mode max, provider cap) can never keep the per-chunk visible
+ // allowance, so no admissible group is longer than this.
+ const maxGroupChunks = Math.floor(
+  Math.min(batchOutput.max, providerMaxOutputTokens) / perChunk,
+ );
+ if (maxGroupChunks < 1) return batches;
  const groupAdmissible = (group: import("../../types.ts").LlmChunk[]): boolean => {
   const visible = batchOutputLimit(mode, group.length, providerMaxOutputTokens);
   if (visible < group.length * perChunk) return false;
@@ -118,18 +132,29 @@ export function repackBatchesForCallBudget(
   return !modelRequestCapacityReason(model, input, request.maxTokens);
  };
  const chunks = batches.flat();
- const plan: import("../../types.ts").LlmChunk[][] = [];
- let start = 0;
- while (start < chunks.length) {
-  let end = start;
-  while (
-   end + 1 < chunks.length &&
-   groupAdmissible(chunks.slice(start, end + 2))
-  )
-   end++;
-  plan.push(chunks.slice(start, end + 1));
-  start = end + 1;
+ const total = chunks.length;
+ // dp[i] = fewest requests covering chunks[i..); cut[i] reconstructs the
+ // partition. dp[0] is always finite because the singleton edge is allowed:
+ // a chunk no request can serve keeps its own request so the caller's
+ // deterministic budget fallback still covers it.
+ const dp = new Array<number>(total + 1).fill(Number.POSITIVE_INFINITY);
+ const cut = new Array<number>(total + 1).fill(total);
+ dp[total] = 0;
+ for (let i = total - 1; i >= 0; i--) {
+  const end = Math.min(total, i + maxGroupChunks);
+  for (let j = i + 1; j <= end; j++) {
+   if (j - i > 1 && !groupAdmissible(chunks.slice(i, j))) continue;
+   const candidate = 1 + dp[j];
+   // Strict improvement only: with equal request counts the earlier (smaller)
+   // first group wins, keeping older history on finer-grained requests.
+   if (candidate < dp[i]) {
+    dp[i] = candidate;
+    cut[i] = j;
+   }
+  }
  }
+ const plan: import("../../types.ts").LlmChunk[][] = [];
+ for (let i = 0; i < total; i = cut[i]) plan.push(chunks.slice(i, cut[i]));
  return plan.length < batches.length ? plan : batches;
 }
 
