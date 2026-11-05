@@ -9,7 +9,7 @@ import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identi
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
-import { contextPressure } from "./background-preparation.ts";
+import { compactionDue, contextPressure } from "./background-preparation.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { contextEvidence, evidencePage, MAX_READ_CHARS } from "./context-evidence.ts";
 import { loadLineage } from "./session-lineage.ts";
@@ -32,6 +32,8 @@ import {
 const TOOL_NAME = "smart_context";
 const MAX_REPORT_CHARS = 8_000;
 const ACTIVE_CHECKPOINT_ERROR = "A checkpoint is already active. Finish it with rewind(report) before starting another.";
+// A trim right before compaction rewrites the prompt cache that the compaction then replaces.
+const COMPACTION_DUE_ERROR = "Automatic compaction runs when this turn settles; a trim now would only rewrite the prompt cache it replaces. History left unchanged.";
 /** Queued context change; `manual` marks a user/command request, not a tool call. */
 interface QueuedChange {
   action: "checkpoint" | "rewind" | "trim";
@@ -297,6 +299,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (params.action === "trim" && config().contextPressureOnly && !contextPressure(ctx, config()).cleanup) {
         throw new Error("No context pressure (or usage is unavailable); history left unchanged. Check status. Human commands can request early cleanup.");
       }
+      if (params.action === "trim" && compactionDue(ctx, config())) throw new Error(COMPACTION_DUE_ERROR);
       if (params.action !== "checkpoint" && options.canAutoTrim?.(ctx) === false) {
         throw new Error("Prepared/running compaction or unavailable recovery tools take priority; history left unchanged.");
       }
@@ -447,8 +450,10 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     }
     const settings = config();
     const { cleanup: pressure, compaction: urgentPressure } = contextPressure(ctx, settings);
-    if (request && !request.manual && !request.userConfirmed && request.action === "trim" && settings.contextPressureOnly && !pressure) {
-      return cancelled(event, "Context pressure cleared; history left unchanged.");
+    const due = compactionDue(ctx, settings);
+    if (request && !request.manual && !request.userConfirmed && request.action === "trim") {
+      if (settings.contextPressureOnly && !pressure) return cancelled(event, "Context pressure cleared; history left unchanged.");
+      if (due) return cancelled(event, COMPACTION_DUE_ERROR);
     }
     if (!request) {
       const configNow = config();
@@ -506,8 +511,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           entries = trimEntries(plan, request.manual || request.userConfirmed ? "manual" : "agent");
         } else {
           mark = null;
-          if (plan.automatic !== "ready") return;
-          // Only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
+          // A due automatic compaction replaces this context; trimming first would only rewrite its cache.
+          if (plan.automatic !== "ready" || due) return;
+          // Otherwise only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
           const cause = urgentPressure ? "pressure" : undefined;
           const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
           const breakEvenRequests = economics ? trimBreakEvenRequests(ctx.model?.cost, economics.savedTokens, economics.tailTokens) : null;
@@ -557,6 +563,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       }
       if (anchor?.callId && (options.canAgentMutate?.(ctx) === false || (!userConfirmed && config().contextPressureOnly && !contextPressure(ctx, config()).cleanup))) {
         return { state: "unavailable", notice: "Cleanup not requested: no context pressure or agent changes are disabled." };
+      }
+      if (anchor?.callId && !userConfirmed && compactionDue(ctx, config())) {
+        return { state: "unavailable", notice: "Cleanup not requested: automatic compaction runs when this turn settles." };
       }
       const branch = ctx.sessionManager.getBranch();
       const origin = anchor ? branch.findIndex(entry => entry.id === anchor.originId) : -1;

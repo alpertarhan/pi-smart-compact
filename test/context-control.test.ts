@@ -748,8 +748,8 @@ describe("smart_context boundary lifecycle", () => {
   it.each([
     ["enabled", true], ["native-hook", false], ["below-threshold", false], ["hidden", true], ["busy", false],
   ] as const)("automatic hygiene is independent of agent exposure and respects %s", async (kind, shouldTrim) => {
-    const h = harness({ background: kind !== "native-hook", canTrim: kind !== "busy" });
-    h.setTokens(160_000); // compaction pressure permits cleanup even without catalog prices
+    const h = harness({ background: kind !== "native-hook", canTrim: kind !== "busy", model: OPENAI });
+    h.setTokens(150_000); // cleanup band; catalog prices say this batch pays back (the due compaction owns 160k)
     const old = toolBatch(h.session, "read", "old research".repeat(2_000));
     tail(h.session);
     if (kind === "below-threshold") h.setTokens(100_000);
@@ -761,7 +761,7 @@ describe("smart_context boundary lifecycle", () => {
     expect(h.changes()).toBe(shouldTrim ? 1 : 0);
     const control = h.session.getBranch().find(entry => entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE);
     expect(control?.type === "custom" ? control.data : undefined).toEqual(shouldTrim
-      ? { version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "pressure" } : undefined);
+      ? { version: 1, action: "trim", references: [old.result], archives: [archiveOf(old.result, "old research".repeat(2_000))], cause: "break-even" } : undefined);
   });
 });
 
@@ -868,7 +868,7 @@ async function offlineUsageHarness(
 }
 
 describe("cleanup before compaction", () => {
-  it.each([false, true])("rechecks Pi's committed projection before idle compaction (pressure remains=%s)", async remains => {
+  it.each([false, true])("rechecks Pi's committed projection after a human trim before idle compaction (pressure remains=%s)", async remains => {
     const h = harness({ model: { contextWindow: 1_000_000 } });
     Object.assign(h.cfg, { contextHygieneEnabled: true, autoTriggerStrategy: "settled", maxContextTokens: 400_000 });
     const old = toolBatch(h.session, "read", "evidence ".repeat(150_000));
@@ -887,6 +887,8 @@ describe("cleanup before compaction", () => {
         compact: ({ onComplete }: { onComplete(): void }) => { compactions++; onComplete(); },
       });
       expect(contextPressure(h.ctx, h.cfg).compaction).toBe(true);
+      expect(h.turn()).toBeUndefined(); // automatic cleanup leaves the gate to the due compaction
+      expect(h.controller.requestManualTrim(h.ctx).state).toBe("queued");
       h.turn(); // Pi commits boundary edits before agent_settled.
       expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(true);
       expect(contextPressure(h.ctx, h.cfg).compaction).toBe(remains);
@@ -895,6 +897,46 @@ describe("cleanup before compaction", () => {
     } finally {
       usage.cleanup();
     }
+  });
+});
+
+describe("trims at the compaction gate", () => {
+  // 200k window, 80% apply gate: compaction pressure from 160k, cleanup from 140k.
+  it.each(["settled", "background"] as const)("leaves the due %s compaction to replace history instead of trimming first", async strategy => {
+    const h = harness({ background: strategy === "background", model: OPENAI });
+    Object.assign(h.cfg, { contextHygieneEnabled: true, autoTriggerStrategy: strategy });
+    const old = toolBatch(h.session, "read", "old research".repeat(2_000));
+    tail(h.session);
+    h.setTokens(160_000);
+    expect(h.turn()).toBeUndefined();
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    await expect(h.tool.execute("trim", { action: "trim" }, undefined, undefined, h.ctx)).rejects.toThrow("Automatic compaction runs when this turn settles");
+    expect(h.controller.requestAnchorTrim(h.ctx, h.session.getLeafId()!, "anchor-call")).toEqual({
+      state: "unavailable", notice: "Cleanup not requested: automatic compaction runs when this turn settles.",
+    });
+    // Queued in the cleanup band, an agent trim is still refused once its batch reaches the gate.
+    h.setTokens(150_000);
+    const batch = await h.execute({ action: "trim" });
+    h.setTokens(160_000);
+    expect(h.boundary(batch).entries.at(-1).content).toContain("Automatic compaction runs when this turn settles");
+    expect(h.changes()).toBe(0);
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.size).toBe(0);
+    // A human request keeps today's behavior.
+    expect(h.controller.requestManualTrim(h.ctx).state).toBe("queued");
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "manual", references: [old.result] });
+  });
+
+  it.each([
+    ["off", "automatic", "pressure"], ["off", "agent", "agent"],
+    ["native-hook", "automatic", "pressure"], ["native-hook", "agent", "agent"],
+  ] as const)("keeps gate trims when automatic compaction is %s (%s request)", async (mode, actor, cause) => {
+    const h = harness({ model: OPENAI }); // native-hook strategy
+    Object.assign(h.cfg, { contextHygieneEnabled: true }, mode === "off" ? { autoTrigger: false, autoTriggerStrategy: "settled" } : {});
+    const old = toolBatch(h.session, "read", "old research".repeat(2_000));
+    tail(h.session);
+    h.setTokens(160_000);
+    const entries = actor === "automatic" ? h.turn()?.entries : h.boundary(await h.execute({ action: "trim" }))?.entries;
+    expect(controlOf(entries)).toMatchObject({ cause, references: [old.result] });
   });
 });
 
@@ -1276,8 +1318,8 @@ describe("agent mutation policy", () => {
   });
 
   it("still runs deterministic automatic hygiene with agent mutations disabled", async () => {
-    const h = harness({ background: true, canMutate: false });
-    h.setTokens(160_000);
+    const h = harness({ background: true, canMutate: false, model: OPENAI });
+    h.setTokens(150_000);
     const old = toolBatch(h.session, "read", "old research".repeat(2_000));
     tail(h.session);
     const result = { role: "toolResult" as const, toolCallId: "unrelated", toolName: "read", content: [], isError: false, timestamp: 1 };
@@ -1428,8 +1470,13 @@ describe("automatic trim timing", () => {
     if (pressureOnly) expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
     else expect(h.controller.deferredTrim(h.session.getSessionId())).not.toBeNull();
 
-    // At the compaction gate, freeing context wins over cache economics.
+    // At the compaction gate the due idle compaction replaces this context; a trim first would only rewrite its cache.
     h.setTokens(160_000);
+    expect(h.turn()).toBeUndefined();
+    expect(h.changes()).toBe(0);
+    expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    // Without automatic compaction, freeing context wins over cache economics.
+    h.cfg.autoTrigger = false;
     expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "pressure", references: [old.result] });
     expect(h.changes()).toBe(1);
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
@@ -1445,7 +1492,7 @@ describe("automatic trim timing", () => {
 
   it("keeps an unpriced prefix until the compaction gate without queuing a cold trim in pressure-only mode", () => {
     const { h, old } = deferredFixture(undefined, false);
-    h.cfg.contextPressureOnly = true;
+    Object.assign(h.cfg, { contextPressureOnly: true, autoTrigger: false }); // no due compaction claims the gate
     h.setTokens(150_000);
     expect(h.turn()).toBeUndefined();
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
@@ -1565,12 +1612,14 @@ describe("automatic trim timing", () => {
   });
 
   it("does not queue a cold trim when only the background strategy enables cleanup", () => {
-    const { h, old } = deferredFixture(OPENAI, true, false);
+    const { h } = deferredFixture(OPENAI, true, false);
     h.setTokens(150_000);
     expect(h.turn()).toBeUndefined();
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
+    // The background strategy always compacts at the gate, so its cleanup never trims there.
     h.setTokens(160_000);
-    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "pressure", references: [old.result] });
+    expect(h.turn()).toBeUndefined();
+    expect(h.session.getBranch().some(entry => entry.type === "context_edit")).toBe(false);
   });
 
   it.each(["compaction", "context_edit"] as const)("drops a mark once a newer %s rewrote the context", kind => {

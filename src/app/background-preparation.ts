@@ -85,6 +85,14 @@ export function contextPressure(
  };
 }
 
+/** The settled/background trigger requests compaction once this turn settles; native-hook waits for Pi's own threshold. */
+export function compactionDue(
+ ctx: Pick<ExtensionContext, "model" | "getContextUsage">,
+ config: Pick<CompactConfig, "minContextPercent" | "prepareContextPercent" | "maxContextTokens" | "autoTrigger" | "autoTriggerStrategy">,
+): boolean {
+ return config.autoTrigger && config.autoTriggerStrategy !== "native-hook" && contextPressure(ctx, config).compaction;
+}
+
 /** Keep the pipeline on one immutable branch/usage snapshot while the agent continues. */
 function snapshotContext(ctx: ExtensionContext): ExtensionContext {
  const branch = structuredClone(ctx.sessionManager.getBranch());

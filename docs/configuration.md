@@ -195,7 +195,7 @@ hides latency, not cost: an unused summary still spends its model budget.
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
 | Ready result lifetime | `pendingTtlMs` (default 5 minutes); `pendingFingerprintTtlMs` extends it while the live branch still matches the captured prefix (off by default) |
-| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, with break-even required below the compaction gate. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
+| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, below the compaction gate and only with break-even; at the gate the due compaction replaces the context instead. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
 window, preparation starts at 120k and applies at 140k. With Auto and an 80%
@@ -414,7 +414,10 @@ By default, automatic cleanup is considered only at the shared early gate:
 `minContextPercent`, a ready trim must also pass the cache break-even check
 below. An unknown price or poor payback leaves history unchanged, without
 queuing a cold-cache trim. At the compaction gate, freeing context takes
-priority over cache economics. A 400k policy window with the default 80% apply
+priority over cache economics, unless automatic compaction (`settled` or
+`background`) is due when the turn settles: then automatic and agent trims
+are skipped, since the compaction replaces the context they would rewrite.
+Human trims and dialog-confirmed anchors still apply. A 400k policy window with the default 80% apply
 gate considers economical cleanup from 288k and allows pressure cleanup and
 compaction from 320k. Unknown usage does not authorize automatic cleanup.
 First-delivery offload and metadata checkpoints do not rewrite cached history. Explicit research rewind
@@ -439,7 +442,8 @@ its rewrite wins, so one early low-value output no longer blocks the rest.
 
 At a completed turn boundary a ready batch commits with cause:
 
-- `pressure` when usage reached the compaction gate;
+- `pressure` when usage reached the compaction gate and no automatic
+  compaction is due (`autoTrigger` off or `native-hook`);
 - `break-even` when `N* ≤ 24` and the timing policy permits cleanup;
 - `cold` otherwise, only with economic timing enabled, after waiting. The batch
   is held (`smart_context status` reports it as `deferredTrim`). The first request beyond the estimated

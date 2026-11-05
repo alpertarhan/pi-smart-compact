@@ -262,7 +262,10 @@ by the model (`canAutoTrim` checks it like artifact offload does).
 least 16,384 net saved characters and eight assistant turns since the last
 owned trim/rewind/compaction; branch history supplies that cooldown across
 reloads and forks. At a completed, uncontested turn boundary a ready batch
-commits with cause `pressure` only at the compaction gate, or `break-even`
+commits with cause `pressure` only at the compaction gate while no automatic
+compaction is due (`autoTrigger` off or `native-hook`; with `settled` or
+`background` the compaction requested when the turn settles replaces the
+context, so automatic and agent trims are skipped there), or `break-even`
 when catalog prices say it pays back within `AUTO_TRIM_BREAK_EVEN_REQUESTS` = 24
 requests. Default pressure-only timing also requires the early cleanup gate:
 in that band, unknown prices or poor payback leave history unchanged, with no
