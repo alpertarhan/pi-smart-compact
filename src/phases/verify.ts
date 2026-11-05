@@ -23,7 +23,7 @@ import type {
 } from "../types.ts";
 import { COMPACT_SYSTEM_PREFIX, LIKELY_ERROR_RE, TRUNC } from "../constants.ts";
 import { trackedComplete } from "../utils/cache.ts";
-import { getProviderCaps } from "../utils/tokens.ts";
+import { outputCeiling } from "../utils/tokens.ts";
 import { extractFileRefs } from "../utils/file-ref-detect.ts";
 import {
  buildToolCallIndex,
@@ -2341,7 +2341,7 @@ export function buildPatchRequest(
 
  return {
   context: { systemPrompt: COMPACT_SYSTEM_PREFIX, messages: [{ role: "user", content: [{ type: "text", text: patchPrompt }], timestamp: Date.now() }] },
-  maxTokens: Math.min(8192, getProviderCaps(model.provider).maxOutputTokens),
+  maxTokens: outputCeiling(model, 8192),
  };
 }
 
