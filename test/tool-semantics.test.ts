@@ -232,6 +232,22 @@ describe("extractShellFileOperations sed in place", () => {
     expect(extractShellFileOperations({ command: "sed -es/a/b/ f" })).toEqual({ modified: [], deleted: [] });
   });
 
+  it("handles the ambiguous bare -i suffix form without fabricating files", () => {
+    // `sed -i bak ...` is BSD's separate suffix or GNU's script — undecided,
+    // so the bare suffix-shaped word is skipped and the script keeps its slot.
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' $F" }))
+      .toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak -e 's/a/b/' file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/'" }))
+      .toEqual({ modified: [], deleted: [] });
+    // Slashless one-word scripts are collateral: nothing is recorded for them.
+    expect(extractShellFileOperations({ command: "sed -i '3d' file" }))
+      .toEqual({ modified: [], deleted: [] });
+  });
+
   it("records nothing for read-only sed or in-place sed without a literal file", () => {
     expect(extractShellFileOperations({ command: "sed -n '40,75p' src/x.ts" })).toEqual({ modified: [], deleted: [] });
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' *.ts" })).toEqual({ modified: [], deleted: [] });

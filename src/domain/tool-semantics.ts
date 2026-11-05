@@ -298,9 +298,16 @@ function commandFileOperations(words: string[]): ShellFileOperations {
           options = false;
           continue;
         }
-        if (options && word === "-i" && words[index + 1]?.startsWith(".")) {
-          // BSD separate-suffix form: `sed -i .bak 's/a/b/' f` — the dotted
-          // word is the backup suffix, never the script or an edited file.
+        // shortcut: after a bare -i, BSD's separate suffix (dotted `.bak` or a
+        // bare `bak`) is skipped without consuming the script slot; slashless
+        // one-word scripts (`sed -i d f`) are collateral and record nothing.
+        if (
+          options &&
+          word === "-i" &&
+          words[index + 1] !== undefined &&
+          !words[index + 1].startsWith("-") &&
+          (words[index + 1].startsWith(".") || !words[index + 1].includes("/"))
+        ) {
           index++;
           continue;
         }
