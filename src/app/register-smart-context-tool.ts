@@ -83,7 +83,9 @@ interface TrimMark extends DeferredTrim {
   sessionId: string;
   leafId: string;
   entries: SessionBoundaryDraft[];
-  targets: { targetId: string; toolCallId: string; toolName: string; replacement: string }[];
+  /** Tool results match by call ID and tool; custom messages by type, timestamp and original content (JSON). */
+  targets: Array<{ targetId: string; replacement: string }
+    & ({ toolCallId: string; toolName: string } | { customType: string; timestamp: number; content: string })>;
 }
 
 /**
@@ -397,9 +399,20 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     }
     const { targets } = current;
     let changed = false;
+    // Identical custom messages (same type, millisecond and content) must each take their own target.
+    const used = new Set<(typeof targets)[number]>();
     const messages = event.messages.map(message => {
+      if (message.role === "custom") {
+        const target = targets.find(item => !used.has(item) && "customType" in item && item.customType === message.customType
+          && item.timestamp === message.timestamp && item.content === JSON.stringify(message.content));
+        if (!target) return message;
+        used.add(target);
+        changed = true;
+        // The host projects a custom-message edit's string content unchanged.
+        return { ...message, content: target.replacement };
+      }
       if (message.role !== "toolResult") return message;
-      const target = targets.find(item => item.toolCallId === message.toolCallId && item.toolName === message.toolName);
+      const target = targets.find(item => "toolCallId" in item && item.toolCallId === message.toolCallId && item.toolName === message.toolName);
       // Byte-identical to the host's projection of the future context_edit.
       const content = target && [{ type: "text" as const, text: target.replacement }];
       if (!content || JSON.stringify(message.content) === JSON.stringify(content)) return message;
@@ -535,8 +548,15 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             mark = {
               sessionId, leafId: branch.at(-1)!.id, entries: trimEntries(plan, "cold"),
               ...economics, breakEvenRequests,
-              targets: branch.flatMap(entry => entry.type === "message" && entry.message.role === "toolResult" && edits.has(entry.id)
-                ? [{ targetId: entry.id, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName, replacement: edits.get(entry.id)! }] : []),
+              targets: branch.flatMap((entry): TrimMark["targets"] => {
+                const replacement = edits.get(entry.id);
+                if (replacement === undefined) return [];
+                if (entry.type === "custom_message") {
+                  return [{ targetId: entry.id, replacement, customType: entry.customType, timestamp: Date.parse(entry.timestamp), content: JSON.stringify(entry.content) }];
+                }
+                return entry.type === "message" && entry.message.role === "toolResult"
+                  ? [{ targetId: entry.id, replacement, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName }] : [];
+              }),
             };
             return;
           }
@@ -546,7 +566,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     } catch (error) {
       return request ? cancelled(event, error instanceof Error ? error.message : "Context change rejected.") : undefined;
     }
-    if (!entries.length) return request ? cancelled(event, "No eligible archived output to trim.") : undefined;
+    if (!entries.length) return request ? cancelled(event, "No eligible archived content to trim.") : undefined;
     if (entries.some(entry => entry.type === "context_edit")) {
       options.onContextChange?.(ctx);
       staged = {

@@ -52,6 +52,11 @@ function branchEvidence(branch: SessionEntry[], sessionId: string, scrubber: Sec
   for (const id of state.references) {
     if (artifacts.has(id)) continue; // list the source, not its archived preview too
     const entry = entries.get(id);
+    if (entry?.type === "custom_message") {
+      records.set(id, { id, kind: "session-output", tool: entry.customType, source: entry.customType,
+        chars: extractText(entry.content).length, hashed: state.archives.has(id) });
+      continue;
+    }
     if (entry?.type !== "message" || entry.message.role !== "toolResult") continue;
     records.set(id, { id, kind: "session-output", tool: entry.message.toolName,
       source: calls.get(entry.message.toolCallId) ?? entry.message.toolName, chars: extractText(entry.message.content).length,

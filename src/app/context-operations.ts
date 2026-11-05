@@ -5,7 +5,7 @@ import {
 import type { ModelCostRates, ToolCall } from "@earendil-works/pi-ai";
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
 import {
-  fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, isRemovableResearchCall, isShellTool, normalizeToolName, toolCallSubject,
+  fileOperationPaths, isArchivableToolResult, isProcessReadTool, isReadOnlyResearchTool, isRemovableResearchCall, isShellTool, normalizeToolName, toolCallSubject,
 } from "../domain/tool-semantics.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { extractText, flattenToolCallBlock, type FlatToolCall } from "../utils/extraction.ts";
@@ -245,6 +245,11 @@ export function buildTrimMarker(input: { toolName: string; entryId: string; text
     if (first) lines.push("> " + line);
     else { lines.push("! " + line); risks++; }
   }
+  return boundedMarker(head, lines);
+}
+
+/** The retrieval line plus digest lines, dropping lines from the end to fit TRIM_MARKER_MAX_CHARS. */
+function boundedMarker(head: string, lines: string[]): string {
   let marker = head;
   for (const line of lines) {
     const room = TRIM_MARKER_MAX_CHARS - marker.length - 1;
@@ -255,14 +260,72 @@ export function buildTrimMarker(input: { toolName: string; entryId: string; text
   return marker;
 }
 
-/** Old results a trim may archive: read-only or shell groups, never side-effecting siblings. */
+/** Old results a trim may archive: read-only, shell or process-read groups, never side-effecting siblings. */
 function archivableResults(branch: SessionEntry[]): Map<string, ToolCall> {
-  const groups = toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments) || isShellTool(call.name));
+  const groups = toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments) || isShellTool(call.name)
+    || isProcessReadTool(call.name, call.arguments));
   const results = new Map<string, ToolCall>();
   for (const [id, call] of groups) {
     if (call && flattenToolCallBlock(call).every(flat => isArchivableToolResult(flat.name, flat.arguments))) results.set(id, call);
   }
   return results;
+}
+
+/** Other extensions' message types a trim may archive; see noticeLines. */
+const PROCESS_NOTICE_TYPE = "ad-process:notification";
+const MESH_DELIVERY_TYPE = "agent_mesh";
+
+/**
+ * Marker lines an old custom message must keep, or undefined when it stays whole. A process
+ * notification keeps name, id and status; an agent-mesh delivery qualifies only once answered
+ * (peers reply and retry by its id) and keeps id, sender and first line. Missing fields fail closed.
+ */
+function noticeLines(message: Extract<ProjectedSessionEntry["messages"][number], { role: "custom" }>, answered: ReadonlySet<string>): string[] | undefined {
+  const details = (message.details && typeof message.details === "object" ? message.details : {}) as Record<string, unknown>;
+  const field = (key: string) => typeof details[key] === "string" && details[key] !== "" ? details[key] as string : undefined;
+  if (message.customType === PROCESS_NOTICE_TYPE) {
+    const name = field("processName"), id = field("processId"), summary = field("summary");
+    if (!name || !id || !summary) return undefined;
+    const exit = typeof details.exitCode === "number" ? " " + details.exitCode : "";
+    return [digestLine(`process ${name} (${id}) ${field("status") ?? field("kind") ?? "event"}${exit}`), "> " + digestLine(summary)];
+  }
+  if (message.customType === MESH_DELIVERY_TYPE) {
+    const id = field("id"), from = field("from_name") ?? field("from");
+    const first = field("text")?.split("\n").find(line => line.trim());
+    if (!id || !from || !first || !answered.has(id)) return undefined;
+    return [digestLine(`answered agent-mesh message ${id} from ${from}`), "> " + digestLine(first)];
+  }
+  return undefined;
+}
+
+/**
+ * Archivable custom messages in the projection with their markers. A delivery counts as answered
+ * only by a later direct `agent_mesh` reply call whose `reply_to` is its id and whose result succeeded.
+ */
+function archivableNotices(projection: ProjectedSessionEntry[]): Map<string, { text: string; marker: string }> {
+  const notices = new Map<string, { text: string; marker: string }>();
+  const succeeded = new Set<string>();
+  const answered = new Set<string>();
+  // Backwards, so each delivery sees only replies that came after it.
+  for (let index = projection.length - 1; index >= 0; index--) {
+    const { sourceEntry, messages } = projection[index]!;
+    const message = messages[0];
+    if (message?.role === "toolResult" && !message.isError && normalizeToolName(message.toolName) === "agent_mesh") succeeded.add(message.toolCallId);
+    if (message?.role === "assistant") {
+      for (const block of message.content) {
+        if (block.type === "toolCall" && succeeded.has(block.id) && block.arguments.action === "reply"
+          && typeof block.arguments.reply_to === "string") answered.add(block.arguments.reply_to);
+      }
+    }
+    if (message?.role !== "custom" || sourceEntry.type !== "custom_message"
+      || (typeof message.content !== "string" && message.content.some(block => block.type !== "text"))) continue;
+    const lines = noticeLines(message, answered);
+    if (!lines) continue;
+    const text = extractText(message.content);
+    const head = `[Archived ${digestLine(message.customType, 64)} message, ${text.length} chars. Retrieve with smart_context action=read id=${sourceEntry.id}.]`;
+    notices.set(sourceEntry.id, { text, marker: boundedMarker(head, lines) });
+  }
+  return notices;
 }
 
 type Superseded = "edited" | "reread";
@@ -298,6 +361,11 @@ function supersededResults(projection: ProjectedSessionEntry[], candidates: Map<
   return result;
 }
 
+function hasSignedThinking(messages: ProjectedSessionEntry["messages"]): boolean {
+  return messages.some(message => message.role === "assistant" && message.api === "anthropic-messages"
+    && message.content.some(block => block.type === "thinking" && Boolean(block.thinkingSignature)));
+}
+
 /** Signed Anthropic thinking may bind the entire preceding history, not only its own bytes. */
 export function thinkingEditReason(branch: SessionEntry[], entries: SessionBoundaryDraft[], readerApi?: string): string | undefined {
   if (readerApi && readerApi !== "anthropic-messages") return;
@@ -308,13 +376,15 @@ export function thinkingEditReason(branch: SessionEntry[], entries: SessionBound
       changed = true;
       if (edits.get(sourceEntry.id) === null) continue;
     }
-    if (changed && messages.some(message => message.role === "assistant" && message.api === "anthropic-messages"
-      && message.content.some(block => block.type === "thinking" && Boolean(block.thinkingSignature)))) {
+    if (changed && hasSignedThinking(messages)) {
       // ponytail: conservatively protect all signed Anthropic thinking; narrow only with a public binding capability.
       return "Cleanup would invalidate retained signed Anthropic thinking, so history stays unchanged. Continue the task; compaction still reduces context.";
     }
   }
 }
+
+/** One archivable entry: its original text, the marker replacing it, and the net characters saved. */
+interface TrimCandidate { id: string; text: string; marker: string; savedChars: number }
 
 /** Warm-cache inputs for frontier scoring; absent cost keeps the full plan. */
 export interface TrimEconomy {
@@ -343,11 +413,11 @@ function missesWholePrompt(provider?: string): boolean {
  * callers' existing hold logic decides.
  */
 function selectTrimFrontier(
-  candidates: Array<{ id: string; toolName: string; call: ToolCall; text: string; marker: string; savedChars: number }>,
+  candidates: TrimCandidate[],
   branch: SessionEntry[],
   economy: TrimEconomy | undefined,
   floorChars: number,
-): Array<{ id: string; toolName: string; call: ToolCall; text: string; marker: string; savedChars: number }> {
+): TrimCandidate[] {
   if (!candidates.length || !economy?.cost) return candidates;
   const messages = contextMessageEntries(branch);
   const indexes = new Map(messages.map((entry, index) => [entry.id, index] as const));
@@ -411,11 +481,16 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
   const rank = (id: string) => { const reason = superseded.get(id); return reason === "edited" ? 0 : reason === "reread" ? 1 : 2; };
   // Superseded outputs first (edited before reread), each group in branch order; the cap then prefers them.
   const floorChars = options.minSavingChars ?? MIN_AUTO_TRIM_SAVING_CHARS;
-  const eligible = projection.slice(0, cutoff).flatMap(({ sourceEntry, messages }) => {
+  const notices = archivableNotices(projection);
+  // A notice before retained signed thinking would make thinkingEditReason refuse the whole plan, so it is no candidate.
+  const signedAt = options.readerApi && options.readerApi !== "anthropic-messages" ? -1 : projection.findLastIndex(entry => hasSignedThinking(entry.messages));
+  const eligible = projection.slice(0, cutoff).flatMap(({ sourceEntry, messages }, index): TrimCandidate[] => {
     const message = messages[0];
     const call = candidates.get(sourceEntry.id);
-    if (!call || protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id) || message?.role !== "toolResult"
-      || message.isError || message.content.some(block => block.type !== "text")) return [];
+    const notice = notices.get(sourceEntry.id);
+    if (protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id)) return [];
+    if (notice) return notice.text.length < MIN_TRIM_CHARS || index < signedAt ? [] : [{ id: sourceEntry.id, ...notice, savedChars: notice.text.length - notice.marker.length }];
+    if (!call || message?.role !== "toolResult" || message.isError || message.content.some(block => block.type !== "text")) return [];
     const text = extractText(message.content);
     if (text.length < MIN_TRIM_CHARS) return [];
     const flat = flattenToolCallBlock(call);
@@ -423,7 +498,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
     const marker = buildTrimMarker({
       toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined, note: reason && SUPERSEDED_NOTE[reason],
     });
-    return [{ id: sourceEntry.id, toolName: message.toolName, call, text, marker, savedChars: text.length - marker.length }];
+    return [{ id: sourceEntry.id, text, marker, savedChars: text.length - marker.length }];
   }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
   const chosen = selectTrimFrontier(eligible, branch, options.economy, floorChars);
   const entries: SessionBoundaryDraft[] = [];
@@ -456,7 +531,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
 /** Why a trim plan queues nothing, with its numbers, so a skipped cleanup is diagnosable without debug mode. */
 export function describeTrimSkip(plan: { entries: unknown[]; savedChars: number; automatic: string; cooldownTurns: number }, floorChars: number): string {
   if (!plan.entries.length) {
-    return `No safe cleanup: no eligible tool output (each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
+    return `No safe cleanup: no eligible archived content (tool output, process notifications or answered peer messages; each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
   }
   if (plan.automatic === "cooldown") return `No safe cleanup yet: cooldown, ${plan.cooldownTurns} more turn(s) after the last context change.`;
   return `No safe cleanup: eligible outputs would save ${plan.savedChars} chars, under the ${floorChars}-char floor.`;
@@ -644,14 +719,21 @@ export function trimRoi(branch: SessionEntry[], sessionId: string): {
   return { archivedOutputs, archivedChars, savedCharsEstimate: Math.max(0, archivedChars - markerChars) };
 }
 
+/** Content a trim can archive: a custom message's or a tool result's; nothing else. */
+function archivableContent(entry: SessionEntry | undefined) {
+  if (entry?.type === "custom_message") return entry.content;
+  if (entry?.type === "message" && entry.message.role === "toolResult") return entry.message.content;
+  return undefined;
+}
+
 /** Explicit, branch-local recovery only; never reveal assistant reasoning or arbitrary session entries. */
 export function readContextReference(branch: SessionEntry[], sessionId: string, id: string): string {
   const state = inspectContext(branch, sessionId);
   if (!state.references.has(id)) throw new Error("No archived reference with that ID on the active branch.");
   const entry = branch.find(item => item.id === id);
-  if (entry?.type !== "message" || entry.message.role !== "toolResult"
-    || entry.message.content.some(block => block.type !== "text")) throw new Error("Archived text is unavailable.");
-  const text = extractText(entry.message.content);
+  const content = archivableContent(entry);
+  if (content === undefined || (typeof content !== "string" && content.some(block => block.type !== "text"))) throw new Error("Archived text is unavailable.");
+  const text = extractText(content);
   const recorded = state.archives.get(id);
   if (recorded && digest(text) !== recorded.sha256) {
     throw new Error(`Archived text for ${id} no longer matches the record made when it was archived (${recorded.chars} chars then, ${text.length} chars now); the session file may have been edited. Nothing was changed.`);
