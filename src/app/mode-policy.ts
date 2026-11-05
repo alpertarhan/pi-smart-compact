@@ -106,7 +106,13 @@ export function resolveCallBudget(configured: number, mode: EffectiveCompactionM
   return automatic ? Math.min(budget, AUTO_TRIGGER_MAX_LLM_CALLS) : budget;
 }
 
-/** Shared like resolveCallBudget. A reasoning summary model reserves thinking headroom on every call. */
-export function resolveOutputBudget(mode: EffectiveCompactionMode, callBudget: number, reasoning: boolean): number {
+/** Shared like resolveCallBudget. Any reasoning model on the run's routes (summary, segmentation, verification)
+ *  reserves thinking headroom on its calls, so the run budget covers it on every call. */
+export function resolveOutputBudget(
+  mode: EffectiveCompactionMode,
+  callBudget: number,
+  models: readonly ({ reasoning?: boolean } | undefined)[],
+): number {
+  const reasoning = models.some(model => model?.reasoning);
   return MODE_POLICIES[mode].maxOutputTokens + (reasoning ? callBudget * REASONING_OUTPUT_HEADROOM_TOKENS : 0);
 }

@@ -23,11 +23,11 @@ import {
  ASSEMBLY_PROMPT_SUFFIX,
  SESSION_TYPE_INSTRUCTIONS,
  TRUNC,
- REASONING_OUTPUT_HEADROOM_TOKENS,
 } from "../constants.ts";
 import {
  getProviderCaps,
  makeTokenEstimator,
+ outputCeiling,
  type TokenEstimator,
 } from "../utils/tokens.ts";
 import { trackedComplete } from "../utils/cache.ts";
@@ -476,12 +476,6 @@ export function heuristicTopicBoundaries(extraction: StructuredExtraction) {
 export interface SynthesisRequest {
  context: Context;
  maxTokens: number;
-}
-
-/** Wire output cap for a visible target; the provider table is a floor when the model advertises more. */
-function outputCeiling(model: Model<Api>, visibleTokens: number): number {
- const limit = Math.max(getProviderCaps(model.provider).maxOutputTokens, model.maxTokens || 0);
- return Math.min(visibleTokens + (model.reasoning ? REASONING_OUTPUT_HEADROOM_TOKENS : 0), limit);
 }
 
 /** The same concrete request is inspected by model selection and sent at runtime. */

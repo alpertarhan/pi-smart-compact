@@ -105,6 +105,15 @@ describe("planned-request model eligibility", () => {
     expect(eligible({ ...plain, reasoning: true }, "summary")).toMatchObject({ selectable: false, reason: expect.stringContaining("Summary batch 1/") });
   });
 
+  it("checks a reasoning model's repair request with the same thinking headroom runtime sends", async () => {
+    const f = fixture();
+    const eligible = await createModelFeasibilityResolver(f.ctx, f.config);
+    // 8,192 repair tokens fit a 16k window; 16,384 more for thinking do not.
+    const plain = { ...model("repair", 16_000), maxTokens: 64_000 };
+    expect(eligible(plain, "verification").selectable).toBe(true);
+    expect(eligible({ ...plain, reasoning: true }, "verification")).toMatchObject({ selectable: false, reason: expect.stringContaining("Repair request minimum") });
+  });
+
   it("rechecks a grown branch when a fresh snapshot is requested", async () => {
     const f = fixture(4);
     const before = await createModelFeasibilityResolver(f.ctx, f.config, "fast");
