@@ -365,6 +365,58 @@ it("keeps a 1h prefix cached across later short-tier writes", () => {
   expect(none.cached).toBeGreaterThan(0);
 });
 
+/**
+ * Pressure-gate fixture: the visible context stays under the 0.8 gate while the recorded prompt
+ * (unseen payload included) crosses it, so only a gate that counts the unseen payload can fire.
+ */
+function pressureFixture() {
+  const SYSTEM = 10_000;
+  const WINDOW = 30_000;
+  const entries: Record<string, unknown>[] = [];
+  let at = T0;
+  let seq = 0;
+  let previous = 0;
+  const add = (entry: Record<string, unknown>) => entries.push({ id: `p${++seq}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const project = () => contextMessageEntries(entries as never).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+  const request = (content: unknown[], stopReason = "stop") => {
+    at += 60_000;
+    const prompt = SYSTEM + project();
+    const reused = previous;
+    const written = prompt - reused;
+    add({ type: "message", message: { role: "assistant", content, stopReason, ...MODEL,
+      usage: { input: 0, cacheRead: reused, cacheWrite: written, cacheWrite1h: 0, output: 0, totalTokens: prompt,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: (0.5 * reused + 6.25 * written) / 1_000_000 } }, timestamp: at } });
+    previous = prompt;
+  };
+  const user = (text: string) => add({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: at } });
+  user("Refactor the parser.");
+  request([{ type: "toolCall", id: "call-1", name: "read", arguments: {} }], "toolUse");
+  add({ type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "read", isError: false,
+    content: [{ type: "text", text: "export const PRESSURE_BODY_SECRET = 1;\n".repeat(1_600) }], timestamp: at } });
+  request([{ type: "text", text: "Read the parser." }]);
+  for (let turn = 3; turn <= 6; turn++) {
+    user(`Step ${turn}.`);
+    request([{ type: "text", text: `Step ${turn} done.` }]);
+  }
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-pressure", timestamp: new Date(T0).toISOString(), cwd: root };
+  return { text: [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n", SYSTEM, WINDOW, projected: project() };
+}
+
+it("fires the pressure gate once the unseen payload pushes the prompt over the ratio", () => {
+  const { text, SYSTEM, WINDOW, projected } = pressureFixture();
+  // The visible context alone never reaches the gate; the recorded prompt crosses it.
+  expect(projected).toBeLessThan(0.8 * WINDOW);
+  expect(projected + SYSTEM).toBeGreaterThanOrEqual(0.8 * WINDOW);
+  const catalog = () => ({ contextWindow: WINDOW, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+  const result = replaySession(loadSession(text)!, catalog, {
+    policies: [{ name: "none", kind: "none" }, { name: "pressure", kind: "pressure" }], rebuildMin: 1_000,
+  });
+  const pressure = result.policies.find(policy => policy.policy === "pressure")!;
+  expect(pressure.trims.pressure).toBe(1);
+  expect(pressure.events[0]).toMatchObject({ cause: "pressure" });
+  expect(result.policies[0].trims.pressure).toBe(0);
+});
+
 it("reproduces recorded cache misses and cost for Anthropic 5-minute and openai-codex whole-prompt caches", () => {
   const catalog = (provider: string) => provider === "anthropic"
     ? { contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }

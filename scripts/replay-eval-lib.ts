@@ -257,7 +257,8 @@ function replayPolicy(
     if (plan.automatic !== "ready") return;
     const info = catalog(message.provider, message.model);
     const window = num(info?.contextWindow);
-    const pressure = window > 0 && project(working).total >= PRESSURE_RATIO * window;
+    // The pressure gate sees the real prompt size: the next request also carries its unseen payload.
+    const pressure = window > 0 && project(working).total + (unseen[result.requests] ?? 0) >= PRESSURE_RATIO * window;
     const commit = (cause: AutoCause, removedTokens: number) => {
       append(materialize(trimEntries(plan, cause)));
       record(cause, result.requests + 1, removedTokens);
