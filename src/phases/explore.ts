@@ -30,7 +30,7 @@ import {
 import { extractText, extractMainGoal, isInjectedMessage } from "../utils/extraction.ts";
 import { classifyTool } from "../domain/tool-semantics.ts";
 import { trackedComplete } from "../utils/cache.ts";
-import { getProviderCaps } from "../utils/tokens.ts";
+import { outputCeiling } from "../utils/tokens.ts";
 import { errorDetail, recordIssue } from "../utils/issues.ts";
 import * as log from "../utils/logger.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
@@ -624,7 +624,7 @@ export function buildExplorerRequest(
    messages: [{ role: "user", content: [{ type: "text", text: userContent }], timestamp: Date.now() }],
    tools: EXPLORATION_TOOLS,
   },
-  maxTokens: Math.min(4096, model.maxTokens || 4096),
+  maxTokens: outputCeiling(model, 4096),
  };
 }
 
@@ -759,7 +759,7 @@ export async function exploreConversation(
        apiKey: auth.apiKey,
        headers: auth.headers,
        signal,
-       maxTokens: Math.min(4096, model.maxTokens || 4096),
+       maxTokens: outputCeiling(model, 4096),
       },
       svc,
      );
@@ -960,10 +960,7 @@ async function explorationRetry(
    {
     apiKey: auth.apiKey,
     headers: auth.headers,
-    maxTokens: Math.min(
-     4096,
-     getProviderCaps(model.provider).maxOutputTokens,
-    ),
+    maxTokens: outputCeiling(model, 4096),
     signal,
    },
    svc,
@@ -1025,7 +1022,7 @@ export function buildDirectExplorationRequest(
 
  return {
   context: { systemPrompt: COMPACT_SYSTEM_PREFIX, messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }] },
-  maxTokens: Math.min(4096, getProviderCaps(model.provider).maxOutputTokens),
+  maxTokens: outputCeiling(model, 4096),
  };
 }
 

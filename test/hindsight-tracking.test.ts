@@ -170,6 +170,10 @@ describe("background Hindsight tracking", () => {
       if (state === "missing") fake.operations.delete(outcome.receipt!.operationId);
       else fake.operations.set(outcome.receipt!.operationId, state);
     }
+    // A slow first status check pushes the 4th receipt's first poll past the
+    // tracking deadline: it must still be checked exactly once (regression:
+    // completed 0, accepted 2 in CI run 42035261771).
+    fake.beforeNext.set("GET operations/:id", () => Bun.sleepSync(100));
     await f.emit("session_start");
     await f.delivered.promise;
     expect(f.messages).toHaveLength(1);

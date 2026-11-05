@@ -339,7 +339,9 @@ the same routes. Choosing a summary model never switches the chat model.
 
 `summaryThinkingLevel` covers synthesis, assembly and repair. Both default to
 `minimal` because reasoning tokens add up over multi-call compaction. An
-explicit call-level reasoning option takes precedence.
+explicit call-level reasoning option takes precedence. A reasoning stage model
+gets 16,384 more completion tokens for thinking on every synthesis,
+exploration and repair request; stated output targets do not change.
 
 Choosing a route based on evidence is covered in
 [provider routing evidence](./evaluation.md#provider-routing-evidence).
@@ -399,8 +401,8 @@ These limits are not configurable. Behavior and examples are in the guide's
 | Item | Limit |
 | --- | --- |
 | Trim per boundary | At most 32 outputs of 2,048+ characters; the latest four assistant turns stay |
-| Trimmed output types | Successful text from read-only tools, shell (`bash`) output whose call stays in context, and `smart_context` `read` pages (their markers point back at the source ID). Errors, writes, unknown tools and mixed turns stay whole. |
-| Digest marker | At most 6 lines and 400 characters: retrieval line, call subject, first output line, up to three error/warning lines |
+| Trimmed output types | Successful text from read-only tools, shell (`bash`) output and `process` `output`/`list` results whose call stays in context, and `smart_context` `read` pages (their markers point back at the source ID). Old `ad-process:notification` messages, and `agent_mesh` deliveries a later successful `agent_mesh` `reply` answered by `reply_to`. Errors, writes, other `process` actions, unknown tools, mixed turns, `agent_mesh` tool results and unanswered deliveries stay whole. |
+| Digest marker | At most 6 lines and 400 characters: retrieval line, call subject, first output line, up to three error/warning lines. A notification keeps `process <name> (<id>) <status> [exit code]` and its summary; a peer message keeps `answered agent-mesh message <id> from <sender>` and its first line |
 | Order within the 32 | Read-only outputs whose path a later call writes, edits or deletes; then those read again in full later (a plain `read` without `offset`/`limit`); then the rest, each in session order. Markers note `(superseded: edited later)` or `(superseded: read again in full later)`. Paths compare after `path.normalize` only (relative never matches absolute). This changes order and the note, not eligibility. |
 | Integrity | Trim and rewind records store a SHA-256 and length of each archived output; `smart_context` `read`/`search` refuse text that no longer matches. Records from earlier versions have no hash and are read as before. |
 | Automatic cleanup batch | At least 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction |

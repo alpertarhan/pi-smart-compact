@@ -2,7 +2,8 @@
  * Token estimation with provider-specific ratios and EMA calibration.
  */
 
-import { CHARS_PER_TOKEN, TUNING } from "../constants.ts";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { CHARS_PER_TOKEN, REASONING_OUTPUT_HEADROOM_TOKENS, TUNING } from "../constants.ts";
 import type { LlmMessage, ProviderCacheCaps, ProviderCapabilities } from "../types.ts";
 import { lruGet, lruSet } from "./lru.ts";
 
@@ -140,6 +141,12 @@ export function getProviderCaps(provider: string): ProviderCapabilities {
     if (pattern.test(provider)) return PROVIDER_MAP[key] ?? DEFAULT_CAPS;
   }
   return DEFAULT_CAPS;
+}
+
+/** Wire output cap for a visible target; the provider table is a floor when the model advertises more. */
+export function outputCeiling(model: Model<Api>, visibleTokens: number): number {
+  const limit = Math.max(getProviderCaps(model.provider).maxOutputTokens, model.maxTokens || 0);
+  return Math.min(visibleTokens + (model.reasoning ? REASONING_OUTPUT_HEADROOM_TOKENS : 0), limit);
 }
 
 /** Documented prompt-cache control surface for a provider; conservative defaults for unknowns. */
