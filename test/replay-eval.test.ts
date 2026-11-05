@@ -247,6 +247,79 @@ it("prices with base rates when a long-context tier omits rate fields", () => {
   }
 });
 
+/**
+ * Recorded-trim fixture: usage is generated from the projected prompt of the branch as recorded
+ * (the automatic trim's context_edit applied) plus a fixed system/tool payload. The trim is recorded
+ * between requests, so from then on the untrimmed projection is larger than what was measured.
+ */
+function trimmedFixture() {
+  const SYSTEM = 5_000;
+  const recorded: Record<string, unknown>[] = [];
+  const kept: Record<string, unknown>[] = [];
+  const strippedProjected: number[] = [];
+  let at = T0;
+  let seq = 0;
+  let edited = false;
+  let previous = 0;
+  const link = (rows: Record<string, unknown>[], entry: Record<string, unknown>) =>
+    rows.push({ id: `q${++seq}`, parentId: rows.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const copyKept = () => kept.push({ ...recorded.at(-1)!, parentId: kept.at(-1)?.id ?? null });
+  const project = (rows: Record<string, unknown>[]) =>
+    contextMessageEntries(rows as never).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+  const request = (content: unknown[], stopReason = "stop") => {
+    at += 60_000;
+    const prompt = SYSTEM + project(recorded);
+    const stripped = project(kept);
+    const reused = edited ? 0 : previous;
+    const total = (0.5 * reused + 6.25 * (prompt - reused)) / 1_000_000;
+    const usage = { input: 0, cacheRead: reused, cacheWrite: prompt - reused, cacheWrite1h: 0, output: 0, totalTokens: prompt,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } };
+    link(recorded, { type: "message", message: { role: "assistant", content, stopReason, ...MODEL, usage, timestamp: at } });
+    copyKept();
+    previous = prompt;
+    edited = false;
+    strippedProjected.push(stripped);
+  };
+  const toolTurn = (body: string) => {
+    at += 60_000;
+    link(recorded, { type: "message", message: { role: "user", content: [{ type: "text", text: "Inspect." }], timestamp: at } });
+    copyKept();
+    request([{ type: "toolCall", id: `call-${seq}`, name: "read", arguments: {} }], "toolUse");
+    link(recorded, { type: "message", message: { role: "toolResult", toolCallId: `call-${seq - 1}`, toolName: "read", isError: false,
+      content: [{ type: "text", text: body }], timestamp: at } });
+    copyKept();
+    const resultId = recorded.at(-1)!.id as string;
+    request([{ type: "text", text: "Read the body." }]);
+    return resultId;
+  };
+  const trimmedId = toolTurn("RECORDED_TRIM_BODY_SECRET line\n".repeat(2_000));
+  toolTurn("small body line\n".repeat(50));
+  at += 60_000;
+  link(recorded, { type: "custom", customType: "smart-compact-context",
+    data: { version: 1, action: "trim", cause: "break-even", references: [trimmedId] } });
+  link(recorded, { type: "context_edit", targetId: trimmedId, replacement: { content: "[archived]" } });
+  edited = true;
+  for (let turn = 1; turn <= 2; turn++) {
+    at += 60_000;
+    link(recorded, { type: "message", message: { role: "user", content: [{ type: "text", text: `Follow-up ${turn}.` }], timestamp: at } });
+    copyKept();
+    request([{ type: "text", text: `Follow-up ${turn} done.` }]);
+  }
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-recorded-trim", timestamp: new Date(T0).toISOString(), cwd: root };
+  return { text: [header, ...recorded].map(line => JSON.stringify(line)).join("\n") + "\n", SYSTEM, strippedProjected };
+}
+
+it("keeps the unseen payload positive after a recorded automatic trim", () => {
+  const { text, SYSTEM, strippedProjected } = trimmedFixture();
+  const catalog = () => ({ contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+  const result = replaySession(loadSession(text)!, catalog, { policies: [{ name: "none", kind: "none" }], rebuildMin: 1_000 });
+  expect(result.strippedTrims).toBe(1);
+  const none = result.policies[0];
+  expect(none.requests).toBe(strippedProjected.length);
+  // Every request, including those after the recorded trim, still carries the policy-independent payload.
+  expect(none.prompt).toBe(strippedProjected.reduce((sum, value) => sum + value, 0) + strippedProjected.length * SYSTEM);
+});
+
 it("reproduces recorded cache misses and cost for Anthropic 5-minute and openai-codex whole-prompt caches", () => {
   const catalog = (provider: string) => provider === "anthropic"
     ? { contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }

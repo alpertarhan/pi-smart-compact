@@ -162,8 +162,10 @@ function lifetimeOf(usage: Usage, promptCache: ModelPromptCache | undefined, pri
 }
 
 /**
- * Per request, recorded prompt tokens the untrimmed projection does not see: system prompt, tool
+ * Per request, recorded prompt tokens the projection does not see: system prompt, tool
  * schemas and provider-side tokens. They do not depend on the trim policy, so every policy adds them.
+ * Measured against the context as recorded (recorded trims applied), so a recorded trim cannot
+ * make the payload disappear: usage was measured on the trimmed prompt, not the untrimmed one.
  */
 function unseenTokens(branch: SessionEntry[], project: Projector): number[] {
   return branch.flatMap((entry, index) => {
@@ -331,7 +333,7 @@ export function replaySession(session: { id: string; branch: SessionEntry[] }, c
   const { branch, stripped } = stripAutomaticTrims(session.branch);
   const project = projector();
   const evidence = cacheEvidence(branch);
-  const unseen = unseenTokens(branch, project);
+  const unseen = unseenTokens(session.branch, project);
   const policies = options.policies.map(policy => replayPolicy(session.id, branch, policy, catalog, options.rebuildMin, project, evidence, unseen));
   const none = policies.find(policy => policy.policy === "none")?.cost ?? null;
   for (const policy of policies) policy.deltaVsNone = policy.cost === null || none === null ? null : policy.cost - none;
