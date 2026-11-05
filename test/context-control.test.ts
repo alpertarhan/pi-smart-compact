@@ -221,6 +221,33 @@ describe("recoverable context edits", () => {
     expect(readContextReference(session.getBranch(), session.getSessionId(), bash.result)).toBe(output);
   });
 
+  it("archives old process output and list results, never process changes or mixed batches", () => {
+    const session = manager();
+    const logs = '"ci-watch" (proc_1) [exited]\n\nstdout:\n' + "pending\n".repeat(400) + "error: build failed\n";
+    const output = toolBatch(session, "process", logs, false, { action: "output", id: "proc_1" });
+    const list = toolBatch(session, "process", "proc_1\texited\tci-watch\n".repeat(100), false, { action: "list" });
+    const changes = ["start", "stop", "write", "update", "clear"].map(action =>
+      toolBatch(session, "process", `${action} `.repeat(1_000), false, { action, id: "proc_1" }));
+    session.appendMessage(assistant([
+      { type: "toolCall", id: "po", name: "process", arguments: { action: "output", id: "proc_2" } },
+      { type: "toolCall", id: "ps", name: "process", arguments: { action: "start", name: "x", command: "make" } },
+    ], "toolUse"));
+    const mixed = ["po", "ps"].map(id => session.appendMessage({
+      role: "toolResult", toolCallId: id, toolName: "process", content: [{ type: "text", text: "mixed\n".repeat(1_000) }], isError: false, timestamp: 1,
+    }));
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toEqual([output.result, list.result]);
+    apply(session, plan.entries);
+    const text = JSON.stringify(buildSessionProjection(session.getBranch()).messages);
+    expect(text).toContain(`[Archived process output, ${logs.length} chars. Retrieve with smart_context action=read id=${output.result}.]`);
+    expect(text).toContain('> \\"ci-watch\\" (proc_1) [exited]');
+    expect(text).toContain("! error: build failed");
+    for (const id of [...changes.map(item => item.result), ...mixed]) expect(ids(session)).toContain(id);
+    expect(text).toContain("start ".repeat(1_000));
+    expect(readContextReference(session.getBranch(), session.getSessionId(), output.result)).toBe(logs);
+  });
+
   it("archives old smart_context read pages against the original id, never other actions", () => {
     const session = manager();
     const evidence = "SOURCE_EVIDENCE".repeat(1_000);

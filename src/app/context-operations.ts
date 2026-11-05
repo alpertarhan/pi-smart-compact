@@ -5,7 +5,7 @@ import {
 import type { ModelCostRates, ToolCall } from "@earendil-works/pi-ai";
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, TRIM_MARKER_MAX_CHARS, TRIM_MARKER_MAX_LINES, TRIM_RISK_LINE_RE } from "../constants.ts";
 import {
-  fileOperationPaths, isArchivableToolResult, isReadOnlyResearchTool, isRemovableResearchCall, isShellTool, normalizeToolName, toolCallSubject,
+  fileOperationPaths, isArchivableToolResult, isProcessReadTool, isReadOnlyResearchTool, isRemovableResearchCall, isShellTool, normalizeToolName, toolCallSubject,
 } from "../domain/tool-semantics.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { extractText, flattenToolCallBlock, type FlatToolCall } from "../utils/extraction.ts";
@@ -255,9 +255,10 @@ export function buildTrimMarker(input: { toolName: string; entryId: string; text
   return marker;
 }
 
-/** Old results a trim may archive: read-only or shell groups, never side-effecting siblings. */
+/** Old results a trim may archive: read-only, shell or process-read groups, never side-effecting siblings. */
 function archivableResults(branch: SessionEntry[]): Map<string, ToolCall> {
-  const groups = toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments) || isShellTool(call.name));
+  const groups = toolGroups(branch, call => isReadOnlyResearchTool(call.name, call.arguments) || isShellTool(call.name)
+    || isProcessReadTool(call.name, call.arguments));
   const results = new Map<string, ToolCall>();
   for (const [id, call] of groups) {
     if (call && flattenToolCallBlock(call).every(flat => isArchivableToolResult(flat.name, flat.arguments))) results.set(id, call);
