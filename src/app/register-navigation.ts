@@ -233,7 +233,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  pi.registerTool({
   name: NAVIGATION_TOOL_NAME,
   label: "Context Navigation",
-  description: "View/recall session anchors. Anchor completed work under pressure. In pressure-only mode, an explicitly user-requested early anchor requires one-time host confirmation. Safe cleanup is queued once, not full compaction; never claim approval or retry a refusal. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
+  description: "View/recall session anchors. Anchor completed work under pressure. In pressure-only mode, early cleanup for an explicitly user-requested anchor needs one-time host confirmation; without that dialog the anchor is only a recall point. Safe cleanup is queued once, not full compaction; never claim approval or retry a refusal. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
    target: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),

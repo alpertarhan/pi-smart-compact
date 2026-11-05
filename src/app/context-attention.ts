@@ -114,7 +114,7 @@ function renderAttention(
         const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (plan.blockedReason) cleanupBlocked = plan.blockedReason;
         else if (plan.automatic === "ready" && !compactionDue(ctx, settings)) {
-          // Name a trim only when it is ready and pays back its cache rewrite; the trim action itself checks neither.
+          // Name a trim only when it is ready and pays back its cache rewrite; the trim action skips readiness and, under compaction pressure, payback.
           const { savedTokens, tailTokens } = trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
           const breakEven = trimBreakEvenRequests(ctx.model?.cost, savedTokens, tailTokens);
           if (breakEven !== null && breakEven <= settings.autoTrimBreakEvenRequests) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
