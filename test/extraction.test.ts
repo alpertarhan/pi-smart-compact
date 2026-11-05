@@ -749,23 +749,6 @@ describe("mineConstraints", () => {
     expect(constraints[0].category).toBe("prohibition");
   });
 
-  it("classifies common Turkish steering imperatives as prohibitions", () => {
-    // "açma"/"dokunma" in imperative position (clause end or before
-    // lütfen/ama) are how the user steers agent usage; they must be preserved
-    // as constraints, not goals.
-    const constraints = mineConstraints([
-      { role: "user", content: "kanka bu kadar çok agent açma lütfen, açacaksan da glm 5.3 kullan" },
-      { role: "user", content: "o dosyalara dokunma, testler bitmeden" },
-    ]);
-    expect(constraints).toHaveLength(2);
-    expect(constraints.every((item) => item.category === "prohibition")).toBe(true);
-  });
-
-  it("does not classify the verbal nouns açma/dokunma as prohibitions", () => {
-    // "PR açma adımı" (the PR-opening step), "dokunma olayları" (touch events).
-    expect(mineConstraints([{ role: "user", content: "PR açma adımını da otomatikleştir" }])).toEqual([]);
-    expect(mineConstraints([{ role: "user", content: "dokunma olaylarını düzelt" }])).toEqual([]);
-  });
   it("ignores short messages and commands", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "/help" },
@@ -837,37 +820,11 @@ describe("extractMainGoal", () => {
     expect(extractMainGoal([{ role: "user", content: compacted }])).toBeNull();
   });
 
-  it("keeps the earlier goal when the latest message is steering, not a task", () => {
-    // The real 15:34 compaction took this Turkish steering message as the goal.
-    const msgs: LlmMessage[] = [
-      { role: "user", content: "torro session'ındaki compaction planlarını doğrula" },
-      {
-        role: "user",
-        content:
-          "kanka bu kadar çok agent açma lütfen açacaksan da glm 5.3 glm anthropic olanı kulan veya sonnet 5.5 low-medium aç anasını satayım.",
-      },
-    ];
-    expect(extractMainGoal(msgs)).toBe("torro session'ındaki compaction planlarını doğrula");
-  });
-
-  it("keeps the earlier goal when the latest message is English steering", () => {
-    const msgs: LlmMessage[] = [
-      { role: "user", content: "verify the compaction plans in the torro session" },
-      { role: "user", content: "please don't spawn this many agents, use glm 5.3 for the cheap ones" },
-    ];
-    expect(extractMainGoal(msgs)).toBe("verify the compaction plans in the torro session");
-  });
-
-  it.each([
-    ["EN open", "Please do not open so many agents"],
- ])("skips clear agent-usage steering (%s)", (_label, steering) => {
-    const msgs: LlmMessage[] = [
-      { role: "user", content: "verify the compaction plans in the torro session" },
-      { role: "user", content: steering },
-    ];
-    expect(extractMainGoal(msgs)).toBe("verify the compaction plans in the torro session");
-  });
-
+  // The semantic steering-skip guard was removed: noun+directive
+  // co-occurrence (even clause-anchored) misclassified the subject matter of
+  // real software tasks. These preservation tests pin main's selection
+  // semantics — the latest substantive request is the goal — until safe goal
+  // continuity lands as a separate bounded task.
   it.each([
     ["desire form without a task verb (EN)", "I want OAuth instead; never keep password login"],
     ["desire form without a task verb (TR)", "Bana OAuth girişi lazım, asla şifre saklama"],
@@ -877,6 +834,10 @@ describe("extractMainGoal", () => {
     ["parallel + never, no agents", "Implement parallel uploads but never store secrets"],
     ["stop processes as behavior under test", "Write tests for stop processes behavior"],
     ["constraint-first mixed message", "Don't spawn so many agents; fix the login bug"],
+    ["comma-joined task and constraint", "Fix the agent-mesh retry bug, do not change the public API"],
+    ["agent subject with never", "Fix the agent retry bug and never log secrets"],
+    ["never + agents clause", "Never crash the agents when their network fails"],
+    ["comma-joined admonition and task", "Don't spawn so many agents, fix the login bug"],
   ])("a task request stays the goal even when it mentions agents or prohibitions (%s)", (_label, request) => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "keep the password login working" },
@@ -910,14 +871,10 @@ describe("extractMainGoal", () => {
     expect(extractMainGoal(msgs)).toBe(request);
   });
 
-  it("falls back to the carried goal when every raw request is steering", () => {
+  it("strips the host summary's closing tag from a carried goal", () => {
     const compacted =
       "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nVerify the planner windows\n</summary>";
-    const msgs: LlmMessage[] = [
-      { role: "user", content: compacted },
-      { role: "user", content: "kanka bu kadar çok agent açma lütfen açacaksan da glm 5.3 kullan" },
-    ];
-    expect(extractMainGoal(msgs)).toBe("Verify the planner windows");
+    expect(extractMainGoal([{ role: "user", content: compacted }])).toBe("Verify the planner windows");
   });
 });
 
