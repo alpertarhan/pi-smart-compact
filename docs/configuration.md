@@ -195,7 +195,7 @@ hides latency, not cost: an unused summary still spends its model budget.
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
 | Ready result lifetime | `pendingTtlMs` (default 5 minutes); `pendingFingerprintTtlMs` extends it while the live branch still matches the captured prefix (off by default) |
-| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, with break-even required below the compaction gate. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
+| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, below the compaction gate and only with break-even; at the gate the due compaction replaces the context instead. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
 window, preparation starts at 120k and applies at 140k. With Auto and an 80%
@@ -385,7 +385,8 @@ stay on disk and manual `/smart-compact trim` still works.
 
 User-guided early anchors use Pi's native confirmation when `requireApproval`
 is on; turning it off provides standing host approval and skips that dialog.
-There is no model-settable override. A dialog approval is scoped to one anchor/cleanup;
+Standing approval saves the anchor but is not consent to early cleanup: its
+cleanup keeps the agent's pressure and readiness gates. There is no model-settable override. A dialog approval is scoped to one anchor/cleanup;
 `contextHygieneEnabled: false` disables periodic cleanup, not explicit confirmed
 work. Tool/navigation permissions, prepared work and signed-thinking guards
 still apply. See [user-guided anchors](./guide.md#user-guided-early-anchors).
@@ -415,7 +416,10 @@ By default, automatic cleanup is considered only at the shared early gate:
 `minContextPercent`, a ready trim must also pass the cache break-even check
 below. An unknown price or poor payback leaves history unchanged, without
 queuing a cold-cache trim. At the compaction gate, freeing context takes
-priority over cache economics. A 400k policy window with the default 80% apply
+priority over cache economics, unless automatic compaction (`settled` or
+`background`) is due when the turn settles: then automatic and agent trims
+are skipped, since the compaction replaces the context they would rewrite.
+Human trims and dialog-confirmed anchors still apply. A 400k policy window with the default 80% apply
 gate considers economical cleanup from 288k and allows pressure cleanup and
 compaction from 320k. Unknown usage does not authorize automatic cleanup.
 First-delivery offload and metadata checkpoints do not rewrite cached history. Explicit research rewind
@@ -428,7 +432,8 @@ cleanup below the early gate and deferred cold-cache cleanup; both require
 `contextHygieneEnabled: true`.
 Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
 the estimated tokens of every message from the first trimmed output to the
-end, the part of the prompt cache a trim rewrites. With the active model's
+end, the part of the prompt cache a trim rewrites. For `openai-codex`, `T`
+covers every message: 6 of 11 observed trims there lost the whole cached prompt. With the active model's
 catalog prices, `r = cacheRead / input` and `w = cacheWrite / input` (`w = 1`
 when no write price is listed). The trim pays back after
 `N* = ((w - r) × T) / (r × X)` further requests (`0` when cache reads are
@@ -440,7 +445,8 @@ its rewrite wins, so one early low-value output no longer blocks the rest.
 
 At a completed turn boundary a ready batch commits with cause:
 
-- `pressure` when usage reached the compaction gate;
+- `pressure` when usage reached the compaction gate and no automatic
+  compaction is due (`autoTrigger` off or `native-hook`);
 - `break-even` when `N* ≤ 24` and the timing policy permits cleanup;
 - `cold` otherwise, only with economic timing enabled, after waiting. The batch
   is held (`smart_context status` reports it as `deferredTrim`). The first request beyond the estimated
@@ -455,7 +461,8 @@ At a completed turn boundary a ready batch commits with cause:
 
 An unknown price only allows `pressure` at the compaction gate and opt-in `cold`
 (the latter still needs lifetime metadata). Manual and permitted agent trims
-commit at the next boundary (causes `manual`, `agent`).
+commit at the next boundary (causes `manual`, `agent`). Below the compaction
+gate, a priced agent trim or anchor cleanup with `N*` above the limit is refused.
 
 A Pi cache-warming refresh counts as a response for this expiry. While a
 batch is held, warming stops once
@@ -487,7 +494,7 @@ Settings → **Agent tools & navigation**.
 | `contextPivotEnabled` | `Return to an anchor` | `true` | Returning to an anchor on a new branch with a required carryover. |
 | `contextAnchorCacheEnabled` | `Anchor prompt cache` | `true` | Anthropic models: keeps a prompt-cache marker on the newest anchor. |
 | `contextAnchorStatusEnabled` | `Anchor status` | `true` | Shows the newest anchor on this branch in Pi's footer; display only. |
-| `contextGuidanceEnabled` | `Navigation guide` | `true` | Lets you or the agent open the navigation guide on request; the full guide is never injected automatically. Also enables one short context-attention note per pressure band. Prompt-start advice uses current usage and permissions, not a parked `nextTurn` note. It names reachable tools, shares cleanup's preparation gate, and distinguishes automatic strategies and staging from applying. Checkpoint metadata can remain available when trim/rewind is blocked. Navigation off does not disable history guidance. Re-armed when pressure clears, compaction occurs or the session/model changes. |
+| `contextGuidanceEnabled` | `Navigation guide` | `true` | Lets you or the agent open the navigation guide on request; the full guide is never injected automatically. Also enables one short context-attention note per pressure band. Prompt-start advice uses current usage and permissions, not a parked `nextTurn` note. It names reachable tools, shares cleanup's preparation gate, names a trim only for a ready batch that pays back its cache rewrite, and distinguishes automatic strategies and staging from applying. Checkpoint metadata can remain available when trim/rewind is blocked. Navigation off does not disable history guidance. Re-armed when pressure clears, compaction occurs or the session/model changes. |
 
 Group permissions apply in both `lazy` and `eager` modes: `compaction` follows
 `agentToolAccess`, `memory` needs `contextGraphEnabled` or a non-local
@@ -532,7 +539,7 @@ settings. Tracking does not retry writes or start an agent turn.
 | `scrubPii` | `Scrub personal data` | `false` | Email, phone and card-shaped values |
 | `backupEnabled` | `Backups` | `true` | Prepare a scrubbed backup; written only after Pi confirms the compaction |
 | `backupDir` | `Backup folder` | `""` | Empty uses `~/.pi/agent/compact-backups` |
-| `requireApproval` | `Ask before applying` | `true` | Manual review; only `A` applies. Also confirms early-anchor cleanup and memory save/resolve. `false` is standing host approval for those operations, including headless memory writes. |
+| `requireApproval` | `Ask before applying` | `true` | Manual review; only `A` applies. Also confirms early-anchor cleanup and memory save/resolve. `false` is standing host approval for memory save/resolve, including headless writes, and skips the early-anchor dialog; that anchor's cleanup then needs context pressure like any agent anchor. |
 
 ## All settings
 

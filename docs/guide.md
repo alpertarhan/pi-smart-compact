@@ -252,10 +252,15 @@ points it there (any **Agent tools** choice except **Off**).
 A batch needs at least 16,384 characters of net savings and eight assistant
 turns after the last trim, rewind or compaction. In the early cleanup band,
 automatic trims must also pay back their cache rewrite within 24 requests;
-unknown prices or poor payback leave history unchanged. Only reaching the
-compaction threshold lets context relief take priority over cache cost.
+unknown prices or poor payback leave history unchanged. A priced agent trim with
+poor payback is refused too. Only reaching the
+compaction threshold lets context relief take priority over cache cost, and
+only when no automatic compaction is due: with **When idle** or background
+compaction on, that compaction replaces the context, so no trim runs first.
+`openai-codex` trims are priced as rebuilding the whole prompt cache.
 
-- `pressure`: context usage reached the compaction gate.
+- `pressure`: context usage reached the compaction gate while automatic
+  compaction is off or follows Pi (`native-hook`).
 - `break-even`: the model's catalog prices say the trim pays back its prompt
   cache rewrite within 24 further requests. By default this also requires the
   early pressure gate; **Economic (opt-in)** timing (`contextPressureOnly: false`)
@@ -443,7 +448,8 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
 
 - `checkpoint` and `rewind` do **not** require context pressure or an available
   usage reading. Autonomous agent trim/anchor requests and automatic cleanup
-  still do by default; early user-requested anchors follow `requireApproval`.
+  still do by default; an early user-requested anchor cleans up only after
+  Pi's dialog approval (`requireApproval: true`).
   Research return is a separate operation, not a cleanup trigger.
 - Check `status` when blocked. Tool permissions, prepared/running compaction,
   a pending pivot and signed-thinking safety checks still apply. Keep/report
@@ -498,8 +504,9 @@ before the pressure gate (including when usage is unknown). The agent prepares
 an anchor name and summary. With `requireApproval: true`, Pi shows them in a
 native confirmation dialog; approval authorizes **that anchor and one safe
 cleanup only**. With `requireApproval: false`, standing host approval skips the
-dialog, including in headless use. Neither path changes settings or needs an
-extra summarizer request. The model cannot grant itself a `userConfirmed` override.
+dialog, including in headless use, and saves the anchor without that early
+cleanup: its cleanup keeps the agent's pressure and readiness gates. Neither
+path changes settings or needs an extra summarizer request. The model cannot grant itself a `userConfirmed` override.
 
 - When a dialog is required, rejection/cancellation leaves the anchor and
   cleanup unrequested. Hosts without confirmation support cannot grant that
@@ -507,7 +514,7 @@ extra summarizer request. The model cannot grant itself a `userConfirmed` overri
 - Session/branch changes, new history/input, revoked navigation/tool access and
   cancellation invalidate pending approval. Cleanup rechecks the originating
   successful tool batch and all safety/preparation gates at commit.
-- User-confirmed cleanup skips automatic pressure, minimum-batch and cooldown
+- Dialog-confirmed cleanup skips automatic pressure, minimum-batch and cooldown
   timing, not eligibility: recent turns, previous anchor/checkpoint prefixes,
   instructions and signed-thinking dependencies stay protected. It works with
   automatic cleanup disabled. An anchor can be saved even when no safe cleanup

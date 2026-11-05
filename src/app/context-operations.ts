@@ -311,7 +311,7 @@ export function thinkingEditReason(branch: SessionEntry[], entries: SessionBound
     if (changed && messages.some(message => message.role === "assistant" && message.api === "anthropic-messages"
       && message.content.some(block => block.type === "thinking" && Boolean(block.thinkingSignature)))) {
       // ponytail: conservatively protect all signed Anthropic thinking; narrow only with a public binding capability.
-      return "Cleanup would invalidate retained signed Anthropic thinking. Use provider-native compaction instead.";
+      return "Cleanup would invalidate retained signed Anthropic thinking, so history stays unchanged. Continue the task; compaction still reduces context.";
     }
   }
 }
@@ -325,10 +325,20 @@ export interface TrimEconomy {
 }
 
 /**
+ * openai-codex lost the whole cached prompt after 6 of 11 observed trims, even with edits 9–30k
+ * tokens from the end, so its trims are priced as full-prompt misses, not as a rewritten tail.
+ */
+function missesWholePrompt(provider?: string): boolean {
+  return provider === "openai-codex";
+}
+
+/**
  * Prefix-drop frontier over position-sorted candidates. Entries after the
  * first edit add savings at zero tail cost — the suffix [first..end] is
  * rewritten once regardless — so dropping only ever helps at the front, and
- * the frontier spans every optimum. O(branch) precompute, O(1) per candidate.
+ * the frontier spans every optimum (a whole-prompt miss makes the cost
+ * position-independent, so the full set wins whenever any candidate is
+ * feasible). O(branch) precompute, O(1) per candidate.
  * Without cost data or feasible candidates the full set is returned and the
  * callers' existing hold logic decides.
  */
@@ -348,6 +358,7 @@ function selectTrimFrontier(
     prefixRaw[i + 1] = prefixRaw[i]! + estimator.message(messages[i]!.message as unknown as LlmMessage);
   }
   const totalRaw = prefixRaw[messages.length]!;
+  const wholePrompt = missesWholePrompt(economy.provider);
   const limit = economy.breakEvenLimit ?? AUTO_TRIM_BREAK_EVEN_REQUESTS;
   const positioned = candidates
     .map(candidate => {
@@ -371,7 +382,7 @@ function selectTrimFrontier(
     suffixChars += positioned[j]!.savedChars;
     const first = positioned[j]!.index;
     if (first >= messages.length) continue;
-    const tail = totalRaw - prefixRaw[first]! - suffixTokens;
+    const tail = totalRaw - (wholePrompt ? 0 : prefixRaw[first]!) - suffixTokens;
     const breakEven = trimBreakEvenRequests(economy.cost, suffixTokens, tail);
     if (breakEven === null || breakEven > limit || suffixChars < floorChars) continue;
     // Descending scan + strict comparison keeps the most-dropped plan on ties.
@@ -503,7 +514,8 @@ export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references:
 
 /**
  * Estimated tokens a trim removes (net of markers) and tokens of the rebuilt tail:
- * every projected message from the first edited target on, with markers in place.
+ * every projected message from the first edited target on (from the start for
+ * providers that miss the whole prompt), with markers in place.
  */
 export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft[], provider?: string, model?: string) {
   const markers = new Map(entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
@@ -513,7 +525,7 @@ export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft
   const first = projected.findIndex(entry => markers.has(entry.id));
   let savedTokens = 0;
   let tailTokens = 0;
-  for (const { id, message: raw } of first < 0 ? [] : projected.slice(first)) {
+  for (const { id, message: raw } of first < 0 ? [] : projected.slice(missesWholePrompt(provider) ? 0 : first)) {
     // SAFETY: contextMessageEntries yields convertToLlm() output, i.e. real LLM messages.
     const message = raw as LlmMessage;
     const marker = markers.get(id);

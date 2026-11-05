@@ -37,7 +37,8 @@ Inside Pi, open the extension:
    **Esc** cancels. **Enter does not apply** on the review screen.
 
 Review is on by default. Turning off `requireApproval` also removes the
-confirmation dialogs for early-anchor cleanup and memory save/resolve.
+confirmation dialogs for memory save/resolve and early anchors; an early
+anchor is then saved without its cleanup.
 Without a UI, the bare command runs compaction rather than opening Home.
 [First-run details](./docs/guide.md#install-and-first-run)
 
