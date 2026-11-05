@@ -750,14 +750,21 @@ describe("mineConstraints", () => {
   });
 
   it("classifies common Turkish steering imperatives as prohibitions", () => {
-    // "açma" (don't open) and "dokunma" (don't touch) are how the user
-    // steers agent usage; they must be preserved as constraints, not goals.
+    // "açma"/"dokunma" in imperative position (clause end or before
+    // lütfen/ama) are how the user steers agent usage; they must be preserved
+    // as constraints, not goals.
     const constraints = mineConstraints([
       { role: "user", content: "kanka bu kadar çok agent açma lütfen, açacaksan da glm 5.3 kullan" },
       { role: "user", content: "o dosyalara dokunma, testler bitmeden" },
     ]);
     expect(constraints).toHaveLength(2);
     expect(constraints.every((item) => item.category === "prohibition")).toBe(true);
+  });
+
+  it("does not classify the verbal nouns açma/dokunma as prohibitions", () => {
+    // "PR açma adımı" (the PR-opening step), "dokunma olayları" (touch events).
+    expect(mineConstraints([{ role: "user", content: "PR açma adımını da otomatikleştir" }])).toEqual([]);
+    expect(mineConstraints([{ role: "user", content: "dokunma olaylarını düzelt" }])).toEqual([]);
   });
   it("ignores short messages and commands", () => {
     const msgs: LlmMessage[] = [
@@ -855,6 +862,20 @@ describe("extractMainGoal", () => {
     ["Turkish", "tamam bulduğun sorunları çözelim"],
     ["English", "now add the retry budget test"],
   ])("a new %s task request still becomes the goal", (_label, request) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "gather the earlier findings" },
+      { role: "user", content: request },
+    ];
+    expect(extractMainGoal(msgs)).toBe(request);
+  });
+
+  it.each([
+    ["task + constraint (EN)", "now add the retry budget test, but don't change the public API"],
+    ["task + prohibition (EN)", "fix the login bug and never commit secrets"],
+    ["task + prohibition (TR)", "bulduğun sorunları çöz ama main'e dokunma"],
+    ["verbal noun açma", "PR açma adımını da otomatikleştir"],
+    ["verbal noun dokunma", "dokunma olaylarını düzelt"],
+  ])("a message that also asks for work stays the goal (%s)", (_label, request) => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "gather the earlier findings" },
       { role: "user", content: request },

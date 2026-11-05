@@ -712,7 +712,15 @@ const CONSTRAINT_PATTERNS: Array<{
   // Turkish-leading forms never matched). (?<![A-Za-z0-9_])…(?![A-Za-z0-9_])
   // treats any non-ASCII letter as a valid edge, so both spellings now work.
   {
-    re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|açma|dokunma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu,
+    re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu,
+    cat: "prohibition",
+    conf: TUNING.CONFIDENCE_MEDIUM,
+  },
+  // "açma"/"dokunma" are common verbal nouns ("PR açma adımı", "dokunma
+  // olayları"); they are prohibitions only in imperative position: at a clause
+  // end, before punctuation, or before lütfen/ama/fakat/yoksa/artık.
+  {
+    re: /(?<![A-Za-z0-9_])(?:açma|dokunma)(?=\s*(?:[,.;!?]|lütfen|ama|fakat|yoksa|artık)|\s*$)/iu,
     cat: "prohibition",
     conf: TUNING.CONFIDENCE_MEDIUM,
   },
@@ -1001,6 +1009,15 @@ const HISTORY_SUMMARY_RE =
 const ACK_ONLY_RE =
   /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
 
+/**
+ * Work-item signals (EN + TR stems, suffix-tolerant on the right). A message
+ * that both asks for work and states rules is still the goal; only a message
+ * with no work item at all is steering. When unsure, the goal stays the latest
+ * substantive request (main's behavior).
+ */
+const TASK_REQUEST_RE =
+  /(?<![A-Za-z0-9_])(?:add|fix|implement|solve|refactor|write|create|build|test|update|change|remove|delete|move|rename|extract|migrate|clean|check|verify|review|find|run|continue|finish|complete|handle|enable|disable|restore|revert|merge|split|ship|deploy|investigate|open|close|make|extend|adjust|rewrite|plan|prepare|gather|collect|report|çöz|ekle|düzelt|de[ğg]i[şs]tir|yaz|olu[şs]tur|kur|ta[şs]ı|kaldır|sil|güncelle|tamamla|otomatikle[şs]tir|analiz|incele|kontrol|do[ğg]rula|toparla|birle[şs]tir|devam|gönder|yap)/iu;
+
 /** Machine status from an earlier compaction is context, not an active user goal. */
 export function isCompactionStatusText(text: string): boolean {
   const candidate = summaryEvidenceLine(text, TRUNC.MESSAGE)
@@ -1028,12 +1045,12 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
       return carried && !isCompactionStatusText(carried) ? carried : null;
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
-    // A steering message (a preference about HOW to work: "don't open so
-    // many agents", a pasted rule set) is not the task. When the constraint
-    // miner classifies the message, keep looking for the previous real
-    // request; if none remains in-window, the caller falls back to the
-    // carried goal.
-    if (mineConstraints([m]).length) continue;
+    // A clearly steering message (a preference about HOW to work: "don't open
+    // so many agents") is not the task. Skip it only when the constraint
+    // miner classifies it AND it carries no work item; a message that also
+    // asks for work stays the goal. If nothing else remains in-window, the
+    // caller falls back to the carried goal.
+    if (mineConstraints([m]).length && !TASK_REQUEST_RE.test(text)) continue;
     return summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
   }
   return null;
