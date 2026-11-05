@@ -1000,6 +1000,8 @@ const HISTORY_SUMMARY_RE =
   /^(?:The conversation history before this point was compacted|The following is a summary of a branch that this conversation came back from)[\s\S]*<summary>/i;
 const ACK_ONLY_RE =
   /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
+/** Bare acknowledgements are not requests; shared with fallback placeholders. */
+export { ACK_ONLY_RE };
 
 /** Machine status from an earlier compaction is context, not an active user goal. */
 export function isCompactionStatusText(text: string): boolean {

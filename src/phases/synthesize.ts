@@ -34,7 +34,7 @@ import { trackedComplete } from "../utils/cache.ts";
 import { clampCompletionMaxTokens } from "../domain/model-capacity.ts";
 import { collectVerificationEvidence, patchResponseIsTruncated } from "../phases/verify.ts";
 import * as log from "../utils/logger.ts";
-import { extractText } from "../utils/extraction.ts";
+import { extractText, ACK_ONLY_RE } from "../utils/extraction.ts";
 import { filterToolCalls } from "../utils/type-guards.ts";
 import {
  buildExtractionContext,
@@ -1046,10 +1046,17 @@ export function fallbackChunkSummary(
   index >= ch.startIndex && index <= ch.endIndex;
  const line = (text: string) => summaryEvidenceLine(text, TRUNC.TOPIC_LABEL);
  const requests = extraction.timeline
-  .filter((item) => item.event === "user_request" && inRange(item.index))
+  .filter(
+   (item) =>
+    item.event === "user_request" &&
+    inRange(item.index) &&
+    // Bare acknowledgements ("ok", "devam et") are not requests and only
+    // consume the evidence budget.
+    !ACK_ONLY_RE.test(item.summary),
+  )
   .map((item) => line(item.summary))
   .filter(Boolean)
-  .slice(0, 3);
+  .slice(-3);
  const modified = extraction.modifiedFiles
   .filter((file) => inRange(file.lastModifiedIndex))
   .map((file) => file.path)
@@ -1071,16 +1078,18 @@ export function fallbackChunkSummary(
   ...unresolved.map((item) => "Unresolved: " + item),
  ]
   .filter(Boolean)
-  .join("; ")
-  .slice(0, TRUNC.DETAIL);
+  .join("; ");
  const summary =
-  evidence ||
-  // Extraction found nothing in this range; keep the old raw-evidence line
-  // so the placeholder is never empty.
+  // summaryEvidenceLine cuts without splitting a path token; a raw slice
+  // could end mid-path and fabricate a reference the verifier flags.
+  summaryEvidenceLine(evidence, TRUNC.DETAIL) ||
   summaryEvidenceLine(
    ch.messages.map((m) => extractText(m.content)).join("\n"),
    TRUNC.DETAIL,
-  );
+  ) ||
+  // Non-text (object) content and no in-range evidence still leave the
+  // placeholder non-empty, as the [Failed] prefix used to guarantee.
+  "No extractable evidence in this segment.";
  return {
   topic: ch.topic,
   startIndex: ch.startIndex,

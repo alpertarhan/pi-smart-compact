@@ -267,4 +267,54 @@ describe("fallbackChunkSummary (per-segment placeholder when a batch never got a
 		expect(s.summary.startsWith("[Failed]")).toBe(true);
 		expect(s.summary.length).toBeLessThanOrEqual(9 + 300);
 	});
+
+	it("stays non-empty even with non-text content and no evidence", () => {
+		const opaque: LlmChunk = {
+			...chunk,
+			messages: [
+				{ role: "toolResult", content: { rows: [] } } as unknown as LlmMessage,
+			{ role: "toolResult", content: "" } as LlmMessage,
+			],
+		};
+		for (const cause of ["batch-failed", "budget"] as const) {
+			const s = fallbackChunkSummary(opaque, makeExtraction(), cause);
+			expect(s.summary.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("cuts joined evidence without splitting a path token", () => {
+		const longPath = "/long/prefix/dir/" + "a".repeat(400) + ".service.ts";
+		const s = fallbackChunkSummary(
+			chunk,
+			makeExtraction({
+				timeline: [{ index: 1, event: "user_request", summary: "keep the services healthy" }],
+				modifiedFiles: [{ path: longPath, toolCalls: 1, lastModifiedIndex: 2 }],
+			}),
+			"budget",
+		);
+		expect(s.summary.length).toBeLessThanOrEqual(300);
+		// No fabricated partial path: the cut ends at a separator or before the
+		// token, never inside it (e.g. never ...service.t).
+		const tail = s.summary.slice(-6);
+		expect(/\.servi|\.t$|\.ts$|ice\.$|ce\.t$/.test(tail)).toBe(false);
+		expect(s.summary.endsWith("/") || /\.$/.test(s.summary) || /\s$/.test(s.summary) || /:$/.test(s.summary)).toBe(true);
+	});
+
+	it("keeps the latest requests, not the earliest, and drops acknowledgements", () => {
+		const timeline = [1, 2, 3, 4, 5].map((n) => ({
+			index: n,
+			event: "user_request" as const,
+			summary: n === 3 ? "ok" : `request number ${n}`,
+		}));
+		const s = fallbackChunkSummary(
+			{ ...chunk, endIndex: 5 },
+			makeExtraction({ timeline }),
+			"budget",
+		);
+		expect(s.summary).toContain("request number 5");
+		expect(s.summary).toContain("request number 4");
+		expect(s.summary).toContain("request number 2");
+		expect(s.summary).not.toContain("request number 1");
+		expect(s.summary).not.toContain("User: ok");
+	});
 });
