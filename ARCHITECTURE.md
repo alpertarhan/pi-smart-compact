@@ -628,7 +628,8 @@ projection and recovery; text without provenance falls back to harness-text
 patterns. LLM transcripts and explore views label them
 `[Extension message: <type>]` instead of `[User]`, and the shared system prompt
 forbids recording them as user goals, constraints, preferences or decisions.
-Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
+Restored backups (`smart-compact-restore`) are the user's own transcript and
+stay user turns. Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
 than a fixed next-message window. Fresh extraction and cached reconciliation
 share retry-result classification and inspect later/sibling retries; a false
 `isError` flag cannot turn an error-bearing command result into success.

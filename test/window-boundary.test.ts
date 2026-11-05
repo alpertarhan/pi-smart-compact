@@ -67,9 +67,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(preview.msgs.map(e => e.id)).toEqual(window.msgs.map(e => e.id));
     const recovered = await recoverSessionLog(window);
     const host = convertToLlm(buildSessionContext(branch).messages) as typeof recovered.llmMessages;
-    // Recovery keeps the custom message's provenance; content and order match the host context.
-    expect(recovered.llmMessages).toEqual(host.slice(0, window.keepFrom).map((message, index) =>
-      index === 0 ? { ...message, customType: "smart-compact-restore" } : message));
+    expect(recovered.llmMessages).toEqual(host.slice(0, window.keepFrom));
     expect(JSON.stringify(recovered.llmMessages)).toContain("RESTORED_SENTINEL");
     expect(JSON.stringify(recovered.llmMessages)).toContain("BRANCH_SENTINEL");
     expect(JSON.stringify(recovered.llmMessages)).not.toContain("NOT_LLM_VISIBLE");

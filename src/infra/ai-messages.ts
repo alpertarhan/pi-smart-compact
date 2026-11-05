@@ -32,7 +32,8 @@ export function contextMessageEntries(entries: readonly unknown[]): SessionMessa
   return projection.entries.flatMap(({ sourceEntry, messages }) => messages.flatMap(source =>
     convertToLlm([source]).map(message => ({
       type: "message" as const, id: sourceEntry.id, message,
-      ...(source.role === "custom" ? { customType: source.customType || "custom" } : {}),
+      // Exempt: a restore (utils/backups.ts buildRestoreMessage) re-injects the user's own transcript at their request.
+      ...(source.role === "custom" && source.customType !== "smart-compact-restore" ? { customType: source.customType || "custom" } : {}),
       ...(editedIds.has(sourceEntry.id) ? { contextEdited: true } : {}),
     })),
   ));

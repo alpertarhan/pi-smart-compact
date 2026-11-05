@@ -23,6 +23,7 @@ import { buildState } from "../src/app/steps/state.ts";
 import { ATTENTION_CUSTOM_TYPE, CONTEXT_REPORT_TYPE } from "../src/app/context-operations.ts";
 import { extractOpenLoops, extractStructured, extractText } from "../src/utils/extraction.ts";
 import { hashMessages } from "../src/utils/id-fingerprint.ts";
+import { buildRestoreMessage } from "../src/utils/backups.ts";
 import { findSection } from "../src/domain/summary-parse.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
 import { createServices } from "../src/infra/services.ts";
@@ -99,6 +100,24 @@ describe("custom-message provenance", () => {
     const extraction = extractStructured(messages, PROFILES.balanced);
     userFactsOnly(extraction);
     expect(extractOpenLoops(messages, extraction)).toEqual([]);
+  });
+
+  it("keeps a restored backup a user turn while other custom messages stay tagged", async () => {
+    const RESTORED_RULE = "Never deploy the billing worker on Fridays.";
+    // A restore re-injects the user's own pre-compaction transcript, which is what a backup holds.
+    const backup = serializeConversationText([{ role: "user", content: RESTORED_RULE }, { role: "assistant", content: [{ type: "text", text: "Understood." }] }]);
+    const restore = buildRestoreMessage(backup, "/tmp/backup.md");
+    const session = SessionManager.inMemory();
+    session.appendMessage({ role: "user", content: USER_GOAL, timestamp: 1 });
+    session.appendCustomMessageEntry(restore.customType, restore.content, restore.display, restore.details);
+    session.appendCustomMessageEntry("agent_mesh", INJECTED.agent_mesh, true);
+    const messages = await recovered(session);
+    expect(messages.map(message => message.customType)).toEqual([undefined, undefined, "agent_mesh"]);
+    expect(extractStructured(messages, PROFILES.balanced).constraints.map(item => item.text)).toEqual([expect.stringContaining(RESTORED_RULE)]);
+    const text = serializeConversationText(messages);
+    expect(text).toContain("[User]: # Restored pre-compaction context (smart-compact backup)");
+    expect(text).toContain("[Extension message: agent_mesh]: **agent-mesh question");
+    expect(text).not.toContain("[Extension message: smart-compact-restore]");
   });
 
   it("invalidates extraction caches whose prefix was hashed without provenance", async () => {
