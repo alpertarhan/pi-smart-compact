@@ -211,6 +211,12 @@ describe("retireSupersededConstraints", () => {
 		expect(overrides[0].replacement).toBe("ok push it now");
 	});
 
+	it("does not let a custom message (peer request) release a user constraint", () => {
+		const peer = { ...user("ok push it now"), customType: "agent_mesh" };
+		const overrides = retireSupersededConstraints([{ text: STALE_RULE, index: 0 }], [user(STALE_RULE), peer], []);
+		expect(overrides).toEqual([]);
+	});
+
 	it("retires a deferral constraint released by a verbose later message", () => {
 		const msgs = [user(STALE_RULE), user("ok, push the branch and open the PR now")];
 		const overrides = retireSupersededConstraints(

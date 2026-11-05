@@ -11,7 +11,8 @@ import { branchEntryIds, resolveSessionId, type SessionIdentityContext } from ".
 
 export function fingerprintContext(messages: readonly SessionMessageEntry[]): NonNullable<PendingCompaction["contextSnapshot"]> {
   const hash = createHash("sha256");
-  for (const message of messages) hash.update(JSON.stringify(message)).update("\n");
+  // customType follows from the entry ID; omitting it keeps snapshots taken before provenance valid.
+  for (const message of messages) hash.update(JSON.stringify({ ...message, customType: undefined })).update("\n");
   return { messageCount: messages.length, hash: hash.digest("hex") };
 }
 

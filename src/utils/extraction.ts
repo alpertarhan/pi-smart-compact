@@ -532,6 +532,18 @@ export function isHarnessInjectedText(text: string): boolean {
   return HARNESS_INJECTED_RE.test(text.trim());
 }
 
+/**
+ * Not human input: a Pi custom message (agent_mesh, i-have-adhd-rules,
+ * smart-compact-rewind, ...) by its recovered customType; messages without
+ * provenance (older entries, plain user turns) fall back to the text patterns.
+ */
+export function isInjectedMessage(
+  message: LlmMessage,
+  text = extractText(message.content),
+): boolean {
+  return message.customType !== undefined || isHarnessInjectedText(text);
+}
+
 export function extractDecisions(
   msgs: LlmMessage[],
   _tcIdx?: ToolCallIndex,
@@ -570,7 +582,7 @@ export function extractDecisions(
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
     const txt = extractText(msgs[i].content);
-    if (isHarnessInjectedText(txt)) continue;
+    if (isInjectedMessage(msgs[i], txt)) continue;
     if (CHOICE_RE.test(txt)) {
       decisions.push({
         index: i,
@@ -678,7 +690,7 @@ export function mineConstraints(
     if (msgs[i]?.role !== "user") continue;
     const text = extractText(msgs[i].content);
     if (text.length < 10 || text.startsWith("/")) continue;
-    if (isHarnessInjectedText(text)) continue;
+    if (isInjectedMessage(msgs[i], text)) continue;
     // Whole-message provenance: a pasted copy of this extension's warning can
     // wrap across lines, isolating an ambiguous shared phrase on its own line.
     // An unambiguous own-output marker anywhere in the message marks those
@@ -766,7 +778,7 @@ export function segmentTopicsHeuristic(
     );
     const userShift =
       message.role === "user" &&
-      !isHarnessInjectedText(text) &&
+      !isInjectedMessage(message, text) &&
       SHIFT_RE.test(text);
     const sizeShift =
       tokenAcc > 0 && tokenAcc + messageTokens > pc.maxChunkTokens;
@@ -848,7 +860,7 @@ function buildTimeline(
     const m = msgs[i];
     if (m.role === "user") {
       const txt = extractText(m.content);
-      if (!txt.startsWith("/") && !isHarnessInjectedText(txt))
+      if (!txt.startsWith("/") && !isInjectedMessage(m, txt))
         timeline.push({
           index: i,
           event: "user_request",
@@ -901,7 +913,7 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
     const m = msgs[i];
     if (m?.role !== "user") continue;
     const text = extractText(m.content).trim();
-    if (!text || isHarnessInjectedText(text)) continue;
+    if (!text || isInjectedMessage(m, text)) continue;
     if (HISTORY_SUMMARY_RE.test(text)) {
       const carried = summaryEvidenceLine(
         findSection(text, "goal")?.body ?? "",
@@ -1006,7 +1018,7 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/") || isHarnessInjectedText(txt))
+    if (txt.length < 10 || txt.startsWith("/") || isInjectedMessage(msg, txt))
       continue;
     if (FOLLOWUP_RE.test(txt)) {
       // Avoid duplicates with errors
@@ -1036,7 +1048,7 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/") || isHarnessInjectedText(txt))
+    if (txt.length < 10 || txt.startsWith("/") || isInjectedMessage(msg, txt))
       continue;
     if (BLOCKED_RE.test(txt)) {
       const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));
@@ -1158,10 +1170,7 @@ export function extractStructured(
   );
   const mainGoal = extractMainGoal(msgs);
   const lastUserMessages = msgs
-    .filter(
-      (m) =>
-        m.role === "user" && !isHarnessInjectedText(extractText(m.content)),
-    )
+    .filter((m) => m.role === "user" && !isInjectedMessage(m))
     .slice(-5)
     .map((m) => extractText(m.content));
   const lastErrors = errors.slice(-3).map((e) => e.message);

@@ -20,6 +20,7 @@ import { contentText, type Message } from "@earendil-works/pi-ai";
 import type { LlmMessage, SessionMessageEntry } from "../types.ts";
 import { buildSessionProjection, convertToLlm, serializeConversation, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SecretScrubber } from "../domain/scrub.ts";
+import { EXTENSION_MESSAGE_LABEL, RESTORE_CUSTOM_TYPE } from "../constants.ts";
 
 /** Project a full selected branch, preserving source IDs and intentional edits. */
 export function contextMessageEntries(entries: readonly unknown[]): SessionMessageEntry[] {
@@ -28,20 +29,32 @@ export function contextMessageEntries(entries: readonly unknown[]): SessionMessa
   const editedIds = new Set(projection.entries.flatMap(({ sourceEntry }) =>
     sourceEntry.type === "context_edit" ? [sourceEntry.targetId] : [],
   ));
-  return projection.entries.flatMap(({ sourceEntry, messages }) =>
-    convertToLlm(messages).map(message => ({
+  // One message at a time: convertToLlm turns custom messages into user turns and drops customType.
+  return projection.entries.flatMap(({ sourceEntry, messages }) => messages.flatMap(source =>
+    convertToLlm([source]).map(message => ({
       type: "message" as const, id: sourceEntry.id, message,
+      // Exempt: a restore (utils/backups.ts buildRestoreMessage) re-injects the user's own transcript at their request.
+      ...(source.role === "custom" && source.customType !== RESTORE_CUSTOM_TYPE ? { customType: source.customType || "custom" } : {}),
       ...(editedIds.has(sourceEntry.id) ? { contextEdited: true } : {}),
     })),
-  );
+  ));
 }
 
 /** Text transcript without the host summarizer's implicit 2,000-character tool-result cap. */
 export function serializeConversationText(messages: LlmMessage[]): string {
-  return asSerializableMessages(messages).map(message => message.role === "toolResult"
-    ? "[Tool result]: " + contentText(message.content, "")
-    : serializeConversation([message]),
-  ).filter(Boolean).join("\n\n");
+  return messages.map(source => {
+    const [message] = asSerializableMessages([source]);
+    if (message.role === "toolResult") return "[Tool result]: " + contentText(message.content, "");
+    if (!source.customType) return serializeConversation([message]);
+    // Pi would print "[User]:" and present injected text as the user's; same shape, empty text skipped.
+    const text = contentText(message.content, "");
+    return text && "[" + transcriptRole(source) + "]: " + text;
+  }).filter(Boolean).join("\n\n");
+}
+
+/** Role tag for LLM-facing transcripts: a custom message names its extension, never "user". */
+export function transcriptRole(message: LlmMessage | undefined): string | undefined {
+  return message?.customType ? EXTENSION_MESSAGE_LABEL + ": " + message.customType : message?.role;
 }
 
 /**

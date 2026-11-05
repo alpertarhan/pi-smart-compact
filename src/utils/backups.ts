@@ -5,6 +5,7 @@ import {
   BACKUP_MAX_FILES,
   BACKUP_MAX_AGE_MS,
   ONE_HOUR_MS,
+  RESTORE_CUSTOM_TYPE,
   TRUNC,
 } from "../constants.ts";
 import { atomicWriteFile } from "../infra/fs.ts";
@@ -303,7 +304,7 @@ export function buildRestoreMessage(
   details: { source: string; restoredAt: number };
 } {
   return {
-    customType: "smart-compact-restore",
+    customType: RESTORE_CUSTOM_TYPE,
     content:
       "# Restored pre-compaction context (smart-compact backup)\nSource: " +
       source +
