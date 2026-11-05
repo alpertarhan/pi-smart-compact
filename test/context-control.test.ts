@@ -1957,7 +1957,7 @@ describe("archived process notifications and answered peer messages", () => {
       expect(h.turn()).toBeUndefined();
       h.setNow(1 + FIVE_MINUTES_MS + 1);
       const cold = h.request();
-      const targets = cold.messages.flatMap((message: { role: string; content: unknown }, index: number) =>
+      const targets = cold.messages.flatMap((message, index) =>
         message.role === "custom" && message.content === first.content ? [index] : []);
       expect(targets).toHaveLength(2);
       const sent = cold.result!.messages;
