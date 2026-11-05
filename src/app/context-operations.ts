@@ -390,6 +390,8 @@ interface TrimCandidate { id: string; text: string; marker: string; savedChars: 
 export interface TrimEconomy {
   provider?: string;
   model?: string;
+  /** Active model's API; cache-miss pricing is keyed on this, not the provider name. */
+  api?: string;
   cost?: Partial<ModelCostRates>;
   breakEvenLimit?: number;
 }
@@ -397,9 +399,11 @@ export interface TrimEconomy {
 /**
  * openai-codex lost the whole cached prompt after 6 of 11 observed trims, even with edits 9–30k
  * tokens from the end, so its trims are priced as full-prompt misses, not as a rewritten tail.
+ * Keyed on the API, not the provider name: custom provider aliases ride the same
+ * codex Responses endpoint, and not every Responses/completions endpoint behaves this way.
  */
-export function missesWholePrompt(provider?: string): boolean {
-  return provider === "openai-codex";
+export function missesWholePrompt(api?: string): boolean {
+  return api === "openai-codex-responses";
 }
 
 /**
@@ -428,7 +432,7 @@ function selectTrimFrontier(
     prefixRaw[i + 1] = prefixRaw[i]! + estimator.message(messages[i]!.message as unknown as LlmMessage);
   }
   const totalRaw = prefixRaw[messages.length]!;
-  const wholePrompt = missesWholePrompt(economy.provider);
+  const wholePrompt = missesWholePrompt(economy.api);
   const limit = economy.breakEvenLimit ?? AUTO_TRIM_BREAK_EVEN_REQUESTS;
   const positioned = candidates
     .map(candidate => {
@@ -592,7 +596,7 @@ export function trimEntries(plan: { entries: SessionBoundaryDraft[]; references:
  * every projected message from the first edited target on (from the start for
  * providers that miss the whole prompt), with markers in place.
  */
-export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft[], provider?: string, model?: string) {
+export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft[], provider?: string, model?: string, api?: string) {
   const markers = new Map(entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
     ? [[entry.targetId, entry.replacement.content] as const] : []));
   const estimator = makeTokenEstimator(provider, model);
@@ -600,7 +604,7 @@ export function trimTokens(branch: SessionEntry[], entries: SessionBoundaryDraft
   const first = projected.findIndex(entry => markers.has(entry.id));
   let savedTokens = 0;
   let tailTokens = 0;
-  for (const { id, message: raw } of first < 0 ? [] : projected.slice(missesWholePrompt(provider) ? 0 : first)) {
+  for (const { id, message: raw } of first < 0 ? [] : projected.slice(missesWholePrompt(api) ? 0 : first)) {
     // SAFETY: contextMessageEntries yields convertToLlm() output, i.e. real LLM messages.
     const message = raw as LlmMessage;
     const marker = markers.get(id);

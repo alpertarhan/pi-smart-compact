@@ -307,7 +307,7 @@ function replayPolicy(
         let index = 0;
         for (; index < keys.length && keys[index] === prior.keys[index]; index++) cached += tokens[index];
         if (index) cached += unseen[result.requests - 1];
-        if (index < prior.keys.length && missesWholePrompt(message.provider)) cached = 0;
+        if (index < prior.keys.length && missesWholePrompt(message.api)) cached = 0;
       }
       const uncached = total - cached;
       result.prompt += total;
