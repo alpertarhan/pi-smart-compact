@@ -149,7 +149,7 @@ export function prepareManualPreflightContext(
   // The window plan describes the ACTIVE model's replay, not the summarizer's.
   const readerEstimator = ctx.model
     ? makeReaderTokenEstimator(
-      { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api },
+      { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api, input: ctx.model.input },
       tokenCalibration,
     )
     : estimator;

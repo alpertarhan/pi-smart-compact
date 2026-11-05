@@ -30,7 +30,7 @@ export async function attachVisualArchive(rc: StatedRc, render = renderVisualPag
     }
     const reader = { provider: model.provider, id: model.id, api: model.api };
     // rc.estimator prices the summarizer; these excerpts would be sent to the reader.
-    const readerEstimator = makeReaderTokenEstimator({ provider: model.provider, id: model.id, api: model.api }, rc.services.tokenCalibration);
+    const readerEstimator = makeReaderTokenEstimator({ provider: model.provider, id: model.id, api: model.api, input: model.input }, rc.services.tokenCalibration);
     if (!sources.length || !visualEconomics(reader, sources, pages.map(visualPageSize), readerEstimator.text).worthwhile) return;
     const frames = await render(pages, AbortSignal.any([rc.cancellation.signal, AbortSignal.timeout(5_000)]));
     if (rc.cancellation.signal.aborted) return;

@@ -42,7 +42,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
  // rc.estimator (the summarizer's own domain).
  const readerEstimator = rc.ctx.model
   ? makeReaderTokenEstimator(
-    { provider: rc.ctx.model.provider, id: rc.ctx.model.id, api: rc.ctx.model.api },
+    { provider: rc.ctx.model.provider, id: rc.ctx.model.id, api: rc.ctx.model.api, input: rc.ctx.model.input },
     rc.services.tokenCalibration,
    )
   : estimator;

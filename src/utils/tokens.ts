@@ -448,6 +448,8 @@ export interface ReaderIdentity {
   provider: string;
   id: string;
   api?: string;
+  /** Explicit input modalities (e.g. ["text"]); absent means unknown, never an assumption. */
+  input?: string[];
 }
 
 /**
@@ -479,6 +481,29 @@ export function makeTokenEstimator(
   };
 }
 
+/**
+ * Documented thinking-block preservation on the Anthropic API: keep-all models
+ * retain prior turns' thinking (billed as input); earlier Opus/Sonnet and Haiku
+ * through 4.5 keep only the last turn's blocks and the API strips older ones.
+ * Only verified for the Anthropic provider itself; compatible endpoints are not
+ * assigned keep-all semantics they may not have (measured-subset rule instead).
+ */
+function keepsAllPriorThinking(provider: string, model: string | undefined): boolean {
+  if (provider !== "anthropic" || !model) return false;
+  const id = model.toLowerCase();
+  if (id.startsWith("claude-mythos-preview")) return true;
+  const family = /opus|sonnet|haiku|fable|mythos/.exec(id)?.[0];
+  const version = /(\d+)[.-](\d+)/.exec(id);
+  if (!family || !version) return false;
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  if (major >= 5) return true; // every 5-family model listed keeps all prior turns
+  switch (family) {
+    case "opus": return major === 4 && minor >= 5;
+    case "sonnet": return major === 4 && minor >= 6;
+    default: return false; // haiku through 4.5, fable/mythos only exist at 5+
+  }
+}
+
 type AssistantMetadata = {
   provider?: string;
   api?: string;
@@ -499,18 +524,23 @@ function replayProxyTokens(
   const output = message.usage?.output;
   if (typeof output !== "number" || !Number.isFinite(output) || output <= 0) return null;
   const reasoning = message.usage?.reasoning;
-  const priorTurnDiscarded = typeof reasoning === "number" && Number.isFinite(reasoning) && reasoning > 0 ? reasoning : 0;
+  // usage.reasoning is a SUBSET of output. A dirty or absent value cannot stand
+  // in for a measured discard amount — the caller falls back to retained content.
+  const measuredSubset = typeof reasoning === "number" && Number.isFinite(reasoning) && reasoning >= 0 && reasoning <= output;
   if (reader.api === "anthropic-messages") {
-    // Signed thinking (visible + encrypted) is replayed and billed; usage.output
-    // measured exactly that content at generation time. reasoning ⊂ output.
-    return Math.round(output);
+    // Keep-all models (and the live tool loop) replay and bill every thinking
+    // block: usage.output measured exactly that content at generation time.
+    if (options?.currentTurn || keepsAllPriorThinking(reader.provider, reader.id)) return Math.round(output);
+    // Keep-last-turn models strip prior thinking on replay: the non-reasoning
+    // remainder is a measured subset, when the metadata is a valid one.
+    return measuredSubset ? Math.round(output - reasoning) : null;
   }
   if (reader.api === "openai-responses" || reader.api === "openai-codex-responses") {
     // Prior-turn reasoning items are discarded on replay; text and tool
     // arguments always come back. Inside the live turn the API requires the
     // reasoning items, so nothing is subtracted there.
     if (options?.currentTurn) return Math.round(output);
-    return Math.max(0, Math.round(output - priorTurnDiscarded));
+    return measuredSubset ? Math.round(output - reasoning) : null;
   }
   if (reader.api === "openai-completions") {
     // Pi replays thinking text through a reasoning field only when the stored
@@ -518,27 +548,38 @@ function replayProxyTokens(
     const marker = (Array.isArray(message.content) ? message.content : []).some(block =>
       block && typeof block === "object" && (block as { type?: string }).type === "thinking"
       && COMPLETIONS_REASONING_MARKERS.has(String((block as { thinkingSignature?: unknown }).thinkingSignature ?? "")));
-    return marker ? Math.round(output) : Math.max(0, Math.round(output - priorTurnDiscarded));
+    if (marker) return Math.round(output);
+    return measuredSubset ? Math.round(output - reasoning) : null;
   }
   return null;
 }
 
 /**
- * Reader-domain estimator: prices what the ACTIVE model's wire actually carries.
+ * Reader-domain estimator: prices what the ACTIVE model's wire actually carries,
+ * following pi-ai's transformMessages semantics exactly:
+ * - Errored/aborted assistant messages are skipped entirely by the SDK before
+ *   conversion, so they cost 0 on known APIs (unknown APIs stay conservative).
  * - Same-model, unchanged assistant messages with clean generation metadata use
- *   the measured usage.output as the replay proxy (per-API reasoning rules).
- * - Thinking blocks that Pi drops before wire conversion cost 0 on known APIs;
- *   same-model thinking without metadata keeps its visible text as a lower bound.
- * - Opaque signatures never count as text; images follow the documented two-tier
- *   rule (edge limit AND visual-token budget, aspect-preserving resize) for every
- *   role where API and Claude model tier are known, a bounded flat estimate
- *   elsewhere.
+ *   measured usage as the replay proxy, per API and (for Anthropic) per-model
+ *   thinking-preservation rules; dirty subset metadata never becomes an exact
+ *   discard — retained visible content is priced instead.
+ * - Cross-model thinking blocks are dropped before wire conversion on known
+ *   APIs; same-model thinking without metadata keeps its visible text as a
+ *   lower bound (encrypted signature payloads are never priced as text).
+ * - Images follow the documented two-tier patch rule where API and Claude model
+ *   tier are known. When the reader's explicit input capabilities exclude
+ *   images, the SDK replaces user/toolResult images with a coalesced text
+ *   placeholder — priced as that text. Missing capability info keeps the
+ *   vision estimate (uncertain, never an assumption).
  */
 export function makeReaderTokenEstimator(
   reader: ReaderIdentity,
   calibration: TokenCalibrationStore = _fallbackCalibration,
 ): TokenEstimator {
   const text = (value: string) => estimateTokensAtFactor(value, reader.provider, calibration.get(reader.provider, reader.id));
+  const knownApi = reader.api === "anthropic-messages" || reader.api === "openai-responses"
+   || reader.api === "openai-codex-responses" || reader.api === "openai-completions";
+  const supportsImages = reader.input === undefined || reader.input.includes("image");
   const charEstimate = (message: SerializableMessage, dropThinking: boolean): number => {
     if (!Array.isArray(message.content)) return text(JSON.stringify(serializableMessage(message)));
     let imageTokens = 0;
@@ -559,18 +600,53 @@ export function makeReaderTokenEstimator(
     });
     return text(JSON.stringify({ ...serializableMessage(message), content })) + imageTokens;
   };
+  /** The SDK's image downgrade for text-only readers: each run of adjacent images becomes one placeholder. */
+  const withImagePlaceholders = (message: SerializableMessage): SerializableMessage => {
+    if (supportsImages || !Array.isArray(message.content)) return message;
+    if (message.role !== "user" && message.role !== "toolResult") return message;
+    const placeholder = message.role === "user"
+     ? "(image omitted: model does not support images)"
+     : "(tool image omitted: model does not support images)";
+    const content: unknown[] = [];
+    let previousWasPlaceholder = false;
+    for (const block of message.content) {
+      if (block && typeof block === "object" && (block as { type?: unknown }).type === "image") {
+        if (!previousWasPlaceholder) content.push({ type: "text", text: placeholder });
+        previousWasPlaceholder = true;
+        continue;
+      }
+      content.push(block);
+      previousWasPlaceholder = block && typeof block === "object" && (block as { type?: unknown }).type === "text"
+       && (block as { text?: unknown }).text === placeholder;
+    }
+    return { ...message, content } as SerializableMessage;
+  };
   const estimate = (message: SerializableMessage & AssistantMetadata, options: MessageEstimateOptions | undefined): number => {
+    if (message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error")) {
+      // transformMessages drops errored/aborted assistant messages on every
+      // known API; an unknown compatibility endpoint keeps the conservative
+      // character estimate.
+      return knownApi ? 0 : charEstimate(message, false);
+    }
     const proxy = replayProxyTokens(message, reader, options);
     if (proxy !== null) return proxy;
-    const knownApi = reader.api === "anthropic-messages" || reader.api === "openai-responses"
-      || reader.api === "openai-codex-responses" || reader.api === "openai-completions";
     const sameModel = message.provider === reader.provider && message.api === reader.api && message.model === reader.id;
-    const responsesApi = reader.api === "openai-responses" || reader.api === "openai-codex-responses";
-    // Cross-model assistant thinking is dropped before wire conversion on known
-    // APIs, and Responses discards same-model reasoning without metadata; other
-    // thinking keeps its visible text as a conservative lower bound.
-    const dropThinking = knownApi && message.role === "assistant" && (!sameModel || responsesApi);
-    return charEstimate(message, dropThinking);
+    const completionsMarker = reader.api === "openai-completions"
+     && (Array.isArray(message.content) ? message.content : []).some(block =>
+       block && typeof block === "object" && (block as { type?: string }).type === "thinking"
+       && COMPLETIONS_REASONING_MARKERS.has(String((block as { thinkingSignature?: unknown }).thinkingSignature ?? "")));
+    // Cross-model thinking is dropped before wire conversion on known APIs;
+    // keep-last-turn Anthropic models strip same-model prior thinking. In every
+    // other fallback the visible thinking text stays priced as a lower bound —
+    // signed reasoning replays (encrypted content, never priced as text), and
+    // unsigned thinking becomes plain text on Anthropic's converter.
+    let dropThinking = false;
+    if (knownApi && message.role === "assistant") {
+      if (!sameModel) dropThinking = true;
+      else if (reader.api === "anthropic-messages" && !keepsAllPriorThinking(reader.provider, reader.id) && !options?.currentTurn) dropThinking = true;
+      else if (reader.api === "openai-completions" && !completionsMarker) dropThinking = true;
+    }
+    return charEstimate(withImagePlaceholders(message), dropThinking);
   };
   return {
     text,
