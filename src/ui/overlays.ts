@@ -451,13 +451,7 @@ export function notifyAppliedCompaction(
   " · " +
   remainingGapCount +
   (remainingGapCount === 1 ? " remaining gap" : " remaining gaps");
- const fallback = details.summarySource === "fallback"
-  ? " · deterministic fallback summary, not LLM (" + (details.generationFallbacks?.join(", ") || "quality floor") + ")"
-  : details.generationFallbacks?.length
-  ? " · fallback: " + details.generationFallbacks.join(", ")
-  : details.method
-   ? " · generation: " + details.method
-   : "";
+ const fallback = generationNote(details);
  const planned = details.plannedAfterTokens ?? after;
  notifyUser(ctx,
   concise
@@ -488,13 +482,29 @@ export function notifyAppliedCompaction(
 }
 
 const notedSummaryFallbacks = new Set<string>();
+// Consecutive fallbacks per session in this process; the metrics log seeds it and can miss runs.
+const fallbackStreaks = new Map<string, number>();
+
+/** Why a committed summary is deterministic text; one wording for notices and the result screen. */
+export function summaryFallbackCause(details: SmartCompactDetails): string {
+ if (details.generationFallbacks?.length) return details.generationFallbacks.join(", ");
+ if (details.provenance?.qualityFloorUsed) return "quality floor replaced the model summary";
+ return "unknown";
+}
+
+function generationNote(details: SmartCompactDetails): string {
+ if (details.summarySource === "fallback") return " · deterministic fallback summary, not LLM (" + summaryFallbackCause(details) + ")";
+ if (details.generationFallbacks?.length) return " · fallback: " + details.generationFallbacks.join(", ");
+ return details.method ? " · generation: " + details.method : "";
+}
 
 /**
  * One line for a committed deterministic fallback: cause (first generation
  * fallback) and summary route. Like native skips, an isolated fallback is
  * noted once per session and route; repeated fallbacks (this run and the
  * previous LLM summary attempt) warn every time. Zero-call plans and LLM
- * summaries stay silent. `earlier`: this session's prior metrics records.
+ * summaries stay silent and end the streak. `earlier`: this session's prior
+ * metrics records; they seed the streak the first time a session is seen.
  */
 export function notifySummaryFallback(
  ctx: ExtensionContext,
@@ -502,18 +512,22 @@ export function notifySummaryFallback(
  details: SmartCompactDetails,
  earlier: readonly CompactMetricsEntry[],
 ): void {
+ if (details.summarySource === "llm") { fallbackStreaks.delete(sessionId); return; }
  if (details.summarySource !== "fallback") return;
  const split = summarySourceSplit([...earlier, { status: "success", summarySource: "fallback" }]);
- const repeated = split.consecutiveFallbacks >= 2;
+ const previous = fallbackStreaks.get(sessionId);
+ const streak = previous === undefined ? split.consecutiveFallbacks : previous + 1;
+ if (previous === undefined && fallbackStreaks.size >= 500) fallbackStreaks.delete(fallbackStreaks.keys().next().value!);
+ fallbackStreaks.set(sessionId, streak);
+ const repeated = streak >= 2;
  const route = details.providerRoutes?.synthesize ?? details.model;
  const key = sessionId + "\u0000" + route;
  if (!repeated && notedSummaryFallbacks.has(key)) return;
  if (notedSummaryFallbacks.size >= 500) notedSummaryFallbacks.delete(notedSummaryFallbacks.values().next().value!);
  notedSummaryFallbacks.add(key);
- const cause = details.generationFallbacks?.[0] ?? (details.provenance?.qualityFloorUsed ? "quality floor replaced the model summary" : "unknown");
  notifyUser(ctx,
-  "Smart Compact: " + (repeated ? split.consecutiveFallbacks + " summaries in a row fell back" : "summary fell back")
-  + " to deterministic text (cause: " + cause + "; summary model " + route + "). "
+  "Smart Compact: " + (repeated ? streak + " summaries in a row fell back" : "summary fell back")
+  + " to deterministic text (cause: " + summaryFallbackCause(details) + "; summary model " + route + "). "
   + formatSummarySplit(split) + " this session. "
   + (repeated ? "/smart-compact metrics shows the errors; choose another summary model if this continues." : "Details: /smart-compact metrics."),
   repeated ? "warning" : "info",
@@ -522,6 +536,7 @@ export function notifySummaryFallback(
 
 export function resetSummaryFallbackNoticesForTests(): void {
  notedSummaryFallbacks.clear();
+ fallbackStreaks.clear();
 }
 
 /**
@@ -762,8 +777,9 @@ export async function showResultScreen(
      line("  + " + (gaps.length - shownGaps) + " more (D details)");
     if (provenance?.qualityFloorUsed)
      line("⚠ Safety fallback used · coverage is not raw synthesis quality", "warning");
-    if (details.summarySource === "fallback")
-     line("⚠ Deterministic fallback summary, not an LLM summary: " + (details.generationFallbacks?.join(", ") || "quality floor") + " · coverage is of the fallback text", "warning");
+    // The quality-floor case already has its safety-fallback warning above.
+    if (details.summarySource === "fallback" && !provenance?.qualityFloorUsed)
+     line("⚠ Deterministic fallback summary, not an LLM summary: " + summaryFallbackCause(details) + " · coverage is of the fallback text", "warning");
     else if (details.generationFallbacks?.length)
      line("⚠ Generation fallback: " + details.generationFallbacks.join(", "), "warning");
     if ((details.redactions ?? 0) > 0)

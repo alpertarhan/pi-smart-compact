@@ -45,13 +45,19 @@ export function summarySourceSplit(
  return split;
 }
 
-/** "LLM summaries 0/32 (32 deterministic fallback)"; undefined without summaries. */
-export function formatSummarySplit(split: SummarySourceSplit): string | undefined {
+/** "0/32 (32 deterministic fallback)" for rows that carry their own label; undefined without summaries. */
+export function formatSummaryCounts(split: SummarySourceSplit): string | undefined {
  const attempts = split.llm + split.fallback;
  if (!attempts && !split.zeroCall) return undefined;
- return "LLM summaries " + split.llm + "/" + attempts
+ return split.llm + "/" + attempts
   + (split.fallback ? " (" + split.fallback + " deterministic fallback)" : "")
   + (split.zeroCall ? " · " + split.zeroCall + " zero-call by plan" : "");
+}
+
+/** "LLM summaries 0/32 (32 deterministic fallback)"; undefined without summaries. */
+export function formatSummarySplit(split: SummarySourceSplit): string | undefined {
+ const counts = formatSummaryCounts(split);
+ return counts && "LLM summaries " + counts;
 }
 
 export interface DamageTelemetryEntry {
@@ -562,7 +568,7 @@ export function formatPrivacySafeTelemetry(report: PrivacySafeTelemetry): string
   "| p95 duration | " + baseline.p95LatencyMs + "ms | " + canary.p95LatencyMs + "ms |",
   "| Avg tokens | " + baseline.avgTokens + " | " + canary.avgTokens + " |",
   "| Fallback | " + Math.round(baseline.fallbackRate * 100) + "% | " + Math.round(canary.fallbackRate * 100) + "% |",
-  "| LLM summaries | " + (formatSummarySplit(baseline.summaries) ?? "n/a") + " | " + (formatSummarySplit(canary.summaries) ?? "n/a") + " |",
+  "| LLM summaries | " + (formatSummaryCounts(baseline.summaries) ?? "n/a") + " | " + (formatSummaryCounts(canary.summaries) ?? "n/a") + " |",
   "| Damage | " + Math.round(baseline.damageRate * 100) + "% | " + Math.round(canary.damageRate * 100) + "% |",
   "| Damage observed | " + Math.round(baseline.damageCoverage * 100) + "% | " + Math.round(canary.damageCoverage * 100) + "% |",
   "",

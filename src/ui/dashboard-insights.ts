@@ -1,6 +1,6 @@
 import { VERSION } from "../constants.ts";
 import {
-  assessCanary, buildPreparationStats, buildQualityProvenanceStats, formatSummarySplit, isTelemetryFailureKind,
+  assessCanary, buildPreparationStats, buildQualityProvenanceStats, formatSummaryCounts, isTelemetryFailureKind,
   type CanaryAssessment, type DamageTelemetryEntry, type PreparationPolicyStats, type QualityProvenanceStats,
 } from "../domain/telemetry.ts";
 import type { CompactMetricsEntry, ProviderRouteMetric, ProviderRouteStage, TelemetryFailureKind } from "../types.ts";
@@ -295,7 +295,7 @@ export function formatDashboardCanary(insights: DashboardInsights): string[] {
     "p95: stable " + c.baseline.p95LatencyMs + "ms | canary " + c.canary.p95LatencyMs + "ms",
     "Tokens: stable " + c.baseline.avgTokens + " | canary " + c.canary.avgTokens,
     "Fallback: stable " + Math.round(c.baseline.fallbackRate * 100) + "% | canary " + Math.round(c.canary.fallbackRate * 100) + "%",
-    "LLM summaries: stable " + (formatSummarySplit(c.baseline.summaries) ?? "—") + " | canary " + (formatSummarySplit(c.canary.summaries) ?? "—"),
+    "LLM summaries: stable " + (formatSummaryCounts(c.baseline.summaries) ?? "—") + " | canary " + (formatSummaryCounts(c.canary.summaries) ?? "—"),
     "Damage: stable " + Math.round(c.baseline.damageRate * 100) + "% | canary " + Math.round(c.canary.damageRate * 100) + "%",
     "Damage observed: stable " + Math.round(c.baseline.damageCoverage * 100) + "% | canary " + Math.round(c.canary.damageCoverage * 100) + "%",
     "",

@@ -2,7 +2,7 @@ import type { CompactMetricsEntry } from "../types.ts";
 import { VERSION } from "../constants.ts";
 import { damageReportsFile, metricsDashboardFile } from "../infra/paths.ts";
 import { atomicWriteFileSync, readJsonlTail } from "../infra/fs.ts";
-import { formatSummarySplit, summarySourceSplit, type DamageTelemetryEntry } from "../domain/telemetry.ts";
+import { formatSummaryCounts, summarySourceSplit, type DamageTelemetryEntry } from "../domain/telemetry.ts";
 import { buildDashboardInsights, type DashboardInsights } from "./dashboard-insights.ts";
 import { errorDetail, recordIssue } from "../utils/issues.ts";
 import { readMetricsLog } from "../utils/cache.ts";
@@ -195,7 +195,7 @@ function canaryRows(insights: DashboardInsights): string {
     ["p95 duration", metricMs(baseline.p95LatencyMs), metricMs(canary.p95LatencyMs)],
     ["Avg tokens", metricNum(baseline.avgTokens), metricNum(canary.avgTokens)],
     ["Fallback", metricPct(baseline.fallbackRate), metricPct(canary.fallbackRate)],
-    ["LLM summaries", formatSummarySplit(baseline.summaries) ?? "—", formatSummarySplit(canary.summaries) ?? "—"],
+    ["LLM summaries", formatSummaryCounts(baseline.summaries) ?? "—", formatSummaryCounts(canary.summaries) ?? "—"],
     ["Damage", metricPct(baseline.damageRate), metricPct(canary.damageRate)],
     ["Damage observed", metricPct(baseline.damageCoverage), metricPct(canary.damageCoverage)],
   ];
@@ -304,7 +304,7 @@ export function buildMetricsReport(
     "LLM calls: " + summary.totalCalls + ", input " + summary.totalInput + "t, cache read " + summary.totalCacheRead + "t, cache write " + summary.totalCacheWrite + "t, output " + summary.totalOutput + "t",
     "Extraction cache: avg " + (extractionCacheRuns.length ? metricPct(extractionCacheAvg) : "—") + " across " + extractionCacheRuns.length + " measured run(s)",
     "Tokens saved: " + summary.totalSaved + "t, average verification score: " + summary.avgScore,
-    "Summaries: " + (formatSummarySplit(summarySourceSplit(entries)) ?? "no applied summaries") + " across applied runs; a fallback's verification score is coverage of deterministic text, not LLM quality",
+    "LLM summaries: " + (formatSummaryCounts(summarySourceSplit(entries)) ?? "none applied") + " across applied runs; a fallback's verification score is coverage of deterministic text, not LLM quality",
     "Data Confidence: " + confidence.score + "/100 (telemetry completeness; target ≥85 " + (confidence.targetMet ? "met" : "not met") + ")",
     "Quality Health: " + quality.healthScore + "/100 (" + quality.healthLabel + "; target ≥85 " + (quality.targetMet ? "met" : "not met") + ")",
     "Evidence: sample " + confidence.sampleScore + "/25 · schema-v2 " + confidence.schemaScore + "/25 · quality " + confidence.qualityScore + "/20 · completeness " + confidence.completenessScore + "/20 · freshness " + confidence.freshnessScore + "/10",

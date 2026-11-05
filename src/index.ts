@@ -606,10 +606,10 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
      candidate.details,
      candidate.metricsSnapshot?.runType !== "manual",
     );
-    if (candidate.details.summarySource === "fallback") {
-     notifySummaryFallback(ctx, sessionId, candidate.details,
-      readMetricsLog(200).filter(entry => entry.sessionId === sessionId && entry.runId !== candidate.runId));
-    }
+    // Every committed summary reports its source: an LLM summary ends the fallback streak.
+    notifySummaryFallback(ctx, sessionId, candidate.details, candidate.details.summarySource === "fallback"
+     ? readMetricsLog(200).filter(entry => entry.sessionId === sessionId && entry.runId !== candidate.runId)
+     : []);
     // Summary pseudo-anchor (best-effort): recall surface + pivot target for
     // the post-compaction branch. Bookkeeping failures must not fail the commit.
     try {

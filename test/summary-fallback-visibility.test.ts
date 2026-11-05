@@ -83,8 +83,8 @@ describe("summary fallback in metrics and telemetry", () => {
     expect(canary.canary.summaries).toMatchObject({ llm: 0, fallback: 3 });
     expect(canary.canary.avgQuality).toBe(100);
     const telemetry = formatPrivacySafeTelemetry(buildPrivacySafeTelemetry(entries, [], { version: "1.0.0", minCanaryRuns: 5 }));
-    expect(telemetry).toContain("| LLM summaries | LLM summaries 3/3 | LLM summaries 0/3 (3 deterministic fallback) |");
-    expect(buildMetricsReport(entries, [])).toContain("Summaries: LLM summaries 3/6 (3 deterministic fallback) across applied runs");
+    expect(telemetry).toContain("| LLM summaries | 3/3 | 0/3 (3 deterministic fallback) |");
+    expect(buildMetricsReport(entries, [])).toContain("LLM summaries: 3/6 (3 deterministic fallback) across applied runs");
   });
 
   it("marks the synthesize route's fallback share in provider evaluation", () => {
@@ -103,10 +103,11 @@ describe("summary fallback notices", () => {
   it("notes an isolated fallback once per session and route with cause and route", () => {
     const { ctx, calls } = ui();
     notifySummaryFallback(ctx, "s1", fallbackDetails, []);
+    notifySummaryFallback(ctx, "s1", { ...fallbackDetails, summarySource: "llm" }, []); // ends the streak
     notifySummaryFallback(ctx, "s1", fallbackDetails, [run({ method: "heuristic" }), run({ method: "eesv" })]);
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toBe("info");
-    expect(calls[0][1]).toContain("cause: 1 synthesis batch budget fallback(s); summary model minimax/M3");
+    expect(calls[0][1]).toContain("cause: 1 synthesis batch budget fallback(s), assembly generation failed; summary model minimax/M3");
     expect(calls[0][1]).toContain("LLM summaries 0/1 (1 deterministic fallback) this session");
     notifySummaryFallback(ctx, "s2", fallbackDetails, []);
     expect(calls).toHaveLength(2);
@@ -120,6 +121,16 @@ describe("summary fallback notices", () => {
     expect(calls.map(call => call[0])).toEqual(["warning", "warning"]);
     expect(calls[1][1]).toContain("3 summaries in a row fell back");
     expect(calls[1][1]).toContain("LLM summaries 1/4 (3 deterministic fallback) this session");
+  });
+
+  it("keeps warning on repeated fallbacks when the metrics log misses earlier runs", () => {
+    const { ctx, calls } = ui();
+    notifySummaryFallback(ctx, "s1", fallbackDetails, []);
+    notifySummaryFallback(ctx, "s1", fallbackDetails, []); // the first run's metrics write failed
+    notifySummaryFallback(ctx, "s1", { ...fallbackDetails, summarySource: "llm" }, []);
+    notifySummaryFallback(ctx, "s1", fallbackDetails, []);
+    expect(calls.map(call => call[0])).toEqual(["info", "warning"]);
+    expect(calls[1][1]).toContain("2 summaries in a row fell back");
   });
 
   it("stays silent for LLM summaries and zero-call plans", () => {
