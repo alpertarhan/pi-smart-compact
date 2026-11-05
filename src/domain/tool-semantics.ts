@@ -36,6 +36,14 @@ const PAYLOAD_KEYS = [
 /** Argument keys that carry a shell command to execute. */
 const COMMAND_KEYS = ["command", "cmd", "script"] as const;
 
+/** The shell command of a tool-call argument record, if any. */
+export function shellCommandArgument(args: unknown): string | undefined {
+  const record = args && typeof args === "object" ? (args as Args) : null;
+  return record
+    ? COMMAND_KEYS.map((key) => record[key]).find((value): value is string => typeof value === "string")
+    : undefined;
+}
+
 function hasPresent(args: Args, keys: readonly string[]): boolean {
   // `!= null` so an empty-string payload (write empty file) still counts as
   // "present" — presence of the arg is the signal, not its value.
@@ -441,6 +449,101 @@ export function isReadOnlyShellCommand(command: string): boolean {
     }
   }
   return readOnlyShellSegment(words);
+}
+
+/** Search/condition commands whose exit 1 is expected control flow, not failure. */
+const NO_MATCH_EXIT_ONE_COMMANDS = new Set([
+  "grep", "egrep", "fgrep", "rg", "ag", "ack", "test", "[",
+]);
+/** Commands that may precede the terminal command in an && chain: they do not
+ * fail with exit 1 and a silent body (cd prints failures to stderr). */
+const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "pushd", "true", "env", "export", "local"]);
+
+function isEnvAssignment(word: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+}
+
+/** The command name of a pipeline's final unit (bare names only, like the read-only set). */
+function terminalPipelineCommand(words: Array<{ kind: "word" | "pipe"; value: string }>): string | undefined {
+  let last = words.length - 1;
+  while (last >= 0 && words[last].kind !== "word") last--;
+  let start = last;
+  while (start > 0 && words[start - 1].kind === "word") start--;
+  const name = words[start]?.value ?? "";
+  // Bare names only: ./grep or /bin/grep could be anything.
+  return name && !name.includes("/") && !isEnvAssignment(name) ? name : undefined;
+}
+
+/** The first command word of a statement (after any env assignments). */
+function statementCommand(words: string[]): string | undefined {
+  const first = words.find((word) => !isEnvAssignment(word));
+  return first && !first.includes("/") ? first : undefined;
+}
+
+/**
+ * True when the command itself proves that exit 1 is expected, non-fatal
+ * control flow: the terminal pipeline ends in a no-match search or condition
+ * (grep/rg family, test/[, git diff --exit-code/--quiet, diff -q), reached
+ * without a short-circuit that could hide an earlier failure (an &&-joined
+ * predecessor must be cd/pwd/assignment class; ; and || attribution is safe:
+ * a ;-list exits with the last statement, and A || B exits 1 only when B ran).
+ * Unknown commands, scripts and mutations never qualify — quiet stdout alone
+ * proves nothing.
+ */
+export function exitOneIsExpectedNoMatch(command: string): boolean {
+  const tokens = tokenizeShell(command);
+  interface Statement {
+    sepBefore: ";" | "\n" | "&&" | "||" | null;
+    words: Array<{ kind: "word" | "pipe"; value: string }>;
+  }
+  const statements: Statement[] = [{ sepBefore: null, words: [] }];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.kind === "heredoc") continue;
+    if (token.kind === "redirect") {
+      if (tokens[index + 1]?.kind === "word") index++; // the target is not a command
+      continue;
+    }
+    if (token.kind === "separator") {
+      if (token.value === "|") {
+        statements[statements.length - 1].words.push({ kind: "pipe", value: "|" });
+      } else {
+        statements.push({
+          sepBefore: token.value === "&&" || token.value === "||" ? token.value : ";",
+          words: [],
+        });
+      }
+      continue;
+    }
+    statements[statements.length - 1].words.push({ kind: "word", value: token.value });
+  }
+  // Trailing separators (e.g. a command ending in "&&") leave an empty terminal.
+  while (statements.length && !statements[statements.length - 1].words.length) statements.pop();
+  const terminal = statements[statements.length - 1];
+  if (!terminal) return false;
+  const name = terminalPipelineCommand(terminal.words);
+  const wordValues = terminal.words.filter((w) => w.kind === "word").map((w) => w.value);
+  const benign =
+    name !== undefined &&
+    (NO_MATCH_EXIT_ONE_COMMANDS.has(name) ||
+      (name === "git" &&
+        wordValues[1] === "diff" &&
+        wordValues.some((w) => w === "--exit-code" || w === "--quiet")) ||
+      (name === "diff" && wordValues.some((w) => w === "-q" || w === "--brief" || w === "--exit-code")));
+  if (!benign) return false;
+  // Attribution: walk back through the && chain into the terminal. A ;-joined
+  // boundary discards earlier exits, and || means the right side ran; only &&
+  // can leave the exit owned by an unknown earlier command.
+  for (let index = statements.length - 2; index >= 0; index--) {
+    if (statements[index].sepBefore !== "&&") break;
+    const priorWords = statements[index].words
+      .filter((item) => item.kind === "word")
+      .map((item) => item.value);
+    const prior = statementCommand(priorWords);
+    const assignmentsOnly = priorWords.every((word) => isEnvAssignment(word));
+    if (!assignmentsOnly && !(prior && HARMLESS_AND_PREFIX.has(prior))) return false;
+  }
+  return true;
 }
 
 /** Calls a research rewind may remove: read-only research tools, plus shell commands that provably only read. */

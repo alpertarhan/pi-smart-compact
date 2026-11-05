@@ -32,6 +32,8 @@ import {
   extractToolPath,
   sameToolOperation,
   toolOperationSignature,
+  exitOneIsExpectedNoMatch,
+  shellCommandArgument,
 } from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
 import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
@@ -242,7 +244,7 @@ export function trackFileOps(
       // error cataloging and retry resolution, never here.
       if (
         /Command exited with code [1-9]\d*\s*$/i.test(resultText) ||
-        hasCommandFailureSignal(resultText)
+        hasCommandFailureSignal(resultText, shellCommandArgument(tc.arguments))
       )
         continue;
       const shell = extractShellFileOperations(tc.arguments);
@@ -335,14 +337,17 @@ function isBenignSearchResult(
 
 /**
  * pi marks any non-zero exit as `isError` on the tool result. A trailing
- * exit 1 with no error signal in the output is shell control flow (a last
- * grep/test with no match after successful commands: "25 pass 0 fail",
- * "0"), not a session failure. Real signals keep the failure: error
- * patterns, N>0 fail counts, error TS*, npm error/fatal/Traceback.
+ * exit 1 is accepted as non-fatal ONLY with positive command semantics
+ * (`exitOneIsExpectedNoMatch`: the terminal pipeline is a no-match search or
+ * condition, reached without a short-circuit that could hide an earlier
+ * failure) AND an output body with no failure signal (error patterns, N>0
+ * fail counts, error TS*, npm error/fatal:/Traceback). Unknown commands and
+ * scripts stay failures: quiet stdout alone proves nothing.
  */
-function isCleanCommandExitOne(text: string): boolean {
+function isCleanCommandExitOne(text: string, command?: string): boolean {
   const exit = text.match(/Command exited with code (\d+)\s*$/i)?.[1];
   if (exit !== "1") return false;
+  if (command === undefined || !exitOneIsExpectedNoMatch(command)) return false;
   const body = text.replace(/Command exited with code \d+\s*$/i, "");
   // Zero counts are clean (jest "0 failed", rspec "0 failures") — strip them
   // before the strong-word test so they cannot force a failure.
@@ -361,10 +366,10 @@ function isCleanCommandExitOne(text: string): boolean {
   );
 }
 
-function hasCommandFailureSignal(text: string): boolean {
+function hasCommandFailureSignal(text: string, command?: string): boolean {
   const exit = text.match(/Command exited with code ([1-9]\d*)\s*$/i)?.[1];
   if (exit !== undefined && exit !== "1") return true;
-  if (exit === "1") return !isCleanCommandExitOne(text);
+  if (exit === "1") return !isCleanCommandExitOne(text, command);
   const firstLine =
     text
       .split(/\r?\n/)
@@ -434,8 +439,9 @@ export function resolvesErrorResult(
   if (!matches) return false;
   const text = extractText(result.content);
   const execute = classifyToolOperation(retry.arguments, retry.name) === "execute";
-  if (result.isError && !(execute && isCleanCommandExitOne(text))) return false;
-  return !(execute && hasCommandFailureSignal(text));
+  const command = shellCommandArgument(retry.arguments);
+  if (result.isError && !(execute && isCleanCommandExitOne(text, command))) return false;
+  return !(execute && hasCommandFailureSignal(text, command));
 }
 
 export function catalogErrors(
@@ -463,7 +469,7 @@ export function catalogErrors(
       if (
         tc &&
         classifyToolOperation(tc.arguments, tc.name) === "execute" &&
-        isCleanCommandExitOne(text)
+        isCleanCommandExitOne(text, shellCommandArgument(tc.arguments))
       )
         continue;
       errors.push({
@@ -483,7 +489,7 @@ export function catalogErrors(
     // Gated by argument shape, not by tool name, so it auto-covers shell-like
     // tools this code has never seen. Explicit m.isError is handled above.
     if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute") {
-      if (hasCommandFailureSignal(text)) {
+      if (hasCommandFailureSignal(text, shellCommandArgument(tc.arguments))) {
         errors.push({
           index: i,
           tool: tc.name,

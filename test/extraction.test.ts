@@ -324,17 +324,67 @@ describe("catalogErrors", () => {
       { role: "toolResult", toolCallId: id, isError, content: output },
     ] as unknown as LlmMessage[];
 
+  const benignExitOne: Array<[string, string, string]> = [
+    [
+      "looped tests then a terminal name-only grep with no match",
+      "for i in 1 2 3; do bun test test/x.test.ts 2>&1 | grep -E \"^ *[0-9]+ (pass|fail)\" | tr '\\n' ' '; done; git diff main... --name-only | grep -i hindsight",
+      " 25 pass  0 fail \n 25 pass  0 fail \n 6 files changed, 63 insertions(+), 20 deletions(-)\nCommand exited with code 1",
+    ],
+    [
+      "in-place edit then a zero-count grep",
+      "F=docs/status.md; sed -i 's/\\u2192/→/g' \"$F\"; grep -c 'u2192' \"$F\"",
+      "0\n\n\nCommand exited with code 1",
+    ],
+    [
+      "git diff --exit-code with clean hunks",
+      "git diff --exit-code main -- src/",
+      "3c3\n< old\n---\n> new\nCommand exited with code 1",
+    ],
+    [
+      "cd then a no-match count grep",
+      'cd /repo/data && grep -c "needle" sessions.jsonl',
+      "0\n\n\nCommand exited with code 1",
+    ],
+    [
+      "no-match search over a zero-failed summary",
+      "grep failing summary.txt",
+      "Tests: 0 failed, 25 passed, 1 skipped\nCommand exited with code 1",
+    ],
+    [
+      "no-match rg over a zero-failures report",
+      "rg \\b[1-9]\\ failing report.txt",
+      "0 failures, 42 examples, 0 pending\nCommand exited with code 1",
+    ],
+    [
+      "false test condition",
+      "test -f /tmp/lock",
+      "\nCommand exited with code 1",
+    ],
+  ];
+
+  it.each(benignExitOne.map(([label, command, output]) => [label, command, output] as const))(
+    "does not catalog a benign-terminal exit 1 (%s)",
+    (_label, command, output) => {
+      // pi marks the non-zero exit as isError on the tool result; both the
+      // isError path and the error-pattern scan must agree it is not a failure.
+      expect(catalogErrors(run("c1", command, output))).toEqual([]);
+      expect(catalogErrors(run("c2", command, output, true))).toEqual([]);
+    },
+  );
+
   it.each([
-    ["passing tests then a no-match trailing command", " 25 pass  0 fail \n 25 pass  0 fail \n 6 files changed, 63 insertions(+), 20 deletions(-)\nCommand exited with code 1"],
-    ["a bare count and a no-match trailing command", "0\n\n\nCommand exited with code 1"],
-    ["diff-style output without error text", "3c3\n< old\n---\n> new\nCommand exited with code 1"],
-    ["jest zero failed summary", "Tests: 0 failed, 25 passed, 1 skipped\nCommand exited with code 1"],
-    ["rspec zero failures summary", "0 failures, 42 examples, 0 pending\nCommand exited with code 1"],
-  ])("does not catalog a clean-output exit 1 (%s)", (_label, output) => {
-    // pi marks the non-zero exit as isError on the tool result; both the
-    // isError path and the error-pattern scan must agree it is not a failure.
-    expect(catalogErrors(run("c1", "bun test && git diff", output))).toEqual([]);
-    expect(catalogErrors(run("c2", "bun test && git diff", output, true))).toEqual([]);
+    ["quiet deploy script", "./deploy --quiet"],
+    ["silent python check", "python silent_check.py"],
+    ["bare false", "false"],
+    ["quiet deploy after tests", "bun test && ./deploy --quiet"],
+    ["unknown cli tool", "agm task set -scope /repo -state working 'note'"],
+  ])("still catalogs a quiet exit-1 failure (%s)", (_label, command) => {
+    const output = "\nCommand exited with code 1";
+    for (const isError of [false, true]) {
+      const errors = catalogErrors(run("c1", command, output, isError));
+      expect(errors).toHaveLength(1);
+      expect(errors[0].resolved).toBe(false);
+    }
   });
 
   it.each([
@@ -695,13 +745,14 @@ describe("catalogErrors retry resolution (A07)", () => {
   });
 
   it("resolves an error when the matching retry exits 1 clean (isError, no signal)", () => {
-    // pi marks every non-zero exit as isError; the retry's commands passed and
-    // only a trailing no-match grep exited 1.
+    // pi marks every non-zero exit as isError; the retry ends in a no-match
+    // count grep whose zero is the expected outcome.
+    const command = "grep -c u2192 notes.md";
     const errors = catalogErrors([
-      exec("1"),
-      execResult("1", "Error: assertion failed", true),
-      exec("2"),
-      execResult("2", "25 pass  0 fail \nCommand exited with code 1", true),
+      exec("1", command),
+      execResult("1", "grep: notes.md: No such file or directory\nCommand exited with code 2", true),
+      exec("2", command),
+      execResult("2", "0\n\n\nCommand exited with code 1", true),
     ]);
     expect(errors).toHaveLength(1);
     expect(errors[0].retryAttempted).toBe(true);
