@@ -61,25 +61,36 @@ import {
 } from "../../infra/synthesis-cache.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
 import { formatGenerationFailureForUi } from "../../ui/error-format.ts";
-import { modelRequestCapacityReason, ModelCapacityError } from "../../domain/model-capacity.ts";
+import { modelRequestCapacityReason, ModelCapacityError, clampCompletionMaxTokens } from "../../domain/model-capacity.ts";
 import { estimateTokens } from "../../utils/tokens.ts";
 import type { SmartCompactServices } from "../../infra/services.ts";
 
 /**
- * Re-pack the greedy batch plan into fewer LLM requests when the remaining
- * call budget cannot cover one request per batch plus final assembly.
+ * Re-pack the greedy batch plan into the fewest LLM requests that cover every
+ * chunk, for when the remaining call budget cannot fit one request per batch
+ * plus final assembly. Old batch boundaries are not constraints: the
+ * contiguous chunk sequence is re-partitioned directly, preserving chunk
+ * order and IDs.
  *
- * A merge of neighbouring batches is admissible only when the request the
- * run would really dispatch — `buildBatchRequest` output, scrubbed and
- * estimated exactly like `trackedComplete` does — fits the summary model
+ * A group of neighbouring chunks is admissible only when the request the run
+ * would really dispatch — `buildBatchRequest` output, scrubbed and estimated
+ * exactly like `trackedComplete` — fits the summary model
  * (`modelRequestCapacityReason`: input + clamped output + SDK headroom, with
- * `outputCeiling`'s reasoning headroom already inside `maxTokens`), and every
- * chunk keeps the mode's per-chunk visible output allowance, so merging only
- * trades duplicate prompt overhead for calls, never chunk coverage.
+ * `outputCeiling`'s reasoning headroom already inside `maxTokens`), every
+ * chunk keeps the mode's per-chunk visible output allowance before clamping
+ * (`batchOutputLimit`), and the wire cap after the model clamp
+ * (`clampCompletionMaxTokens`) still covers that allowance, so a merged
+ * request cannot truncate its sections into budget-stealing retries.
  *
- * The original plan is returned (same batches, same order) when it already
- * fits or when no admissible merge exists; callers then keep the safe
- * deterministic budget fallback for whatever remains.
+ * Admissibility is downward-closed (any contiguous sub-group of an admissible
+ * group is admissible), so greedily extending each group as far as it stays
+ * admissible yields the minimum request count — a feasible full-coverage
+ * plan is always found. A chunk the model cannot serve even alone keeps its
+ * own request, so the caller's deterministic budget fallback still covers it
+ * and nothing oversized is dispatched. The original array is returned
+ * unchanged when the plan already fits; when full coverage is impossible the
+ * partial improvement is returned unless it cannot reduce the request count,
+ * in which case the original plan stays.
  */
 export function repackBatchesForCallBudget(
  batches: import("../../types.ts").LlmChunk[][],
@@ -92,32 +103,34 @@ export function repackBatchesForCallBudget(
 ): import("../../types.ts").LlmChunk[][] {
  if (allowedBatchCalls < 1 || batches.length <= allowedBatchCalls) return batches;
  const perChunk = MODE_POLICIES[mode].batchOutput.perChunk;
- const plan = [...batches];
- while (plan.length > allowedBatchCalls) {
-  let bestIndex = -1;
-  let bestInput = Number.POSITIVE_INFINITY;
-  for (let index = 0; index + 1 < plan.length; index++) {
-   const group = [...plan[index], ...plan[index + 1]];
-   const visible = batchOutputLimit(mode, group.length, providerMaxOutputTokens);
-   if (visible < group.length * perChunk) continue;
-   const request = buildBatchRequest(group, extraction, model, visible);
-   const input = estimateTokens(
-    JSON.stringify(services.scrubber.scrubValue(request.context).value),
-    model.provider,
-    model.id,
-    services.tokenCalibration,
-   );
-   if (modelRequestCapacityReason(model, input, request.maxTokens)) continue;
-   if (input < bestInput) {
-    bestInput = input;
-    bestIndex = index;
-   }
-  }
-  if (bestIndex < 0) return plan;
-  plan[bestIndex] = [...plan[bestIndex], ...plan[bestIndex + 1]];
-  plan.splice(bestIndex + 1, 1);
+ const groupAdmissible = (group: import("../../types.ts").LlmChunk[]): boolean => {
+  const visible = batchOutputLimit(mode, group.length, providerMaxOutputTokens);
+  if (visible < group.length * perChunk) return false;
+  const request = buildBatchRequest(group, extraction, model, visible);
+  if ((clampCompletionMaxTokens(model, request.maxTokens) ?? 0) < group.length * perChunk)
+   return false;
+  const input = estimateTokens(
+   JSON.stringify(services.scrubber.scrubValue(request.context).value),
+   model.provider,
+   model.id,
+   services.tokenCalibration,
+  );
+  return !modelRequestCapacityReason(model, input, request.maxTokens);
+ };
+ const chunks = batches.flat();
+ const plan: import("../../types.ts").LlmChunk[][] = [];
+ let start = 0;
+ while (start < chunks.length) {
+  let end = start;
+  while (
+   end + 1 < chunks.length &&
+   groupAdmissible(chunks.slice(start, end + 2))
+  )
+   end++;
+  plan.push(chunks.slice(start, end + 1));
+  start = end + 1;
  }
- return plan;
+ return plan.length < batches.length ? plan : batches;
 }
 
 export async function summarizeConversation(

@@ -237,19 +237,25 @@ describe("pipeline integration: extract -> synthesize (single-pass)", () => {
   });
 
   it.each([1, 2, 4])("keeps the assembly call with retries and queued batches (%i workers)", async (concurrency) => {
+    // 34 chunks: the balanced per-chunk output rule (n*250 <= 4096) caps a
+    // re-packed request at 16 chunks, so the call-budget re-pack plans three
+    // multi-chunk requests; retries and queued workers must still leave the
+    // final assembly call reserved.
     let batches = 0;
     setLlmClient({ complete: async (_model, body) => {
-      if (JSON.stringify(body.messages).includes("--- CHUNK 1:")) {
+      const prompt = JSON.stringify(body.messages);
+      if (prompt.includes("--- CHUNK 1:")) {
         batches++;
-        const batch = makeSummaryResponse([
-          "### CHUNK 1: Evidence", "**Priority**: normal", "**Summary**: Preserve the evidence.",
+        const ids = [...prompt.matchAll(/--- CHUNK (\d+):/g)].map(match => Number(match[1]));
+        const batch = makeSummaryResponse(ids.map(id => [
+          "### CHUNK " + id + ": Evidence", "**Priority**: normal", "**Summary**: Preserve the evidence.",
           "**Decisions**: None", "**Modified**: None", "**Deleted**: None", "**Read**: None",
-        ].join("\n"));
+        ].join("\n")).join("\n\n"));
         return batches <= 2 ? { ...batch, stopReason: "length" } : batch;
       }
       return makeSummaryResponse("## Goal\nPreserve evidence\n## Critical Context\nLLM_ASSEMBLY_SENTINEL");
     } });
-    const messages = Array.from({ length: 6 }, (_, index) => {
+    const messages = Array.from({ length: 34 }, (_, index) => {
       const text = "Detail " + index + ": " + "evidence ".repeat(40);
       return index % 2 ? assistantMsg(text) : userMsg(text);
     });

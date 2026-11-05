@@ -181,10 +181,12 @@ beforeEach(() => {
 });
 
 describe("synthesis batch re-packing within the call budget", () => {
-  it("covers every chunk with fewer LLM requests when merging is feasible (red: budget fallback on main)", async () => {
+  it("re-partitions chunks across batch boundaries into the fewest feasible requests (red: budget fallback on main)", async () => {
     // 12 one-message topics of ~127 tokens: maxChunkTokens 600 keeps each
     // whole; batchMaxTokens 400 packs 3 chunks per batch -> 4 batches, but a
-    // budget of 4 allows only 3 batch calls + assembly.
+    // budget of 4 allows only 3 batch calls + assembly. The re-pack may cross
+    // the old batch boundaries: the minimum is a single request covering all
+    // 12 chunks (12*250 visible = 3000 <= the balanced 4096 cap).
     const messages = Array.from({ length: 12 }, (_, index) => sizedMsg(index));
     const tiered = makeTieredRc(messages, openAiModel);
     tiered.mode = "balanced";
@@ -201,16 +203,15 @@ describe("synthesis batch re-packing within the call budget", () => {
     const synthesized = await summarizeConversation(extracted);
 
     expect(tiered.services.metrics.snapshot().map(metric => metric.phase))
-      .toEqual(["batch", "batch", "batch", "assemble"]);
-    expect(tiered.services.budget.callCount()).toBe(4);
+      .toEqual(["batch", "assemble"]);
+    expect(tiered.services.budget.callCount()).toBe(2);
     expect(synthesized.generationFallbacks).toEqual([]);
     expect(synthesized.chunkCount).toBe(12);
     // Same chunk order and IDs, every section from the LLM, none from fallback.
     expect(synthesized.summaries.map(summary => summary.startIndex)).toEqual(Array.from({ length: 12 }, (_, i) => i));
     expect(synthesized.summaries.every(summary => summary.summary.includes(LLM_SUMMARY_MARKER))).toBe(true);
     expect(synthesized.finalSummary).toContain("ASSEMBLY_SENTINEL");
-    // The re-packed plan covered 4 batches with 3 requests: one merge happened.
-    expect(batchChunkCounts.sort((a, b) => a - b)).toEqual([3, 3, 6]);
+    expect(batchChunkCounts).toEqual([12]);
   });
 
   it("keeps the original plan when it already fits the remaining calls", async () => {
@@ -255,6 +256,45 @@ describe("synthesis batch re-packing within the call budget", () => {
     expect(repackBatchesForCallBudget(batches, unitExtraction, openAiModel, "balanced", 8_192, services, 1).length).toBe(1);
   });
 
+  it("re-partitions globally instead of stopping at a locally-stuck pair merge", () => {
+    // [9,6,6,9] with fast output caps (15 chunks max per request): the middle
+    // 6+6 pair is the smallest adjacent merge, but taking it strands [9,12,9]
+    // with no admissible follow-up. The minimum-count packing crosses the old
+    // batch boundaries and finds [15,15].
+    const services = createServices();
+    const batches = [
+      Array.from({ length: 9 }, (_, i) => unitChunk(i)),
+      Array.from({ length: 6 }, (_, i) => unitChunk(9 + i)),
+      Array.from({ length: 6 }, (_, i) => unitChunk(15 + i)),
+      Array.from({ length: 9 }, (_, i) => unitChunk(21 + i)),
+    ];
+    const plan = repackBatchesForCallBudget(batches, unitExtraction, openAiModel, "fast", 8_192, services, 2);
+    expect(plan.map(group => group.length)).toEqual([15, 15]);
+    expect(plan.flat().map(ch => ch.startIndex)).toEqual(batches.flat().map(ch => ch.startIndex));
+    // [8,8,8] needs a middle batch's chunks split across requests: 16 chunks
+    // would squeeze the per-chunk allowance, so the packing stops at 15.
+    const triple = [
+      Array.from({ length: 8 }, (_, i) => unitChunk(i)),
+      Array.from({ length: 8 }, (_, i) => unitChunk(8 + i)),
+      Array.from({ length: 8 }, (_, i) => unitChunk(16 + i)),
+    ];
+    const repartitioned = repackBatchesForCallBudget(triple, unitExtraction, openAiModel, "fast", 8_192, services, 2);
+    expect(repartitioned.length).toBe(2);
+    expect(repartitioned.every(group => group.length <= 15)).toBe(true);
+    expect(repartitioned.flat().map(ch => ch.startIndex)).toEqual(triple.flat().map(ch => ch.startIndex));
+  });
+
+  it("refuses a merge whose clamped wire output cannot cover the per-chunk allowance", () => {
+    // maxTokens 128: the pre-clamp visible allowance for two fast chunks is
+    // 800 >= 2*160, but the wire cap after the model clamp is 128 < 320, so a
+    // merged request would truncate and burn retries. No merge is admissible.
+    const services = createServices();
+    const batches = [[unitChunk(0)], [unitChunk(1)]];
+    const tinyOutput = { ...openAiModel, maxTokens: 128 } as Model<Api>;
+    const plan = repackBatchesForCallBudget(batches, unitExtraction, tinyOutput, "fast", 8_192, services, 1);
+    expect(plan.length).toBe(2); // wire 128 cannot cover 2*160 required visible tokens
+  });
+
   it("re-packs on every API family with the provider's own caps", () => {
     const services = createServices();
     const families: Array<Model<Api>> = [
@@ -267,8 +307,8 @@ describe("synthesis batch re-packing within the call budget", () => {
       const batches = [0, 1, 2].map(index => [unitChunk(index)]);
       const plan = repackBatchesForCallBudget(batches, unitExtraction, model, "balanced", 8_192, services, 2);
       // Text-only summary requests: no protocol branches, so every family
-      // that admits the request covers all chunks within the allowance.
-      expect(plan.length).toBe(2);
+      // that admits the request packs to the minimum request count.
+      expect(plan.length).toBe(1);
       expect(plan.flat().map(ch => ch.startIndex)).toEqual([0, 1, 2]);
       const blocked = repackBatchesForCallBudget(
         batches, unitExtraction, { ...model, contextWindow: 5_000 } as Model<Api>, "balanced", 8_192, services, 2,

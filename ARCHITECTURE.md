@@ -688,10 +688,12 @@ Session-aware prompting, decision propagation across later batches,
 mode-specific thresholds and output limits, provider-aware wave concurrency,
 aggregate prompt-token reservation and deterministic fallback assembly when any
 budget or LLM call fails. When the remaining calls cannot cover one request per
-batch plus assembly, batches are re-packed into fewer requests, admissible only
-if the actually built request fits the summary model and every chunk keeps its
-mode's per-chunk visible output allowance; plans that already fit are unchanged,
-and infeasible merges keep the deterministic fallback. Batch retries and queued
+batch plus assembly, the chunk sequence is re-partitioned across batch
+boundaries into the fewest requests a greedy minimum-count packing can
+admit — a group is admissible only if the actually built request fits the
+summary model and its clamped wire output still covers the mode's per-chunk
+visible allowance; plans that already fit are unchanged, and infeasible
+groupings keep the deterministic fallback. Batch retries and queued
 workers recheck remaining calls before dispatch so they cannot spend the final
 assembly call.
 Single-pass and final assembly reject known nonterminal stop reasons and
