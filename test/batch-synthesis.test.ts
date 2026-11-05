@@ -257,6 +257,26 @@ describe("summarizeBatch response validation", () => {
 		expect(calls[1].reasoning).toBe("minimal"); // retry caps thinking
 	});
 
+	it("retries a truncated reasoning batch once at its thinking-headroom cap with minimal reasoning", async () => {
+		const calls: Array<Record<string, unknown>> = [];
+		const services = createServices({
+			thinkingLevels: { summaryThinkingLevel: "high", segmentationThinkingLevel: null },
+			llm: {
+				complete: async (_m: unknown, _b: unknown, opts: Record<string, unknown>) => {
+					calls.push(opts);
+					return response(valid, calls.length === 1 ? "length" : "stop");
+				},
+			},
+		});
+		const thinking = { ...model, reasoning: true, maxTokens: 64_000 } as Model<Api>;
+		const result = await summarizeBatch([chunk], extraction, thinking, { apiKey: "test" }, undefined, services, 1_000, "session");
+		expect(result[0].summary).toBe("Atomic writes remain required.");
+		expect(calls.map(call => [call.reasoning, call.maxTokens])).toEqual([
+			["high", 1_000 + REASONING_OUTPUT_HEADROOM_TOKENS],
+			["minimal", 1_000 + REASONING_OUTPUT_HEADROOM_TOKENS], // same cap, not doubled
+		]);
+	});
+
 	it("still throws (deterministic fallback upstream) when the retry also length-truncates", async () => {
 		let calls = 0;
 		const services = createServices({

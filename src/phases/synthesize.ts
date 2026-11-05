@@ -701,9 +701,12 @@ export async function summarizeBatch(
   // Minimal thinking can still truncate prose. Retry once with output headroom,
   // without changing configured reasoning or spending the final assembly call.
   const initialMaxTokens = clampCompletionMaxTokens(model, maxTokens)!;
+  // A reasoning model's first attempt already carries thinking headroom above the table: retry at that
+  // cap with minimal reasoning instead of doubling it, which would outlast the call watchdog.
+  const retryCeiling = Math.max(getProviderCaps(model.provider).maxOutputTokens, model.reasoning ? initialMaxTokens : 0);
   const retryMaxTokens = Math.min(
    clampCompletionMaxTokens(model, maxTokens * 2)!,
-   getProviderCaps(model.provider).maxOutputTokens,
+   retryCeiling,
    svc.budget.remainingOutputTokens(),
   );
   if (

@@ -631,8 +631,8 @@ request for thinking; stated targets do not change. Requests stay within the
 model's advertised output limit (the provider table when none is advertised) and
 the run output budget.
 Batch prompts state their output budget. A `length` stop may retry once with
-minimal reasoning and up to twice the original output allowance, including when
-reasoning is already minimal; retries must leave the final assembly call available.
+minimal reasoning and up to twice the original output allowance (a reasoning
+model keeps its first, headroom-sized cap), including when reasoning is already minimal; retries must leave the final assembly call available.
 Malformed or still-truncated responses continue to use deterministic fallback.
 
 ## Legacy and removed keys
