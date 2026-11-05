@@ -341,7 +341,7 @@ describe("catalogErrors", () => {
       "3c3\n< old\n---\n> new\nCommand exited with code 1",
     ],
     [
-      "cd then a no-match count grep",
+      "cd then a no-match count grep that printed its zero",
       'cd /repo/data && grep -c "needle" sessions.jsonl',
       "0\n\n\nCommand exited with code 1",
     ],
@@ -372,6 +372,14 @@ describe("catalogErrors", () => {
     },
   );
 
+  it("still catalogs a benign-terminal exit 1 whose body carries bare 'failing'", () => {
+    const errors = catalogErrors(
+      run("c1", "git diff --exit-code main -- src/", "--- a/src/x.ts\n-// failing tests disabled\nCommand exited with code 1", true),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].resolved).toBe(false);
+  });
+
   it.each([
     ["quiet deploy script", "./deploy --quiet"],
     ["silent python check", "python silent_check.py"],
@@ -388,6 +396,10 @@ describe("catalogErrors", () => {
     ["failable local predecessor", "local X=1 && grep -q missing file"],
     ["redirect hides a failed cd predecessor", "cd /does-not-exist 2>/dev/null && grep -q missing file"],
     ["input redirect fails before grep", "grep -q needle <missing-file"],
+    ["backgrounded search then a failing node", "grep -q pat f & node build.js"],
+    ["glued background ampersand", "grep -q pat f& node build.js"],
+    ["cd failing at exit 1 (not a directory)", "cd /f-not-dir && grep -q missing file"],
+    ["cd failing at exit 1 (too many arguments)", "cd a b && grep -q missing file"],
   ])("still catalogs a quiet exit-1 failure (%s)", (_label, command) => {
     const output = "\nCommand exited with code 1";
     for (const isError of [false, true]) {

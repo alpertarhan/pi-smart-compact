@@ -244,7 +244,7 @@ export function trackFileOps(
       // error cataloging and retry resolution, never here.
       if (
         /Command exited with code [1-9]\d*\s*$/i.test(resultText) ||
-        hasCommandFailureSignal(resultText, shellCommandArgument(tc.arguments))
+        hasCommandFailureSignal(resultText)
       )
         continue;
       const shell = extractShellFileOperations(tc.arguments);
@@ -316,12 +316,7 @@ function isBenignSearchResult(
   tc: { arguments: Record<string, unknown> },
   result: string,
 ): boolean {
-  const command =
-    typeof tc.arguments.command === "string"
-      ? tc.arguments.command
-      : typeof tc.arguments.cmd === "string"
-        ? tc.arguments.cmd
-        : "";
+  const command = shellCommandArgument(tc.arguments) ?? "";
   if (/[;\n]|\|\|/.test(command)) return false;
   const segments = command
     .split("&&")
@@ -350,8 +345,11 @@ function isBenignSearchResult(
 function isCleanCommandExitOne(text: string, command?: string): boolean {
   const exit = text.match(/Command exited with code (\d+)\s*$/i)?.[1];
   if (exit !== "1") return false;
-  if (command === undefined || !exitOneIsExpectedNoMatch(command)) return false;
+  if (command === undefined) return false;
   const body = text.replace(/Command exited with code \d+\s*$/i, "");
+  // Positive evidence a counting terminal actually ran: its zero count line.
+  const terminalCountZero = /(?:^|\n)\s*0\s*(?:\n|$)/.test(body);
+  if (!exitOneIsExpectedNoMatch(command, { terminalCountZero })) return false;
   // Zero counts are clean (jest "0 failed", rspec "0 failures") — strip them
   // before the strong-word test so they cannot force a failure.
   const words = body.replace(/\b0\s+(?:fail|failed|failures?|failing)\b/gi, "");
@@ -364,7 +362,7 @@ function isCleanCommandExitOne(text: string, command?: string): boolean {
     /--- FAIL:/.test(body) ||
     /\bnot ok \d+/.test(body) ||
     // Strong failure words anywhere (bare "fail" excluded: "0 fail" is clean).
-    /\b(?:failed|failures?|fatal|panic|exception)\b/i.test(words) ||
+    /\b(?:failed|failures?|failing|fatal|panic|exception)\b/i.test(words) ||
     /^(?:npm\s+error|fatal:|traceback\b)/im.test(body)
   );
 }

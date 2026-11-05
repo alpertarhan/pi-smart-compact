@@ -462,10 +462,11 @@ export function isReadOnlyShellCommand(command: string): boolean {
 const NO_MATCH_EXIT_ONE_COMMANDS = new Set([
   "grep", "egrep", "fgrep", "rg", "ag", "ack", "test", "[",
 ]);
-/** Statements that may sit directly before the terminal in an && chain: they
- * execute nothing of their own and report their own failure on stderr (which
- * the body-signal scan then sees). Only the forms the real benign session
- * fixtures use; wrappers (env/export/local) execute or fail on their own. */
+/** Statements that may sit directly before the terminal in an && chain:
+ * pwd/true execute nothing and cannot exit 1; cd can (Not a directory,
+ * too many arguments) and is only trusted with positive terminal-execution
+ * evidence (a counting grep that actually printed its zero count). Wrappers
+ * (env/export/local) execute or fail on their own and never qualify. */
 const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "true"]);
 
 function isEnvAssignment(word: string): boolean {
@@ -499,11 +500,23 @@ function statementCommand(words: string[]): string | undefined {
  * Unknown commands, scripts and mutations never qualify — quiet stdout alone
  * proves nothing.
  */
-export function exitOneIsExpectedNoMatch(command: string): boolean {
+export function exitOneIsExpectedNoMatch(
+  command: string,
+  evidence?: { terminalCountZero: boolean },
+): boolean {
   // Command/process substitution can execute a failing command inside a
   // prefix (X=$(./deploy --quiet)); attribution is unknowable.
   if (/(?:\$\(|`|<\()/.test(command)) return false;
   const tokens = tokenizeShell(command);
+  // A & backgrounds the previous command or is glued to it (f&); the
+  // tokenizer keeps both as words. Whatever ran last is then not what the
+  // words suggest — reject. A leading &<digits> is a redirect's fd target.
+  if (
+    tokens.some(
+      (token) => token.kind === "word" && token.value.includes("&") && !/^&\d+$/.test(token.value),
+    )
+  )
+    return false;
   interface Statement {
     sepBefore: ";" | "&&" | "||" | null;
     words: Array<{ kind: "word" | "pipe"; value: string }>;
@@ -551,6 +564,12 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
   if (units.slice(0, -1).some((unit) => !readOnlyShellSegment(unit))) return false;
   const name = terminalPipelineCommand(terminal.words);
   const wordValues = terminalWords;
+  // Positive evidence that the terminal counting search actually ran and
+  // counted zero: only then may a failing-able cd prefix be trusted.
+  const countingTerminal =
+    name !== undefined &&
+    ["grep", "egrep", "fgrep", "rg"].includes(name) &&
+    wordValues.some((word) => word === "-c" || word === "--count" || /^-[^-]+c/.test(word));
   const benign =
     name !== undefined &&
     (NO_MATCH_EXIT_ONE_COMMANDS.has(name) ||
@@ -584,9 +603,11 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
     // A no-match predecessor is itself exit-1-benign: searches and conditions
     // exit 1 only for no-match/false (real errors exit 2), so a short-circuit
     // there still leaves exit 1 expected (main's rg/grep-chain behavior).
+    // cd additionally requires the counting-terminal zero-count evidence.
     const harmless =
       prior !== undefined &&
-      (HARMLESS_AND_PREFIX.has(prior) || NO_MATCH_EXIT_ONE_COMMANDS.has(prior));
+      (HARMLESS_AND_PREFIX.has(prior) || NO_MATCH_EXIT_ONE_COMMANDS.has(prior)) &&
+      (prior !== "cd" || (countingTerminal && Boolean(evidence?.terminalCountZero)));
     if (!assignmentsOnly && !harmless) return false;
   }
   return true;

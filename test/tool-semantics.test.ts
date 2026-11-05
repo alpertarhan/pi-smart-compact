@@ -291,7 +291,6 @@ describe("exitOneIsExpectedNoMatch", () => {
 
   it.each([
     ["terminal count grep after an edit", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
-    ["cd then count grep", 'cd /repo/data && grep -c "needle" sessions.jsonl'],
     ["ls piped into grep", "ls /tmp/dir | grep 2026-11-05"],
     ["git-diff producer piped into grep", "git diff main... --stat | tail -1 | grep -i hindsight"],
     ["git diff name-only piped into grep", "git diff main... --name-only | grep -i hindsight"],
@@ -300,6 +299,22 @@ describe("exitOneIsExpectedNoMatch", () => {
     ["loop body before the terminal grep", "for i in 1 2 3; do bun test test/x.test.ts 2>&1 | grep -E \"pass|fail\" | tr '\\n' ' '; echo; done; git diff main... --name-only | grep -i hindsight"],
   ])("accepts %s", (_label, command) => {
     expect(exitOneIsExpectedNoMatch(command)).toBe(true);
+  });
+
+  it("accepts a cd predecessor only with a counting terminal that printed zero", () => {
+    const command = 'cd /repo/data && grep -c "needle" sessions.jsonl';
+    expect(exitOneIsExpectedNoMatch(command)).toBe(false); // no evidence
+    expect(exitOneIsExpectedNoMatch(command, { terminalCountZero: false })).toBe(false);
+    expect(exitOneIsExpectedNoMatch(command, { terminalCountZero: true })).toBe(true); // grep ran, counted 0
+  });
+
+  it.each([
+    ["backgrounded search then node", "grep -q pat f & node build.js"],
+    ["glued background ampersand", "grep -q pat f& node build.js"],
+    ["cd failing at exit 1 (not a directory)", "cd /f-not-dir && grep -q missing file"],
+    ["cd failing at exit 1 (too many arguments)", "cd a b && grep -q missing file"],
+  ])("rejects %s", (_label, command) => {
+    expect(exitOneIsExpectedNoMatch(command)).toBe(false);
   });
 });
 
