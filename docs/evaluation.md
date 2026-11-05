@@ -381,15 +381,16 @@ policy starts from the same history. Policies:
 
 - `none`: no automatic trim.
 - `pressure`: the old rule; a ready batch commits at a turn boundary only when
-  the estimated prompt reaches 0.8 × the catalog context window. Live, the gate
-  is the configured start percentage of `min(window, maxContextTokens)` against
-  Pi's reported usage, which includes the system prompt and tool definitions, so
-  pressure fires later in replay than live.
+  the estimated prompt (plus the next request's policy-independent payload) reaches
+  0.8 × the catalog context window. Live, the gate is the configured start
+  percentage of `min(window, maxContextTokens)` against Pi's reported usage, which
+  includes the system prompt and tool definitions.
 - `timed-<N>`: an economic comparison policy with `N` as the break-even limit;
   pressure commits, `N* ≤ N` commits (`break-even`), otherwise the batch is held
   and applied at the first request beyond the model's estimated cache horizon
   (`cold`). The horizon is the tier recorded cache writes report (Anthropic
-  `cacheWrite1h` 0 means the 5-minute tier; a pure read keeps the last one),
+  `cacheWrite1h` 0 means the 5-minute tier, never shortening a longer-lived
+  prefix already written on the route; a pure read keeps the last one),
   else the longest advertised `promptCache` tier. Missing lifetime metadata
   never permits a cold trim. Planning, cooldown and protected prefixes use the extension's own
   `planContextTrim`/`trimEntries`/`trimTokens`.
@@ -402,10 +403,11 @@ cache economics for an automatic trim.
 
 Cost model per request: the projected context is estimated per message with
 Pi's own estimator (an image is a fixed size, thinking counts as text, never
-base64 or encrypted signatures). Recorded prompt tokens the untrimmed
-projection does not see (system prompt, tool schemas, provider-side tokens)
-are added to every policy's prompt as a policy-independent leading payload,
-so `none` carries the recorded prompt size. The cached prefix is the longest
+base64 or encrypted signatures). Recorded prompt tokens the untrimmed projection
+does not see (system prompt, tool schemas, provider-side tokens) are measured
+against the context as recorded (recorded trims applied) and added to every
+policy's prompt as a policy-independent leading payload, so `none` carries the
+recorded prompt size. The cached prefix is the longest
 run of identical projected messages shared with the previous request, plus
 that payload when any message is reused. It is 0 after the cache horizon, on
 a model switch, on a route that never recorded a cache read, and for
