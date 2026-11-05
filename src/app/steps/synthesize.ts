@@ -18,11 +18,18 @@
  * once you exceed 2-3 concurrent calls.
  */
 
-import type { ChunkSummary, TopicBoundary } from "../../types.ts";
+import type { Model, Api } from "@earendil-works/pi-ai";
+import type {
+ ChunkSummary,
+ EffectiveCompactionMode,
+ StructuredExtraction,
+ TopicBoundary,
+} from "../../types.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
-import { exploreConversation, shouldExplore } from "../../phases/explore.ts";
+import { exploreConversation, shouldExplore, SYNTHESIS_CALL_RESERVE } from "../../phases/explore.ts";
 import {
  chunkLlmMessages,
+ buildBatchRequest,
  buildSinglePassRequest,
  heuristicTopicBoundaries,
  singlePassCompact,
@@ -56,6 +63,62 @@ import { resolveStageAuth } from "../stage-auth.ts";
 import { formatGenerationFailureForUi } from "../../ui/error-format.ts";
 import { modelRequestCapacityReason, ModelCapacityError } from "../../domain/model-capacity.ts";
 import { estimateTokens } from "../../utils/tokens.ts";
+import type { SmartCompactServices } from "../../infra/services.ts";
+
+/**
+ * Re-pack the greedy batch plan into fewer LLM requests when the remaining
+ * call budget cannot cover one request per batch plus final assembly.
+ *
+ * A merge of neighbouring batches is admissible only when the request the
+ * run would really dispatch — `buildBatchRequest` output, scrubbed and
+ * estimated exactly like `trackedComplete` does — fits the summary model
+ * (`modelRequestCapacityReason`: input + clamped output + SDK headroom, with
+ * `outputCeiling`'s reasoning headroom already inside `maxTokens`), and every
+ * chunk keeps the mode's per-chunk visible output allowance, so merging only
+ * trades duplicate prompt overhead for calls, never chunk coverage.
+ *
+ * The original plan is returned (same batches, same order) when it already
+ * fits or when no admissible merge exists; callers then keep the safe
+ * deterministic budget fallback for whatever remains.
+ */
+export function repackBatchesForCallBudget(
+ batches: import("../../types.ts").LlmChunk[][],
+ extraction: StructuredExtraction,
+ model: Model<Api>,
+ mode: EffectiveCompactionMode,
+ providerMaxOutputTokens: number,
+ services: SmartCompactServices,
+ allowedBatchCalls: number,
+): import("../../types.ts").LlmChunk[][] {
+ if (allowedBatchCalls < 1 || batches.length <= allowedBatchCalls) return batches;
+ const perChunk = MODE_POLICIES[mode].batchOutput.perChunk;
+ const plan = [...batches];
+ while (plan.length > allowedBatchCalls) {
+  let bestIndex = -1;
+  let bestInput = Number.POSITIVE_INFINITY;
+  for (let index = 0; index + 1 < plan.length; index++) {
+   const group = [...plan[index], ...plan[index + 1]];
+   const visible = batchOutputLimit(mode, group.length, providerMaxOutputTokens);
+   if (visible < group.length * perChunk) continue;
+   const request = buildBatchRequest(group, extraction, model, visible);
+   const input = estimateTokens(
+    JSON.stringify(services.scrubber.scrubValue(request.context).value),
+    model.provider,
+    model.id,
+    services.tokenCalibration,
+   );
+   if (modelRequestCapacityReason(model, input, request.maxTokens)) continue;
+   if (input < bestInput) {
+    bestInput = input;
+    bestIndex = index;
+   }
+  }
+  if (bestIndex < 0) return plan;
+  plan[bestIndex] = [...plan[bestIndex], ...plan[bestIndex + 1]];
+  plan.splice(bestIndex + 1, 1);
+ }
+ return plan;
+}
 
 export async function summarizeConversation(
  rc: ExtractedRc,
@@ -293,6 +356,34 @@ export async function summarizeConversation(
    try {
     const segAuth = await resolveStageAuth(rc, "explore");
     rc.cancellation.signal.throwIfAborted();
+    // Optional exploration must not spend calls a known feasible full-coverage
+    // synthesis still needs: estimate the fewest batch requests the summary
+    // model can admit for this conversation (heuristic boundaries — the
+    // exploration report only refines that split, and the dispatch-time
+    // re-pack below merges it back) and reserve them plus final assembly.
+    const preBatches = createBatches(
+     chunkLlmMessages(
+      rc.llmMessages,
+      heuristicTopicBoundaries(extraction),
+      pc,
+      rc.estimator,
+      rc.config.focusWeighting ? rc.focus : undefined,
+     ),
+     pc.batchMaxTokens,
+    );
+    const synthesisCallReserve = Math.max(
+     SYNTHESIS_CALL_RESERVE,
+     repackBatchesForCallBudget(
+      preBatches,
+      extraction,
+      rc.summaryModel,
+      rc.mode,
+      rc.providerCaps.maxOutputTokens,
+      rc.services,
+      1,
+     ).length + 1,
+    );
+    rc.vlog("Explore reserve: " + synthesisCallReserve + " calls (fewest full-coverage batch requests + assembly)");
     const expResult = await exploreConversation(
      rc.llmMessages,
      extraction,
@@ -311,6 +402,7 @@ export async function summarizeConversation(
      MAX_EXPLORATION_ROUNDS,
      rc.notify,
      rc.services,
+     synthesisCallReserve,
     );
     explorationReport = expResult.report;
     explorationRounds = expResult.rounds;
@@ -396,7 +488,34 @@ export async function summarizeConversation(
   );
 
   const batches = createBatches(chunks, pc.batchMaxTokens);
-  const totalBatches = batches.length;
+  // Full LLM coverage within the call budget: when one request per batch plus
+  // the reserved final assembly call exceeds the remaining calls, merge
+  // neighbouring batches the summary model can actually serve in a single
+  // request. Plans that already fit stay unchanged; when merging is
+  // infeasible the deterministic budget fallback below still covers the rest.
+  const batchCallAllowance = Math.max(
+   0,
+   rc.services.budget.remainingCalls() - 1,
+  );
+  const plan = batches.length > batchCallAllowance
+   ? repackBatchesForCallBudget(
+    batches,
+    extraction,
+    rc.summaryModel,
+    rc.mode,
+    rc.providerCaps.maxOutputTokens,
+    rc.services,
+    batchCallAllowance,
+   )
+   : batches;
+  if (plan.length < batches.length) {
+   rc.notify(
+    "Call budget: re-packed " + batches.length + " batches into " + plan.length +
+    " request(s) — every chunk keeps LLM coverage",
+    "info",
+   );
+  }
+  const totalBatches = plan.length;
   showProgressOverlay(rc.ctx, {
    phase: 3,
    phaseName: "Synthesize",
@@ -423,7 +542,7 @@ export async function summarizeConversation(
 
   rc.cancellation.signal.throwIfAborted();
   if (totalBatches <= 1) {
-   const single = batches[0];
+   const single = plan[0];
    if (single) {
     if (rc.services.budget.remainingCalls() <= 1) {
      summaries.push(...single.map((ch) => fallbackChunkSummary(ch, extraction, "budget")));
@@ -487,7 +606,7 @@ export async function summarizeConversation(
     Math.min(totalBatches, rc.services.budget.remainingCalls() - 1),
    );
    for (let index = batchCallLimit; index < totalBatches; index++) {
-    results[index] = batches[index].map((chunk) =>
+    results[index] = plan[index].map((chunk) =>
      fallbackChunkSummary(chunk, extraction, "budget"),
     );
    }
@@ -514,12 +633,12 @@ export async function summarizeConversation(
      // Retries can consume the allowance calculated before workers start.
      if (budgetStopped || rc.services.budget.reason() || rc.services.budget.remainingCalls() <= 1) {
       budgetStopped = true;
-      results[idx] = batches[idx].map((chunk) =>
+      results[idx] = plan[idx].map((chunk) =>
        fallbackChunkSummary(chunk, extraction, "budget"),
       );
      } else {
       try {
-       const batch = batches[idx];
+       const batch = plan[idx];
        results[idx] = await summarizeBatch(
         batch,
         extraction,
@@ -537,7 +656,7 @@ export async function summarizeConversation(
       } catch (err) {
        rc.cancellation.signal.throwIfAborted();
        errors[idx] = err instanceof Error ? err : new Error(String(err));
-       results[idx] = batches[idx].map((chunk) =>
+       results[idx] = plan[idx].map((chunk) =>
         fallbackChunkSummary(chunk, extraction, "batch-failed"),
        );
       }
@@ -606,7 +725,7 @@ export async function summarizeConversation(
    profile: rc.profile,
    extraction,
    explorationRounds,
-   totalBatches: batches.length,
+   totalBatches: plan.length,
   });
   method = "eesv";
   try {
