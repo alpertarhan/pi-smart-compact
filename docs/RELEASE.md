@@ -162,6 +162,10 @@ release check never implies `PROMOTE`. Promotion requires:
 - [ ] verifier quality did not fall by 5 points or more;
 - [ ] p95 duration and average tokens did not rise by 50% or more;
 - [ ] fallback and damage rates did not rise by 10pp or more;
+- [ ] canary `LLM summaries` is not below stable (a deterministic fallback
+      verifies at 100/100, so verifier quality alone cannot show this); the
+      report HOLDs automatically when fewer than 10% of at least 5 applied
+      LLM summary attempts produced an LLM summary;
 - [ ] no unresolved security, data-loss, cross-session, or cancellation issue.
 
 The report evaluates rollback triggers once the canary has at least three

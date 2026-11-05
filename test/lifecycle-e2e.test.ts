@@ -12,6 +12,9 @@ import { resetConfigCache } from "../src/utils/helpers.ts";
 import { loadScopedCompactionState } from "../src/utils/state.ts";
 import { readMetricsLog } from "../src/utils/cache.ts";
 import { resetIssuesForTests } from "../src/utils/issues.ts";
+import { resetSummaryFallbackNoticesForTests } from "../src/ui/overlays.ts";
+import { describeEffectiveState } from "../src/app/effective-state.ts";
+import { loadConfig } from "../src/utils/config.ts";
 import {
   makeTokenEstimator,
   TokenCalibrationStore,
@@ -397,6 +400,46 @@ describe("extension lifecycle end to end", () => {
     expect(readMetricsLog()).toHaveLength(metricsBefore);
     expect(notifications.filter((message) => message.includes("Pi's built-in compaction was applied without a Continuity summary"))).toHaveLength(1);
 
+    await dispatch(handlers, "session_shutdown", {}, ctx);
+  }, 20_000);
+
+  it("marks committed summary fallbacks and warns when they repeat in the session", async () => {
+    resetSummaryFallbackNoticesForTests();
+    const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+    smartCompactExtension(new Proxy({
+      on: (name: string, handler: (event: any, ctx: any) => unknown) => handlers.set(name, [...handlers.get(name) ?? [], handler]),
+      getActiveTools: () => [], setActiveTools: () => {},
+    }, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} }) as any);
+    const branch: any[] = activeBranch();
+    const model = { provider: "openai", id: "lifecycle", api: "openai-responses", input: ["text"], contextWindow: 300_000, maxTokens: 16_384 };
+    const tokens = branch.reduce((sum, entry) => sum + makeTokenEstimator("openai", "lifecycle", new TokenCalibrationStore()).message(entry.message), 0);
+    const notices: Array<[string, string]> = [];
+    const ctx = {
+      hasUI: true, cwd, model,
+      modelRegistry: { getAvailable: () => [model], find: () => model, getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: {} }) },
+      sessionManager: { getBranch: () => branch, buildContextEntries: () => branch, getSessionId: () => "fallback-session" },
+      getContextUsage: () => ({ tokens, contextWindow: model.contextWindow, percent: tokens / model.contextWindow * 100 }),
+      ui: { notify: (message: string, type: string) => notices.push([type, message]), setWidget: () => {}, setStatus: () => {}, custom: async () => null },
+    };
+    setLlmClient({ complete: async () => { throw new Error("simulated provider outage"); } });
+    const compactOnce = async () => {
+      const response = await dispatch(handlers, "session_before_compact", { reason: "threshold", signal: new AbortController().signal }, ctx);
+      expect(response?.compaction?.details?.summarySource).toBe("fallback");
+      await dispatch(handlers, "session_compact", { type: "session_compact", fromExtension: true, compactionEntry: { id: "c-" + Math.random(), details: response.compaction.details } }, ctx);
+      return response.compaction.details.runId as string;
+    };
+    const first = await compactOnce();
+    expect(readMetricsLog().find(entry => entry.runId === first)).toMatchObject({ summarySource: "fallback", verificationScore: expect.any(Number) });
+    const firstNotice = notices.find(([, message]) => message.includes("fell back to deterministic text"));
+    expect(firstNotice?.[0]).toBe("info");
+    expect(firstNotice?.[1]).toContain("summary model openai/lifecycle");
+    expect(firstNotice?.[1]).toMatch(/cause: [a-z0-9 ()-]+;/);
+    await compactOnce();
+    const warnings = notices.filter(([type, message]) => type === "warning" && message.includes("2 summaries in a row fell back"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][1]).toContain("LLM summaries 0/2 (2 deterministic fallback) this session");
+    const status = await describeEffectiveState(ctx as any, loadConfig(), { agentToolAccess: "inherit", agentToolEnabled: false, autoTrigger: true, showStatus: false });
+    expect(status).toContain("LLM summaries 0/2 (2 deterministic fallback) this session (applied runs)");
     await dispatch(handlers, "session_shutdown", {}, ctx);
   }, 20_000);
 

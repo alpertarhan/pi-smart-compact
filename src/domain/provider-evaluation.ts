@@ -1,6 +1,7 @@
 import type {
   CompactMetricsEntry, LLMCallMetric, ProviderRouteMetric, ProviderRouteStage,
 } from "../types.ts";
+import { summarySourceOf } from "./telemetry.ts";
 
 export type ProviderScenario =
   | "compact/conversational" | "compact/mixed" | "compact/tool-heavy"
@@ -22,6 +23,8 @@ export interface ProviderEvaluationCell {
   avgCacheWriteTokensPerCall: number;
   avgQuality: number | null;
   qualityCoverage: number;
+  /** Synthesize only: share of runs that committed the deterministic fallback summary. */
+  summaryFallbackRate?: number;
   score: number;
   confidence: number;
   eligible: boolean;
@@ -136,6 +139,7 @@ interface AggregateCell {
   qualityRuns: number;
   estimatedRuns: number;
   subscriptionRuns: number;
+  summaryFallbackRuns: number;
 }
 
 function validPersistedRoutes(value: unknown): ProviderRouteMetric[] {
@@ -204,9 +208,10 @@ export function evaluateProviderMetrics(
         stage: route.stage, scenario, provider: route.provider, model: route.model,
         runs: 0, calls: 0, successes: 0, latencyCallMs: 0, tokens: 0,
         cacheRead: 0, cacheWrite: 0, qualityTotal: 0, qualityRuns: 0,
-        estimatedRuns: 0, subscriptionRuns: 0,
+        estimatedRuns: 0, subscriptionRuns: 0, summaryFallbackRuns: 0,
       };
       group.runs++;
+      if (route.stage === "synthesize" && summarySourceOf(entry) === "fallback") group.summaryFallbackRuns++;
       group.calls += route.calls;
       group.successes += Math.max(0, Math.min(route.calls, route.successes));
       group.latencyCallMs += Math.max(0, route.avgLatencyMs) * route.calls;
@@ -254,6 +259,7 @@ export function evaluateProviderMetrics(
       avgCacheWriteTokensPerCall: group.calls ? Math.round(group.cacheWrite / group.calls) : 0,
       avgQuality: avgQuality == null ? null : Math.round(avgQuality * 10) / 10,
       qualityCoverage: Math.round(qualityCoverage * 1_000) / 1_000,
+      ...(group.stage === "synthesize" ? { summaryFallbackRate: Math.round(group.summaryFallbackRuns / group.runs * 1_000) / 1_000 } : {}),
       score: Math.round(score * 1_000) / 1_000,
       confidence: Math.round(confidence * 1_000) / 1_000,
       eligible: group.runs >= minSamples && successRate >= 0.8
@@ -307,13 +313,15 @@ export function formatProviderEvaluation(report: ProviderEvaluationReport): stri
     "# Provider Evaluation (advisory only)", "",
     "The selected Pi model remains the default. Apply a stage route only after representative quality evidence.", "",
     "Tokens per call are quota-inclusive (new input + cache read + cache write + output); the cache split is shown separately. `~` marks estimated usage; `sub` marks subscription (OAuth) routes, which must never be priced at API rates.", "",
-    "| Stage | Scenario | Provider/model | Runs | Success | Quality | Latency | Tokens/call | Cache R/W per call | Basis | Score | Confidence |",
-    "|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|",
+    "Summary fallback: synthesize runs whose committed summary was the deterministic fallback; call success does not show it.", "",
+    "| Stage | Scenario | Provider/model | Runs | Success | Summary fallback | Quality | Latency | Tokens/call | Cache R/W per call | Basis | Score | Confidence |",
+    "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|",
   ];
   for (const cell of report.cells) {
     lines.push(
       "| " + cell.stage + " | " + cell.scenario + " | " + cell.provider + "/" + cell.model +
       " | " + cell.runs + " | " + Math.round(cell.successRate * 100) + "% | " +
+      (cell.summaryFallbackRate == null ? "—" : Math.round(cell.summaryFallbackRate * 100) + "%") + " | " +
       (cell.avgQuality == null ? "n/a" : cell.avgQuality.toFixed(1)) + " | " +
       cell.avgLatencyMs + "ms | " + cell.avgTokensPerCall + " | " +
       cell.avgCacheReadTokensPerCall + "/" + cell.avgCacheWriteTokensPerCall + " | " +

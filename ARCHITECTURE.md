@@ -972,6 +972,10 @@ says the conversation is unchanged until Apply. Routine info toasts are hidden
 unless `verbose`; handled provider, watchdog, Explore, batch and assembly
 failures switch to deterministic fallback without printing raw messages.
 Auto-trigger rejection logs are debug-only, leaving one content-free notice.
+At commit, a summary whose `summarySource` is `fallback` gets its own notice
+with the first generation fallback and the summary route: info once per session
+and route, a warning on every consecutive repeat (counted from the session's
+metrics records).
 `utils/issues.ts` deduplicates user-facing problems once per session.
 
 | Concern | Where | Notes |

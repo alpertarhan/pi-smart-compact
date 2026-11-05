@@ -37,6 +37,12 @@ export interface ProfileConfig {
 export type MemoryBackend = "local" | "hindsight" | "mnemopi";
 /** Summary engine: EESV pipeline, or the current provider's native compaction. */
 export type CompactionEngine = "eesv" | "native";
+/**
+ * What wrote the committed summary. `fallback`: an LLM summary was planned or
+ * attempted, but deterministic text was committed. `zero-call`: a deterministic
+ * summary chosen on purpose (fast mode), not a fallback.
+ */
+export type SummarySource = "llm" | "fallback" | "zero-call";
 
 export interface CompactConfig {
  /** Execution preset. `profile` remains the backwards-compatible compression detail knob. */
@@ -344,6 +350,10 @@ export interface CompactMetricsEntry {
  pruneSavedTokens?: number;
  chunkCount?: number;
  fallbackReason?: string;
+ /** Absent for native and pre-10.7.4 records; derive with `summarySourceOf`. */
+ summarySource?: SummarySource;
+ /** Content-free synthesis fallback labels in occurrence order. */
+ generationFallbacks?: string[];
  verificationScore?: number;
  verificationGaps?: number;
  initialVerificationScore?: number;
@@ -408,6 +418,7 @@ export interface SmartCompactDetails {
  runId?: string;
  method: "eesv" | "single-pass" | "heuristic" | "native";
  generationFallbacks?: string[];
+ summarySource?: SummarySource;
  chunkCount: number;
  topics: string[];
  readFiles: string[];

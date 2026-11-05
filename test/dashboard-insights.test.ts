@@ -79,8 +79,9 @@ describe("dashboard trust insights", () => {
 
   it("builds provider, quality repair, failure, and canary drilldowns", () => {
     const entries = [
-      ...Array.from({ length: 20 }, () => run()),
-      ...Array.from({ length: 20 }, () => run({ releaseChannel: "canary", qualityFloorUsed: true })),
+      // Floor runs sit in stable: a canary whose every summary was floored HOLDs (0 LLM summaries).
+      ...Array.from({ length: 20 }, () => run({ qualityFloorUsed: true })),
+      ...Array.from({ length: 20 }, () => run({ releaseChannel: "canary" })),
       run({ status: "error", failureKind: "provider", verificationScore: undefined }),
       run({ status: "error", failureKind: "yield", verificationScore: undefined }),
     ];

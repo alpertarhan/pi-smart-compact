@@ -9,6 +9,7 @@ import { contextGraphFile, home } from "../infra/paths.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
 import { readMetricsLog } from "../utils/cache.ts";
+import { formatSummarySplit, summarySourceSplit } from "../domain/telemetry.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { effectiveContextWindow } from "../utils/tokens.ts";
 import { contextPressure } from "./background-preparation.ts";
@@ -188,8 +189,11 @@ export async function describeEffectiveState(
   if (config.visualArchiveEnabled) {
     lines.push("Image snapshots: renderer @resvg/resvg-js " + (componentInstalled("resvg") ? "installed" : "not installed (text fallback; install it with: " + installCommand(["resvg"]) + ")"));
   }
-  const last = isUnresolvedSessionId(sessionId) ? undefined : readMetricsLog(200).findLast(entry => entry?.sessionId === sessionId);
+  const sessionRuns = isUnresolvedSessionId(sessionId) ? [] : readMetricsLog(200).filter(entry => entry?.sessionId === sessionId);
+  const last = sessionRuns.at(-1);
   lines.push(last ? "Last session record: " + label(last.ts) + " · " + label(last.status) + " · " + label(last.method)
     : "Last session record: none in the recent local log");
+  const split = formatSummarySplit(summarySourceSplit(sessionRuns));
+  if (split) lines.push(split + " this session (applied runs)");
   return lines.join("\n");
 }

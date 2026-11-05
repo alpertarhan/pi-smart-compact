@@ -23,7 +23,7 @@ import type {
  VerificationGateStage,
 } from "../../types.ts";
 import { aggregateProviderRoutes } from "../../domain/provider-evaluation.ts";
-import { classifyTelemetryFailure } from "../../domain/telemetry.ts";
+import { classifyTelemetryFailure, summarySourceOf } from "../../domain/telemetry.ts";
 import { VERSION } from "../../constants.ts";
 import { loadConfig } from "../../utils/config.ts";
 import {
@@ -141,6 +141,11 @@ export function buildSuccessMetrics(
    ]),
   ),
   method: rc.methodForMetrics,
+  summarySource: summarySourceOf({
+   method: rc.methodForMetrics,
+   qualityFloorUsed: rc.verificationProvenance?.qualityFloorUsed,
+  }),
+  generationFallbacks: rc.generationFallbacks?.length ? [...rc.generationFallbacks] : undefined,
   model: rc.modelLabel,
   provider: rc.summaryModel.provider,
   runType: runType(rc),

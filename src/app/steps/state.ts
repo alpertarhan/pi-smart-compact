@@ -29,6 +29,7 @@ import {
 } from "../../phases/verify.ts";
 import { verifyCompactionYield } from "../../domain/yield-gate.ts";
 import { findSection, summaryEvidenceLine } from "../../domain/summary-parse.ts";
+import { summarySourceOf } from "../../domain/telemetry.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
   const extraction = rc.extraction;
@@ -161,6 +162,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
     runId: rc.runId,
     method: rc.method,
     generationFallbacks: rc.generationFallbacks,
+    summarySource: summarySourceOf({ method: rc.methodForMetrics, qualityFloorUsed: rc.verificationProvenance.qualityFloorUsed }),
     chunkCount: rc.chunkCount || 1,
     topics: rc.summaries.length ? rc.summaries.map(s => s.topic) : [rc.method],
     readFiles: detRead, modifiedFiles: detModified,

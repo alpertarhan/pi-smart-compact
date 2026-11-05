@@ -146,6 +146,31 @@ describe("privacy-safe canary telemetry", () => {
     expect(report.decision).toBe("rollback");
   });
 
+  it("holds a canary whose planned LLM summaries all fell back, with a minimum sample", () => {
+    const assess = (method: (index: number) => string, baselineMethod: (index: number) => string = () => "eesv") => {
+      const entries = [
+        ...Array.from({ length: 20 }, (_, index) => metric("stable", { method: baselineMethod(index) })),
+        ...Array.from({ length: 20 }, (_, index) => metric("canary", { method: method(index) })),
+      ];
+      return assessCanary(entries, observed(entries), { version: "8.0.0", minCanaryRuns: 20 });
+    };
+    // Equally broken baseline: no relative trigger fires and fallbacks verify at 95+, so it would promote.
+    const allFallback = assess(() => "heuristic", () => "heuristic");
+    expect(allFallback.triggers).toEqual([]);
+    expect(allFallback.decision).toBe("hold");
+    expect(allFallback.reasons[0]).toContain("LLM summaries 0/20 in the canary");
+    // Below the minimum sample (4 attempts; zero-call runs are not attempts): no new HOLD.
+    const fewAttempts = (index: number) => index < 4 ? "heuristic" : "zero-call";
+    const small = assess(fewAttempts, fewAttempts);
+    expect(small.reasons.join("\n")).not.toContain("LLM summaries");
+    expect(small.decision).toBe("promote");
+    // Mixed: LLM summaries succeed in most runs, no new HOLD.
+    const oneFallback = (index: number) => index === 0 ? "heuristic" : "eesv";
+    const mixed = assess(oneFallback, oneFallback);
+    expect(mixed.reasons.join("\n")).not.toContain("LLM summaries");
+    expect(mixed.decision).toBe("promote");
+  });
+
   it("keeps failed non-dry runs in latency, token, and fallback evidence", () => {
     const entries = [
       ...Array.from({ length: 20 }, () => metric("stable")),
