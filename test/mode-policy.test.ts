@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { batchOutputLimit, deterministicExtractionConfidence, modeFromLegacyProfile, MODE_POLICIES, resolveMode, resolveCallBudget, effectiveBudget } from "../src/app/mode-policy.ts";
+import { batchOutputLimit, deterministicExtractionConfidence, modeFromLegacyProfile, MODE_POLICIES, resolveMode, resolveCallBudget, resolveOutputBudget, effectiveBudget } from "../src/app/mode-policy.ts";
+import { REASONING_OUTPUT_HEADROOM_TOKENS } from "../src/constants.ts";
 import type { StructuredExtraction } from "../src/types.ts";
 
 const extraction = (partial: Partial<StructuredExtraction> = {}): StructuredExtraction => ({
@@ -8,6 +9,12 @@ const extraction = (partial: Partial<StructuredExtraction> = {}): StructuredExtr
 });
 
 describe("compaction mode policy", () => {
+  it("adds thinking headroom per allowed call to the run output budget only for reasoning models", () => {
+    expect(resolveOutputBudget("fast", 3, false)).toBe(MODE_POLICIES.fast.maxOutputTokens);
+    expect(resolveOutputBudget("fast", 3, true)).toBe(MODE_POLICIES.fast.maxOutputTokens + 3 * REASONING_OUTPUT_HEADROOM_TOKENS);
+    expect(resolveOutputBudget("thorough", 4, true)).toBe(MODE_POLICIES.thorough.maxOutputTokens + 4 * REASONING_OUTPUT_HEADROOM_TOKENS);
+  });
+
   it("keeps preset defaults finite, automatic runs capped, and explicit manual overrides usable", () => {
     expect(resolveCallBudget(0, "fast", 0, true)).toBe(3);
     expect(resolveCallBudget(0, "balanced", 0, true)).toBe(4);

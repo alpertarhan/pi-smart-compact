@@ -97,6 +97,14 @@ describe("planned-request model eligibility", () => {
     expect(f.authCalls()).toBe(0);
   });
 
+  it("plans a reasoning model's batches with the same thinking headroom runtime sends", async () => {
+    const f = fixture();
+    const eligible = await createModelFeasibilityResolver(f.ctx, f.config);
+    const plain = { ...model("mid", 16_000), maxTokens: 64_000 };
+    expect(eligible(plain, "summary").selectable).toBe(true);
+    expect(eligible({ ...plain, reasoning: true }, "summary")).toMatchObject({ selectable: false, reason: expect.stringContaining("Summary batch 1/") });
+  });
+
   it("rechecks a grown branch when a fresh snapshot is requested", async () => {
     const f = fixture(4);
     const before = await createModelFeasibilityResolver(f.ctx, f.config, "fast");
