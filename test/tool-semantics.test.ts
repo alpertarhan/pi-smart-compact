@@ -201,6 +201,23 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
   });
 
+  it("records the literal file when the script itself is not a literal path", () => {
+    // Scripts freely contain $, [], (), + — the script slot must still be
+    // consumed, or the real file is mistaken for the script.
+    expect(extractShellFileOperations({ command: "sed -i 's/foo(/bar(/' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i '/^$/d' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/[0-9]+/N/g' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/;s/c/d/' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i -es/a/b/ src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i '' '/^$/d' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+  });
+
   it("records nothing for read-only sed or in-place sed without a literal file", () => {
     expect(extractShellFileOperations({ command: "sed -n '40,75p' src/x.ts" })).toEqual({ modified: [], deleted: [] });
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' *.ts" })).toEqual({ modified: [], deleted: [] });

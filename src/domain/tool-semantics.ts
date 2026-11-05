@@ -290,18 +290,26 @@ function commandFileOperations(words: string[]): ShellFileOperations {
           scriptSeen = true;
           continue;
         }
-        if (options && (word.startsWith("--expression=") || word.startsWith("--file="))) {
+        if (
+          options &&
+          (word.startsWith("--expression=") ||
+            word.startsWith("--file=") ||
+            /^-[ef]./.test(word)) // attached -es/a/b/ or -fscript.sed
+        ) {
           scriptSeen = true;
           continue;
         }
         if (options && word.startsWith("-")) continue;
-        const target = literalShellPath(word);
-        if (!target) continue;
+        // The script decision runs on the RAW word, before literalShellPath:
+        // scripts freely contain $, [], (), * … and must still consume the
+        // script slot, or the real file would be mistaken for the script.
+        if (!word) continue; // BSD's `sed -i ''` empty backup suffix
         if (!scriptSeen) {
           scriptSeen = true; // first bare operand is the script
           continue;
         }
-        modified.push(target);
+        const target = literalShellPath(word);
+        if (target) modified.push(target);
       }
     }
     return { modified, deleted };
