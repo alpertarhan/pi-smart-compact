@@ -48,7 +48,8 @@ import {
  type ManualPreflight,
 } from "../app/preflight.ts";
 import { compactionPlanReasonText } from "../app/steps/window.ts";
-import type { CompactionEngine, EffectiveCompactionMode } from "../types.ts";
+import type { CompactionEngine, CompactMetricsEntry, EffectiveCompactionMode } from "../types.ts";
+import { formatSummarySplit, summarySourceSplit } from "../domain/telemetry.ts";
 import { loadConfig } from "../utils/config.ts";
 import path from "node:path";
 
@@ -450,7 +451,9 @@ export function notifyAppliedCompaction(
   " · " +
   remainingGapCount +
   (remainingGapCount === 1 ? " remaining gap" : " remaining gaps");
- const fallback = details.generationFallbacks?.length
+ const fallback = details.summarySource === "fallback"
+  ? " · deterministic fallback summary, not LLM (" + (details.generationFallbacks?.join(", ") || "quality floor") + ")"
+  : details.generationFallbacks?.length
   ? " · fallback: " + details.generationFallbacks.join(", ")
   : details.method
    ? " · generation: " + details.method
@@ -482,6 +485,43 @@ export function notifyAppliedCompaction(
    fallback,
   "info",
  );
+}
+
+const notedSummaryFallbacks = new Set<string>();
+
+/**
+ * One line for a committed deterministic fallback: cause (first generation
+ * fallback) and summary route. Like native skips, an isolated fallback is
+ * noted once per session and route; repeated fallbacks (this run and the
+ * previous LLM summary attempt) warn every time. Zero-call plans and LLM
+ * summaries stay silent. `earlier`: this session's prior metrics records.
+ */
+export function notifySummaryFallback(
+ ctx: ExtensionContext,
+ sessionId: string,
+ details: SmartCompactDetails,
+ earlier: readonly CompactMetricsEntry[],
+): void {
+ if (details.summarySource !== "fallback") return;
+ const split = summarySourceSplit([...earlier, { status: "success", summarySource: "fallback" }]);
+ const repeated = split.consecutiveFallbacks >= 2;
+ const route = details.providerRoutes?.synthesize ?? details.model;
+ const key = sessionId + "\u0000" + route;
+ if (!repeated && notedSummaryFallbacks.has(key)) return;
+ if (notedSummaryFallbacks.size >= 500) notedSummaryFallbacks.delete(notedSummaryFallbacks.values().next().value!);
+ notedSummaryFallbacks.add(key);
+ const cause = details.generationFallbacks?.[0] ?? (details.provenance?.qualityFloorUsed ? "quality floor replaced the model summary" : "unknown");
+ notifyUser(ctx,
+  "Smart Compact: " + (repeated ? split.consecutiveFallbacks + " summaries in a row fell back" : "summary fell back")
+  + " to deterministic text (cause: " + cause + "; summary model " + route + "). "
+  + formatSummarySplit(split) + " this session. "
+  + (repeated ? "/smart-compact metrics shows the errors; choose another summary model if this continues." : "Details: /smart-compact metrics."),
+  repeated ? "warning" : "info",
+ );
+}
+
+export function resetSummaryFallbackNoticesForTests(): void {
+ notedSummaryFallbacks.clear();
 }
 
 /**
@@ -722,7 +762,9 @@ export async function showResultScreen(
      line("  + " + (gaps.length - shownGaps) + " more (D details)");
     if (provenance?.qualityFloorUsed)
      line("⚠ Safety fallback used · coverage is not raw synthesis quality", "warning");
-    if (details.generationFallbacks?.length)
+    if (details.summarySource === "fallback")
+     line("⚠ Deterministic fallback summary, not an LLM summary: " + (details.generationFallbacks?.join(", ") || "quality floor") + " · coverage is of the fallback text", "warning");
+    else if (details.generationFallbacks?.length)
      line("⚠ Generation fallback: " + details.generationFallbacks.join(", "), "warning");
     if ((details.redactions ?? 0) > 0)
      line("⚠ " + details.redactions + " sensitive value(s) redacted", "warning");

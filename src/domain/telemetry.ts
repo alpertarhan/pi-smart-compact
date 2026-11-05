@@ -1,4 +1,58 @@
-import type { CompactMetricsEntry, PreparationDiscardReason, TelemetryFailureKind } from "../types.ts";
+import type { CompactMetricsEntry, PreparationDiscardReason, SummarySource, TelemetryFailureKind } from "../types.ts";
+
+const SUMMARY_SOURCES: ReadonlySet<string> = new Set<SummarySource>(["llm", "fallback", "zero-call"]);
+
+/**
+ * Who wrote the committed summary. A persisted `summarySource` wins; older
+ * records derive it from the metrics method: "heuristic" is only ever the
+ * deterministic fallback, a zero-call plan records "zero-call" (replayed as
+ * "heuristic-cache"), and a quality floor replaced model text with the
+ * deterministic summary. Native and unknown engines have no summary source.
+ */
+export function summarySourceOf(
+ run: Pick<CompactMetricsEntry, "method" | "qualityFloorUsed" | "summarySource">,
+): SummarySource | undefined {
+ if (typeof run.summarySource === "string" && SUMMARY_SOURCES.has(run.summarySource)) return run.summarySource;
+ switch (run.method) {
+  case "zero-call": case "heuristic-cache": return "zero-call";
+  case "heuristic": return "fallback";
+  case "eesv": case "single-pass": case "eesv-cache": case "single-pass-cache":
+   return run.qualityFloorUsed ? "fallback" : "llm";
+  default: return undefined;
+ }
+}
+
+export interface SummarySourceSplit {
+ llm: number;
+ fallback: number;
+ zeroCall: number;
+ /** Trailing fallbacks among LLM summary attempts, newest last. */
+ consecutiveFallbacks: number;
+}
+
+/** Host-applied runs by summary source, oldest to newest. */
+export function summarySourceSplit(
+ entries: readonly Pick<CompactMetricsEntry, "status" | "method" | "qualityFloorUsed" | "summarySource">[],
+): SummarySourceSplit {
+ const split: SummarySourceSplit = { llm: 0, fallback: 0, zeroCall: 0, consecutiveFallbacks: 0 };
+ for (const entry of entries) {
+  if (entry?.status !== "success") continue;
+  const source = summarySourceOf(entry);
+  if (source === "llm") { split.llm++; split.consecutiveFallbacks = 0; }
+  else if (source === "fallback") { split.fallback++; split.consecutiveFallbacks++; }
+  else if (source === "zero-call") split.zeroCall++;
+ }
+ return split;
+}
+
+/** "LLM summaries 0/32 (32 deterministic fallback)"; undefined without summaries. */
+export function formatSummarySplit(split: SummarySourceSplit): string | undefined {
+ const attempts = split.llm + split.fallback;
+ if (!attempts && !split.zeroCall) return undefined;
+ return "LLM summaries " + split.llm + "/" + attempts
+  + (split.fallback ? " (" + split.fallback + " deterministic fallback)" : "")
+  + (split.zeroCall ? " · " + split.zeroCall + " zero-call by plan" : "");
+}
 
 export interface DamageTelemetryEntry {
  ts?: string;
@@ -22,6 +76,8 @@ export interface TelemetryWindowStats {
  p95LatencyMs: number;
  avgTokens: number;
  fallbackRate: number;
+ /** Applied runs by summary source; verifier quality of a fallback is not LLM quality. */
+ summaries: SummarySourceSplit;
  damageRate: number;
  damageCoverage: number;
 }
@@ -197,6 +253,7 @@ function stats(entries: CompactMetricsEntry[], damage: readonly DamageTelemetryE
   fallbackRate: evidence.length ? evidence.filter(entry =>
    entry.method === "heuristic" || (Array.isArray(entry.providerRoutes) && entry.providerRoutes.some(route => route.successes < route.calls)),
   ).length / evidence.length : 0,
+  summaries: summarySourceSplit(entries),
   damageRate: observedScores.size ? damaging / observedScores.size : 0,
   // Missing correlation ids are missing evidence, not silently excluded
   // from the denominator.
@@ -487,6 +544,7 @@ export function formatPrivacySafeTelemetry(report: PrivacySafeTelemetry): string
   "| p95 duration | " + baseline.p95LatencyMs + "ms | " + canary.p95LatencyMs + "ms |",
   "| Avg tokens | " + baseline.avgTokens + " | " + canary.avgTokens + " |",
   "| Fallback | " + Math.round(baseline.fallbackRate * 100) + "% | " + Math.round(canary.fallbackRate * 100) + "% |",
+  "| LLM summaries | " + (formatSummarySplit(baseline.summaries) ?? "n/a") + " | " + (formatSummarySplit(canary.summaries) ?? "n/a") + " |",
   "| Damage | " + Math.round(baseline.damageRate * 100) + "% | " + Math.round(canary.damageRate * 100) + "% |",
   "| Damage observed | " + Math.round(baseline.damageCoverage * 100) + "% | " + Math.round(canary.damageCoverage * 100) + "% |",
   "",

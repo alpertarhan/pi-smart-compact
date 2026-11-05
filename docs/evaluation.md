@@ -103,6 +103,17 @@ content-free categories (authentication, rate limit, timeout, and so on), even
 when a deterministic fallback completed the run. Older records without
 categories stay unclassified.
 
+Each applied EESV record also carries `summarySource`: `llm` (an LLM wrote the
+summary, possibly with partial batch fallbacks), `fallback` (an LLM summary was
+planned or attempted, but deterministic text was committed, including a
+verification quality floor), or `zero-call` (a deterministic Fast summary chosen
+on purpose). `generationFallbacks` lists the content-free fallback labels in
+order. Older records derive the source from `method` (`heuristic` is always a
+fallback). A fallback still verifies at `100/100`: that is coverage of the
+deterministic text, not LLM quality. Provider evaluation shows each synthesize
+route's summary-fallback share next to call success, which counts truncated
+but delivered responses as successful calls.
+
 ### Advisory matrix from local telemetry
 
 ```bash
@@ -310,6 +321,10 @@ trigger returns `ROLLBACK`:
 | p95 duration | At least +50% versus stable (stable p95 at least 1 s) |
 | Average tokens | At least +50% versus stable (stable average at least 1,000) |
 | Fallback rate | At least +10pp versus stable |
+
+The `LLM summaries` row (LLM-written / attempted applied summaries) is
+reported for both cohorts but is not a trigger; fallback runs still count in
+verifier quality and in the fallback rate exactly as before.
 | Damage rate | At least +10pp versus stable |
 
 Without a trigger, `PROMOTE` requires all of the following; otherwise the

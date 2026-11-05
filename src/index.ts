@@ -18,13 +18,14 @@ import {
 } from "./constants.ts";
 import { loadConfig } from "./utils/config.ts";
 import { effectiveContextWindow, getProviderCaps, safeContextPercent } from "./utils/tokens.ts";
-import { appendMetricsSnapshot } from "./utils/cache.ts";
+import { appendMetricsSnapshot, readMetricsLog } from "./utils/cache.ts";
 import { runSmartCompact } from "./app/run-smart-compact.ts";
 import { registerCompactionDelivery } from "./app/compaction-delivery.ts";
 import { applyGlobalSettingsRuntime } from "./app/global-settings-runtime.ts";
 import {
  clearCompactProgress,
  notifyAppliedCompaction,
+ notifySummaryFallback,
 } from "./ui/overlays.ts";
 import {
  branchEntryIds,
@@ -605,6 +606,10 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
      candidate.details,
      candidate.metricsSnapshot?.runType !== "manual",
     );
+    if (candidate.details.summarySource === "fallback") {
+     notifySummaryFallback(ctx, sessionId, candidate.details,
+      readMetricsLog(200).filter(entry => entry.sessionId === sessionId && entry.runId !== candidate.runId));
+    }
     // Summary pseudo-anchor (best-effort): recall surface + pivot target for
     // the post-compaction branch. Bookkeeping failures must not fail the commit.
     try {
