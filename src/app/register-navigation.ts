@@ -278,9 +278,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
     let userConfirmed = false;
     if (early) {
      if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority; no anchor or cleanup requested.");
-     if (!config().requireApproval) {
-      userConfirmed = true; // requireApproval=false is the host's standing approval; no dialog to revalidate
-     } else {
+     // requireApproval=false (standing approval) waives this dialog only; cleanup keeps the agent's pressure and economics gates.
+     if (config().requireApproval) {
       const approvalEpoch = epoch;
       const sessionId = resolveSessionId(ctx);
       const approved = await ctx.ui.confirm("Save anchor and request early cleanup?",

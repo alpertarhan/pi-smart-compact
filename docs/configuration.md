@@ -383,7 +383,8 @@ stay on disk and manual `/smart-compact trim` still works.
 
 User-guided early anchors use Pi's native confirmation when `requireApproval`
 is on; turning it off provides standing host approval and skips that dialog.
-There is no model-settable override. A dialog approval is scoped to one anchor/cleanup;
+Standing approval saves the anchor but is not consent to early cleanup: its
+cleanup keeps the agent's pressure and readiness gates. There is no model-settable override. A dialog approval is scoped to one anchor/cleanup;
 `contextHygieneEnabled: false` disables periodic cleanup, not explicit confirmed
 work. Tool/navigation permissions, prepared work and signed-thinking guards
 still apply. See [user-guided anchors](./guide.md#user-guided-early-anchors).
@@ -530,7 +531,7 @@ settings. Tracking does not retry writes or start an agent turn.
 | `scrubPii` | `Scrub personal data` | `false` | Email, phone and card-shaped values |
 | `backupEnabled` | `Backups` | `true` | Prepare a scrubbed backup; written only after Pi confirms the compaction |
 | `backupDir` | `Backup folder` | `""` | Empty uses `~/.pi/agent/compact-backups` |
-| `requireApproval` | `Ask before applying` | `true` | Manual review; only `A` applies. Also confirms early-anchor cleanup and memory save/resolve. `false` is standing host approval for those operations, including headless memory writes. |
+| `requireApproval` | `Ask before applying` | `true` | Manual review; only `A` applies. Also confirms early-anchor cleanup and memory save/resolve. `false` is standing host approval for memory save/resolve, including headless writes, and skips the early-anchor dialog; that anchor's cleanup then needs context pressure like any agent anchor. |
 
 ## All settings
 

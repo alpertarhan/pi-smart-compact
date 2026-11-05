@@ -942,6 +942,25 @@ describe("anchor consolidation", () => {
     };
   }
 
+  it.each(["roomy", "unknown", "headless"])("treats standing approval as no dialog, not as early cleanup consent, with %s usage", async usage => {
+    const h = confirmedAnchorHarness();
+    h.cfg.requireApproval = false;
+    if (usage === "unknown") h.ctx.getContextUsage = () => undefined;
+    if (usage === "headless") Object.assign(h.ctx, { hasUI: false });
+    const old = toolBatch(h.session, "read", "RECOVERABLE".repeat(2_000));
+    tail(h.session);
+    expect(planContextTrim(h.session.getBranch()).automatic).toBe("ready"); // a ready batch still needs pressure
+    const batch = await h.executeAnchor();
+    expect(h.prompts).toHaveLength(0);
+    expect(batch.response.details.userConfirmed).toBeUndefined();
+    expect(batch.response.content[0].text).toContain("Anchor saved: reviewed");
+    expect(batch.response.content[0].text).toContain("Cleanup not requested: no context pressure");
+    h.boundary(batch);
+    expect(h.session.getBranch().some(entry => anchorFromEntry(entry))).toBe(true);
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.has(old.result)).toBe(false);
+    expect(h.changes()).toBe(0);
+  });
+
   it.each(["roomy", "unknown"])("uses host consent once for early anchor cleanup with %s usage, never as a general bypass", async usage => {
     const h = confirmedAnchorHarness();
     if (usage === "unknown") h.ctx.getContextUsage = () => undefined;
