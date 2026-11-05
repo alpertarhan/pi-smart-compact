@@ -147,11 +147,19 @@ export function selectCachedExtraction(input: {
  if (!cacheUsable || !cachedExt) {
   return { extraction: extractStructured(llmMessages, profileCfg, buildToolCallIndex(llmMessages)), cache: "miss", missReason };
  }
- if (cacheExact) return { extraction: cachedExt.extraction, cache: "exact" };
+ if (cacheExact) return { extraction: dropInjectedConstraints(cachedExt.extraction, llmMessages), cache: "exact" };
  const newMsgs = llmMessages.slice(cachedExt.messageCount);
  const deltaTcIdx = buildToolCallIndex(newMsgs);
  const delta = extractStructured(newMsgs, profileCfg, deltaTcIdx);
- return { extraction: mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx), cache: "incremental" };
+ const merged = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx);
+ return { extraction: dropInjectedConstraints(merged, llmMessages), cache: "incremental" };
+}
+
+/** Cached and delta mining each saw part of the window (or predate this filter): re-check against all of it. */
+function dropInjectedConstraints(extraction: StructuredExtraction, llmMessages: LlmMessage[]): StructuredExtraction {
+ const isInjectedCarried = injectedCarriedFacts(llmMessages);
+ const constraints = extraction.constraints.filter(item => !isInjectedCarried(item.text));
+ return constraints.length === extraction.constraints.length ? extraction : { ...extraction, constraints };
 }
 
 /**

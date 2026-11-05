@@ -545,7 +545,7 @@ export function isInjectedMessage(
 }
 
 /** Custom types whose text can quote the session verbatim (incl. user rules). */
-const QUOTING_CUSTOM_TYPE_RE = /^(?:smart-compact-|smart-context-|agent_mesh$)/;
+const QUOTING_CUSTOM_TYPE_RE = /^(?:smart-compact-|smart-context-|agent_mesh)/;
 
 /** Comparable form of a fact: bullets, headings, whitespace and case never decide equality. */
 function factKey(text: string): string {

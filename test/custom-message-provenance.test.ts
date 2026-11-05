@@ -298,6 +298,25 @@ describe("facts carried from before provenance", () => {
     expect(constraints.map(item => item.text)).toEqual([USER_RULE, ADHD_RETYPED]);
   });
 
+  it("re-checks cached and delta extraction against the whole window", () => {
+    // The ruleset sits in the cached prefix; a summary that repeats one of its lines arrives in the delta.
+    const prefix = window();
+    const summary = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\n" + USER_GOAL
+      + "\n\n## Constraints & Preferences\n- " + USER_RULE + "\n- " + ADHD_LINE + "\n</summary>";
+    const messages: LlmMessage[] = [...prefix, { role: "user", content: summary }];
+    const ids = messages.map((_, index) => "m-" + index);
+    const prefixIds = ids.slice(0, prefix.length);
+    const selection = selectCachedExtraction({
+      llmMessages: messages, profileCfg: PROFILES.balanced, currentEntryIds: ids, currentKeptEntryIds: ids,
+      cachedExt: { lastMessageIndex: prefix.length - 1, extraction: extractStructured(prefix, PROFILES.balanced), messageCount: prefix.length,
+        timestamp: 1, entryIds: prefixIds, keptEntryIds: prefixIds, messagePrefixHash: hashMessages(prefix) },
+    });
+    expect(selection.cache).toBe("incremental");
+    const texts = selection.extraction.constraints.map(item => item.text);
+    expect(texts).toContain(USER_RULE);
+    expect(texts).not.toContain(ADHD_LINE);
+  });
+
   describe("saved state", () => {
     let home: string;
     const previousHome = process.env.HOME;
