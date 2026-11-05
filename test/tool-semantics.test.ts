@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   classifyTool, classifyToolOperation, extractShellFileOperations, extractToolPath, fileOperationPaths, isReadOnlyShellCommand, isRemovableResearchCall, isArchivableToolResult, isReadOnlyResearchTool, normalizeToolName,
-  toolCallSubject,
+  toolCallSubject, exitOneIsExpectedNoMatch,
 } from "../src/domain/tool-semantics.ts";
 
 describe("classifyTool", () => {
@@ -252,6 +252,31 @@ describe("extractShellFileOperations heredocs", () => {
 
   it("keeps a redirect written on the heredoc line itself", () => {
     expect(extractShellFileOperations({ command: "cat <<EOF > notes.md\na => b\nEOF" }).modified).toEqual(["notes.md"]);
+  });
+});
+
+describe("exitOneIsExpectedNoMatch", () => {
+  it.each([
+    ["unknown directly before the terminal", "./deploy --quiet && grep -q missing file"],
+    ["unknown behind a harmless cd", "./deploy --quiet && cd . && grep -q missing file"],
+    ["harmless unknown chain both sides", "cd . && ./deploy --quiet && grep -q missing file"],
+    ["env executes the unknown", "env ./deploy --quiet && grep -q missing file"],
+    ["assignment runs a substitution", "X=$(./deploy --quiet) && grep -q missing file"],
+    ["pipefail producer owns the exit", "set -o pipefail; ./deploy --quiet | grep -q ready"],
+  ])("rejects %s", (_label, command) => {
+    expect(exitOneIsExpectedNoMatch(command)).toBe(false);
+  });
+
+  it.each([
+    ["terminal count grep after an edit", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
+    ["cd then count grep", 'cd /repo/data && grep -c "needle" sessions.jsonl'],
+    ["ls piped into grep", "ls /tmp/dir | grep 2026-11-05"],
+    ["git diff name-only piped into grep", "git diff main... --name-only | grep -i hindsight"],
+    ["git diff --exit-code", "git diff --exit-code main -- src/"],
+    ["test condition", "test -f /tmp/lock"],
+    ["loop body before the terminal grep", "for i in 1 2 3; do bun test test/x.test.ts 2>&1 | grep -E \"pass|fail\" | tr '\\n' ' '; echo; done; git diff main... --name-only | grep -i hindsight"],
+  ])("accepts %s", (_label, command) => {
+    expect(exitOneIsExpectedNoMatch(command)).toBe(true);
   });
 });
 

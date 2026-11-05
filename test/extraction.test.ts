@@ -377,6 +377,11 @@ describe("catalogErrors", () => {
     ["silent python check", "python silent_check.py"],
     ["bare false", "false"],
     ["quiet deploy after tests", "bun test && ./deploy --quiet"],
+    ["quiet deploy before a benign terminal", "./deploy --quiet && grep -q missing file"],
+    ["quiet deploy behind a cd", "./deploy --quiet && cd . && grep -q missing file"],
+    ["env-wrapped quiet deploy before a benign terminal", "env ./deploy --quiet && grep -q missing file"],
+    ["substituted quiet deploy in a prefix", "X=$(./deploy --quiet) && grep -q missing file"],
+    ["pipefail producer before a matching grep", "set -o pipefail; ./deploy --quiet | grep -q ready"],
     ["unknown cli tool", "agm task set -scope /repo -state working 'note'"],
   ])("still catalogs a quiet exit-1 failure (%s)", (_label, command) => {
     const output = "\nCommand exited with code 1";
@@ -757,6 +762,19 @@ describe("catalogErrors retry resolution (A07)", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].retryAttempted).toBe(true);
     expect(errors[0].resolved).toBe(true);
+  });
+
+  it("never resolves through a quiet exit-1 retry of an unknown && chain", () => {
+    const command = "./deploy --quiet && grep -q missing file";
+    const errors = catalogErrors([
+      exec("1", command),
+      execResult("1", "Error: assertion failed", true),
+      exec("2", command),
+      execResult("2", "\nCommand exited with code 1", true),
+    ]);
+    // The retry's own quiet failure is a second error; the original stays open.
+    expect(errors).toHaveLength(2);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
   });
 
   it("never resolves through an isError retry that is not a clean command exit", () => {

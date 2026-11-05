@@ -455,9 +455,11 @@ export function isReadOnlyShellCommand(command: string): boolean {
 const NO_MATCH_EXIT_ONE_COMMANDS = new Set([
   "grep", "egrep", "fgrep", "rg", "ag", "ack", "test", "[",
 ]);
-/** Commands that may precede the terminal command in an && chain: they do not
- * fail with exit 1 and a silent body (cd prints failures to stderr). */
-const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "pushd", "true", "env", "export", "local"]);
+/** Statements that may sit directly before the terminal in an && chain: they
+ * execute nothing of their own and report their own failure on stderr (which
+ * the body-signal scan then sees). `env` and wrappers are excluded: they can
+ * execute any command. */
+const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "pushd", "true", "export", "local"]);
 
 function isEnvAssignment(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
@@ -491,9 +493,12 @@ function statementCommand(words: string[]): string | undefined {
  * proves nothing.
  */
 export function exitOneIsExpectedNoMatch(command: string): boolean {
+  // Command/process substitution can execute a failing command inside a
+  // prefix (X=$(./deploy --quiet)); attribution is unknowable.
+  if (/(?:\$\(|`|<\()/.test(command)) return false;
   const tokens = tokenizeShell(command);
   interface Statement {
-    sepBefore: ";" | "\n" | "&&" | "||" | null;
+    sepBefore: ";" | "&&" | "||" | null;
     words: Array<{ kind: "word" | "pipe"; value: string }>;
   }
   const statements: Statement[] = [{ sepBefore: null, words: [] }];
@@ -531,11 +536,19 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
         wordValues.some((w) => w === "--exit-code" || w === "--quiet")) ||
       (name === "diff" && wordValues.some((w) => w === "-q" || w === "--brief" || w === "--exit-code")));
   if (!benign) return false;
-  // Attribution: walk back through the && chain into the terminal. A ;-joined
+  // `set` anywhere changes exit semantics (pipefail makes an earlier pipeline
+  // producer own the exit; errexit aborts before the terminal) — reject.
+  if (
+    statements.some((statement) =>
+      statementCommand(statement.words.filter((item) => item.kind === "word").map((item) => item.value)) === "set")
+  )
+    return false;
+  // Attribution: walk back through the && chain into the terminal (the edge
+  // INTO the next statement is the next statement's sepBefore). A ;-joined
   // boundary discards earlier exits, and || means the right side ran; only &&
   // can leave the exit owned by an unknown earlier command.
   for (let index = statements.length - 2; index >= 0; index--) {
-    if (statements[index].sepBefore !== "&&") break;
+    if (statements[index + 1].sepBefore !== "&&") break;
     const priorWords = statements[index].words
       .filter((item) => item.kind === "word")
       .map((item) => item.value);
