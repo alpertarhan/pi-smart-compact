@@ -248,6 +248,14 @@ describe("custom messages in LLM prompts", () => {
     }
   });
 
+  it("keeps harness text without provenance out of explore's user-message views, like extraction", () => {
+    const legacy = [
+      { role: "user", content: "Ship the fix today.", timestamp: 1 },
+      { role: "user", content: "<process_event type=\"lifecycle\">done</process_event>", timestamp: 2 },
+    ] as LlmMessage[];
+    expect(JSON.parse(executeExplorationTool({ name: "get_recent_user_messages", arguments: {} }, legacy))).toEqual(["Ship the fix today."]);
+  });
+
   it("keeps custom messages out of explore's user-message views and labels them elsewhere", async () => {
     const messages = await recovered(sessionWithInjectedMessages());
     const tool = (name: string, args: Record<string, unknown> = {}) => JSON.parse(executeExplorationTool({ name, arguments: args }, messages));

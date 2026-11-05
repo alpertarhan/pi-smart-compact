@@ -27,7 +27,7 @@ import {
  MAX_EXPLORER_OUTPUT_CHARS,
  TRUNC,
 } from "../constants.ts";
-import { extractText, extractMainGoal } from "../utils/extraction.ts";
+import { extractText, extractMainGoal, isInjectedMessage } from "../utils/extraction.ts";
 import { classifyTool } from "../domain/tool-semantics.ts";
 import { trackedComplete } from "../utils/cache.ts";
 import { getProviderCaps } from "../utils/tokens.ts";
@@ -297,7 +297,7 @@ export function executeExplorationTool(
    const count = boundedInteger(args.count, 10, 1, 50);
    output = llmMessages
     // Custom messages arrive as user turns but were injected, not typed by the user.
-    .filter((m) => m?.role === "user" && !m.customType)
+    .filter((m) => m?.role === "user" && !isInjectedMessage(m))
     .slice(-count)
     .map((m) => extractText(m.content).slice(0, TRUNC.PREVIEW_XL));
    break;
@@ -988,7 +988,7 @@ export function buildDirectExplorationRequest(
  prevSummary?: string, userNote?: string,
 ): { context: Context; maxTokens: number } {
  const first3 = llmMessages
-  .filter((m) => m?.role === "user" && !m.customType) // injected custom messages are not user turns
+  .filter((m) => m?.role === "user" && !isInjectedMessage(m)) // injected messages are not user turns
   .slice(0, 3)
   .map((m) => extractText(m?.content).slice(0, TRUNC.PREVIEW_MID))
   .join("\n---\n");
