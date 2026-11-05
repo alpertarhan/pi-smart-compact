@@ -383,6 +383,11 @@ describe("catalogErrors", () => {
     ["substituted quiet deploy in a prefix", "X=$(./deploy --quiet) && grep -q missing file"],
     ["pipefail producer before a matching grep", "set -o pipefail; ./deploy --quiet | grep -q ready"],
     ["unknown cli tool", "agm task set -scope /repo -state working 'note'"],
+    ["unknown producer before a matching grep", "./deploy --quiet | grep -q ready"],
+    ["failable export predecessor", "export -f nonexistent_function && grep -q missing file"],
+    ["failable local predecessor", "local X=1 && grep -q missing file"],
+    ["redirect hides a failed cd predecessor", "cd /does-not-exist 2>/dev/null && grep -q missing file"],
+    ["input redirect fails before grep", "grep -q needle <missing-file"],
   ])("still catalogs a quiet exit-1 failure (%s)", (_label, command) => {
     const output = "\nCommand exited with code 1";
     for (const isError of [false, true]) {

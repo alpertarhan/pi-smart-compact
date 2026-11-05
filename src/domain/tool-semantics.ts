@@ -457,9 +457,9 @@ const NO_MATCH_EXIT_ONE_COMMANDS = new Set([
 ]);
 /** Statements that may sit directly before the terminal in an && chain: they
  * execute nothing of their own and report their own failure on stderr (which
- * the body-signal scan then sees). `env` and wrappers are excluded: they can
- * execute any command. */
-const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "pushd", "true", "export", "local"]);
+ * the body-signal scan then sees). Only the forms the real benign session
+ * fixtures use; wrappers (env/export/local) execute or fail on their own. */
+const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "true"]);
 
 function isEnvAssignment(word: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
@@ -500,12 +500,14 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
   interface Statement {
     sepBefore: ";" | "&&" | "||" | null;
     words: Array<{ kind: "word" | "pipe"; value: string }>;
+    redirected: boolean;
   }
-  const statements: Statement[] = [{ sepBefore: null, words: [] }];
+  const statements: Statement[] = [{ sepBefore: null, words: [], redirected: false }];
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
     if (token.kind === "heredoc") continue;
     if (token.kind === "redirect") {
+      statements[statements.length - 1].redirected = true;
       if (tokens[index + 1]?.kind === "word") index++; // the target is not a command
       continue;
     }
@@ -516,6 +518,7 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
         statements.push({
           sepBefore: token.value === "&&" || token.value === "||" ? token.value : ";",
           words: [],
+          redirected: false,
         });
       }
       continue;
@@ -526,8 +529,21 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
   while (statements.length && !statements[statements.length - 1].words.length) statements.pop();
   const terminal = statements[statements.length - 1];
   if (!terminal) return false;
+  // An input redirect can fail in the shell before the terminal command runs
+  // (grep ... <missing-file exits 1 from the shell); a tokenizer-level "<"
+  // inside a word is the same shape.
+  const terminalWords = terminal.words.map((item) => item.value);
+  if (terminal.redirected || terminalWords.some((word) => word.startsWith("<"))) return false;
+  // Under host-configured pipefail, any producer of the terminal pipeline can
+  // own its exit; every producer must be a proven read-only command.
+  const units: string[][] = [[]];
+  for (const item of terminal.words) {
+    if (item.kind === "pipe") units.push([]);
+    else units[units.length - 1].push(item.value);
+  }
+  if (units.slice(0, -1).some((unit) => !readOnlyShellSegment(unit))) return false;
   const name = terminalPipelineCommand(terminal.words);
-  const wordValues = terminal.words.filter((w) => w.kind === "word").map((w) => w.value);
+  const wordValues = terminalWords;
   const benign =
     name !== undefined &&
     (NO_MATCH_EXIT_ONE_COMMANDS.has(name) ||
@@ -549,12 +565,22 @@ export function exitOneIsExpectedNoMatch(command: string): boolean {
   // can leave the exit owned by an unknown earlier command.
   for (let index = statements.length - 2; index >= 0; index--) {
     if (statements[index + 1].sepBefore !== "&&") break;
+    // A redirected predecessor can fail silently (cd /missing 2>/dev/null),
+    // leaving the exit owned by an unknown failure.
+    if (statements[index].redirected) return false;
     const priorWords = statements[index].words
       .filter((item) => item.kind === "word")
       .map((item) => item.value);
+    if (priorWords.some((word) => word.startsWith("<"))) return false;
     const prior = statementCommand(priorWords);
     const assignmentsOnly = priorWords.every((word) => isEnvAssignment(word));
-    if (!assignmentsOnly && !(prior && HARMLESS_AND_PREFIX.has(prior))) return false;
+    // A no-match predecessor is itself exit-1-benign: searches and conditions
+    // exit 1 only for no-match/false (real errors exit 2), so a short-circuit
+    // there still leaves exit 1 expected (main's rg/grep-chain behavior).
+    const harmless =
+      prior !== undefined &&
+      (HARMLESS_AND_PREFIX.has(prior) || NO_MATCH_EXIT_ONE_COMMANDS.has(prior));
+    if (!assignmentsOnly && !harmless) return false;
   }
   return true;
 }

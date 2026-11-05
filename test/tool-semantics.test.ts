@@ -263,6 +263,12 @@ describe("exitOneIsExpectedNoMatch", () => {
     ["env executes the unknown", "env ./deploy --quiet && grep -q missing file"],
     ["assignment runs a substitution", "X=$(./deploy --quiet) && grep -q missing file"],
     ["pipefail producer owns the exit", "set -o pipefail; ./deploy --quiet | grep -q ready"],
+    ["unknown pipeline producer before a matching grep", "./deploy --quiet | grep -q ready"],
+    ["failable export predecessor", "export -f nonexistent_function && grep -q missing file"],
+    ["failable local predecessor", "local X=1 && grep -q missing file"],
+    ["redirect hides a failed cd predecessor", "cd /does-not-exist 2>/dev/null && grep -q missing file"],
+    ["input redirect fails in the shell before grep", "grep -q needle <missing-file"],
+    ["redirect on the terminal pipeline", "ls /tmp/dir 2>/dev/null | grep 2026-11-05"],
   ])("rejects %s", (_label, command) => {
     expect(exitOneIsExpectedNoMatch(command)).toBe(false);
   });
@@ -271,6 +277,7 @@ describe("exitOneIsExpectedNoMatch", () => {
     ["terminal count grep after an edit", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
     ["cd then count grep", 'cd /repo/data && grep -c "needle" sessions.jsonl'],
     ["ls piped into grep", "ls /tmp/dir | grep 2026-11-05"],
+    ["git-diff producer piped into grep", "git diff main... --stat | tail -1 | grep -i hindsight"],
     ["git diff name-only piped into grep", "git diff main... --name-only | grep -i hindsight"],
     ["git diff --exit-code", "git diff --exit-code main -- src/"],
     ["test condition", "test -f /tmp/lock"],

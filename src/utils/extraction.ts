@@ -332,7 +332,10 @@ function isBenignSearchResult(
     segments.every((segment) => /^(?:rg|grep)\b/.test(segment));
   if (!searchOnly || /(?:^|\n)(?:rg|grep):/m.test(result)) return false;
   const exit = result.match(/Command exited with code (\d+)\s*$/i)?.[1];
-  return exit === undefined || exit === "1";
+  // An exit 1 needs the same semantic proof as the general exemption: a
+  // redirected search (grep ... <missing-file) exits 1 in the shell, and an
+  // &&-predecessor search may have been short-circuited.
+  return exit === undefined || (exit === "1" && exitOneIsExpectedNoMatch(command));
 }
 
 /**
