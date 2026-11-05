@@ -398,7 +398,8 @@ export function estimateReaderMessageTokens(
 }
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
- const totalTokens = contextUsage(rc.ctx)?.tokens ?? 0;
+ const usageBasis = contextUsage(rc.ctx, rc.usagePricing);
+ const totalTokens = usageBasis?.tokens ?? 0;
  const branch = rc.ctx.sessionManager.getBranch();
  const msgs = contextMessageEntries(branch);
  if (msgs.length < 3) {

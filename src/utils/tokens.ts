@@ -583,7 +583,10 @@ export function makeReaderTokenEstimator(
   reader: ReaderIdentity,
   calibration: TokenCalibrationStore = _fallbackCalibration,
 ): TokenEstimator {
-  const text = (value: string) => estimateTokensAtFactor(value, reader.provider, calibration.get(reader.provider, reader.id));
+  // Capture the calibration factor once: a mid-run calibration update (e.g. a
+  // summary response calibrating this same bucket) must not reprice an in-flight basis.
+  const readerFactor = calibration.get(reader.provider, reader.id);
+  const text = (value: string) => estimateTokensAtFactor(value, reader.provider, readerFactor);
   const knownApi = reader.api === "anthropic-messages" || reader.api === "openai-responses"
    || reader.api === "openai-codex-responses" || reader.api === "openai-completions";
   const supportsImages = reader.input === undefined || reader.input.includes("image");

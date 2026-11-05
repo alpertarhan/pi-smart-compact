@@ -45,6 +45,7 @@ import type { PendingSlot } from "./pending-slot.ts";
 import type { PruningResult } from "../utils/pruning.ts";
 import type { CompactionTier } from "../utils/helpers.ts";
 import type { TokenEstimator } from "../utils/tokens.ts";
+import type { UsagePricing } from "./context-usage.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import type { SessionRunLock } from "./session-run-lock.ts";
 
@@ -142,6 +143,8 @@ export interface PreparedExt {
   estimator: TokenEstimator;
   /** Prices what the ACTIVE model's wire carries (replay proxies, image rules). */
   readerEstimator: TokenEstimator;
+  /** Run-scoped immutable pricing snapshot for contextUsage basis computation. */
+  usagePricing: UsagePricing;
   adapted: boolean;
   summaryAuth?: ResolvedAuth;
   /** Optional routes resolve credentials only when the stage actually runs. */

@@ -30,14 +30,20 @@ export function pendingMatchesBranch(pending: PendingCompaction, branch: readonl
 export function readerSignature(ctx: Pick<ExtensionContext, "model"> & Partial<Pick<ExtensionContext, "getSystemPrompt">>): string | undefined {
   const model = ctx.model;
   const prompt = ctx.getSystemPrompt?.();
-  return model && JSON.stringify([model.provider, model.id, model.api, model.baseUrl, model.contextWindow, model.maxTokens,
+  // Input capability is part of the priced replay (text-only readers send image
+  // placeholders, vision readers send images); a same-id capability flip must invalidate.
+  return model && JSON.stringify([model.provider, model.id, model.api, model.baseUrl, model.contextWindow, model.maxTokens, model.input ?? null,
     prompt === undefined ? null : createHash("sha256").update(prompt).digest("hex")]);
 }
 
 /** Shared final gate for foreground and background candidates. Missing proof fails closed. */
 export function revalidatePending(pending: PendingCompaction, ctx: ExtensionContext, reserveTokens = 0): PendingCompaction | null {
   const model = ctx.model;
-  const tokens = contextUsage(ctx)?.tokens;
+  const usage = contextUsage(ctx);
+  const tokens = usage?.tokens;
+  // Insufficient basis proof fails closed: an uncertain reprojected basis, or a
+  // stale measurement nobody could reprice, must never authorize application.
+  if (usage?.basis === "uncertain" || (usage?.basis === "unavailable" && usage.staleProducer)) return null;
   const estimatedAfter = pending.details.estimatedAfterTokens;
   if (!model || !pending.readerSignature || pending.readerSignature !== readerSignature(ctx)
     || pending.sessionId !== resolveSessionId(ctx) || !pendingMatchesBranch(pending, ctx.sessionManager.getBranch())

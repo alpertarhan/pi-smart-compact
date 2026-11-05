@@ -13,6 +13,7 @@ import { DEFAULT_CONFIG } from "../../constants.ts";
 import { getProviderCaps, makeReaderTokenEstimator } from "../../utils/tokens.ts";
 import { loadConfig } from "../../utils/config.ts";
 import { preparePreflightProfile } from "../preflight.ts";
+import { createUsagePricing } from "../context-usage.ts";
 import { readerSignature } from "../pending-slot.ts";
 import * as log from "../../utils/logger.ts";
 import { SecretScrubber } from "../../domain/scrub.ts";
@@ -46,6 +47,12 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
     rc.services.tokenCalibration,
    )
   : estimator;
+ const usagePricing = createUsagePricing(
+  rc.ctx.model
+   ? { provider: rc.ctx.model.provider, id: rc.ctx.model.id, api: rc.ctx.model.api, input: rc.ctx.model.input }
+   : { provider: rc.summaryModel.provider, id: rc.summaryModel.id, api: rc.summaryModel.api },
+  rc.services.tokenCalibration,
+ );
  rc.services.thinkingLevels = {
   summaryThinkingLevel: config.summaryThinkingLevel,
   segmentationThinkingLevel: config.segmentationThinkingLevel,
@@ -98,6 +105,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
   providerCaps: typeof providerCaps;
   estimator: typeof estimator;
   readerEstimator: ReturnType<typeof makeReaderTokenEstimator>;
+  usagePricing: ReturnType<typeof createUsagePricing>;
   adapted: boolean;
   summaryAuth?: ResolvedAuth;
   segAuth?: ResolvedAuth;
@@ -109,6 +117,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
  out.providerCaps = providerCaps;
  out.estimator = estimator;
  out.readerEstimator = readerEstimator;
+ out.usagePricing = usagePricing;
  out.adapted = adapted;
  return advance<RcBase, PreparedRc>(out, "_prepared");
 }

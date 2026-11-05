@@ -1,4 +1,4 @@
-import { contextUsage } from "./context-usage.ts";
+import { contextUsage, createUsagePricing } from "./context-usage.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { PROFILES } from "../constants.ts";
@@ -131,7 +131,15 @@ export function prepareManualPreflightContext(
 ): ManualPreflightContext {
   const branch = ctx.sessionManager.getBranch();
   const msgs = contextMessageEntries(branch);
-  const totalTokens = contextUsage(ctx)?.tokens ?? 0;
+  // Run-scoped pricing snapshot: the basis reprices a stale cross-model
+  // measurement in the ACTIVE reader's domain, never the summarizer's.
+  const usagePricing = createUsagePricing(
+    ctx.model
+      ? { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api, input: ctx.model.input }
+      : { provider: summaryModel.provider, id: summaryModel.id, api: summaryModel.api },
+    tokenCalibration,
+  );
+  const totalTokens = contextUsage(ctx, usagePricing)?.tokens ?? 0;
   const modelContextWindow = ctx.model?.contextWindow;
   const contextWindowTokens =
     Number.isFinite(modelContextWindow) && (modelContextWindow ?? 0) > 0
