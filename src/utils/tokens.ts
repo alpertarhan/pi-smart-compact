@@ -274,17 +274,67 @@ const SIGNATURE_KEYS = ["thinkingSignature", "textSignature", "thoughtSignature"
 /** Conservative flat image cost when no dimension rule is verified for the API. */
 const IMAGE_BLOCK_TOKENS = 1_200;
 /**
- * Current Claude 3-family vision (documented): the provider resizes the long
- * edge to at most 1568px, then visual tokens are ⌈w/28⌉·⌈h/28⌉ patches.
+ * Claude vision (documented, platform.claude.com vision docs): visual tokens are
+ * ⌈w/28⌉·⌈h/28⌉ patches after an aspect-preserving provider resize that must fit
+ * BOTH the tier's edge limit and its visual-token budget. Two verified tiers:
+ * - High resolution ("Claude 4.7 and later", incl. Opus 5.5): 2576px, 4784 tokens.
+ * - Standard (all other patch-grid Claude): 1568px, 1568 tokens.
  * Pre-3 Claude and non-Claude models on Anthropic-compatible endpoints have
  * different, unverified rules and take the flat estimate instead.
  */
 const CLAUDE_IMAGE_PATCH_PX = 28;
-const CLAUDE_MAX_IMAGE_EDGE_PX = 1_568;
+interface ClaudeImageTier { maxEdge: number; maxVisualTokens: number }
 
-function isPatchGridClaude(model: string | undefined): boolean {
-  if (!model?.toLowerCase().startsWith("claude")) return false;
-  return !/^claude-(?:2|instant)/i.test(model);
+const CLAUDE_IMAGE_TIERS = {
+  standard: { maxEdge: 1_568, maxVisualTokens: 1_568 },
+  high: { maxEdge: 2_576, maxVisualTokens: 4_784 },
+} as const;
+
+/** "Claude 4.7 and later" is the documented high-resolution membership. */
+function claudeImageTier(model: string | undefined): ClaudeImageTier | null {
+  if (!model?.toLowerCase().startsWith("claude")) return null;
+  if (/^claude-(?:2|instant)/i.test(model)) return null; // pre-patch-grid billing
+  const version = /claude[a-z-]*?(\d+)[.-](\d+)/i.exec(model);
+  if (!version) return CLAUDE_IMAGE_TIERS.high; // unknown current name: price high, never under-count
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  return major > 4 || (major === 4 && minor >= 7) ? CLAUDE_IMAGE_TIERS.high : CLAUDE_IMAGE_TIERS.standard;
+}
+
+/** Round half to even (banker's rounding), matching the documented reference implementation. */
+function roundTiesToEven(value: number): number {
+  const floor = Math.floor(value);
+  if (value - floor !== 0.5) return Math.round(value);
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+function fitsClaudeImageLimits(width: number, height: number, tier: ClaudeImageTier): boolean {
+  return (
+    Math.ceil(width / CLAUDE_IMAGE_PATCH_PX) * CLAUDE_IMAGE_PATCH_PX <= tier.maxEdge &&
+    Math.ceil(height / CLAUDE_IMAGE_PATCH_PX) * CLAUDE_IMAGE_PATCH_PX <= tier.maxEdge &&
+    Math.ceil(width / CLAUDE_IMAGE_PATCH_PX) * Math.ceil(height / CLAUDE_IMAGE_PATCH_PX) <= tier.maxVisualTokens
+  );
+}
+
+/**
+ * The provider's resize rule: largest aspect-preserving size whose patch grid
+ * fits both tier limits (binary search along the long edge, short edge rounded
+ * half-to-even — the documented reference algorithm).
+ */
+function claudeResizedSize(width: number, height: number, tier: ClaudeImageTier): { width: number; height: number } {
+  if (fitsClaudeImageLimits(width, height, tier)) return { width, height };
+  const rotated = height > width;
+  const [long0, short0] = rotated ? [height, width] : [width, height];
+  const aspect = long0 / short0;
+  let lo = 1; // fits
+  let hi = long0; // does not fit
+  while (lo + 1 < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fitsClaudeImageLimits(mid, roundTiesToEven(mid / aspect), tier)) lo = mid;
+    else hi = mid;
+  }
+  const long = lo;
+  const short = roundTiesToEven(long / aspect);
+  return rotated ? { width: short, height: long } : { width: long, height: short };
 }
 /** openai-completions thinking replay is keyed by these marker signatures (pi-ai converter). */
 const COMPLETIONS_REASONING_MARKERS = new Set(["reasoning", "reasoning_content", "reasoning_text"]);
@@ -339,15 +389,14 @@ function parseImageDimensions(source: unknown): { width: number; height: number 
 function imageBlockTokens(image: { data?: unknown; source?: { data?: unknown } | string }, api: string | undefined, model: string | undefined): number {
   const raw = typeof image.data === "string" ? image.data : typeof image.source === "object" && image.source && typeof image.source.data === "string" ? image.source.data : undefined;
   const dims = parseImageDimensions(raw);
-  if (api !== "anthropic-messages" || !isPatchGridClaude(model) || !dims) {
+  const tier = api === "anthropic-messages" ? claudeImageTier(model) : null;
+  if (!tier || !dims) {
     return IMAGE_BLOCK_TOKENS;
   }
-  // Provider-side resize first: the long edge is capped before patching, so
-  // a huge source never prices as unbounded patches.
-  const scale = Math.min(1, CLAUDE_MAX_IMAGE_EDGE_PX / Math.max(dims.width, dims.height));
-  const width = Math.max(1, Math.ceil(dims.width * scale));
-  const height = Math.max(1, Math.ceil(dims.height * scale));
-  return Math.ceil(width / CLAUDE_IMAGE_PATCH_PX) * Math.ceil(height / CLAUDE_IMAGE_PATCH_PX);
+  // Both tier limits bind (edge AND visual-token budget), so a huge source
+  // never prices as unbounded patches.
+  const size = claudeResizedSize(dims.width, dims.height, tier);
+  return Math.ceil(size.width / CLAUDE_IMAGE_PATCH_PX) * Math.ceil(size.height / CLAUDE_IMAGE_PATCH_PX);
 }
 
 type SerializableMessage = Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">;
@@ -480,9 +529,10 @@ function replayProxyTokens(
  *   the measured usage.output as the replay proxy (per-API reasoning rules).
  * - Thinking blocks that Pi drops before wire conversion cost 0 on known APIs;
  *   same-model thinking without metadata keeps its visible text as a lower bound.
- * - Opaque signatures never count as text; images follow the verified rule for
- *   every role where API and model family are both known (patch-grid Claude with
- *   provider-side long-edge resize), a bounded flat estimate elsewhere.
+ * - Opaque signatures never count as text; images follow the documented two-tier
+ *   rule (edge limit AND visual-token budget, aspect-preserving resize) for every
+ *   role where API and Claude model tier are known, a bounded flat estimate
+ *   elsewhere.
  */
 export function makeReaderTokenEstimator(
   reader: ReaderIdentity,

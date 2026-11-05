@@ -94,27 +94,96 @@ describe("reader token estimator replay proxies", () => {
 });
 
 describe("reader token estimator image pricing", () => {
-  it("prices Claude patch tokens for images in any role", () => {
-    const reader = makeReaderTokenEstimator(ANTHROPIC, new TokenCalibrationStore());
+  // Expected values are the CURRENT documented table (platform.claude.com vision
+  // docs): two tiers — high resolution (Claude 4.7 and later: 2576px, 4784 visual
+  // tokens) and standard (1568px, 1568 tokens) — after the aspect-preserving
+  // resize that must fit BOTH limits.
+  const HIGH = "claude-opus-5-5";
+  const STANDARD = "claude-sonnet-4-6";
+  const cost = (model: string, width: number, height: number): number => {
+    const reader = makeReaderTokenEstimator({ provider: "anthropic", id: model, api: "anthropic-messages" }, new TokenCalibrationStore());
+    return reader.message({ role: "user", content: [{ type: "image", data: pngBase64(width, height) }] } as any);
+  };
+  const expectTokens = (model: string, width: number, height: number, tokens: number) => {
+    const value = cost(model, width, height);
+    expect(value).toBeGreaterThanOrEqual(tokens);
+    expect(value).toBeLessThan(tokens + 100); // patch component exact, wrapper is small
+  };
+
+  it("matches the documented cost table on both tiers", () => {
+    expectTokens(STANDARD, 200, 200, 64);
+    expectTokens(HIGH, 200, 200, 64);
+    expectTokens(STANDARD, 1000, 1000, 1296);
+    expectTokens(HIGH, 1000, 1000, 1296);
+    expectTokens(STANDARD, 1092, 1092, 1521);
+    expectTokens(HIGH, 1092, 1092, 1521);
+    // 1920x1080: standard resizes to 1456x819; high-resolution keeps the original.
+    expectTokens(STANDARD, 1920, 1080, 1560);
+    expectTokens(HIGH, 1920, 1080, 2691);
+    // 3840x2160: standard resizes to 1456x819; high-resolution to 2576x1449 (at its cap).
+    expectTokens(STANDARD, 3840, 2160, 1560);
+    expectTokens(HIGH, 3840, 2160, 4784);
+  });
+
+  it("prices the current Opus 5.5 fixture at its unresized patch count", () => {
+    // 2000x1093 is below the high-resolution limits: 72*40 = 2880, no resize.
+    expectTokens(HIGH, 2000, 1093, 2880);
+    // The same image on a standard-tier model must be downscaled to fit the
+    // 1568-token budget (smaller than the high-resolution cost).
+    expect(cost(STANDARD, 2000, 1093)).toBeLessThan(1568 + 100);
+    expect(cost(STANDARD, 2000, 1093)).toBeLessThan(cost(HIGH, 2000, 1093));
+  });
+
+  it("resizes by the visual-token budget, not just the edge limit", () => {
+    // A4 scan from the docs: 1075x1520 fits both edge limits on standard, but
+    // 39*55 = 2145 tokens exceeds 1568, so it resizes to 924x1307 (33*47 = 1551).
+    expectTokens(STANDARD, 1075, 1520, 1551);
+    // High-resolution tier has budget for it: no resize, 2145 tokens.
+    expectTokens(HIGH, 1075, 1520, 2145);
+  });
+
+  it("bounds oversized images by each tier's visual-token cap", () => {
+    // The resize maximizes the long edge under BOTH limits; for 4:3 sources the
+    // resulting patch count lands just under the token budget.
+    expectTokens(HIGH, 8000, 6000, 4740); // 2212x1659 -> 79*60
+    expect(cost(HIGH, 8000, 6000)).toBeLessThan(4784 + 100);
+    expectTokens(STANDARD, 8000, 6000, 1564); // 1270x952 -> 46*34
+    expect(cost(STANDARD, 8000, 6000)).toBeLessThan(1568 + 100);
+  });
+
+  it("selects the tier from the model version, with verified boundaries", () => {
+    // 4.7 is the documented high-resolution boundary; 4.6 and 3.7 stay standard.
+    expectTokens("claude-opus-4-7", 3840, 2160, 4784);
+    expectTokens("claude-opus-4-8", 3840, 2160, 4784);
+    expectTokens("claude-opus-4-6", 3840, 2160, 1560);
+    expectTokens("claude-3-7-sonnet", 3840, 2160, 1560);
+    expectTokens("claude-haiku-4-5", 3840, 2160, 1560);
+    // Unparseable current-name Claude prices as high tier (never under-count).
+    expectTokens("claude-mythos-preview", 3840, 2160, 4784);
+  });
+
+  it("prices images in any message role", () => {
+    const reader = makeReaderTokenEstimator({ provider: "anthropic", id: HIGH, api: "anthropic-messages" }, new TokenCalibrationStore());
     const image = { type: "image", data: pngBase64(2000, 1093) };
     for (const role of ["toolResult", "user", "assistant"] as const) {
-      const cost = reader.message({ role, content: [image] } as any);
-      expect(cost).toBeGreaterThanOrEqual(patch(2000, 1093));
-      expect(cost).toBeLessThan(patch(2000, 1093) + 100);
+      const value = reader.message({ role, content: [image] } as any);
+      expect(value).toBeGreaterThanOrEqual(2880);
+      expect(value).toBeLessThan(2880 + 100);
     }
   });
 
   it("reads JPEG frame dimensions and strips data-URI prefixes", () => {
-    const reader = makeReaderTokenEstimator(ANTHROPIC, new TokenCalibrationStore());
+    const reader = makeReaderTokenEstimator({ provider: "anthropic", id: HIGH, api: "anthropic-messages" }, new TokenCalibrationStore());
     const jpeg = reader.message({ role: "user", content: [{ type: "image", data: jpegBase64(448, 672) }] } as any);
-    expect(jpeg).toBeGreaterThanOrEqual(patch(448, 672));
-    expect(jpeg).toBeLessThan(patch(448, 672) + 100);
-    const prefixed = reader.message({ role: "user", content: [{ type: "image", data: "data:image/png;base64," + pngBase64(448, 672) }] } as any);
-    expect(prefixed).toBeGreaterThanOrEqual(patch(448, 672));
+    expect(jpeg).toBeGreaterThanOrEqual(16 * 24); // 384: under every limit, no resize
+    expect(jpeg).toBeLessThan(16 * 24 + 100);
+    const prefixed = reader.message({ role: "user", content: [{ type: "image", data: "data:image/png;base64," + pngBase64(1000, 1000) }] } as any);
+    expect(prefixed).toBeGreaterThanOrEqual(1296);
+    expect(prefixed).toBeLessThan(1296 + 100);
   });
 
-  it("falls back to the flat cost for unreadable headers and non-Anthropic APIs", () => {
-    const anthropicReader = makeReaderTokenEstimator(ANTHROPIC, new TokenCalibrationStore());
+  it("falls back to the flat cost for unreadable headers, other APIs, and unverified models", () => {
+    const anthropicReader = makeReaderTokenEstimator({ provider: "anthropic", id: HIGH, api: "anthropic-messages" }, new TokenCalibrationStore());
     const flat = anthropicReader.message({ role: "user", content: [{ type: "image", data: "not-base64-at-all!!" }] } as any);
     expect(flat).toBeGreaterThanOrEqual(1200);
     expect(flat).toBeLessThan(1300);
@@ -122,13 +191,21 @@ describe("reader token estimator image pricing", () => {
     const other = otherReader.message({ role: "user", content: [{ type: "image", data: pngBase64(2000, 1093) }] } as any);
     expect(other).toBeGreaterThanOrEqual(1200);
     expect(other).toBeLessThan(1300);
+    // Same wire API, but the two-tier rule is only verified for patch-grid Claude:
+    // pre-3 Claude and Anthropic-compatible endpoints from other vendors take the flat estimate.
+    for (const id of ["claude-2-1", "claude-instant", "glm-4.6"]) {
+      const reader = makeReaderTokenEstimator({ provider: "zai-anthropic", id, api: "anthropic-messages" }, new TokenCalibrationStore());
+      const value = reader.message({ role: "user", content: [{ type: "image", data: pngBase64(2000, 1093) }] } as any);
+      expect(value).toBeGreaterThanOrEqual(1200);
+      expect(value).toBeLessThan(1300);
+    }
   });
 
   it("prices wire-format image sources as well as session-format data", () => {
-    const reader = makeReaderTokenEstimator(ANTHROPIC, new TokenCalibrationStore());
+    const reader = makeReaderTokenEstimator({ provider: "anthropic", id: HIGH, api: "anthropic-messages" }, new TokenCalibrationStore());
     const wire = reader.message({ role: "user", content: [{ type: "image", source: { data: pngBase64(1000, 1000) } }] } as any);
-    expect(wire).toBeGreaterThanOrEqual(patch(1000, 1000));
-    expect(wire).toBeLessThan(patch(1000, 1000) + 100);
+    expect(wire).toBeGreaterThanOrEqual(1296);
+    expect(wire).toBeLessThan(1296 + 100);
   });
 });
 
