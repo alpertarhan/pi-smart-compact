@@ -299,6 +299,9 @@ function commandFileOperations(words: string[]): ShellFileOperations {
       // A script already supplied before the bare -i (first bare operand, or
       // any -e/-f/--expression/--file form) means the word after -i is the
       // GNU input file, not a BSD suffix — the normal walk records it.
+      // The GNU final-input inference applies only when the word after the
+      // bare -i is the LAST operand: with a script already supplied and
+      // nothing following, BSD's suffix reading would have to edit stdin.
       const scriptBefore =
         bareIndex !== -1 &&
         args.slice(0, bareIndex).some(
@@ -309,6 +312,7 @@ function commandFileOperations(words: string[]): ShellFileOperations {
             word.startsWith("--expression") ||
             word.startsWith("--file"),
         );
+      const finalTarget = scriptBefore && bareIndex === args.length - 2;
       if (
         !scriptBefore &&
         bareIndex !== -1 &&
@@ -324,6 +328,21 @@ function commandFileOperations(words: string[]): ShellFileOperations {
         // A no-target command may leave a path-looking last word — harmless:
         // trackFileOps only records successful executions, and genuine
         // literal absolute targets (/tmp/a.ts) stay valid files.
+        if (
+          lastRaw !== undefined &&
+          literalShellPath(lastRaw) === lastRaw &&
+          !/^(?:s|y)\//.test(lastRaw)
+        ) {
+          modified.push(lastRaw);
+        }
+        return { modified, deleted };
+      }
+      if (scriptBefore && !finalTarget) {
+        // Script supplied AND operands follow (-i .bak file, -i bak file):
+        // valid BSD suffix+input; the dialect is ambiguous, so keep main's
+        // conservative last-target rule and never fabricate the suffix.
+        const rest = args.slice(bareIndex + 1);
+        const lastRaw = rest[rest.length - 1];
         if (
           lastRaw !== undefined &&
           literalShellPath(lastRaw) === lastRaw &&
@@ -350,7 +369,7 @@ function commandFileOperations(words: string[]): ShellFileOperations {
         // the tokenizer drops empty quotes.)
         if (
           options &&
-          !scriptBefore &&
+          !finalTarget &&
           word === "-i" &&
           words[index + 1] !== undefined &&
           !words[index + 1].startsWith("-") &&

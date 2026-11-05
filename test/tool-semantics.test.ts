@@ -271,6 +271,14 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: [".env"], deleted: [] });
     expect(extractShellFileOperations({ command: "sed 's/a/b/' -i ./src/a.ts" }))
       .toEqual({ modified: ["./src/a.ts"], deleted: [] });
+    // Valid BSD suffix+input with the script supplied: only the input is edited.
+    expect(extractShellFileOperations({ command: "sed -e 's/a/b/' -i .bak file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -f fixes.sed -i bak file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    // GNU two-target form stays conservative: last target only.
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i f1 f2" }))
+      .toEqual({ modified: ["f2"], deleted: [] });
     // Unambiguous multi-file form is unchanged.
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
       .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
