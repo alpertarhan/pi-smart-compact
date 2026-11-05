@@ -620,7 +620,12 @@ Deterministically pulls modified/read/deleted files, tool and bash-like errors,
 retry/resolution signals, explicit and implicit decisions, constraints and
 preferences, heuristic topic segments, timeline events, the main goal and open
 loops across the whole compacted prefix. This is the ground truth that
-synthesis and verification trust. Dialog answers follow tool-call IDs rather
+synthesis and verification trust. Goal, constraints, implicit decisions,
+recent user requests, open loops and constraint releases come only from human
+turns: Pi presents `custom_message` entries (peer requests, injected rule sets,
+rewind handoffs) as user turns, so their `customType` is carried through
+projection and recovery; text without provenance falls back to harness-text
+patterns. Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
 than a fixed next-message window. Fresh extraction and cached reconciliation
 share retry-result classification and inspect later/sibling retries; a false
 `isError` flag cannot turn an error-bearing command result into success.

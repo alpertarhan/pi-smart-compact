@@ -29,6 +29,7 @@ import { inferSessionType, normalizeFactKey } from "./helpers.ts";
 import {
  isCompactionStatusText,
  isNonLiveConstraintText,
+ isInjectedMessage,
  isTransientToolDiagnostic,
  extractText,
  collapseDecisionsByQuestion,
@@ -374,7 +375,8 @@ export function retireSupersededConstraints(
   if (msgs[i]?.role !== "user") continue;
   const text = extractText(msgs[i].content).trim();
   if (text.length < 4 || text.startsWith("/")) continue;
-  if (isNonLiveConstraintText(text)) continue;
+  // A peer request or injected rule set is not the user releasing their rule.
+  if (isNonLiveConstraintText(text) || isInjectedMessage(msgs[i], text)) continue;
   userTexts.push({ index: i, text: text.slice(0, TRUNC.MESSAGE) });
  }
  // The gate's evidence threshold: only rules it requires can block it.

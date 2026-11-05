@@ -680,6 +680,8 @@ export interface LlmMessage {
   */
  toolName?: string;
  timestamp?: number;
+ /** Extension that injected this message (Pi custom_message); convertToLlm presents it as a user turn. Never human input. */
+ customType?: string;
 }
 
 export interface LlmTextBlock {
@@ -829,6 +831,8 @@ export interface SessionMessageEntry {
  type: "message";
  id: string;
  message: unknown;
+ /** Set for custom messages: `message` is their convertToLlm user turn, which drops the type. */
+ customType?: string;
  /** Intentional host projection: never replace it with raw JSONL content. */
  contextEdited?: boolean;
 }

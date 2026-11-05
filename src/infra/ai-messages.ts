@@ -28,12 +28,14 @@ export function contextMessageEntries(entries: readonly unknown[]): SessionMessa
   const editedIds = new Set(projection.entries.flatMap(({ sourceEntry }) =>
     sourceEntry.type === "context_edit" ? [sourceEntry.targetId] : [],
   ));
-  return projection.entries.flatMap(({ sourceEntry, messages }) =>
-    convertToLlm(messages).map(message => ({
+  // One message at a time: convertToLlm turns custom messages into user turns and drops customType.
+  return projection.entries.flatMap(({ sourceEntry, messages }) => messages.flatMap(source =>
+    convertToLlm([source]).map(message => ({
       type: "message" as const, id: sourceEntry.id, message,
+      ...(source.role === "custom" ? { customType: source.customType || "custom" } : {}),
       ...(editedIds.has(sourceEntry.id) ? { contextEdited: true } : {}),
     })),
-  );
+  ));
 }
 
 /** Text transcript without the host summarizer's implicit 2,000-character tool-result cap. */
