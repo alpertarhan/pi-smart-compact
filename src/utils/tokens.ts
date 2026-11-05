@@ -228,14 +228,14 @@ const JSON_DENSITY_SCAN_CAP = 8192;
 
 function estimateTokensAtFactor(text: string, provider: string | undefined, factor: number): number {
   const baseRatio = provider ? getProviderCaps(provider).tokenRatioEstimate : CHARS_PER_TOKEN;
-  // JSON content has denser tokenization. The leading-brace check covers
-  // per-message JSON tool results; the density fallback catches concatenations
-  // that don't start with JSON. Capped so a multi-MB serialization can't pause.
-  const startsJson = text.startsWith("[") || text.startsWith("{");
+  // Structurally dense text (JSON tool arguments/results, serialized code)
+  // tokenizes to more tokens per character. The scan is capped so a multi-MB
+  // serialization can't pause the pipeline. Prose inside a JSON message wrapper
+  // must stay unaffected: density is measured on content, not the wrapper, so
+  // there is deliberately no leading-brace shortcut — every serialized message
+  // starts with '{'.
   let jsonPenalty = 1.0;
-  if (startsJson) {
-    jsonPenalty = JSON_PENALTY;
-  } else if (text.length > 0) {
+  if (text.length > 0) {
     const sample = text.length > JSON_DENSITY_SCAN_CAP ? text.slice(0, JSON_DENSITY_SCAN_CAP) : text;
     let structural = 0;
     for (let i = 0; i < sample.length; i++) {
@@ -250,7 +250,9 @@ function estimateTokensAtFactor(text: string, provider: string | undefined, fact
   // over a multi-MB conversation serialization walks the whole string.
   const langSample = text.length > JSON_DENSITY_SCAN_CAP ? text.slice(0, JSON_DENSITY_SCAN_CAP) : text;
   const langPenalty = /[çğıöşüÇĞİÖŞÜ]/.test(langSample) ? 0.9 : 1.0;
-  return Math.ceil((text.length / baseRatio) * jsonPenalty * langPenalty * factor);
+  // Denser content means MORE tokens per character, so the density penalties
+  // shrink the chars/token ratio — they must not reduce the token count.
+  return Math.ceil((text.length / (baseRatio * jsonPenalty * langPenalty)) * factor);
 }
 
 export function estimateTokens(text: string, provider?: string, model?: string, calibration = _fallbackCalibration): number {
@@ -263,14 +265,126 @@ export function calibrateFromResponse(estimated: number, actual: number, provide
 
 export interface TokenEstimator {
   text(text: string): number;
-  message(message: Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">): number;
+  message(message: Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">, options?: MessageEstimateOptions): number;
   messages(messages: ReadonlyArray<Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">>): number;
+}
+
+/** Binary payloads the model does not read as text: never counted as serialized chars. */
+const SIGNATURE_KEYS = ["thinkingSignature", "textSignature", "thoughtSignature"];
+/** Conservative flat image cost when no dimension rule is verified for the API. */
+const IMAGE_BLOCK_TOKENS = 1_200;
+/** Current Claude vision: visual tokens are ⌈w/28⌉·⌈h/28⌉ patches after model-specific resizing. */
+const ANTHROPIC_IMAGE_PATCH_PX = 28;
+/** openai-completions thinking replay is keyed by these marker signatures (pi-ai converter). */
+const COMPLETIONS_REASONING_MARKERS = new Set(["reasoning", "reasoning_content", "reasoning_text"]);
+
+/** Bounded image header scan: PNG IHDR / JPEG SOF only, never a full multi-MB decode. */
+const IMAGE_HEADER_BASE64_CAP = 262_144;
+
+function parseImageDimensions(source: unknown): { width: number; height: number } | null {
+  const data = typeof source === "string" ? source : undefined;
+  if (!data || data.length < 64) return null;
+  let buf: Buffer;
+  try {
+    const b64 = data.replace(/^data:[^,]+,/, "");
+    buf = Buffer.from(b64.length > IMAGE_HEADER_BASE64_CAP ? b64.slice(0, IMAGE_HEADER_BASE64_CAP) : b64, "base64");
+  } catch {
+    return null;
+  }
+  try {
+    if (buf.length > 24 && buf[0] === 0x89 && buf.subarray(1, 4).toString() === "PNG") {
+      const width = buf.readUInt32BE(16), height = buf.readUInt32BE(20);
+      if (width > 0 && height > 0 && width <= 30_000 && height <= 30_000) return { width, height };
+      return null;
+    }
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < buf.length) {
+        if (buf[offset] !== 0xff) return null;
+        const marker = buf[offset + 1]!;
+        const length = buf.readUInt16BE(offset + 2);
+        // SOF0..SOF15 except DHT/JPG/DAC carry the frame dimensions.
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          const height = buf.readUInt16BE(offset + 5), width = buf.readUInt16BE(offset + 7);
+          if (width > 0 && height > 0 && width <= 30_000 && height <= 30_000) return { width, height };
+          return null;
+        }
+        offset += 2 + length;
+      }
+    }
+  } catch {
+    // Malformed headers fall back to the flat estimate.
+  }
+  return null;
+}
+
+/** Visual-token cost of one image block for a reader API (verified rules only). */
+function imageBlockTokens(image: { data?: unknown; source?: { data?: unknown } | string }, api: string | undefined): number {
+  if (api !== "anthropic-messages") return IMAGE_BLOCK_TOKENS;
+  const raw = typeof image.data === "string" ? image.data : typeof image.source === "object" && image.source && typeof image.source.data === "string" ? image.source.data : undefined;
+  const dims = parseImageDimensions(raw);
+  if (!dims) return IMAGE_BLOCK_TOKENS;
+  return Math.ceil(dims.width / ANTHROPIC_IMAGE_PATCH_PX) * Math.ceil(dims.height / ANTHROPIC_IMAGE_PATCH_PX);
+}
+
+type SerializableMessage = Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">;
+
+function serializableMessage(message: SerializableMessage) {
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName ? { toolName: message.toolName } : {}),
+    ...(message.isError ? { isError: true } : {}),
+  };
+}
+
+/** Drop opaque signatures and collapse images so binary payloads never count as text. */
+function countableMessage(message: SerializableMessage) {
+  if (!Array.isArray(message.content)) return { base: serializableMessage(message), images: [] as Array<{ data?: unknown; source?: { data?: unknown } | string }> };
+  const images: Array<{ data?: unknown; source?: { data?: unknown } | string }> = [];
+  let changed = false;
+  const content = message.content.map(block => {
+    if (!block || typeof block !== "object") return block;
+    if ((block as { type?: unknown }).type === "image") {
+      images.push(block as { type: string; data?: unknown; source?: { data?: unknown } | string });
+      changed = true;
+      return { type: "image" };
+    }
+    if (!SIGNATURE_KEYS.some(key => (block as Record<string, unknown>)[key] !== undefined)) return block;
+    changed = true;
+    const clone: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(block)) {
+      if (value !== undefined && !SIGNATURE_KEYS.includes(key)) clone[key] = value;
+    }
+    return clone;
+  });
+  // Byte-identical serialization for messages without images or signatures.
+  return changed ? { base: { ...serializableMessage(message), content }, images } : { base: serializableMessage(message), images };
+}
+
+/** Per-message estimation context: replay proxies are only valid for unchanged content. */
+export interface MessageEstimateOptions {
+  /** The projection rewrote this message's content; generation metadata no longer describes it. */
+  contextEdited?: boolean;
+  /** This assistant message is part of the turn still in progress (after the last human turn). */
+  currentTurn?: boolean;
+}
+
+/** The active reader model whose wire replay is being estimated. */
+export interface ReaderIdentity {
+  provider: string;
+  id: string;
+  api?: string;
 }
 
 /**
  * Bind provider/model calibration once per run. Message estimates use the
  * actual structured content, including tool-call arguments that text-only
- * extraction intentionally omits.
+ * extraction intentionally omits. Base64 image data and opaque provider
+ * signatures (Anthropic thinking/text signatures, OpenAI encrypted reasoning
+ * stored in thinkingSignature) are dropped before serialization; each image
+ * block is priced at a flat conservative cost.
  */
 export function makeTokenEstimator(
   provider?: string,
@@ -279,16 +393,115 @@ export function makeTokenEstimator(
 ): TokenEstimator {
   const factor = calibration.get(provider, model);
   const text = (value: string) => estimateTokensAtFactor(value, provider, factor);
-  const serializable = (message: Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">) => ({
-    role: message.role,
-    content: message.content,
-    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-    ...(message.toolName ? { toolName: message.toolName } : {}),
-    ...(message.isError ? { isError: true } : {}),
-  });
   return {
     text,
-    message: message => text(JSON.stringify(serializable(message))),
-    messages: messages => text(JSON.stringify(messages.map(serializable))),
+    message: message => {
+      const { base, images } = countableMessage(message);
+      return text(JSON.stringify(base)) + images.length * IMAGE_BLOCK_TOKENS;
+    },
+    messages: messages => {
+      const counted = messages.map(countableMessage);
+      return text(JSON.stringify(counted.map(item => item.base)))
+        + counted.reduce((sum, item) => sum + item.images.length, 0) * IMAGE_BLOCK_TOKENS;
+    },
+  };
+}
+
+type AssistantMetadata = {
+  provider?: string;
+  api?: string;
+  model?: string;
+  stopReason?: string;
+  usage?: { output?: unknown; reasoning?: unknown };
+};
+
+function replayProxyTokens(
+  message: SerializableMessage & AssistantMetadata,
+  reader: ReaderIdentity,
+  options: MessageEstimateOptions | undefined,
+): number | null {
+  if (message.role !== "assistant" || options?.contextEdited) return null;
+  // Pi's replay compatibility is full provider+api+model identity.
+  if (message.provider !== reader.provider || message.api !== reader.api || message.model !== reader.id) return null;
+  if (message.stopReason === "aborted" || message.stopReason === "error") return null;
+  const output = message.usage?.output;
+  if (typeof output !== "number" || !Number.isFinite(output) || output <= 0) return null;
+  const reasoning = message.usage?.reasoning;
+  const priorTurnDiscarded = typeof reasoning === "number" && Number.isFinite(reasoning) && reasoning > 0 ? reasoning : 0;
+  if (reader.api === "anthropic-messages") {
+    // Signed thinking (visible + encrypted) is replayed and billed; usage.output
+    // measured exactly that content at generation time. reasoning ⊂ output.
+    return Math.round(output);
+  }
+  if (reader.api === "openai-responses" || reader.api === "openai-codex-responses") {
+    // Prior-turn reasoning items are discarded on replay; text and tool
+    // arguments always come back. Inside the live turn the API requires the
+    // reasoning items, so nothing is subtracted there.
+    if (options?.currentTurn) return Math.round(output);
+    return Math.max(0, Math.round(output - priorTurnDiscarded));
+  }
+  if (reader.api === "openai-completions") {
+    // Pi replays thinking text through a reasoning field only when the stored
+    // signature is one of the known marker names; other thinking is dropped.
+    const marker = (Array.isArray(message.content) ? message.content : []).some(block =>
+      block && typeof block === "object" && (block as { type?: string }).type === "thinking"
+      && COMPLETIONS_REASONING_MARKERS.has(String((block as { thinkingSignature?: unknown }).thinkingSignature ?? "")));
+    return marker ? Math.round(output) : Math.max(0, Math.round(output - priorTurnDiscarded));
+  }
+  return null;
+}
+
+/**
+ * Reader-domain estimator: prices what the ACTIVE model's wire actually carries.
+ * - Same-model, unchanged assistant messages with clean generation metadata use
+ *   the measured usage.output as the replay proxy (per-API reasoning rules).
+ * - Thinking blocks that Pi drops before wire conversion cost 0 on known APIs;
+ *   same-model thinking without metadata keeps its visible text as a lower bound.
+ * - Opaque signatures never count as text; images follow the API's verified rule
+ *   for every role (Claude patch tokens — current 3-family models; flat elsewhere),
+ *   with a bounded header parse only.
+ */
+export function makeReaderTokenEstimator(
+  reader: ReaderIdentity,
+  calibration: TokenCalibrationStore = _fallbackCalibration,
+): TokenEstimator {
+  const text = (value: string) => estimateTokensAtFactor(value, reader.provider, calibration.get(reader.provider, reader.id));
+  const charEstimate = (message: SerializableMessage, dropThinking: boolean): number => {
+    if (!Array.isArray(message.content)) return text(JSON.stringify(serializableMessage(message)));
+    let imageTokens = 0;
+    const content = message.content.map(block => {
+      if (!block || typeof block !== "object") return block;
+      const type = (block as { type?: unknown }).type;
+      if (type === "image") {
+        imageTokens += imageBlockTokens(block as { data?: unknown; source?: { data?: unknown } | string }, reader.api);
+        return { type: "image" };
+      }
+      if (type === "thinking" && dropThinking) return { type: "thinking" };
+      if (!SIGNATURE_KEYS.some(key => (block as Record<string, unknown>)[key] !== undefined)) return block;
+      const clone: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(block)) {
+        if (value !== undefined && !SIGNATURE_KEYS.includes(key)) clone[key] = value;
+      }
+      return clone;
+    });
+    return text(JSON.stringify({ ...serializableMessage(message), content })) + imageTokens;
+  };
+  const estimate = (message: SerializableMessage & AssistantMetadata, options: MessageEstimateOptions | undefined): number => {
+    const proxy = replayProxyTokens(message, reader, options);
+    if (proxy !== null) return proxy;
+    const knownApi = reader.api === "anthropic-messages" || reader.api === "openai-responses"
+      || reader.api === "openai-codex-responses" || reader.api === "openai-completions";
+    const sameModel = message.provider === reader.provider && message.api === reader.api && message.model === reader.id;
+    const responsesApi = reader.api === "openai-responses" || reader.api === "openai-codex-responses";
+    // Cross-model assistant thinking is dropped before wire conversion on known
+    // APIs, and Responses discards same-model reasoning without metadata; other
+    // thinking keeps its visible text as a conservative lower bound.
+    const dropThinking = knownApi && message.role === "assistant" && (!sameModel || responsesApi);
+    return charEstimate(message, dropThinking);
+  };
+  return {
+    text,
+    message: (message, options) => estimate(message as SerializableMessage & AssistantMetadata, options),
+    messages: messages => messages.reduce((sum, message) => sum + estimate(message as SerializableMessage & AssistantMetadata, undefined), 0),
   };
 }

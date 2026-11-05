@@ -351,7 +351,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       messageEntry("u3", "a2", { role: "user", content: [{ type: "text", text: "third" }] }),
       messageEntry("a3", "u3", { role: "assistant", content: [{ type: "text", text: "third answer" }] }),
     ];
-    const rc = makePreparedRc(branch, 100);
+    const rc = makePreparedRc(branch, 130);
     const estimated = branch.reduce((sum, entry) => sum + rc.estimator.message(entry.message as any), 0);
     rc.profileCfg.summaryBudgetTokens = 10;
     rc.ctx.model = { id: "soft", provider: "test", contextWindow: estimated * 4 } as any;
@@ -585,7 +585,7 @@ describe("resolveCompactionWindow tool-result boundary", () => {
       messageEntry("a2", "u2", { role: "assistant", content: [{ type: "text", text: "second answer" }] }),
       messageEntry("u3", "a2", { role: "user", content: [{ type: "text", text: "tail" }] }),
     ];
-    const rc = makePreparedRc(branch, 100);
+    const rc = makePreparedRc(branch, 130);
     const estimated = branch.reduce((sum, entry) => sum + rc.estimator.message(entry.message as any), 0);
     rc.profileCfg.summaryBudgetTokens = 10;
     rc.ctx.model = { id: "anchor", provider: "test", contextWindow: estimated * 4 } as any;
