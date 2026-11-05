@@ -871,7 +871,13 @@ describe("extractMainGoal", () => {
   it.each([
     ["desire form without a task verb (EN)", "I want OAuth instead; never keep password login"],
     ["desire form without a task verb (TR)", "Bana OAuth girişi lazım, asla şifre saklama"],
-  ])("a new task request stays the goal even without a known verb (%s)", (_label, request) => {
+    ["agent noun in subject matter", "Fix the agent-mesh retry bug; do not change the public API."],
+    ["worker noun in subject matter", "I want worker retries; never retry non-idempotent work"],
+    ["stop + worker subject", "Stop worker crashes by implementing cancellation"],
+    ["parallel + never, no agents", "Implement parallel uploads but never store secrets"],
+    ["stop processes as behavior under test", "Write tests for stop processes behavior"],
+    ["constraint-first mixed message", "Don't spawn so many agents; fix the login bug"],
+  ])("a task request stays the goal even when it mentions agents or prohibitions (%s)", (_label, request) => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "keep the password login working" },
       { role: "user", content: request },

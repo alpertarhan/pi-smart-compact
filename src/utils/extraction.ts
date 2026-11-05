@@ -1010,18 +1010,32 @@ const ACK_ONLY_RE =
   /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
 
 /**
- * Clear procedural steering about agent/session/process usage ("bu kadar çok
- * agent açma", "don't open so many agents"). Positive evidence only: an
- * agent-usage noun AND a directive marker in the same message. Anything
- * without this signature — including ambiguous or new task requests — stays
- * the latest substantive goal (main's behavior).
+ * Direct agent-quantity admonitions ("bu kadar çok agent açma", "don't
+ * open so many agents"). Narrow by design: the noun must be agent/ajan
+ * itself (not workers, processes, sessions or parallelism — those name real
+ * software tasks), the directive must sit in the same clause, and EVERY
+ * clause of the message must belong to the admonition. Any other clause —
+ * a task, other subject matter — keeps the message as the goal (main's
+ * behavior).
  */
-const AGENT_USAGE_NOUN_RE =
-  /\b(?:agents?|ajanlar?|workers?|processes|instances?|sessions?|oturumlar?|parallel)\b/i;
-// Word-bounded or multi-word only: bare Turkish stems like "kullanma" also
-// occur inside verbal nouns ("kullanmasını") and must not match as substrings.
-const STEERING_DIRECTIVE_RE =
-  /\b(?:don't|do not|never|stop|avoid|fewer)\b|(?:too many|so many|this many|bu kadar çok|çok fazla)/i;
+const AGENT_NOUN_RE = /\b(?:agents?|ajanlar?|ajan)\b/i;
+const AGENT_DIRECTIVE_RE =
+  /\b(?:don't|do not|never|stop|avoid|fewer)\b|(?:this|that|so|too) many\b|bu kadar çok|çok fazla|(?<![A-Za-z0-9_])(?:açma|kullanma|kapatma|sakın)(?![A-Za-z0-9_])/iu;
+const isAgentAdmonition = (text: string): boolean => {
+  // Version numbers ("glm 5.3") must not split clauses.
+  const clauses = text
+    .replace(/(\d)\.(?=\d)/g, "$1\u0001")
+    .split(/[.!?;\n]+/)
+    .map((clause) => clause.replaceAll("\u0001", ".").trim())
+    .filter((clause) => clause.length > 3);
+  return (
+    clauses.length > 0 &&
+    AGENT_NOUN_RE.test(text) &&
+    clauses.every(
+      (clause) => AGENT_NOUN_RE.test(clause) && AGENT_DIRECTIVE_RE.test(clause),
+    )
+  );
+};
 
 /** Machine status from an earlier compaction is context, not an active user goal. */
 export function isCompactionStatusText(text: string): boolean {
@@ -1050,11 +1064,10 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
       return carried && !isCompactionStatusText(carried) ? carried : null;
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
-    // A clearly steering message about agent usage is not the task. The
-    // signature is positive evidence (agent-usage noun + directive), never
-    // the absence of a known task verb; anything else stays the goal, and if
+    // A direct agent-quantity admonition is not the task. The signature is
+    // narrow (see isAgentAdmonition); anything else stays the goal, and if
     // nothing else remains in-window the caller falls back to the carried goal.
-    if (AGENT_USAGE_NOUN_RE.test(text) && STEERING_DIRECTIVE_RE.test(text)) continue;
+    if (isAgentAdmonition(text)) continue;
     return summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
   }
   return null;
