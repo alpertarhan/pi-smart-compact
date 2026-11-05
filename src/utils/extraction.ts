@@ -412,28 +412,30 @@ export function isTransientToolDiagnostic(text: string): boolean {
 
 /**
  * A retry's result resolves the original error only under the same failure
- * classification that flagged it: not m.isError, and for command-executing
- * tools no failure signal in the result text either — a retry that returns
- * "isError: false" with `Command exited with code 1` in the body is still a
- * failure, not a resolution. Shared by fresh extraction and the cached-delta
- * reconciliation so both paths classify identically.
+ * classification that flagged it. pi sets `isError` on every non-zero exit,
+ * so for command-executing retries a clean-output exit 1 (a trailing
+ * no-match grep after successful commands) is a resolution, not a failure;
+ * any other `isError` result (a failed write, a provider error) never
+ * resolves. Non-`isError` command results still need a failure-free body.
+ * Shared by fresh extraction and the cached-delta reconciliation so both
+ * paths classify identically.
  */
 export function resolvesErrorResult(
   result: LlmMessage | undefined,
   retry: FlatToolCall,
   tcIdx: ToolCallIndex,
 ): boolean {
-  if (!result || result.role !== "toolResult" || result.isError) return false;
+  if (!result || result.role !== "toolResult") return false;
   const resultCall = tcIdx.get(result.toolCallId ?? "");
   const matches =
     retry.id == null
       ? Boolean(resultCall && sameToolOperation(retry, resultCall))
       : result.toolCallId === retry.id;
   if (!matches) return false;
-  return !(
-    classifyToolOperation(retry.arguments, retry.name) === "execute" &&
-    hasCommandFailureSignal(extractText(result.content))
-  );
+  const text = extractText(result.content);
+  const execute = classifyToolOperation(retry.arguments, retry.name) === "execute";
+  if (result.isError && !(execute && isCleanCommandExitOne(text))) return false;
+  return !(execute && hasCommandFailureSignal(text));
 }
 
 export function catalogErrors(

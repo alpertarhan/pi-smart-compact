@@ -694,6 +694,32 @@ describe("catalogErrors retry resolution (A07)", () => {
     expect(errors[1].resolved).toBe(false);
   });
 
+  it("resolves an error when the matching retry exits 1 clean (isError, no signal)", () => {
+    // pi marks every non-zero exit as isError; the retry's commands passed and
+    // only a trailing no-match grep exited 1.
+    const errors = catalogErrors([
+      exec("1"),
+      execResult("1", "Error: assertion failed", true),
+      exec("2"),
+      execResult("2", "25 pass  0 fail \nCommand exited with code 1", true),
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].retryAttempted).toBe(true);
+    expect(errors[0].resolved).toBe(true);
+  });
+
+  it("never resolves through an isError retry that is not a clean command exit", () => {
+    const errors = catalogErrors([
+      exec("1"),
+      execResult("1", "Error: assertion failed", true),
+      exec("2"),
+      execResult("2", "Command exited with code 2", true),
+    ]);
+    // The retry's own exit-2 failure is a second error; the original stays open.
+    expect(errors).toHaveLength(2);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
   it("resolves every related earlier error when a later retry succeeds (A07)", () => {
     const errors = catalogErrors([
       exec("1"),

@@ -248,6 +248,34 @@ describe("mergeExtractions — cached error reconciliation parity (A07)", () => 
     );
   });
 
+  it("reconciles a cached error from a matching clean exit-1 isError retry (parity)", () => {
+    const baseMsgs = [exec("1"), execResult("1", "Error: assertion failed", true)];
+    const deltaMsgs = [
+      exec("2"),
+      execResult("2", "25 pass  0 fail \nCommand exited with code 1", true),
+    ];
+    const base = makeExtraction({
+      errors: catalogErrors(baseMsgs),
+      messageCount: baseMsgs.length,
+    });
+    const delta = makeExtraction({
+      errors: catalogErrors(deltaMsgs),
+      messageCount: deltaMsgs.length,
+    });
+    const merged = mergeExtractions(
+      base,
+      delta,
+      baseMsgs.length,
+      deltaMsgs,
+      buildToolCallIndex(deltaMsgs),
+    );
+    const fresh = catalogErrors([...baseMsgs, ...deltaMsgs]);
+    expect(fresh[0].resolved).toBe(true);
+    expect(merged.errors.map((error) => error.resolved)).toEqual(
+      fresh.map((error) => error.resolved),
+    );
+  });
+
   it("does not reconcile a cached error from a retry whose result text still fails (A07)", () => {
     const failure = "Error: assertion failed\nCommand exited with code 1";
     const baseMsgs = [exec("1"), execResult("1", failure)];
