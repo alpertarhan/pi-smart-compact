@@ -100,6 +100,28 @@ describe("extractMediaAttachments", () => {
 });
 
 describe("trackFileOps", () => {
+  it("records no file effects for an exit-1 chain: later commands never ran", () => {
+    // A non-zero exit means the chain stopped early; the rm/sed may never have
+    // executed, so their file effects are unknowable (isError or not).
+    const chain = (command: string) =>
+      [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command } }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "c1",
+          isError: true,
+          content: "Command exited with code 1",
+        },
+      ] as unknown as LlmMessage[];
+    expect(trackFileOps(chain("test -f old.ts && rm old.ts")).deleted).toEqual([]);
+    expect(
+      trackFileOps(chain("grep -q TODO src/a.ts && sed -i 's/TODO/DONE/' src/a.ts")).modified,
+    ).toEqual([]);
+  });
+
   it("detects file modifications", () => {
     const msgs: LlmMessage[] = [
       {

@@ -230,24 +230,21 @@ export function trackFileOps(
     )) {
       referencedAt.set(ref, i);
     }
-    if (m.role !== "toolResult") continue;
+    if (m.role !== "toolResult" || m.isError) continue;
     const tc = tcIdx.get(m.toolCallId ?? "");
-    const resultText = extractText(m.content);
-    // A clean-output exit 1 is shell control flow, not a failure: commands
-    // before the trailing no-match grep/test ran, so their file effects stand.
-    if (
-      m.isError &&
-      !(
-        tc &&
-        classifyToolOperation(tc.arguments, tc.name) === "execute" &&
-        isCleanCommandExitOne(resultText)
-      )
-    )
-      continue;
     if (!tc) continue;
     const operation = classifyToolOperation(tc.arguments, tc.name);
     if (operation === "execute") {
-      if (hasCommandFailureSignal(resultText)) continue;
+      const resultText = extractText(m.content);
+      // File tracking stays conservative: any non-zero exit means later
+      // commands in the chain may never have run, so the chain's file
+      // effects are unknowable. The clean-exit-1 leniency applies only to
+      // error cataloging and retry resolution, never here.
+      if (
+        /Command exited with code [1-9]\d*\s*$/i.test(resultText) ||
+        hasCommandFailureSignal(resultText)
+      )
+        continue;
       const shell = extractShellFileOperations(tc.arguments);
       for (const file of shell.modified) {
         const existing = modMap.get(file);
@@ -270,6 +267,7 @@ export function trackFileOps(
     if (operation === "mutate") {
       // pi-toolkit truncation hides whether a write was a no-op, so a truncated
       // result is treated as modified (safe default); otherwise skip true no-ops.
+      const resultText = extractText(m.content);
       if (isTruncated(resultText) || !NO_OP_RE.test(resultText)) {
         const existing = modMap.get(filePath);
         modMap.set(filePath, {
