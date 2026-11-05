@@ -323,8 +323,8 @@ trigger returns `ROLLBACK`:
 | Fallback rate | At least +10pp versus stable |
 
 The `LLM summaries` row (LLM-written / attempted applied summaries) is
-reported for both cohorts but is not a trigger; fallback runs still count in
-verifier quality and in the fallback rate exactly as before.
+reported for both cohorts but is not a rollback trigger; fallback runs still
+count in verifier quality and in the fallback rate exactly as before.
 | Damage rate | At least +10pp versus stable |
 
 Without a trigger, `PROMOTE` requires all of the following; otherwise the
@@ -335,7 +335,12 @@ result is `HOLD` with the first missing reason:
 - at least 70% verifier-quality coverage in both cohorts;
 - at least 70% run-correlated damage-observation coverage in both cohorts;
 - canary average verifier quality of at least 85 and success of at least 95%;
-- canary data confidence of at least 85.
+- canary data confidence of at least 85;
+- once the canary has at least 5 applied runs that planned an LLM summary,
+  at least 10% of them committed an LLM summary. Zero-call and native runs are
+  not attempts. A deterministic fallback verifies at 100, so an all-fallback
+  canary would otherwise promote whenever stable is equally broken; partial
+  regressions above 10% stay with the relative fallback-rate trigger.
 
 Damage observations join their originating compaction by run ID and are
 deduplicated per run. Missing observations are missing evidence, never clean

@@ -275,6 +275,20 @@ function roundStats(value: TelemetryWindowStats): TelemetryWindowStats {
  };
 }
 
+/**
+ * HOLD rule: a canary whose planned LLM summaries almost never succeed cannot
+ * promote. Below 10% LLM summaries are effectively absent; partial regressions
+ * above it are the relative fallback trigger's job. Zero-call and native runs
+ * are not attempts.
+ */
+const SUMMARY_HOLD_MIN_ATTEMPTS = 5;
+const SUMMARY_HOLD_MIN_LLM_SHARE = 0.1;
+
+function summaryHold(split: SummarySourceSplit): boolean {
+ const attempts = split.llm + split.fallback;
+ return attempts >= SUMMARY_HOLD_MIN_ATTEMPTS && split.llm / attempts < SUMMARY_HOLD_MIN_LLM_SHARE;
+}
+
 export function assessCanary(
  entries: readonly CompactMetricsEntry[],
  damageEntries: readonly DamageTelemetryEntry[],
@@ -340,6 +354,10 @@ export function assessCanary(
  if (triggers.length && canary.attemptedRuns >= 3) {
   decision = "rollback";
   reasons.push(...triggers.map(trigger => trigger.metric + " crossed " + trigger.threshold));
+ } else if (summaryHold(canary.summaries)) {
+  reasons.push("LLM summaries " + canary.summaries.llm + "/" + (canary.summaries.llm + canary.summaries.fallback)
+   + " in the canary: below " + SUMMARY_HOLD_MIN_LLM_SHARE * 100 + "% after at least " + SUMMARY_HOLD_MIN_ATTEMPTS
+   + " applied LLM summary attempts; deterministic fallbacks verify at 100 and are not quality evidence");
  } else if (canary.appliedRuns < minCanaryRuns) {
   reasons.push("need " + (minCanaryRuns - canary.appliedRuns) + " more canary runs with host-applied outcomes");
  } else if (baseline.appliedRuns < Math.max(20, minCanaryRuns)) {
