@@ -267,18 +267,10 @@ export interface TokenEstimator {
   messages(messages: ReadonlyArray<Pick<LlmMessage, "role" | "content" | "toolCallId" | "toolName" | "isError">>): number;
 }
 
-/** Binary payloads the model does not read as text: never counted as serialized chars. */
-const SIGNATURE_KEYS = ["thinkingSignature", "textSignature", "thoughtSignature"];
-/** Fixed per-image cost, matching Pi's estimateTokens (ESTIMATED_IMAGE_CHARS 4800 / 4). */
-const IMAGE_BLOCK_TOKENS = 1_200;
-
 /**
  * Bind provider/model calibration once per run. Message estimates use the
  * actual structured content, including tool-call arguments that text-only
- * extraction intentionally omits. Base64 image data and provider signatures
- * (Anthropic thinking/text signatures, OpenAI encrypted reasoning stored in
- * thinkingSignature) are dropped before serialization and each image block is
- * priced at a fixed token cost that calibration never scales.
+ * extraction intentionally omits.
  */
 export function makeTokenEstimator(
   provider?: string,
@@ -294,39 +286,9 @@ export function makeTokenEstimator(
     ...(message.toolName ? { toolName: message.toolName } : {}),
     ...(message.isError ? { isError: true } : {}),
   });
-  const countable = (message: Parameters<typeof serializable>[0]) => {
-    const base = serializable(message);
-    if (!Array.isArray(base.content)) return { base, images: 0 };
-    let images = 0;
-    let changed = false;
-    const content = base.content.map(block => {
-      if (!block || typeof block !== "object") return block;
-      if ((block as { type?: unknown }).type === "image") {
-        images++;
-        changed = true;
-        return { type: "image" };
-      }
-      if (!SIGNATURE_KEYS.some(key => (block as Record<string, unknown>)[key] !== undefined)) return block;
-      changed = true;
-      const clone: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(block)) {
-        if (value !== undefined && !SIGNATURE_KEYS.includes(key)) clone[key] = value;
-      }
-      return clone;
-    });
-    // Byte-identical serialization for messages without images or signatures.
-    return changed ? { base: { ...base, content }, images } : { base, images };
-  };
   return {
     text,
-    message: message => {
-      const { base, images } = countable(message);
-      return text(JSON.stringify(base)) + images * IMAGE_BLOCK_TOKENS;
-    },
-    messages: messages => {
-      const counted = messages.map(countable);
-      return text(JSON.stringify(counted.map(item => item.base)))
-        + counted.reduce((sum, item) => sum + item.images, 0) * IMAGE_BLOCK_TOKENS;
-    },
+    message: message => text(JSON.stringify(serializable(message))),
+    messages: messages => text(JSON.stringify(messages.map(serializable))),
   };
 }
