@@ -726,6 +726,17 @@ describe("mineConstraints", () => {
     expect(constraints).toHaveLength(1);
     expect(constraints[0].category).toBe("prohibition");
   });
+
+  it("classifies common Turkish steering imperatives as prohibitions", () => {
+    // "açma" (don't open) and "dokunma" (don't touch) are how the user
+    // steers agent usage; they must be preserved as constraints, not goals.
+    const constraints = mineConstraints([
+      { role: "user", content: "kanka bu kadar çok agent açma lütfen, açacaksan da glm 5.3 kullan" },
+      { role: "user", content: "o dosyalara dokunma, testler bitmeden" },
+    ]);
+    expect(constraints).toHaveLength(2);
+    expect(constraints.every((item) => item.category === "prohibition")).toBe(true);
+  });
   it("ignores short messages and commands", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "/help" },
@@ -795,6 +806,48 @@ describe("extractMainGoal", () => {
     const compacted =
       "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nEESV Compact (model, balanced) — 259,782t Warning: Smart compact skipped\n</summary>";
     expect(extractMainGoal([{ role: "user", content: compacted }])).toBeNull();
+  });
+
+  it("keeps the earlier goal when the latest message is steering, not a task", () => {
+    // The real 15:34 compaction took this Turkish steering message as the goal.
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "torro session'ındaki compaction planlarını doğrula" },
+      {
+        role: "user",
+        content:
+          "kanka bu kadar çok agent açma lütfen açacaksan da glm 5.3 glm anthropic olanı kulan veya sonnet 5.5 low-medium aç anasını satayım.",
+      },
+    ];
+    expect(extractMainGoal(msgs)).toBe("torro session'ındaki compaction planlarını doğrula");
+  });
+
+  it("keeps the earlier goal when the latest message is English steering", () => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "verify the compaction plans in the torro session" },
+      { role: "user", content: "please don't spawn this many agents, use glm 5.3 for the cheap ones" },
+    ];
+    expect(extractMainGoal(msgs)).toBe("verify the compaction plans in the torro session");
+  });
+
+  it.each([
+    ["Turkish", "tamam bulduğun sorunları çözelim"],
+    ["English", "now add the retry budget test"],
+  ])("a new %s task request still becomes the goal", (_label, request) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "gather the earlier findings" },
+      { role: "user", content: request },
+    ];
+    expect(extractMainGoal(msgs)).toBe(request);
+  });
+
+  it("falls back to the carried goal when every raw request is steering", () => {
+    const compacted =
+      "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nVerify the planner windows\n</summary>";
+    const msgs: LlmMessage[] = [
+      { role: "user", content: compacted },
+      { role: "user", content: "kanka bu kadar çok agent açma lütfen açacaksan da glm 5.3 kullan" },
+    ];
+    expect(extractMainGoal(msgs)).toBe("Verify the planner windows");
   });
 });
 

@@ -714,7 +714,7 @@ const CONSTRAINT_PATTERNS: Array<{
   // Turkish-leading forms never matched). (?<![A-Za-z0-9_])…(?![A-Za-z0-9_])
   // treats any non-ASCII letter as a valid edge, so both spellings now work.
   {
-    re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu,
+    re: /(?<![A-Za-z0-9_])(?:yapma|kullanma|açma|dokunma|sakın|sakınha|asla(?:\s+(?:kullanma|yapma|getirme))?|bunu yapma)(?![A-Za-z0-9_])/iu,
     cat: "prohibition",
     conf: TUNING.CONFIDENCE_MEDIUM,
   },
@@ -1018,12 +1018,18 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
     if (!text || isInjectedMessage(m, text)) continue;
     if (HISTORY_SUMMARY_RE.test(text)) {
       const carried = summaryEvidenceLine(
-        findSection(text, "goal")?.body ?? "",
+        (findSection(text, "goal")?.body ?? "").replace(/\s*<\/summary>\s*$/, ""),
         TRUNC.MESSAGE,
       );
       return carried && !isCompactionStatusText(carried) ? carried : null;
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
+    // A steering message (a preference about HOW to work: "don't open so
+    // many agents", a pasted rule set) is not the task. When the constraint
+    // miner classifies the message, keep looking for the previous real
+    // request; if none remains in-window, the caller falls back to the
+    // carried goal.
+    if (mineConstraints([m]).length) continue;
     return summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
   }
   return null;
