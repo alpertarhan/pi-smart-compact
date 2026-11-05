@@ -100,6 +100,28 @@ describe("extractMediaAttachments", () => {
 });
 
 describe("trackFileOps", () => {
+  it("records no file effects for an exit-1 chain: later commands never ran", () => {
+    // A non-zero exit means the chain stopped early; the rm/sed may never have
+    // executed, so their file effects are unknowable (isError or not).
+    const chain = (command: string) =>
+      [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command } }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "c1",
+          isError: true,
+          content: "Command exited with code 1",
+        },
+      ] as unknown as LlmMessage[];
+    expect(trackFileOps(chain("test -f old.ts && rm old.ts")).deleted).toEqual([]);
+    expect(
+      trackFileOps(chain("grep -q TODO src/a.ts && sed -i 's/TODO/DONE/' src/a.ts")).modified,
+    ).toEqual([]);
+  });
+
   it("detects file modifications", () => {
     const msgs: LlmMessage[] = [
       {
@@ -293,6 +315,158 @@ describe("trackFileOps", () => {
 });
 
 describe("catalogErrors", () => {
+  const run = (id: string, command: string, output: string, isError = false) =>
+    [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+      },
+      { role: "toolResult", toolCallId: id, isError, content: output },
+    ] as unknown as LlmMessage[];
+
+  const benignExitOne: Array<[string, string, string]> = [
+    [
+      "git diff --exit-code with clean hunks",
+      "git diff --exit-code main -- src/",
+      "3c3\n< old\n---\n> new\nCommand exited with code 1",
+    ],
+    [
+      "cd then a no-match count grep that printed its zero",
+      'cd /repo/data && grep -c "needle" sessions.jsonl',
+      "0\n\n\nCommand exited with code 1",
+    ],
+    [
+      "no-match search over a zero-failed summary",
+      "grep failing summary.txt",
+      "Tests: 0 failed, 25 passed, 1 skipped\nCommand exited with code 1",
+    ],
+    [
+      "no-match rg over a zero-failures report",
+      "rg \\b[1-9]\\ failing report.txt",
+      "0 failures, 42 examples, 0 pending\nCommand exited with code 1",
+    ],
+    [
+      "false test condition",
+      "test -f /tmp/lock",
+      "\nCommand exited with code 1",
+    ],
+  ];
+
+  it.each(benignExitOne.map(([label, command, output]) => [label, command, output] as const))(
+    "does not catalog a benign-terminal exit 1 (%s)",
+    (_label, command, output) => {
+      // pi marks the non-zero exit as isError on the tool result; both the
+      // isError path and the error-pattern scan must agree it is not a failure.
+      expect(catalogErrors(run("c1", command, output))).toEqual([]);
+      expect(catalogErrors(run("c2", command, output, true))).toEqual([]);
+    },
+  );
+
+  it("preserves a cd failure whose zero line came from an earlier command", () => {
+    const command = "echo 0; cd /dev/null && grep -c x file";
+    const body = "0\nbash: cd: /dev/null: Not a directory\nCommand exited with code 1";
+    for (const isError of [false, true]) {
+      expect(catalogErrors(run("c1", command, body, isError))).toHaveLength(1);
+    }
+    // A matching retry does not resolve it.
+    const errors = catalogErrors([...run("1", command, body, true), ...run("2", command, body, true)]);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
+  it("preserves a hidden read error redirected to null before a benign terminal", () => {
+    const command = "cat missing 2>/dev/null; grep -q missing file";
+    for (const isError of [false, true]) {
+      expect(catalogErrors(run("c1", command, "\nCommand exited with code 1", isError))).toHaveLength(1);
+    }
+    const errors = catalogErrors([
+      ...run("1", command, "Error: cat failed", true),
+      ...run("2", command, "\nCommand exited with code 1", true),
+    ]);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
+  it("still catalogs a benign-terminal exit 1 with truncated output", () => {
+    // A missing error line could simply have been cut off.
+    const truncated = "head of output…✂12345\nCommand exited with code 1";
+    for (const isError of [false, true]) {
+      expect(catalogErrors(run("c1", "git diff --exit-code main -- src/", truncated, isError))).toHaveLength(1);
+    }
+  });
+
+  it("never resolves an error through a quiet ;-compound retry", () => {
+    const command = "./deploy --quiet; grep -q missing file";
+    const errors = catalogErrors([
+      ...run("1", command, "Error: deploy failed", true),
+      ...run("2", command, "\nCommand exited with code 1", true),
+    ]);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
+  it("still catalogs a benign-terminal exit 1 whose body carries bare 'failing'", () => {
+    const errors = catalogErrors(
+      run("c1", "git diff --exit-code main -- src/", "--- a/src/x.ts\n-// failing tests disabled\nCommand exited with code 1", true),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].resolved).toBe(false);
+  });
+
+  it.each([
+    ["quiet deploy script", "./deploy --quiet"],
+    ["silent python check", "python silent_check.py"],
+    ["bare false", "false"],
+    ["quiet deploy after tests", "bun test && ./deploy --quiet"],
+    ["quiet deploy before a benign terminal", "./deploy --quiet && grep -q missing file"],
+    ["quiet deploy behind a cd", "./deploy --quiet && cd . && grep -q missing file"],
+    ["env-wrapped quiet deploy before a benign terminal", "env ./deploy --quiet && grep -q missing file"],
+    ["substituted quiet deploy in a prefix", "X=$(./deploy --quiet) && grep -q missing file"],
+    ["pipefail producer before a matching grep", "set -o pipefail; ./deploy --quiet | grep -q ready"],
+    ["unknown cli tool", "agm task set -scope /repo -state working 'note'"],
+    ["unknown producer before a matching grep", "./deploy --quiet | grep -q ready"],
+    ["failable export predecessor", "export -f nonexistent_function && grep -q missing file"],
+    ["failable local predecessor", "local X=1 && grep -q missing file"],
+    ["redirect hides a failed cd predecessor", "cd /does-not-exist 2>/dev/null && grep -q missing file"],
+    ["input redirect fails before grep", "grep -q needle <missing-file"],
+    ["backgrounded search then a failing node", "grep -q pat f & node build.js"],
+    ["glued background ampersand", "grep -q pat f& node build.js"],
+    ["cd failing at exit 1 (not a directory)", "cd /f-not-dir && grep -q missing file"],
+    ["cd failing at exit 1 (too many arguments)", "cd a b && grep -q missing file"],
+    ["quiet deploy before a ;-joined benign terminal", "./deploy --quiet; grep -q missing file"],
+    ["quiet deploy before an ||-joined benign terminal", "./deploy --quiet || grep -q missing file"],
+    ["mutating sed before a zero-count grep", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
+    ["unknown loop body before a benign terminal", "for i in 1 2 3; do bun test t.test.ts 2>&1 | grep -E \"pass|fail\"; done; git diff main... --name-only | grep -i hindsight"],
+  ])("still catalogs a quiet exit-1 failure (%s)", (_label, command) => {
+    const output = "\nCommand exited with code 1";
+    for (const isError of [false, true]) {
+      const errors = catalogErrors(run("c1", command, output, isError));
+      expect(errors).toHaveLength(1);
+      expect(errors[0].resolved).toBe(false);
+    }
+  });
+
+  it.each([
+    ["failing test count", " 9 pass\n 1 fail \nRan 10 tests\nCommand exited with code 1"],
+    ["failing test count (vitest)", "Tests  1 failed | 9 passed\nCommand exited with code 1"],
+    ["failing test count (mocha)", "  2 passing\n  2 failing\nCommand exited with code 1"],
+    ["go test FAIL line", "--- FAIL: TestWindow (0.01s)\nFAIL\nexit status 1\nCommand exited with code 1"],
+    ["bare go FAIL line mid-body", "run tests: ok\nFAIL\nCommand exited with code 1"],
+    ["TAP not-ok line", "ok 1 setup\nnot ok 2 computes the window\nCommand exited with code 1"],
+    ["module-not-found body", 'error: Module not found "minimax-probe.mjs"\nCommand exited with code 1'],
+    ["typescript errors", "src/a.ts:1:10: error TS2304: Cannot find name 'x'\nCommand exited with code 1"],
+    ["stack trace", "Traceback (most recent call last):\n  File \"x.py\"\nCommand exited with code 1"],
+  ])("still catalogs a real failure with exit 1 (%s)", (_label, output) => {
+    for (const isError of [false, true]) {
+      const errors = catalogErrors(run("c1", "bun test", output, isError));
+      expect(errors.length).toBe(1);
+      expect(errors[0].resolved).toBe(false);
+    }
+  });
+
+  it("still catalogs a clean-output exit 2 or higher", () => {
+    expect(catalogErrors(run("c1", "ls missing", "ls: cannot access 'missing': No such file or directory\nCommand exited with code 2")).length).toBe(1);
+    expect(catalogErrors(run("c2", "tsc", "\nCommand exited with code 2")).length).toBe(1);
+  });
+
   it("catalogs tool errors", () => {
     const msgs: LlmMessage[] = [
       {
@@ -627,6 +801,46 @@ describe("catalogErrors retry resolution (A07)", () => {
     expect(errors[1].resolved).toBe(false);
   });
 
+  it("resolves an error when the matching retry exits 1 clean (isError, no signal)", () => {
+    // pi marks every non-zero exit as isError; the retry ends in a no-match
+    // count grep whose zero is the expected outcome.
+    const command = "grep -c u2192 notes.md";
+    const errors = catalogErrors([
+      exec("1", command),
+      execResult("1", "grep: notes.md: No such file or directory\nCommand exited with code 2", true),
+      exec("2", command),
+      execResult("2", "0\n\n\nCommand exited with code 1", true),
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].retryAttempted).toBe(true);
+    expect(errors[0].resolved).toBe(true);
+  });
+
+  it("never resolves through a quiet exit-1 retry of an unknown && chain", () => {
+    const command = "./deploy --quiet && grep -q missing file";
+    const errors = catalogErrors([
+      exec("1", command),
+      execResult("1", "Error: assertion failed", true),
+      exec("2", command),
+      execResult("2", "\nCommand exited with code 1", true),
+    ]);
+    // The retry's own quiet failure is a second error; the original stays open.
+    expect(errors).toHaveLength(2);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
+  it("never resolves through an isError retry that is not a clean command exit", () => {
+    const errors = catalogErrors([
+      exec("1"),
+      execResult("1", "Error: assertion failed", true),
+      exec("2"),
+      execResult("2", "Command exited with code 2", true),
+    ]);
+    // The retry's own exit-2 failure is a second error; the original stays open.
+    expect(errors).toHaveLength(2);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
   it("resolves every related earlier error when a later retry succeeds (A07)", () => {
     const errors = catalogErrors([
       exec("1"),
@@ -687,6 +901,7 @@ describe("mineConstraints", () => {
     expect(constraints).toHaveLength(1);
     expect(constraints[0].category).toBe("prohibition");
   });
+
   it("ignores short messages and commands", () => {
     const msgs: LlmMessage[] = [
       { role: "user", content: "/help" },
@@ -757,6 +972,63 @@ describe("extractMainGoal", () => {
       "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nEESV Compact (model, balanced) — 259,782t Warning: Smart compact skipped\n</summary>";
     expect(extractMainGoal([{ role: "user", content: compacted }])).toBeNull();
   });
+
+  // The semantic steering-skip guard was removed: noun+directive
+  // co-occurrence (even clause-anchored) misclassified the subject matter of
+  // real software tasks. These preservation tests pin main's selection
+  // semantics — the latest substantive request is the goal — until safe goal
+  // continuity lands as a separate bounded task.
+  it.each([
+    ["desire form without a task verb (EN)", "I want OAuth instead; never keep password login"],
+    ["desire form without a task verb (TR)", "Bana OAuth girişi lazım, asla şifre saklama"],
+    ["agent noun in subject matter", "Fix the agent-mesh retry bug; do not change the public API."],
+    ["worker noun in subject matter", "I want worker retries; never retry non-idempotent work"],
+    ["stop + worker subject", "Stop worker crashes by implementing cancellation"],
+    ["parallel + never, no agents", "Implement parallel uploads but never store secrets"],
+    ["stop processes as behavior under test", "Write tests for stop processes behavior"],
+    ["constraint-first mixed message", "Don't spawn so many agents; fix the login bug"],
+    ["comma-joined task and constraint", "Fix the agent-mesh retry bug, do not change the public API"],
+    ["agent subject with never", "Fix the agent retry bug and never log secrets"],
+    ["never + agents clause", "Never crash the agents when their network fails"],
+    ["comma-joined admonition and task", "Don't spawn so many agents, fix the login bug"],
+  ])("a task request stays the goal even when it mentions agents or prohibitions (%s)", (_label, request) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "keep the password login working" },
+      { role: "user", content: request },
+    ];
+    expect(extractMainGoal(msgs)).toBe(request);
+  });
+
+  it.each([
+    ["Turkish", "tamam bulduğun sorunları çözelim"],
+    ["English", "now add the retry budget test"],
+  ])("a new %s task request still becomes the goal", (_label, request) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "gather the earlier findings" },
+      { role: "user", content: request },
+    ];
+    expect(extractMainGoal(msgs)).toBe(request);
+  });
+
+  it.each([
+    ["task + constraint (EN)", "now add the retry budget test, but don't change the public API"],
+    ["task + prohibition (EN)", "fix the login bug and never commit secrets"],
+    ["task + prohibition (TR)", "bulduğun sorunları çöz ama main'e dokunma"],
+    ["verbal noun açma", "PR açma adımını da otomatikleştir"],
+    ["verbal noun dokunma", "dokunma olaylarını düzelt"],
+  ])("a message that also asks for work stays the goal (%s)", (_label, request) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "gather the earlier findings" },
+      { role: "user", content: request },
+    ];
+    expect(extractMainGoal(msgs)).toBe(request);
+  });
+
+  it("strips the host summary's closing tag from a carried goal", () => {
+    const compacted =
+      "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nVerify the planner windows\n</summary>";
+    expect(extractMainGoal([{ role: "user", content: compacted }])).toBe("Verify the planner windows");
+  });
 });
 
 describe("extractStructured", () => {
@@ -765,6 +1037,21 @@ describe("extractStructured", () => {
     expect(ext.messageCount).toBe(0);
     expect(ext.modifiedFiles.length).toBe(0);
     expect(ext.errors.length).toBe(0);
+  });
+
+  it("does not record a host compaction summary as a user request in the timeline", () => {
+    const compacted =
+      "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nShip it\n</summary>";
+    const ext = extractStructured(
+      [
+        { role: "user", content: compacted },
+        { role: "user", content: "verify the planner windows" },
+      ],
+      PC,
+    );
+    expect(ext.timeline).toEqual([
+      { index: 1, event: "user_request", summary: "verify the planner windows" },
+    ]);
   });
 
   it("extracts all facets from a realistic conversation", () => {

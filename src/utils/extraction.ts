@@ -32,6 +32,8 @@ import {
   extractToolPath,
   sameToolOperation,
   toolOperationSignature,
+  exitOneIsExpectedNoMatch,
+  shellCommandArgument,
 } from "../domain/tool-semantics.ts";
 import { extractFileRefs } from "./file-ref-detect.ts";
 import { findSection, summaryEvidenceLine } from "../domain/summary-parse.ts";
@@ -236,7 +238,15 @@ export function trackFileOps(
     const operation = classifyToolOperation(tc.arguments, tc.name);
     if (operation === "execute") {
       const resultText = extractText(m.content);
-      if (hasCommandFailureSignal(resultText)) continue;
+      // File tracking stays conservative: any non-zero exit means later
+      // commands in the chain may never have run, so the chain's file
+      // effects are unknowable. The clean-exit-1 leniency applies only to
+      // error cataloging and retry resolution, never here.
+      if (
+        /Command exited with code [1-9]\d*\s*$/i.test(resultText) ||
+        hasCommandFailureSignal(resultText)
+      )
+        continue;
       const shell = extractShellFileOperations(tc.arguments);
       for (const file of shell.modified) {
         const existing = modMap.get(file);
@@ -306,12 +316,7 @@ function isBenignSearchResult(
   tc: { arguments: Record<string, unknown> },
   result: string,
 ): boolean {
-  const command =
-    typeof tc.arguments.command === "string"
-      ? tc.arguments.command
-      : typeof tc.arguments.cmd === "string"
-        ? tc.arguments.cmd
-        : "";
+  const command = shellCommandArgument(tc.arguments) ?? "";
   if (/[;\n]|\|\|/.test(command)) return false;
   const segments = command
     .split("&&")
@@ -322,11 +327,55 @@ function isBenignSearchResult(
     segments.every((segment) => /^(?:rg|grep)\b/.test(segment));
   if (!searchOnly || /(?:^|\n)(?:rg|grep):/m.test(result)) return false;
   const exit = result.match(/Command exited with code (\d+)\s*$/i)?.[1];
-  return exit === undefined || exit === "1";
+  // An exit 1 needs the same semantic proof as the general exemption: a
+  // redirected search (grep ... <missing-file) exits 1 in the shell, and an
+  // &&-predecessor search may have been short-circuited.
+  return exit === undefined || (exit === "1" && exitOneIsExpectedNoMatch(command));
 }
 
-function hasCommandFailureSignal(text: string): boolean {
-  if (/Command exited with code [1-9]\d*\s*$/i.test(text)) return true;
+/**
+ * pi marks any non-zero exit as `isError` on the tool result. A trailing
+ * exit 1 is accepted as non-fatal ONLY with positive command semantics
+ * (`exitOneIsExpectedNoMatch`: the terminal pipeline is a no-match search or
+ * condition, reached without a short-circuit that could hide an earlier
+ * failure) AND an output body with no failure signal (error patterns, N>0
+ * fail counts, error TS*, npm error/fatal:/Traceback). Unknown commands and
+ * scripts stay failures: quiet stdout alone proves nothing.
+ */
+function isCleanCommandExitOne(text: string, command?: string): boolean {
+  const exit = text.match(/Command exited with code (\d+)\s*$/i)?.[1];
+  if (exit !== "1") return false;
+  if (command === undefined) return false;
+  // A truncated body may simply have lost its error line — fail closed. The
+  // marker is tested unanchored: the harness appends the exit line after it.
+  if (/…✂\d+/.test(text)) return false;
+  const body = text.replace(/Command exited with code \d+\s*$/i, "");
+  // Positive evidence a counting terminal actually ran: its zero count must
+  // be the body's LAST non-empty line — an earlier zero proves nothing.
+  const bodyLines = body.split("\n").filter((line) => line.trim().length > 0);
+  const terminalCountZero = bodyLines[bodyLines.length - 1]?.trim() === "0";
+  if (!exitOneIsExpectedNoMatch(command, { terminalCountZero })) return false;
+  // Zero counts are clean (jest "0 failed", rspec "0 failures") — strip them
+  // before the strong-word test so they cannot force a failure.
+  const words = body.replace(/\b0\s+(?:fail|failed|failures?|failing)\b/gi, "");
+  return !(
+    LIKELY_ERROR_RE.test(body) ||
+    /\berror TS\d+\b/.test(body) ||
+    /(?:^|\s)[1-9]\d*\s+(?:fail|failed|failures?|failing)\b/i.test(body) ||
+    // Go test prints a bare case-sensitive FAIL line; TAP prints "not ok N".
+    /^FAIL\b/m.test(body) ||
+    /--- FAIL:/.test(body) ||
+    /\bnot ok \d+/.test(body) ||
+    // Strong failure words anywhere (bare "fail" excluded: "0 fail" is clean).
+    /\b(?:failed|failures?|failing|fatal|panic|exception)\b/i.test(words) ||
+    /^(?:npm\s+error|fatal:|traceback\b)/im.test(body)
+  );
+}
+
+function hasCommandFailureSignal(text: string, command?: string): boolean {
+  const exit = text.match(/Command exited with code ([1-9]\d*)\s*$/i)?.[1];
+  if (exit !== undefined && exit !== "1") return true;
+  if (exit === "1") return !isCleanCommandExitOne(text, command);
   const firstLine =
     text
       .split(/\r?\n/)
@@ -374,28 +423,31 @@ export function isTransientToolDiagnostic(text: string): boolean {
 
 /**
  * A retry's result resolves the original error only under the same failure
- * classification that flagged it: not m.isError, and for command-executing
- * tools no failure signal in the result text either — a retry that returns
- * "isError: false" with `Command exited with code 1` in the body is still a
- * failure, not a resolution. Shared by fresh extraction and the cached-delta
- * reconciliation so both paths classify identically.
+ * classification that flagged it. pi sets `isError` on every non-zero exit,
+ * so for command-executing retries a clean-output exit 1 (a trailing
+ * no-match grep after successful commands) is a resolution, not a failure;
+ * any other `isError` result (a failed write, a provider error) never
+ * resolves. Non-`isError` command results still need a failure-free body.
+ * Shared by fresh extraction and the cached-delta reconciliation so both
+ * paths classify identically.
  */
 export function resolvesErrorResult(
   result: LlmMessage | undefined,
   retry: FlatToolCall,
   tcIdx: ToolCallIndex,
 ): boolean {
-  if (!result || result.role !== "toolResult" || result.isError) return false;
+  if (!result || result.role !== "toolResult") return false;
   const resultCall = tcIdx.get(result.toolCallId ?? "");
   const matches =
     retry.id == null
       ? Boolean(resultCall && sameToolOperation(retry, resultCall))
       : result.toolCallId === retry.id;
   if (!matches) return false;
-  return !(
-    classifyToolOperation(retry.arguments, retry.name) === "execute" &&
-    hasCommandFailureSignal(extractText(result.content))
-  );
+  const text = extractText(result.content);
+  const execute = classifyToolOperation(retry.arguments, retry.name) === "execute";
+  const command = shellCommandArgument(retry.arguments);
+  if (result.isError && !(execute && isCleanCommandExitOne(text, command))) return false;
+  return !(execute && hasCommandFailureSignal(text, command));
 }
 
 export function catalogErrors(
@@ -418,6 +470,14 @@ export function catalogErrors(
       continue;
 
     if (m.isError) {
+      // pi marks any non-zero exit as isError; a clean-output exit 1 is shell
+      // control flow, not a session failure (see isCleanCommandExitOne).
+      if (
+        tc &&
+        classifyToolOperation(tc.arguments, tc.name) === "execute" &&
+        isCleanCommandExitOne(text, shellCommandArgument(tc.arguments))
+      )
+        continue;
       errors.push({
         index: i,
         tool: tc?.name ?? "unknown",
@@ -435,7 +495,7 @@ export function catalogErrors(
     // Gated by argument shape, not by tool name, so it auto-covers shell-like
     // tools this code has never seen. Explicit m.isError is handled above.
     if (tc && classifyToolOperation(tc.arguments, tc.name) === "execute") {
-      if (hasCommandFailureSignal(text)) {
+      if (hasCommandFailureSignal(text, shellCommandArgument(tc.arguments))) {
         errors.push({
           index: i,
           tool: tc.name,
@@ -921,7 +981,13 @@ function buildTimeline(
     const m = msgs[i];
     if (m.role === "user") {
       const txt = extractText(m.content);
-      if (!txt.startsWith("/") && !isInjectedMessage(m, txt))
+      // A host compaction summary is carried context, not a user request; the
+      // same boundary extractMainGoal applies.
+      if (
+        !txt.startsWith("/") &&
+        !isInjectedMessage(m, txt) &&
+        !HISTORY_SUMMARY_RE.test(txt)
+      )
         timeline.push({
           index: i,
           event: "user_request",
@@ -955,6 +1021,8 @@ const HISTORY_SUMMARY_RE =
   /^(?:The conversation history before this point was compacted|The following is a summary of a branch that this conversation came back from)[\s\S]*<summary>/i;
 const ACK_ONLY_RE =
   /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
+/** Bare acknowledgements are not requests; shared with fallback placeholders. */
+export { ACK_ONLY_RE };
 
 /** Machine status from an earlier compaction is context, not an active user goal. */
 export function isCompactionStatusText(text: string): boolean {
@@ -977,7 +1045,7 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
     if (!text || isInjectedMessage(m, text)) continue;
     if (HISTORY_SUMMARY_RE.test(text)) {
       const carried = summaryEvidenceLine(
-        findSection(text, "goal")?.body ?? "",
+        (findSection(text, "goal")?.body ?? "").replace(/\s*<\/summary>\s*$/, ""),
         TRUNC.MESSAGE,
       );
       return carried && !isCompactionStatusText(carried) ? carried : null;

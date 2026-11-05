@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   classifyTool, classifyToolOperation, extractShellFileOperations, extractToolPath, fileOperationPaths, isReadOnlyShellCommand, isRemovableResearchCall, isArchivableToolResult, isReadOnlyResearchTool, normalizeToolName,
-  toolCallSubject,
+  toolCallSubject, exitOneIsExpectedNoMatch,
 } from "../src/domain/tool-semantics.ts";
 
 describe("classifyTool", () => {
@@ -171,6 +171,140 @@ describe("fileOperationPaths", () => {
   });
 });
 
+describe("extractShellFileOperations sed in place", () => {
+  it("never records the sed script as the edited file", () => {
+    // The real 15:34 compaction recorded "s/\\u2192/→/g" as a modified file:
+    // with a non-literal target ($F) the script was the only operand left.
+    expect(extractShellFileOperations({ command: "sed -i 's/\\\\u2192/→/g' $F" })).toEqual({ modified: [], deleted: [] });
+  });
+
+  it("records the literal file when the script is the first operand", () => {
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/g' src/a.ts" })).toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i '' 's/a/b/' src/a.ts" })).toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i.bak 's/a/b/' src/a.ts" })).toEqual({ modified: ["src/a.ts"], deleted: [] });
+  });
+
+  it("treats -e/--expression and -f/--file values as scripts, not files", () => {
+    expect(extractShellFileOperations({ command: "sed -i -e 's/a/b/' -e 's/c/d/' src/a.ts src/b.ts" }))
+      .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed --in-place --expression='s/a/b/' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i -f fixes.sed src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed --file=fixes.sed --in-place src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+  });
+
+  it("records every edited file when the script leaves earlier ones unrecorded", () => {
+    // The old last-operand rule recorded only src/b.ts here.
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
+      .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
+  });
+
+  it("records the literal file when the script itself is not a literal path", () => {
+    // Scripts freely contain $, [], (), + — the script slot must still be
+    // consumed, or the real file is mistaken for the script.
+    expect(extractShellFileOperations({ command: "sed -i 's/foo(/bar(/' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i '/^$/d' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/[0-9]+/N/g' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/;s/c/d/' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i -es/a/b/ src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i '' '/^$/d' src/a.ts" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+  });
+
+  it("records bundled -ni flags and BSD's separate dotted suffix", () => {
+    expect(extractShellFileOperations({ command: "sed -ni 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -in 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i .bak 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i .bak -e 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+  });
+
+  it("never treats attached -e/-f scripts as in-place flags", () => {
+    // Attached script forms contain dots/slashes and must stay read-only.
+    expect(extractShellFileOperations({ command: "sed -ffixes.sed input" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -fsedscript input" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -es/a/b/ f" })).toEqual({ modified: [], deleted: [] });
+  });
+
+  it("handles the ambiguous bare -i suffix form without fabricating files", () => {
+    // `sed -i bak ...` is BSD's separate suffix or GNU's script — undecided,
+    // so the bare suffix-shaped word is skipped and the script keeps its slot.
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' $F" }))
+      .toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak -e 's/a/b/' file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/'" }))
+      .toEqual({ modified: [], deleted: [] });
+    // GNU slashless scripts keep main's behavior: the file is recorded.
+    expect(extractShellFileOperations({ command: "sed -i '3d' file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i d file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    // Absolute literal targets are ordinary files, not address scripts.
+    expect(extractShellFileOperations({ command: "sed -i d /tmp/a.ts" }))
+      .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' /tmp/a.ts" }))
+      .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
+    // A script already supplied before the bare -i: the next word is the file.
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -e 's/a/b/' -i file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -f fixes.sed -i file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i /tmp/a.ts" }))
+      .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i $F" }))
+      .toEqual({ modified: [], deleted: [] });
+    // Dotted/relative final targets with the script already supplied.
+    expect(extractShellFileOperations({ command: "sed -e 's/a/b/' -i .env" }))
+      .toEqual({ modified: [".env"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i .env" }))
+      .toEqual({ modified: [".env"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i ./src/a.ts" }))
+      .toEqual({ modified: ["./src/a.ts"], deleted: [] });
+    // Valid BSD suffix+input with the script supplied: only the input is edited.
+    expect(extractShellFileOperations({ command: "sed -e 's/a/b/' -i .bak file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -f fixes.sed -i bak file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    // GNU two-target form stays conservative: last target only.
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i f1 f2" }))
+      .toEqual({ modified: ["f2"], deleted: [] });
+    // Trailing valueless flags are not target operands.
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i src/a.ts -n" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i d src/a.ts -n" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i $F -n" }))
+      .toEqual({ modified: [], deleted: [] });
+    // Unambiguous multi-file form is unchanged.
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
+      .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
+    // Bundled attached suffixes edit the file.
+    expect(extractShellFileOperations({ command: "sed -Ei.bak 's/a/b/' f" }))
+      .toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -ni.bak 's/a/b/' f" }))
+      .toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -Ei~ 's/a/b/' f" }))
+      .toEqual({ modified: ["f"], deleted: [] });
+  });
+
+  it("records nothing for read-only sed or in-place sed without a literal file", () => {
+    expect(extractShellFileOperations({ command: "sed -n '40,75p' src/x.ts" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/' *.ts" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i 's/a/b/'" })).toEqual({ modified: [], deleted: [] });
+  });
+});
+
 describe("extractShellFileOperations heredocs", () => {
   it("reads a heredoc body as data, so arrow functions in it are not redirects", () => {
     const command = "cat > /tmp/x.test.ts <<\"EOF\"\nconst t = msgs.map(m => m.text);\nconst k = gaps.filter(g => g.kind === \"x\");\nEOF\nbun test /tmp/x.test.ts";
@@ -184,6 +318,65 @@ describe("extractShellFileOperations heredocs", () => {
 
   it("keeps a redirect written on the heredoc line itself", () => {
     expect(extractShellFileOperations({ command: "cat <<EOF > notes.md\na => b\nEOF" }).modified).toEqual(["notes.md"]);
+  });
+});
+
+describe("exitOneIsExpectedNoMatch", () => {
+  it.each([
+    ["unknown directly before the terminal", "./deploy --quiet && grep -q missing file"],
+    ["unknown behind a harmless cd", "./deploy --quiet && cd . && grep -q missing file"],
+    ["harmless unknown chain both sides", "cd . && ./deploy --quiet && grep -q missing file"],
+    ["env executes the unknown", "env ./deploy --quiet && grep -q missing file"],
+    ["assignment runs a substitution", "X=$(./deploy --quiet) && grep -q missing file"],
+    ["pipefail producer owns the exit", "set -o pipefail; ./deploy --quiet | grep -q ready"],
+    ["unknown pipeline producer before a matching grep", "./deploy --quiet | grep -q ready"],
+    ["failable export predecessor", "export -f nonexistent_function && grep -q missing file"],
+    ["failable local predecessor", "local X=1 && grep -q missing file"],
+    ["redirect hides a failed cd predecessor", "cd /does-not-exist 2>/dev/null && grep -q missing file"],
+    ["input redirect fails in the shell before grep", "grep -q needle <missing-file"],
+    ["redirect on the terminal pipeline", "ls /tmp/dir 2>/dev/null | grep 2026-11-05"],
+  ])("rejects %s", (_label, command) => {
+    expect(exitOneIsExpectedNoMatch(command)).toBe(false);
+  });
+
+  it.each([
+    ["ls piped into grep", "ls /tmp/dir | grep 2026-11-05"],
+    ["git-diff producer piped into grep", "git diff main... --stat | tail -1 | grep -i hindsight"],
+    ["read-only ;-joined statements", "pwd; ls /tmp/dir | grep 2026-11-05"],
+    ["git diff name-only piped into grep", "git diff main... --name-only | grep -i hindsight"],
+    ["git diff --exit-code", "git diff --exit-code main -- src/"],
+    ["test condition", "test -f /tmp/lock"],
+  ])("accepts %s", (_label, command) => {
+    expect(exitOneIsExpectedNoMatch(command)).toBe(true);
+  });
+
+  it("accepts a read-only multi-statement chain with counting-terminal evidence", () => {
+    const chain = 'cd ~/.pi/s && sed -n 682,712p src/index.ts; grep -rn "n" src --include=*.ts | head -3; cd ~/.pi/d && grep -c "n" file.jsonl';
+    expect(exitOneIsExpectedNoMatch(chain, { terminalCountZero: true })).toBe(true);
+    expect(exitOneIsExpectedNoMatch(chain)).toBe(false); // no zero-count evidence for the cd
+  });
+
+  it("accepts a cd predecessor only with a counting terminal that printed zero", () => {
+    const command = 'cd /repo/data && grep -c "needle" sessions.jsonl';
+    expect(exitOneIsExpectedNoMatch(command)).toBe(false); // no evidence
+    expect(exitOneIsExpectedNoMatch(command, { terminalCountZero: false })).toBe(false);
+    expect(exitOneIsExpectedNoMatch(command, { terminalCountZero: true })).toBe(true); // grep ran, counted 0
+  });
+
+  it.each([
+    ["backgrounded search then node", "grep -q pat f & node build.js"],
+    ["glued background ampersand", "grep -q pat f& node build.js"],
+    ["cd failing at exit 1 (not a directory)", "cd /f-not-dir && grep -q missing file"],
+    ["cd failing at exit 1 (too many arguments)", "cd a b && grep -q missing file"],
+    ["quiet deploy ;-joined before a benign terminal", "./deploy --quiet; grep -q missing file"],
+    ["quiet deploy ||-joined before a benign terminal", "./deploy --quiet || grep -q missing file"],
+    ["mutating sed before a zero-count grep", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
+    ["unknown loop body before a benign terminal", "for i in 1 2 3; do bun test t.test.ts 2>&1 | grep -E \"pass|fail\"; done; git diff main... --name-only | grep -i hindsight"],
+    ["unknown ;-joined statement", "python check.py; ls /tmp | grep x"],
+    ["redirect silences an earlier read error", "cat missing 2>/dev/null; grep -q missing file"],
+    ["redirect silences an earlier ||-joined read error", "cat missing 2>/dev/null || grep -q missing file"],
+  ])("rejects %s", (_label, command) => {
+    expect(exitOneIsExpectedNoMatch(command)).toBe(false);
   });
 });
 

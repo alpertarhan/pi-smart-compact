@@ -36,6 +36,14 @@ const PAYLOAD_KEYS = [
 /** Argument keys that carry a shell command to execute. */
 const COMMAND_KEYS = ["command", "cmd", "script"] as const;
 
+/** The shell command of a tool-call argument record, if any. */
+export function shellCommandArgument(args: unknown): string | undefined {
+  const record = args && typeof args === "object" ? (args as Args) : null;
+  return record
+    ? COMMAND_KEYS.map((key) => record[key]).find((value): value is string => typeof value === "string")
+    : undefined;
+}
+
 function hasPresent(args: Args, keys: readonly string[]): boolean {
   // `!= null` so an empty-string payload (write empty file) still counts as
   // "present" — presence of the arg is the signal, not its value.
@@ -269,8 +277,146 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     while (commandIndex < words.length && words[commandIndex].startsWith("-")) commandIndex++;
   }
   const command = words[commandIndex]?.split("/").pop()?.toLowerCase();
+  if (!command) return { modified, deleted };
+  if (command === "sed") {
+    // In-place sed: identify the script operand so it is never recorded as
+    // the edited file. The script is the first operand unless
+    // -e/--expression or -f/--file supplies it; every other literal operand
+    // is an edited file. Backup suffixes (-i.bak, BSD's -i '') are options or
+    // an empty word, so they never reach the operand walk.
+    // In-place gate: bare/attached -i ("-i", "-i.bak", BSD's separate suffix
+    // word), or a bundle of sed's value-less flags with i followed only by
+    // more such flags or a suffix separator ("-ni", "-Ei.bak", "-Ei~").
+    // Attached scripts ("-ffixes.sed", "-es/a/b/") never match.
+    // Last raw operand, ignoring trailing valueless flags (-n): GNU option
+    // permutations can place flags after the target (sed 's/a/b/' -i f -n).
+    // Nonliteral words ($F) are kept as the selection and rejected after.
+    const lastOperand = (rest: string[]): string | undefined => {
+      for (let i = rest.length - 1; i >= 0; i--) {
+        if (!rest[i].startsWith("-")) return rest[i];
+      }
+      return undefined;
+    };
+    if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || /^-[nErszu]*i(?:[nErszu]*$|[^A-Za-z])/.test(word) || word.startsWith("--in-place"))) {
+      // BSD's ambiguous bare suffix (`sed -i bak 's/a/b/' f`: suffix or GNU
+      // script — the dialect cannot be decided). Original last-target
+      // behavior: record the last raw operand when it is a literal path, and
+      // never when it is not (`$F`) or script-like (`s/…/…/`, `/addr/…`).
+      const args = words.slice(commandIndex + 1);
+      const bareIndex = args.indexOf("-i");
+      const ambiguous = args[bareIndex + 1];
+      // A script already supplied before the bare -i (first bare operand, or
+      // any -e/-f/--expression/--file form) means the word after -i is the
+      // GNU input file, not a BSD suffix — the normal walk records it.
+      // The GNU final-input inference applies only when the word after the
+      // bare -i is the LAST operand: with a script already supplied and
+      // nothing following, BSD's suffix reading would have to edit stdin.
+      const scriptBefore =
+        bareIndex !== -1 &&
+        args.slice(0, bareIndex).some(
+          (word) =>
+            !word.startsWith("-") ||
+            word.startsWith("-e") ||
+            word.startsWith("-f") ||
+            word.startsWith("--expression") ||
+            word.startsWith("--file"),
+        );
+      const finalTarget = scriptBefore && bareIndex === args.length - 2;
+      if (
+        !scriptBefore &&
+        bareIndex !== -1 &&
+        ambiguous !== undefined &&
+        !ambiguous.startsWith("-") &&
+        !ambiguous.startsWith(".") &&
+        !ambiguous.includes("/")
+      ) {
+        const rest = args.slice(bareIndex + 2);
+        const lastRaw = lastOperand(rest);
+        // Address scripts (/^$/d) usually carry regex metachars the literal
+        // filter already rejects; only the s|y prefix is excluded explicitly.
+        // A no-target command may leave a path-looking last word — harmless:
+        // trackFileOps only records successful executions, and genuine
+        // literal absolute targets (/tmp/a.ts) stay valid files.
+        if (
+          lastRaw !== undefined &&
+          literalShellPath(lastRaw) === lastRaw &&
+          !/^(?:s|y)\//.test(lastRaw)
+        ) {
+          modified.push(lastRaw);
+        }
+        return { modified, deleted };
+      }
+      if (scriptBefore && !finalTarget) {
+        // Script supplied AND operands follow (-i .bak file, -i bak file):
+        // valid BSD suffix+input; the dialect is ambiguous, so keep main's
+        // conservative last-target rule and never fabricate the suffix.
+        const rest = args.slice(bareIndex + 1);
+        const lastRaw = lastOperand(rest);
+        if (
+          lastRaw !== undefined &&
+          literalShellPath(lastRaw) === lastRaw &&
+          !/^(?:s|y)\//.test(lastRaw)
+        ) {
+          modified.push(lastRaw);
+        }
+        return { modified, deleted };
+      }
+      let scriptSeen = false;
+      let options = true;
+      for (let index = commandIndex + 1; index < words.length; index++) {
+        const word = words[index];
+        if (options && word === "--") {
+          options = false;
+          continue;
+        }
+        // shortcut: after a bare -i with no script yet supplied, a dotted
+        // word is BSD's separate suffix (sed -i .bak 's/a/b/' f); it is
+        // skipped, never the script or a file. With the script already
+        // supplied before the -i, a final dotted word is the GNU input file
+        // (.env, ./src/a.ts): BSD's suffix reading would have to edit stdin.
+        // (The empty BSD suffix `sed -i '' s/…/ f` never appears as a word:
+        // the tokenizer drops empty quotes.)
+        if (
+          options &&
+          !finalTarget &&
+          word === "-i" &&
+          words[index + 1] !== undefined &&
+          !words[index + 1].startsWith("-") &&
+          words[index + 1].startsWith(".")
+        ) {
+          index++;
+          continue;
+        }
+        if (options && (word === "-e" || word === "--expression" || word === "-f" || word === "--file")) {
+          index++; // the option's value is a script (or script file), never an edited file
+          scriptSeen = true;
+          continue;
+        }
+        if (
+          options &&
+          (word.startsWith("--expression=") ||
+            word.startsWith("--file=") ||
+            /^-[ef]./.test(word)) // attached -es/a/b/ or -fscript.sed
+        ) {
+          scriptSeen = true;
+          continue;
+        }
+        if (options && word.startsWith("-")) continue;
+        // The script decision runs on the RAW word, before literalShellPath:
+        // scripts freely contain $, [], (), * … and must still consume the
+        // script slot, or the real file would be mistaken for the script.
+        if (!scriptSeen) {
+          scriptSeen = true; // first bare operand is the script
+          continue;
+        }
+        const target = literalShellPath(word);
+        if (target) modified.push(target);
+      }
+    }
+    return { modified, deleted };
+  }
   const operands = shellOperands(words, commandIndex + 1);
-  if (!command || !operands.length) return { modified, deleted };
+  if (!operands.length) return { modified, deleted };
   if (command === "rm" || command === "unlink") {
     deleted.push(...operands);
   } else if (command === "touch" || command === "tee") {
@@ -279,10 +425,6 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     modified.push(operands[operands.length - 1]);
   } else if (command === "mv") {
     deleted.push(...operands.slice(0, -1));
-    modified.push(operands[operands.length - 1]);
-  } else if (command === "sed" && words.slice(commandIndex + 1).some(word => /^-i|^--in-place/.test(word))) {
-    // The final operand is the edited file; earlier operands may be scripts or
-    // platform-specific empty backup suffixes.
     modified.push(operands[operands.length - 1]);
   }
   return { modified, deleted };
@@ -389,6 +531,185 @@ export function isReadOnlyShellCommand(command: string): boolean {
     }
   }
   return readOnlyShellSegment(words);
+}
+
+/** Search/condition commands whose exit 1 is expected control flow, not failure. */
+const NO_MATCH_EXIT_ONE_COMMANDS = new Set([
+  "grep", "egrep", "fgrep", "rg", "ag", "ack", "test", "[",
+]);
+/** Statements that may sit directly before the terminal in an && chain:
+ * pwd/true execute nothing and cannot exit 1; cd can (Not a directory,
+ * too many arguments) and is only trusted with positive terminal-execution
+ * evidence (a counting grep that actually printed its zero count). Wrappers
+ * (env/export/local) execute or fail on their own and never qualify. */
+const HARMLESS_AND_PREFIX = new Set(["cd", "pwd", "true"]);
+
+function isEnvAssignment(word: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+}
+
+/** The command name of a pipeline's final unit (bare names only, like the read-only set). */
+function terminalPipelineCommand(words: Array<{ kind: "word" | "pipe"; value: string }>): string | undefined {
+  let last = words.length - 1;
+  while (last >= 0 && words[last].kind !== "word") last--;
+  let start = last;
+  while (start > 0 && words[start - 1].kind === "word") start--;
+  const name = words[start]?.value ?? "";
+  // Bare names only: ./grep or /bin/grep could be anything.
+  return name && !name.includes("/") && !isEnvAssignment(name) ? name : undefined;
+}
+
+/** The first command word of a statement (after any env assignments). */
+function statementCommand(words: string[]): string | undefined {
+  const first = words.find((word) => !isEnvAssignment(word));
+  return first && !first.includes("/") ? first : undefined;
+}
+
+/**
+ * True when the command itself proves that exit 1 is expected, non-fatal
+ * control flow: the terminal pipeline ends in a no-match search or condition
+ * (grep/rg family, test/[, git diff --exit-code/--quiet, diff -q), reached
+ * without a short-circuit that could hide an earlier failure (an &&-joined
+ * predecessor must be cd/pwd/assignment class; ; and || attribution is safe:
+ * a ;-list exits with the last statement, and A || B exits 1 only when B ran).
+ * Unknown commands, scripts and mutations never qualify — quiet stdout alone
+ * proves nothing.
+ */
+export function exitOneIsExpectedNoMatch(
+  command: string,
+  evidence?: { terminalCountZero: boolean },
+): boolean {
+  // Command/process substitution can execute a failing command inside a
+  // prefix (X=$(./deploy --quiet)); attribution is unknowable.
+  if (/(?:\$\(|`|<\()/.test(command)) return false;
+  const tokens = tokenizeShell(command);
+  // A & backgrounds the previous command or is glued to it (f&); the
+  // tokenizer keeps both as words. Whatever ran last is then not what the
+  // words suggest — reject. A leading &<digits> is a redirect's fd target.
+  if (
+    tokens.some(
+      (token) => token.kind === "word" && token.value.includes("&") && !/^&\d+$/.test(token.value),
+    )
+  )
+    return false;
+  interface Statement {
+    sepBefore: ";" | "&&" | "||" | null;
+    words: Array<{ kind: "word" | "pipe"; value: string }>;
+    redirected: boolean;
+  }
+  const statements: Statement[] = [{ sepBefore: null, words: [], redirected: false }];
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.kind === "heredoc") continue;
+    if (token.kind === "redirect") {
+      statements[statements.length - 1].redirected = true;
+      if (tokens[index + 1]?.kind === "word") index++; // the target is not a command
+      continue;
+    }
+    if (token.kind === "separator") {
+      if (token.value === "|") {
+        statements[statements.length - 1].words.push({ kind: "pipe", value: "|" });
+      } else {
+        statements.push({
+          sepBefore: token.value === "&&" || token.value === "||" ? token.value : ";",
+          words: [],
+          redirected: false,
+        });
+      }
+      continue;
+    }
+    statements[statements.length - 1].words.push({ kind: "word", value: token.value });
+  }
+  // Trailing separators (e.g. a command ending in "&&") leave an empty terminal.
+  while (statements.length && !statements[statements.length - 1].words.length) statements.pop();
+  const terminal = statements[statements.length - 1];
+  if (!terminal) return false;
+  // An input redirect can fail in the shell before the terminal command runs
+  // (grep ... <missing-file exits 1 from the shell); a tokenizer-level "<"
+  // inside a word is the same shape.
+  const terminalWords = terminal.words.map((item) => item.value);
+  if (terminal.redirected || terminalWords.some((word) => word.startsWith("<"))) return false;
+  // Under host-configured pipefail, any producer of the terminal pipeline can
+  // own its exit; every producer must be a proven read-only command.
+  const units: string[][] = [[]];
+  for (const item of terminal.words) {
+    if (item.kind === "pipe") units.push([]);
+    else units[units.length - 1].push(item.value);
+  }
+  if (units.slice(0, -1).some((unit) => !readOnlyShellSegment(unit))) return false;
+  const name = terminalPipelineCommand(terminal.words);
+  const wordValues = terminalWords;
+  // Positive evidence that the terminal counting search actually ran and
+  // counted zero: only then may a failing-able cd prefix be trusted.
+  const countingTerminal =
+    name !== undefined &&
+    ["grep", "egrep", "fgrep", "rg"].includes(name) &&
+    wordValues.some((word) => word === "-c" || word === "--count" || /^-[^-]+c/.test(word));
+  const benign =
+    name !== undefined &&
+    (NO_MATCH_EXIT_ONE_COMMANDS.has(name) ||
+      (name === "git" &&
+        wordValues[1] === "diff" &&
+        wordValues.some((w) => w === "--exit-code" || w === "--quiet")) ||
+      (name === "diff" && wordValues.some((w) => w === "-q" || w === "--brief" || w === "--exit-code")));
+  if (!benign) return false;
+  // The terminal's no-match exit proves nothing about earlier statements: a
+  // ;-list discards their status and || even proves the left side failed.
+  // Every pipe unit of every earlier statement must be provably read-only, a
+  // condition, or a plain assignment — unknown/mutating segments fail closed.
+  const unitPasses = (unit: string[]): boolean => {
+    if (unit.length && unit.every((word) => isEnvAssignment(word))) return true;
+    if (readOnlyShellSegment(unit)) return true;
+    const unitName = unit.find((word) => !isEnvAssignment(word));
+    return (
+      unitName !== undefined &&
+      !unitName.includes("/") &&
+      (NO_MATCH_EXIT_ONE_COMMANDS.has(unitName) ||
+        (unitName === "git" && unit[1] === "diff" && unit.some((w) => w === "--exit-code" || w === "--quiet")) ||
+        (unitName === "diff" && unit.some((w) => w === "-q" || w === "--brief" || w === "--exit-code")))
+    );
+  };
+  for (let index = 0; index < statements.length - 1; index++) {
+    // A redirect can silence a read error (cat missing 2>/dev/null); a
+    // hidden earlier failure stays a real failure regardless of boundaries.
+    if (statements[index].redirected) return false;
+    const units: string[][] = [[]];
+    for (const item of statements[index].words) {
+      if (item.kind === "pipe") units.push([]);
+      else units[units.length - 1].push(item.value);
+    }
+    if (units.some((unit) => unit.length > 0 && !unitPasses(unit))) return false;
+  }
+  // `set` anywhere changes exit semantics (pipefail makes an earlier pipeline
+  // producer own the exit; errexit aborts before the terminal) — reject.
+  if (
+    statements.some((statement) =>
+      statementCommand(statement.words.filter((item) => item.kind === "word").map((item) => item.value)) === "set")
+  )
+    return false;
+  // Attribution: walk back through the && chain into the terminal (the edge
+  // INTO the next statement is the next statement's sepBefore). A ;-joined
+  // boundary discards earlier exits, and || means the right side ran; only &&
+  // can leave the exit owned by an unknown earlier command.
+  for (let index = statements.length - 2; index >= 0; index--) {
+    if (statements[index + 1].sepBefore !== "&&") break;
+    const priorWords = statements[index].words
+      .filter((item) => item.kind === "word")
+      .map((item) => item.value);
+    if (priorWords.some((word) => word.startsWith("<"))) return false;
+    const prior = statementCommand(priorWords);
+    const assignmentsOnly = priorWords.every((word) => isEnvAssignment(word));
+    // A no-match predecessor is itself exit-1-benign: searches and conditions
+    // exit 1 only for no-match/false (real errors exit 2), so a short-circuit
+    // there still leaves exit 1 expected (main's rg/grep-chain behavior).
+    // cd additionally requires the counting-terminal zero-count evidence.
+    const harmless =
+      prior !== undefined &&
+      (HARMLESS_AND_PREFIX.has(prior) || NO_MATCH_EXIT_ONE_COMMANDS.has(prior)) &&
+      (prior !== "cd" || (countingTerminal && Boolean(evidence?.terminalCountZero)));
+    if (!assignmentsOnly && !harmless) return false;
+  }
+  return true;
 }
 
 /** Calls a research rewind may remove: read-only research tools, plus shell commands that provably only read. */

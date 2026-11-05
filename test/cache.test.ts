@@ -248,6 +248,52 @@ describe("mergeExtractions — cached error reconciliation parity (A07)", () => 
     );
   });
 
+  it("reconciles a cached error from a matching clean exit-1 isError retry (parity)", () => {
+    const command = "grep -c u2192 notes.md";
+    const baseMsgs = [
+      exec("1", command),
+      execResult("1", "grep: notes.md: No such file or directory\nCommand exited with code 2", true),
+    ];
+    const deltaMsgs = [
+      exec("2", command),
+      execResult("2", "0\n\n\nCommand exited with code 1", true),
+    ];
+    const base = makeExtraction({
+      errors: catalogErrors(baseMsgs),
+      messageCount: baseMsgs.length,
+    });
+    const delta = makeExtraction({
+      errors: catalogErrors(deltaMsgs),
+      messageCount: deltaMsgs.length,
+    });
+    const merged = mergeExtractions(
+      base,
+      delta,
+      baseMsgs.length,
+      deltaMsgs,
+      buildToolCallIndex(deltaMsgs),
+    );
+    const fresh = catalogErrors([...baseMsgs, ...deltaMsgs]);
+    expect(fresh[0].resolved).toBe(true);
+    expect(merged.errors.map((error) => error.resolved)).toEqual(
+      fresh.map((error) => error.resolved),
+    );
+  });
+
+  it("does not reconcile a cached error from a quiet exit-1 retry of an unknown command", () => {
+    // Quiet stdout is not success: the retry's exit 1 has no benign terminal
+    // command, so the original error stays unresolved.
+    const baseMsgs = [exec("1"), execResult("1", "Error: assertion failed", true)];
+    const deltaMsgs = [
+      exec("2", "./deploy --quiet"),
+      execResult("2", "\nCommand exited with code 1", true),
+    ];
+    const base = makeExtraction({ errors: catalogErrors(baseMsgs), messageCount: baseMsgs.length });
+    const delta = makeExtraction({ errors: catalogErrors(deltaMsgs), messageCount: deltaMsgs.length });
+    const merged = mergeExtractions(base, delta, baseMsgs.length, deltaMsgs, buildToolCallIndex(deltaMsgs));
+    expect(merged.errors.map((error) => error.resolved)).toEqual([false, false]);
+  });
+
   it("does not reconcile a cached error from a retry whose result text still fails (A07)", () => {
     const failure = "Error: assertion failed\nCommand exited with code 1";
     const baseMsgs = [exec("1"), execResult("1", failure)];
