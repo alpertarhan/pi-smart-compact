@@ -1455,6 +1455,19 @@ function controlOf(entries: SessionBoundaryDraft[] | undefined) {
 }
 
 describe("automatic trim timing", () => {
+  it("refuses an agent trim that does not pay back below the gate; a human trim still commits", async () => {
+    const { h, old } = deferredFixture(OPENAI, true);
+    Object.assign(h.cfg, { autoTriggerStrategy: "settled" });
+    h.setTokens(150_000); // cleanup band, compaction not due
+    expect(expectedTrim(h.session, OPENAI).breakEvenRequests).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+    const batch = await h.execute({ action: "trim" });
+    expect(h.boundary(batch).entries.at(-1).content).toContain("pays back its prompt-cache rewrite only after");
+    expect(h.changes()).toBe(0);
+    expect(inspectContext(h.session.getBranch(), h.session.getSessionId()).references.size).toBe(0);
+    expect(h.controller.requestManualTrim(h.ctx).state).toBe("queued");
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ cause: "manual", references: [old.result] });
+  });
+
   it.each([true, false])("keeps an uneconomic cached prefix in the cleanup band (pressure-only=%s)", pressureOnly => {
     const { h, old } = deferredFixture(OPENAI, true);
     Object.assign(h.cfg, { autoTriggerStrategy: "settled", contextPressureOnly: pressureOnly });

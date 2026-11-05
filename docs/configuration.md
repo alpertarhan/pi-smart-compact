@@ -459,7 +459,8 @@ At a completed turn boundary a ready batch commits with cause:
 
 An unknown price only allows `pressure` at the compaction gate and opt-in `cold`
 (the latter still needs lifetime metadata). Manual and permitted agent trims
-commit at the next boundary (causes `manual`, `agent`).
+commit at the next boundary (causes `manual`, `agent`). Below the compaction
+gate, a priced agent trim or anchor cleanup with `N*` above the limit is refused.
 
 A Pi cache-warming refresh counts as a response for this expiry. While a
 batch is held, warming stops once

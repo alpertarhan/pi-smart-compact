@@ -289,8 +289,10 @@ commit at the next boundary with cause `manual` or `agent`; explicit trim
 bypasses batching, not safety. `manual` also covers an early anchor the user
 confirmed in Pi's dialog. Standing approval (`requireApproval: false`) waives
 only that dialog: the anchor is saved and its cleanup keeps the agent's
-pressure and readiness gates. Attention notes name a trim only for a ready
-batch that pays back within the break-even limit.
+pressure and readiness gates. Below the compaction gate an agent trim or anchor
+cleanup must also pay back within the break-even limit (unknown prices keep
+today's behavior). Attention notes name a trim only for a ready batch that pays
+back within the break-even limit.
 
 Instruction and skill sources stay inline through trim, rewind, artifact,
 bitmap and pre-compaction pruning; recovery tool output is not recursively

@@ -508,7 +508,17 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
-          entries = trimEntries(plan, request.manual || request.userConfirmed ? "manual" : "agent");
+          const human = request.manual || request.userConfirmed;
+          // Agent trims follow the automatic rule: below the compaction gate they must pay back their cache rewrite.
+          // Unpriced models (null) keep today's behavior; there is no cost to weigh.
+          if (!human && !urgentPressure) {
+            const { savedTokens, tailTokens } = trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
+            const breakEven = trimBreakEvenRequests(ctx.model?.cost, savedTokens, tailTokens);
+            if (breakEven !== null && breakEven > settings.autoTrimBreakEvenRequests) {
+              return cancelled(event, `This trim pays back its prompt-cache rewrite only after ~${Math.ceil(breakEven)} requests (limit ${settings.autoTrimBreakEvenRequests}); history left unchanged.`);
+            }
+          }
+          entries = trimEntries(plan, human ? "manual" : "agent");
         } else {
           mark = null;
           // A due automatic compaction replaces this context; trimming first would only rewrite its cache.

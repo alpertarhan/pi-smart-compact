@@ -252,7 +252,8 @@ points it there (any **Agent tools** choice except **Off**).
 A batch needs at least 16,384 characters of net savings and eight assistant
 turns after the last trim, rewind or compaction. In the early cleanup band,
 automatic trims must also pay back their cache rewrite within 24 requests;
-unknown prices or poor payback leave history unchanged. Only reaching the
+unknown prices or poor payback leave history unchanged. A priced agent trim with
+poor payback is refused too. Only reaching the
 compaction threshold lets context relief take priority over cache cost, and
 only when no automatic compaction is due: with **When idle** or background
 compaction on, that compaction replaces the context, so no trim runs first.
