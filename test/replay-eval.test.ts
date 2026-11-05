@@ -2,7 +2,9 @@ import { afterAll, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadSession, policiesFor, replaySession } from "../scripts/replay-eval-lib.ts";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { loadSession, policiesFor, replaySession, type ModelInfo } from "../scripts/replay-eval-lib.ts";
+import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "replay-eval-test-"));
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -73,8 +75,8 @@ it.each([
   const result = replaySession(session, catalog, { policies: policiesFor([24]), rebuildMin: 16_384 });
   expect(result.policies.find(policy => policy.policy === "timed-24")!.trims.cold).toBe(cold);
   if (!promptCache) {
-    expect(result.policies.find(policy => policy.policy === "none")!.cached).toBe(0);
-    expect(result.baseline.cacheRead).toBeGreaterThan(0); // measured data is never rewritten to match an estimate
+    // Unknown lifetime: the recorded reads show a cache, so the unchanged prefix is reused, never expired.
+    expect(result.policies.find(policy => policy.policy === "none")!.cached).toBeGreaterThan(0);
   }
 });
 
@@ -177,4 +179,255 @@ it("selects files by --since and reports per-file progress on stderr", () => {
   const all = run([]);
   expect(all.stderr.toString()).toBe("");
   expect(all.stdout.toString()).toContain("2 session(s) replayed, 0 skipped without a valid header, 0 skipped because they changed");
+});
+
+/**
+ * Calibration fixture: usage is generated from the documented provider cache semantics over the
+ * session's own projected prompt plus a fixed system/tool payload. Anthropic writes report the
+ * 5-minute tier (cacheWrite1h 0) and expire after a 6-minute gap; openai-codex has no catalog
+ * lifetime, keeps its prefix across a 20-minute gap, misses the whole prompt after a context edit
+ * and never bills cache writes.
+ */
+function calibrationFixture() {
+  const SYSTEM = 20_000;
+  const prices = { anthropic: { input: 5, cacheRead: 0.5, cacheWrite: 6.25 }, "openai-codex": { input: 2, cacheRead: 0.2, cacheWrite: 0 } };
+  const entries: Record<string, unknown>[] = [];
+  let at = T0;
+  let seq = 0;
+  let previous: { provider: string; prompt: number; at: number } | undefined;
+  let edited = false;
+  const add = (entry: Record<string, unknown>) => entries.push({ id: `c${++seq}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const message = (message: Record<string, unknown>) => add({ type: "message", message: { ...message, timestamp: at } });
+  const request = (provider: "anthropic" | "openai-codex", minutes: number) => {
+    at += minutes * 60_000;
+    const prompt = SYSTEM + contextMessageEntries(entries).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+    const hit = previous?.provider === provider && !edited && (provider !== "anthropic" || at - previous.at <= 300_000);
+    const reused = hit ? previous!.prompt : 0;
+    const [input, cacheWrite] = provider === "anthropic" ? [0, prompt - reused] : [prompt - reused, 0];
+    const rate = prices[provider];
+    const total = (rate.input * input + rate.cacheRead * reused + rate.cacheWrite * cacheWrite) / 1_000_000;
+    message({
+      role: "assistant", content: [{ type: "text", text: `Step ${seq}.` }], stopReason: "stop", api: provider === "anthropic" ? "anthropic-messages" : "openai-codex-responses",
+      provider, model: provider === "anthropic" ? "claude-cal" : "codex-cal",
+      usage: { input, cacheRead: reused, cacheWrite, ...(provider === "anthropic" ? { cacheWrite1h: 0 } : {}), output: 0, totalTokens: prompt,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } },
+    });
+    previous = { provider, prompt, at };
+    edited = false;
+  };
+  const toolTurn = (n: number) => {
+    message({ role: "user", content: [{ type: "text", text: `Inspect part ${n}.` }] });
+    message({ role: "toolResult", toolCallId: `t${n}`, toolName: "read", isError: false, content: [{ type: "text", text: `part ${n} line\n`.repeat(900) }] });
+  };
+  for (let n = 1; n <= 4; n++) { toolTurn(n); request("anthropic", 1); }
+  toolTurn(5); request("anthropic", 6); // past the 5-minute tier: expired
+  toolTurn(6); request("anthropic", 1);
+  for (let n = 7; n <= 9; n++) { toolTurn(n); request("openai-codex", 1); } // route switch: separate cache
+  toolTurn(10); request("openai-codex", 20); // no catalog lifetime: still cached
+  add({ type: "context_edit", targetId: entries.find(entry => (entry.message as { toolCallId?: string })?.toolCallId === "t8")!.id, replacement: { content: "[archived]" } });
+  edited = true;
+  toolTurn(11); request("openai-codex", 1); // codex: whole prompt after an edit
+  toolTurn(12); request("openai-codex", 1);
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-calibration", timestamp: new Date(T0).toISOString(), cwd: root };
+  return [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n";
+}
+
+it("prices with base rates when a long-context tier omits rate fields", () => {
+  const session = loadSession(fixture(false, 6).text)!;
+  // Catalogs are data at runtime; a tier may omit rate fields the base cost defines.
+  const cost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75,
+    tiers: [{ inputTokensAbove: 10_000, input: 6, output: 30 }] } as ModelInfo["cost"];
+  const catalog = () => ({ contextWindow: 200_000, cost });
+  const result = replaySession(session, catalog, { policies: policiesFor([24]), rebuildMin: 16_384 });
+  for (const policy of result.policies) {
+    expect(policy.cost).not.toBeNull();
+    expect(Number.isFinite(policy.cost)).toBe(true);
+    expect(policy.cost!).toBeGreaterThan(0);
+  }
+});
+
+/**
+ * Recorded-trim fixture: usage is generated from the projected prompt of the branch as recorded
+ * (the automatic trim's context_edit applied) plus a fixed system/tool payload. The trim is recorded
+ * between requests, so from then on the untrimmed projection is larger than what was measured.
+ */
+function trimmedFixture() {
+  const SYSTEM = 5_000;
+  const recorded: Record<string, unknown>[] = [];
+  const kept: Record<string, unknown>[] = [];
+  const strippedProjected: number[] = [];
+  let at = T0;
+  let seq = 0;
+  let edited = false;
+  let previous = 0;
+  const link = (rows: Record<string, unknown>[], entry: Record<string, unknown>) =>
+    rows.push({ id: `q${++seq}`, parentId: rows.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const copyKept = () => kept.push({ ...recorded.at(-1)!, parentId: kept.at(-1)?.id ?? null });
+  const project = (rows: Record<string, unknown>[]) =>
+    contextMessageEntries(rows as never).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+  const request = (content: unknown[], stopReason = "stop") => {
+    at += 60_000;
+    const prompt = SYSTEM + project(recorded);
+    const stripped = project(kept);
+    const reused = edited ? 0 : previous;
+    const total = (0.5 * reused + 6.25 * (prompt - reused)) / 1_000_000;
+    const usage = { input: 0, cacheRead: reused, cacheWrite: prompt - reused, cacheWrite1h: 0, output: 0, totalTokens: prompt,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } };
+    link(recorded, { type: "message", message: { role: "assistant", content, stopReason, ...MODEL, usage, timestamp: at } });
+    copyKept();
+    previous = prompt;
+    edited = false;
+    strippedProjected.push(stripped);
+  };
+  const toolTurn = (body: string) => {
+    at += 60_000;
+    link(recorded, { type: "message", message: { role: "user", content: [{ type: "text", text: "Inspect." }], timestamp: at } });
+    copyKept();
+    request([{ type: "toolCall", id: `call-${seq}`, name: "read", arguments: {} }], "toolUse");
+    link(recorded, { type: "message", message: { role: "toolResult", toolCallId: `call-${seq - 1}`, toolName: "read", isError: false,
+      content: [{ type: "text", text: body }], timestamp: at } });
+    copyKept();
+    const resultId = recorded.at(-1)!.id as string;
+    request([{ type: "text", text: "Read the body." }]);
+    return resultId;
+  };
+  const trimmedId = toolTurn("RECORDED_TRIM_BODY_SECRET line\n".repeat(2_000));
+  toolTurn("small body line\n".repeat(50));
+  at += 60_000;
+  link(recorded, { type: "custom", customType: "smart-compact-context",
+    data: { version: 1, action: "trim", cause: "break-even", references: [trimmedId] } });
+  link(recorded, { type: "context_edit", targetId: trimmedId, replacement: { content: "[archived]" } });
+  edited = true;
+  for (let turn = 1; turn <= 2; turn++) {
+    at += 60_000;
+    link(recorded, { type: "message", message: { role: "user", content: [{ type: "text", text: `Follow-up ${turn}.` }], timestamp: at } });
+    copyKept();
+    request([{ type: "text", text: `Follow-up ${turn} done.` }]);
+  }
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-recorded-trim", timestamp: new Date(T0).toISOString(), cwd: root };
+  return { text: [header, ...recorded].map(line => JSON.stringify(line)).join("\n") + "\n", SYSTEM, strippedProjected };
+}
+
+it("keeps the unseen payload positive after a recorded automatic trim", () => {
+  const { text, SYSTEM, strippedProjected } = trimmedFixture();
+  const catalog = () => ({ contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+  const result = replaySession(loadSession(text)!, catalog, { policies: [{ name: "none", kind: "none" }], rebuildMin: 1_000 });
+  expect(result.strippedTrims).toBe(1);
+  const none = result.policies[0];
+  expect(none.requests).toBe(strippedProjected.length);
+  // Every request, including those after the recorded trim, still carries the policy-independent payload.
+  expect(none.prompt).toBe(strippedProjected.reduce((sum, value) => sum + value, 0) + strippedProjected.length * SYSTEM);
+});
+
+/** 1 h write then short-tier writes on the same Anthropic route; a 10-minute gap follows. */
+function hourTierFixture() {
+  const SYSTEM = 5_000;
+  const entries: Record<string, unknown>[] = [];
+  let at = T0;
+  let seq = 0;
+  let previous = 0;
+  let prevAt = at;
+  let horizonMs = 0;
+  const add = (entry: Record<string, unknown>) => entries.push({ id: `h${++seq}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const project = () => contextMessageEntries(entries as never).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+  const request = (gapMinutes: number, hourTier: boolean) => {
+    at += gapMinutes * 60_000;
+    const prompt = SYSTEM + project();
+    const reused = at - prevAt <= horizonMs ? previous : 0;
+    const written = prompt - reused;
+    add({ type: "message", message: { role: "assistant", content: [{ type: "text", text: `Step ${seq}.` }], stopReason: "stop", ...MODEL,
+      usage: { input: 0, cacheRead: reused, cacheWrite: written, cacheWrite1h: hourTier ? written : 0, output: 0, totalTokens: prompt,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: (0.5 * reused + 6.25 * written) / 1_000_000 } }, timestamp: at } });
+    horizonMs = Math.max(horizonMs, hourTier ? 3_600_000 : 300_000);
+    prevAt = at;
+    previous = prompt;
+  };
+  const user = (text: string) => add({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: at } });
+  user("Start.");
+  request(1, true); // 1 h write
+  user("Continue.");
+  request(1, false); // short-tier writes keep the prefix
+  user("Continue.");
+  request(1, false);
+  user("After the gap.");
+  request(10, false); // 10 min later: the 1 h prefix is still cached
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-hour-tier", timestamp: new Date(T0).toISOString(), cwd: root };
+  return [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n";
+}
+
+it("keeps a 1h prefix cached across later short-tier writes", () => {
+  const catalog = () => ({ contextWindow: 200_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+  const result = replaySession(loadSession(hourTierFixture())!, catalog, { policies: [{ name: "none", kind: "none" }], rebuildMin: 1_000 });
+  const none = result.policies[0];
+  expect(result.baseline.misses).toBe(0);
+  expect(none.rebuilds).toBe(0);
+  expect(none.cached).toBeGreaterThan(0);
+});
+
+/**
+ * Pressure-gate fixture: the visible context stays under the 0.8 gate while the recorded prompt
+ * (unseen payload included) crosses it, so only a gate that counts the unseen payload can fire.
+ */
+function pressureFixture() {
+  const SYSTEM = 10_000;
+  const WINDOW = 30_000;
+  const entries: Record<string, unknown>[] = [];
+  let at = T0;
+  let seq = 0;
+  let previous = 0;
+  const add = (entry: Record<string, unknown>) => entries.push({ id: `p${++seq}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date(at).toISOString(), ...entry });
+  const project = () => contextMessageEntries(entries as never).reduce((sum, entry) => sum + estimateTokens(entry.message as never), 0);
+  const request = (content: unknown[], stopReason = "stop") => {
+    at += 60_000;
+    const prompt = SYSTEM + project();
+    const reused = previous;
+    const written = prompt - reused;
+    add({ type: "message", message: { role: "assistant", content, stopReason, ...MODEL,
+      usage: { input: 0, cacheRead: reused, cacheWrite: written, cacheWrite1h: 0, output: 0, totalTokens: prompt,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: (0.5 * reused + 6.25 * written) / 1_000_000 } }, timestamp: at } });
+    previous = prompt;
+  };
+  const user = (text: string) => add({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: at } });
+  user("Refactor the parser.");
+  request([{ type: "toolCall", id: "call-1", name: "read", arguments: {} }], "toolUse");
+  add({ type: "message", message: { role: "toolResult", toolCallId: "call-1", toolName: "read", isError: false,
+    content: [{ type: "text", text: "export const PRESSURE_BODY_SECRET = 1;\n".repeat(1_600) }], timestamp: at } });
+  request([{ type: "text", text: "Read the parser." }]);
+  for (let turn = 3; turn <= 6; turn++) {
+    user(`Step ${turn}.`);
+    request([{ type: "text", text: `Step ${turn} done.` }]);
+  }
+  const header = { type: "session", version: 3, id: "0f1e2d3c-replay-pressure", timestamp: new Date(T0).toISOString(), cwd: root };
+  return { text: [header, ...entries].map(line => JSON.stringify(line)).join("\n") + "\n", SYSTEM, WINDOW, projected: project() };
+}
+
+it("fires the pressure gate once the unseen payload pushes the prompt over the ratio", () => {
+  const { text, SYSTEM, WINDOW, projected } = pressureFixture();
+  // The visible context alone never reaches the gate; the recorded prompt crosses it.
+  expect(projected).toBeLessThan(0.8 * WINDOW);
+  expect(projected + SYSTEM).toBeGreaterThanOrEqual(0.8 * WINDOW);
+  const catalog = () => ({ contextWindow: WINDOW, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } });
+  const result = replaySession(loadSession(text)!, catalog, {
+    policies: [{ name: "none", kind: "none" }, { name: "pressure", kind: "pressure" }], rebuildMin: 1_000,
+  });
+  const pressure = result.policies.find(policy => policy.policy === "pressure")!;
+  expect(pressure.trims.pressure).toBe(1);
+  expect(pressure.events[0]).toMatchObject({ cause: "pressure" });
+  expect(result.policies[0].trims.pressure).toBe(0);
+});
+
+it("reproduces recorded cache misses and cost for Anthropic 5-minute and openai-codex whole-prompt caches", () => {
+  const catalog = (provider: string) => provider === "anthropic"
+    ? { contextWindow: 1_000_000, promptCache: { short: 300, long: 3_600 }, cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }
+    // Catalog lists a write price the provider never bills; no promptCache metadata.
+    : { contextWindow: 1_000_000, cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 } };
+  const result = replaySession(loadSession(calibrationFixture())!, catalog, { policies: policiesFor([24]), rebuildMin: 1_000 });
+  const { baseline } = result;
+  const none = result.policies.find(policy => policy.policy === "none")!;
+  // Observed misses: expiry after 6 minutes, route switch, codex edit.
+  expect(baseline.misses).toBe(3);
+  expect(none.rebuilds).toBe(baseline.misses);
+  expect(none.prompt).toBe(baseline.input + baseline.cacheRead + baseline.cacheWrite);
+  expect(none.cached / baseline.cacheRead).toBeCloseTo(1, 2);
+  expect(none.cost! / baseline.recordedCost).toBeCloseTo(1, 2);
 });

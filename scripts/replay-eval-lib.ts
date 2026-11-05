@@ -1,26 +1,24 @@
 /**
  * Read-only replay of recorded Pi sessions under alternative automatic-trim policies.
- * Every figure except the measured baseline is an estimate: projected prompt tokens
- * from the local estimator, priced with catalog rates.
+ * Every figure except the measured baseline is an estimate: projected prompt tokens from Pi's
+ * estimator plus the recorded unprojected payload, cache reuse modelled per provider, catalog prices.
  */
 import {
-  parseSessionEntries, SessionManager, type FileEntry, type SessionBoundaryDraft, type SessionEntry,
+  estimateTokens, parseSessionEntries, SessionManager, type FileEntry, type SessionBoundaryDraft, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage, ModelCostRates, ModelPromptCache } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ModelCost, ModelPromptCache, Usage } from "@earendil-works/pi-ai";
 import {
-  CONTEXT_CONTROL_TYPE, inspectContext, planContextTrim, trimBreakEvenRequests, trimEntries, trimTokens, type TrimCause,
+  CONTEXT_CONTROL_TYPE, inspectContext, missesWholePrompt, planContextTrim, trimBreakEvenRequests, trimEntries, trimTokens, type TrimCause,
 } from "../src/app/context-operations.ts";
 import { cacheLifetimeMs } from "../src/app/host-cache-ledger.ts";
 import { unchangedSince } from "../src/app/register-smart-context-tool.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
-import type { LlmMessage } from "../src/types.ts";
-import { makeTokenEstimator, type TokenEstimator } from "../src/utils/tokens.ts";
 
 /** Settled pressure gate of the old rule: estimated prompt ≥ 0.8 · contextWindow. */
 export const PRESSURE_RATIO = 0.8;
 const AUTOMATIC_CAUSES: readonly unknown[] = ["pressure", "break-even", "cold"];
 
-export interface ModelInfo { cost?: Partial<ModelCostRates>; contextWindow?: number; promptCache?: ModelPromptCache }
+export interface ModelInfo { cost?: Partial<ModelCost>; contextWindow?: number; promptCache?: ModelPromptCache }
 export type Catalog = (provider: string, model: string) => ModelInfo | undefined;
 export type Policy = { name: string; kind: "none" | "pressure" } | { name: string; kind: "timed"; breakEven: number };
 type AutoCause = Extract<TrimCause, "pressure" | "break-even" | "cold">;
@@ -31,6 +29,8 @@ export interface Baseline {
   recordedCost: number;
   /** Requests reporting tokens but no (or zero) cost: quota, never priced at API rates. */
   subscriptionRequests: number;
+  /** Observed cache misses: requests after the first whose input + cacheWrite meets the replay's rebuild rule. */
+  misses: number;
   models: string[];
 }
 
@@ -82,13 +82,18 @@ function requestOf(entry: SessionEntry): AssistantMessage | undefined {
   return usage && num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite) > 0 ? message : undefined;
 }
 
-export function measuredBaseline(branch: SessionEntry[]): Baseline {
-  const baseline: Baseline = { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, recordedCost: 0, subscriptionRequests: 0, models: [] };
+/** Same rule as a replay rebuild, applied to recorded usage. */
+const isRebuild = (uncached: number, prompt: number, rebuildMin: number) => uncached >= Math.max(rebuildMin, 0.5 * prompt);
+
+export function measuredBaseline(branch: SessionEntry[], rebuildMin: number): Baseline {
+  const baseline: Baseline = { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, recordedCost: 0, subscriptionRequests: 0, misses: 0, models: [] };
   const models = new Set<string>();
   for (const entry of branch) {
     const message = requestOf(entry);
     if (!message) continue;
     const { usage } = message;
+    const uncached = num(usage.input) + num(usage.cacheWrite);
+    if (baseline.requests && isRebuild(uncached, uncached + num(usage.cacheRead), rebuildMin)) baseline.misses++;
     baseline.requests++;
     baseline.input += num(usage.input);
     baseline.cacheRead += num(usage.cacheRead);
@@ -127,22 +132,74 @@ function stripAutomaticTrims(branch: SessionEntry[]): { branch: SessionEntry[]; 
   return { branch: chain(kept), stripped: controls.size };
 }
 
+/** Per route, what recorded usage shows the provider does: serve cache reads, bill cache writes. */
+type CacheEvidence = Map<string, { reads: boolean; writes: boolean }>;
+
+function cacheEvidence(branch: SessionEntry[]): CacheEvidence {
+  const routes: CacheEvidence = new Map();
+  for (const entry of branch) {
+    const message = requestOf(entry);
+    if (!message) continue;
+    const key = `${message.provider}/${message.model}`;
+    const route = routes.get(key) ?? { reads: false, writes: false };
+    route.reads ||= num(message.usage.cacheRead) > 0;
+    route.writes ||= num(message.usage.cacheWrite) > 0;
+    routes.set(key, route);
+  }
+  return routes;
+}
+
+/**
+ * Lifetime of the prefix a request leaves cached. A write reports its tier (Anthropic: cacheWrite1h 0
+ * means the short tier), a pure read keeps the route's last one, else the longest advertised tier.
+ * Null without promptCache metadata.
+ */
+function lifetimeOf(usage: Usage, promptCache: ModelPromptCache | undefined, prior: number | null | undefined): number | null {
+  const longest = cacheLifetimeMs(usage, promptCache);
+  if (longest === null || num(usage.cacheWrite1h) > 0) return longest;
+  if (num(usage.cacheWrite) > 0 && usage.cacheWrite1h === 0 && num(promptCache?.short) > 0)
+    // A short-tier write must not shorten a longer-lived prefix written earlier on the route.
+    return Math.max(prior ?? 0, promptCache!.short! * 1000);
+  return prior ?? longest;
+}
+
+/**
+ * Per request, recorded prompt tokens the projection does not see: system prompt, tool
+ * schemas and provider-side tokens. They do not depend on the trim policy, so every policy adds them.
+ * Measured against the context as recorded (recorded trims applied), so a recorded trim cannot
+ * make the payload disappear: usage was measured on the trimmed prompt, not the untrimmed one.
+ */
+function unseenTokens(branch: SessionEntry[], project: Projector): number[] {
+  return branch.flatMap((entry, index) => {
+    const usage = requestOf(entry)?.usage;
+    return usage ? [Math.max(0, num(usage.input) + num(usage.cacheRead) + num(usage.cacheWrite) - project(branch.slice(0, index)).total)] : [];
+  });
+}
+
+/** Catalog rates for a prompt of `tokens`, choosing long-context tiers as Pi's calculateCost does. */
+function ratesFor(cost: Partial<ModelCost>, tokens: number): Partial<ModelCost> {
+  let rates = cost;
+  let above = -1;
+  for (const tier of cost.tiers ?? []) if (tokens > tier.inputTokensAbove && tier.inputTokensAbove > above) [rates, above] = [tier, tier.inputTokensAbove];
+  if (rates === cost) return rates;
+  // A tier may omit rate fields; every omitted one falls back to the base cost so no NaN is priced.
+  const present = Object.fromEntries(Object.entries(rates).filter(([, value]) => value !== undefined));
+  return { ...cost, ...present };
+}
+
 
 /**
  * Projected prompt of `entries` as per-message keys and estimated tokens. A key names the source
  * entry, the message's index within it and the context edit applied to it, so equal keys are
- * byte-equal projected messages.
+ * byte-equal projected messages. Pi's own estimator counts what providers bill: an image as a
+ * fixed size and thinking as its text, not base64 image data or encrypted reasoning signatures.
  */
 interface Projection { keys: string[]; tokens: number[]; total: number }
-type Projector = (entries: SessionEntry[], provider: string, model: string) => Projection;
+type Projector = (entries: SessionEntry[]) => Projection;
 
 function projector(): Projector {
-  const estimators = new Map<string, TokenEstimator>();
   const memo = new Map<string, number>();
-  return (entries: SessionEntry[], provider: string, model: string) => {
-    const scope = `${provider}\0${model}`;
-    let estimator = estimators.get(scope);
-    if (!estimator) estimators.set(scope, estimator = makeTokenEstimator(provider, model));
+  return (entries: SessionEntry[]) => {
     const edits = new Map(entries.flatMap(entry => entry.type === "context_edit" ? [[entry.targetId, entry.id] as const] : []));
     const keys: string[] = [];
     const tokens: number[] = [];
@@ -152,10 +209,9 @@ function projector(): Projector {
       index = id === previousId ? index + 1 : 0;
       previousId = id;
       const key = `${id}\0${index}\0${edits.get(id) ?? ""}`;
-      const memoKey = `${scope}\0${key}`;
-      let count = memo.get(memoKey);
-      // SAFETY: contextMessageEntries yields convertToLlm() output, i.e. real LLM messages.
-      if (count === undefined) memo.set(memoKey, count = estimator.message(message as LlmMessage));
+      let count = memo.get(key);
+      // SAFETY: contextMessageEntries yields convertToLlm() output, i.e. real agent messages.
+      if (count === undefined) memo.set(key, count = estimateTokens(message as Parameters<typeof estimateTokens>[0]));
       keys.push(key);
       tokens.push(count);
     }
@@ -167,7 +223,7 @@ interface Mark { leafId: string; entries: SessionEntry[]; removedTokens: number 
 
 function replayPolicy(
   sessionId: string, branch: SessionEntry[], policy: Policy, catalog: Catalog, rebuildMin: number,
-  project: Projector,
+  project: Projector, evidence: CacheEvidence, unseen: number[],
 ): PolicyResult {
   const result: PolicyResult = {
     policy: policy.name, requests: 0, prompt: 0, cached: 0, uncached: 0, rebuilds: 0,
@@ -201,7 +257,8 @@ function replayPolicy(
     if (plan.automatic !== "ready") return;
     const info = catalog(message.provider, message.model);
     const window = num(info?.contextWindow);
-    const pressure = window > 0 && project(working, message.provider, message.model).total >= PRESSURE_RATIO * window;
+    // The pressure gate sees the real prompt size: the next request also carries its unseen payload.
+    const pressure = window > 0 && project(working).total + (unseen[result.requests] ?? 0) >= PRESSURE_RATIO * window;
     const commit = (cause: AutoCause, removedTokens: number) => {
       append(materialize(trimEntries(plan, cause)));
       record(cause, result.requests + 1, removedTokens);
@@ -228,8 +285,9 @@ function replayPolicy(
     if (message) {
       result.requests++;
       const info = catalog(message.provider, message.model);
-      const lifetimeMs = cacheLifetimeMs(message.usage, info?.promptCache);
+      const route = evidence.get(`${message.provider}/${message.model}`);
       const prior = previous && previous.message.provider === message.provider && previous.message.model === message.model ? previous : undefined;
+      const lifetimeMs = lifetimeOf(message.usage, info?.promptCache, prior?.lifetimeMs);
       if (!prior) mark = null;
       const expired = prior && prior.lifetimeMs !== null && lifetimeMs !== null
         && message.timestamp - Math.max(prior.message.timestamp, warmedAt ?? 0) > prior.lifetimeMs;
@@ -239,25 +297,33 @@ function replayPolicy(
         record("cold", result.requests, applied.removedTokens);
       }
       const context = applied ? [...working, ...chain(applied.entries, working.at(-1)?.id ?? null)] : working;
-      const { keys, tokens, total } = project(context, message.provider, message.model);
+      const { keys, tokens, total: projected } = project(context);
+      // The unseen part leads the prompt (system prompt, tool schemas), so it is cached with any reused prefix.
+      const total = projected + unseen[result.requests - 1];
       let cached = 0;
-      // Unknown lifetime has no assumed cache reuse, but is not permission to trim.
-      if (prior && prior.lifetimeMs !== null && lifetimeMs !== null && !expired) {
-        for (let index = 0; index < keys.length && keys[index] === prior.keys[index]; index++) cached += tokens[index];
+      // A route that recorded cache reads reuses its prefix; an unknown lifetime never expires it
+      // but is not permission to trim.
+      if (prior && !expired && route?.reads) {
+        let index = 0;
+        for (; index < keys.length && keys[index] === prior.keys[index]; index++) cached += tokens[index];
+        if (index) cached += unseen[result.requests - 1];
+        if (index < prior.keys.length && missesWholePrompt(message.provider)) cached = 0;
       }
       const uncached = total - cached;
       result.prompt += total;
       result.cached += cached;
       result.uncached += uncached;
-      if (previous && uncached >= Math.max(rebuildMin, 0.5 * total)) result.rebuilds++;
+      if (previous && isRebuild(uncached, total, rebuildMin)) result.rebuilds++;
       const cost = info?.cost;
       if (num(message.usage.cost?.total) > 0 && cost && typeof cost.input === "number" && typeof cost.cacheRead === "number") {
-        const write = num(cost.cacheWrite) > 0 ? cost.cacheWrite! : cost.input;
+        const rates = ratesFor(cost, total);
+        // A route that never reported a cache write bills uncached tokens as input.
+        const write = route?.writes && num(rates.cacheWrite) > 0 ? rates.cacheWrite! : rates.input!;
         result.pricedRequests++;
-        result.cost = (result.cost ?? 0) + (cost.cacheRead * cached + write * uncached) / 1_000_000;
+        // Output is identical across policies and priced as recorded.
+        result.cost = (result.cost ?? 0) + (rates.cacheRead! * cached + write * uncached) / 1_000_000 + num(message.usage.cost.output);
       }
-      previous = { message, keys, lifetimeMs: prior && prior.lifetimeMs !== null && lifetimeMs !== null
-        ? Math.max(prior.lifetimeMs, lifetimeMs) : lifetimeMs };
+      previous = { message, keys, lifetimeMs };
       warmedAt = undefined;
     }
     append([entry]);
@@ -269,10 +335,12 @@ function replayPolicy(
 export function replaySession(session: { id: string; branch: SessionEntry[] }, catalog: Catalog, options: ReplayOptions): SessionResult {
   const { branch, stripped } = stripAutomaticTrims(session.branch);
   const project = projector();
-  const policies = options.policies.map(policy => replayPolicy(session.id, branch, policy, catalog, options.rebuildMin, project));
+  const evidence = cacheEvidence(branch);
+  const unseen = unseenTokens(session.branch, project);
+  const policies = options.policies.map(policy => replayPolicy(session.id, branch, policy, catalog, options.rebuildMin, project, evidence, unseen));
   const none = policies.find(policy => policy.policy === "none")?.cost ?? null;
   for (const policy of policies) policy.deltaVsNone = policy.cost === null || none === null ? null : policy.cost - none;
-  return { id: session.id, strippedTrims: stripped, baseline: measuredBaseline(session.branch), policies };
+  return { id: session.id, strippedTrims: stripped, baseline: measuredBaseline(session.branch, options.rebuildMin), policies };
 }
 
 /** Per-policy sums across sessions; cost sums only sessions that were priced. */
@@ -304,12 +372,13 @@ function table(rows: string[][]): string[] {
 export function formatReport(sessions: SessionResult[], policies: Policy[]): string {
   const lines = ["Measured baseline (recorded usage; subscription requests are quota, never priced)"];
   lines.push(...table([
-    ["session", "models", "requests", "input", "cacheRead", "cacheWrite", "output", "recorded cost", "subscription req"],
+    ["session", "models", "requests", "input", "cacheRead", "cacheWrite", "output", "misses", "recorded cost", "subscription req"],
     ...sessions.map(({ id, baseline: b }) => [id.slice(0, 8), b.models.join(",") || "-", String(b.requests), String(b.input),
-      String(b.cacheRead), String(b.cacheWrite), String(b.output), usd(b.recordedCost), String(b.subscriptionRequests)]),
+      String(b.cacheRead), String(b.cacheWrite), String(b.output), String(b.misses), usd(b.recordedCost), String(b.subscriptionRequests)]),
   ]));
   lines.push("", "Replay estimates (est. = local token estimator + catalog prices; not real savings or billing)",
-    "Unknown cache lifetimes assume no reuse and never trigger cold trims; known horizons use the longest model tier.");
+    "Routes with recorded cache reads reuse the unchanged prefix; unknown lifetimes never expire it nor trigger cold trims.",
+    "Known horizons use the tier recorded writes report (else the longest); openai-codex misses the whole prompt after an edit.");
   const row = (session: string, p: PolicyResult) => [session, p.policy, String(p.requests), String(p.prompt), String(p.cached),
     String(p.uncached), String(p.rebuilds), `${p.trims.pressure}/${p.trims["break-even"]}/${p.trims.cold}`, String(p.removedTokens),
     `${p.pricedRequests}`, usd(p.cost), usd(p.deltaVsNone, true)];
