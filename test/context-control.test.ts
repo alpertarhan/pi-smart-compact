@@ -1429,7 +1429,7 @@ describe("manual trim controller", () => {
 
   it("names why a trim plan queues nothing, with its numbers", () => {
     expect(describeTrimSkip({ entries: [], savedChars: 0, automatic: "insufficient-savings", cooldownTurns: 0 }, 16_384))
-      .toContain("no eligible tool output");
+      .toContain("no eligible archived content");
     expect(describeTrimSkip({ entries: [1], savedChars: 5_000, automatic: "insufficient-savings", cooldownTurns: 0 }, 16_384))
       .toBe("No safe cleanup: eligible outputs would save 5000 chars, under the 16384-char floor.");
     expect(describeTrimSkip({ entries: [1], savedChars: 50_000, automatic: "cooldown", cooldownTurns: 3 }, 16_384))

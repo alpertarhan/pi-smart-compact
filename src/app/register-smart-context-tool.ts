@@ -563,7 +563,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     } catch (error) {
       return request ? cancelled(event, error instanceof Error ? error.message : "Context change rejected.") : undefined;
     }
-    if (!entries.length) return request ? cancelled(event, "No eligible archived output to trim.") : undefined;
+    if (!entries.length) return request ? cancelled(event, "No eligible archived content to trim.") : undefined;
     if (entries.some(entry => entry.type === "context_edit")) {
       options.onContextChange?.(ctx);
       staged = {

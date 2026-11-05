@@ -531,7 +531,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
 /** Why a trim plan queues nothing, with its numbers, so a skipped cleanup is diagnosable without debug mode. */
 export function describeTrimSkip(plan: { entries: unknown[]; savedChars: number; automatic: string; cooldownTurns: number }, floorChars: number): string {
   if (!plan.entries.length) {
-    return `No safe cleanup: no eligible tool output (each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
+    return `No safe cleanup: no eligible archived content (tool output, process notifications or answered peer messages; each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
   }
   if (plan.automatic === "cooldown") return `No safe cleanup yet: cooldown, ${plan.cooldownTurns} more turn(s) after the last context change.`;
   return `No safe cleanup: eligible outputs would save ${plan.savedChars} chars, under the ${floorChars}-char floor.`;
