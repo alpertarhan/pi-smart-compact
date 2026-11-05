@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { parseExplorationReport, fallbackExplorationReport, shouldExplore, buildExplorationReportFromParsed, executeExplorationTool, exploreConversation } from "../src/phases/explore.ts";
 import { createServices } from "../src/infra/services.ts";
-import { MAX_EXPLORATION_ROUNDS } from "../src/constants.ts";
+import { MAX_EXPLORATION_ROUNDS, REASONING_OUTPUT_HEADROOM_TOKENS } from "../src/constants.ts";
 import type { LlmMessage } from "../src/types.ts";
 
 describe("parseExplorationReport", () => {
@@ -178,6 +178,39 @@ describe("exploration cost guard", () => {
 
     expect(requests.filter(request => request.tools)).toHaveLength(MAX_EXPLORATION_ROUNDS);
     expect(requests.filter(request => request.tools).every(request => request.maxTokens === 4096)).toBe(true);
+  });
+
+  it.each([false, true])("adds thinking headroom to every exploration request only for reasoning models (reasoning: %p)", async (reasoning) => {
+    const limits: number[] = [];
+    let toolRequests = 0;
+    const services = createServices({
+      llm: {
+        complete: async (model, body, opts) => {
+          limits.push(opts.maxTokens!);
+          const hasTools = Array.isArray((body as any).tools);
+          // The probe calls a tool, the loop round fails, and neither fallback returns a report.
+          if (hasTools && toolRequests++) throw new Error("loop unavailable");
+          const content = hasTools
+            ? [{ type: "toolCall", id: "call-1", name: "get_context_around", arguments: { index: 0, radius: 1 } }]
+            : [{ type: "text", text: "no report" }];
+          return {
+            role: "assistant", content, api: model.api, provider: model.provider, model: model.id,
+            usage: { input: 10, output: 5, cacheRead: 0 }, stopReason: "stop", timestamp: Date.now(),
+          } as any;
+        },
+      },
+    });
+    const messages = [{ role: "user", content: "inspect a complex session" }] as LlmMessage[];
+    const extraction = {
+      modifiedFiles: [], readFiles: [], deletedFiles: [], errors: [], decisions: [], constraints: [], topics: [], timeline: [],
+      mainGoal: "g", lastUserMessages: [], lastErrors: [], messageCount: 1,
+    } as any;
+    const model = { id: "explorer", provider: "minimax", api: "anthropic-messages", contextWindow: 200_000, maxTokens: 131_072, reasoning } as any;
+
+    await exploreConversation(messages, extraction, model, { apiKey: "k" }, undefined, undefined, undefined, undefined, undefined, services);
+
+    expect(services.metrics.snapshot().map(metric => metric.phase)).toEqual(["explore", "explore-loop", "explore-direct", "explore-retry"]);
+    expect(limits).toEqual(Array(4).fill(4_096 + (reasoning ? REASONING_OUTPUT_HEADROOM_TOKENS : 0)));
   });
 });
 

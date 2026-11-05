@@ -17,6 +17,7 @@ import { verifyAndPatch as runVerificationStep } from "../src/app/steps/verify.t
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 import { createServices } from "../src/infra/services.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
+import { REASONING_OUTPUT_HEADROOM_TOKENS } from "../src/constants.ts";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 
 function makeExtraction(
@@ -1528,6 +1529,21 @@ describe("patchSummary", () => {
 			services,
 		);
 		expect(patched).toBe(original);
+	});
+
+	it.each([false, true])("adds thinking headroom to the repair request only for reasoning models (reasoning: %p)", async (reasoning) => {
+		const limits: number[] = [];
+		const services = createServices({
+			llm: {
+				complete: async (_model, _body, options) => {
+					limits.push(options.maxTokens!);
+					return { role: "assistant", content: [{ type: "text", text: "## Goal\nBuild auth" }], usage: { input: 1, output: 1 }, stopReason: "stop" } as unknown as AssistantMessage;
+				},
+			},
+		});
+		const model = { provider: "minimax", id: "verifier", contextWindow: 200_000, maxTokens: 131_072, reasoning } as unknown as Model<Api>;
+		await patchSummary("## Goal\nBuild auth", [{ kind: "missing-section", section: "files-modified" }], model, { apiKey: "test" }, undefined, services);
+		expect(limits).toEqual([8_192 + (reasoning ? REASONING_OUTPUT_HEADROOM_TOKENS : 0)]);
 	});
 });
 

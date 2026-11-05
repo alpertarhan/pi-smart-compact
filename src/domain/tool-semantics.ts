@@ -88,15 +88,21 @@ export function isShellTool(toolName: string): boolean {
   return normalizeToolName(toolName) === "bash";
 }
 
+/** `process` `output` and `list` only observe; `start`, `stop`, `write`, `update` and `clear` change processes. */
+export function isProcessReadTool(toolName: string, input: Args): boolean {
+  return normalizeToolName(toolName) === "process" && (input.action === "output" || input.action === "list");
+}
+
 /**
  * Results a context trim may replace with a digest once old: read-only research,
- * `smart_context read` pages (ephemeral copies of archived text), and shell output.
+ * `smart_context read` pages (ephemeral copies of archived text), shell output and
+ * `process` output/list.
  */
 export function isArchivableToolResult(toolName: string, input: Args): boolean {
   if (isInstructionSource(input)) return false;
   const name = normalizeToolName(toolName);
   if (name === "smart_context") return input.action === "read";
-  return isShellTool(name) || isReadOnlyResearchTool(toolName, input);
+  return isShellTool(name) || isProcessReadTool(name, input) || isReadOnlyResearchTool(toolName, input);
 }
 
 const SUBJECT_KEYS = ["pattern", "query", "symbol", "url"] as const;

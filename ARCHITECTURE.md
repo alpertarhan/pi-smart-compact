@@ -249,8 +249,13 @@ edit applies at the next natural completed-turn boundary. A pending return to
 an anchor or newer boundary change cancels it with a visible message.
 
 Trimming protects four recent assistant turns and the active checkpoint prefix,
-replacing up to 32 old read-only results of at least 4096 characters with a
-bounded reference marker. Already-edited entries are not rewritten. Since
+replacing up to 32 old entries of at least 2,048 characters with a bounded
+reference marker: read-only, shell and `process` `output`/`list` results, old
+`ad-process:notification` messages (the marker keeps process name, id, status
+and summary), and `agent_mesh` deliveries a later successful `agent_mesh`
+`reply` answered by `reply_to` (the marker keeps message id, sender and first
+line). Unanswered deliveries, `agent_mesh` tool results and other `process`
+actions stay whole. Already-edited entries are not rewritten. Since
 10.4.0, planning is also tail-aware: eligible outputs are scored along a
 prefix-drop frontier (the rewritten cache suffix runs from the first edited
 entry to the branch end; `openai-codex` trims are priced as whole-prompt
@@ -339,7 +344,7 @@ mutation cap is 512; no partial rewind is applied when it is exceeded. Files
 and processes are untouched.
 
 Reference retrieval is restricted to this extension's branch-local archive
-records and original textual tool results; foreign context edits revoke access
+records and original textual tool results or archived custom messages; foreign context edits revoke access
 until an owned archive record explicitly re-authorizes it. Assistant reasoning
 and arbitrary entries are never exposed. Full text is scrubbed before a bounded
 page is sliced, avoiding cross-page credential reconstruction.
@@ -655,9 +660,10 @@ recent user messages, local context around an index, file-change lookups and
 error chains. Tool support is probed once and cached per run; without function
 calling the system falls back to a direct structured analysis. The tool
 conversation is capped at three rounds, each response is capped where the
-provider supports output limits, and the shared prefix uses short-lived prompt
-caching. Every exploration path leaves two calls for batch synthesis and final
-assembly; with two or fewer calls remaining it uses deterministic boundaries.
+provider supports output limits (a reasoning model gets the synthesis thinking
+headroom on top), and the shared prefix uses short-lived prompt caching. Every
+exploration path leaves two calls for batch synthesis and final assembly; with
+two or fewer calls remaining it uses deterministic boundaries.
 
 ### Synthesize
 
@@ -706,7 +712,8 @@ repaired by simply appending the expected answer. These deterministic checks
 remain bounded heuristics, not a proof of arbitrary prose equivalence.
 
 Repair order is intentional: (1) deterministic patch first (free, idempotent);
-(2) one LLM patch only in `thorough` mode if still insufficient; (3) replace
+(2) one LLM patch only in `thorough` mode if still insufficient, with the
+synthesis thinking headroom for a reasoning model; (3) replace
 lower-scoring output with a deterministic quality floor built only from
 extraction, continuity and steering; (4) reject unless final verification has
 no gaps and meets the verified threshold. Untrusted chunk prose never feeds the
@@ -1084,7 +1091,7 @@ with a safe default and fuzzy alias matching for unknowns:
 
 | Capability | Drives |
 | --- | --- |
-| `maxOutputTokens` | caps batch targets and patch budgets; synthesis completions use the model's limit when it is larger |
+| `maxOutputTokens` | caps batch targets; synthesis, exploration and patch completions use the model's limit when it is larger |
 | `supportsTools` (`true \| false \| "probe"`) | exploration tool-call probing |
 | `concurrencyLimit` | bounded batch-synthesis worker-pool width |
 | `cacheStrategy` | prompt-cache retention per call |

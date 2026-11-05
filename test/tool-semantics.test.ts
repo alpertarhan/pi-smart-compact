@@ -125,6 +125,19 @@ describe("isArchivableToolResult", () => {
     expect(isArchivableToolResult("custom_tool", {})).toBe(false);
     expect(isArchivableToolResult("read", { path: "/repo/AGENTS.md" })).toBe(false);
   });
+
+  it("admits process output and list, never actions that change processes", () => {
+    for (const action of ["output", "list"]) {
+      expect(isArchivableToolResult("process", { action, id: "proc_1" })).toBe(true);
+      expect(isArchivableToolResult("functions.process", { action })).toBe(true);
+      // Rewind removal and early offload keep their own allowlist.
+      expect(isReadOnlyResearchTool("process", { action })).toBe(false);
+    }
+    for (const action of ["start", "stop", "write", "update", "clear", undefined]) {
+      expect(isArchivableToolResult("process", { action })).toBe(false);
+    }
+    expect(isArchivableToolResult("other__process", { action: "output" })).toBe(false);
+  });
 });
 
 describe("toolCallSubject", () => {
