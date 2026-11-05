@@ -646,8 +646,10 @@ forbids recording them as user goals, constraints, preferences or decisions.
 Restored backups (`smart-compact-restore`) are the user's own transcript and
 stay user turns. Carried facts (a previous summary's constraints, saved
 constraints, implicit decisions and loops) have no provenance; one that equals,
-whole, a line or bounded text of a custom message in the window, or is harness
-text, is dropped unless the user typed it in the window. Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
+whole, a line or bounded text of a custom message in the window (not one that
+can quote the session: smart-compact/smart-context types, agent_mesh), or is
+harness text, is dropped unless the user typed it in the window. A prior
+summary never becomes an open loop. Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
 than a fixed next-message window. Fresh extraction and cached reconciliation
 share retry-result classification and inspect later/sibling retries; a false
 `isError` flag cannot turn an error-bearing command result into success.
