@@ -35,6 +35,7 @@ import {
 import { safeContextPercent, type TokenEstimator } from "../../utils/tokens.ts";
 import { isRecord } from "../../utils/type-guards.ts";
 import { contextMessageEntries } from "../../infra/ai-messages.ts";
+import { isInjectedMessage } from "../../utils/extraction.ts";
 
 export type { CompactionWindowPlan } from "../run-context.ts";
 
@@ -251,6 +252,8 @@ export function planCompactionWindow(
  for (let index = msgs.length - 1; index >= 0; index--) {
   const message = msgs[index].message;
   if (!isRecord(message) || message.role !== "user") continue;
+  // Custom messages arrive as user turns; only a human turn earns this protection.
+  if (msgs[index].customType || isInjectedMessage(message as unknown as LlmMessage)) continue;
   userOrdinal++;
   protectedUserIndex = index;
   if (userOrdinal === 2) break;

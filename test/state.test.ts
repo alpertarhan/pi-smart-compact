@@ -266,6 +266,34 @@ describe("extractOpenLoops", () => {
     );
     expect(loops.find((l) => l.type === "follow-up")?.status).toBe("resolved");
   });
+
+  it("retires follow-ups completed after injected messages", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const loops = extractOpenLoops(
+      [
+        { role: "user", content: "next step is to add the migration script" },
+        { role: "assistant", content: "Looking into it." },
+        // Custom messages arrive as user turns: with provenance, and without it.
+        {
+          role: "user",
+          content: "Peer status: review round requested on the open PR.",
+          customType: "agent_mesh",
+        },
+        {
+          role: "user",
+          content: '<process_event type="lifecycle" kind="success">exited 0</process_event>',
+        },
+        {
+          role: "assistant",
+          content: "The migration script is added and verified.",
+        },
+      ],
+      extraction,
+    );
+    expect(loops.map((l) => [l.type, l.status])).toEqual([
+      ["follow-up", "resolved"],
+    ]);
+  });
 });
 
 describe("loop overrides", () => {

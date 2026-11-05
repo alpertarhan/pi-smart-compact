@@ -1134,9 +1134,15 @@ export function extractOpenLoops(
       if (message?.role === "user") {
         // Ack-only nudges ("devam et", "ok", "go ahead") continue the same
         // request rather than supersede it; scanning past them retires loops
-        // whose completion lands one user turn later.
+        // whose completion lands one user turn later. Injected messages (peer
+        // requests, process events) are no new user request either.
         const turn = extractText(message.content);
-        if (turn.length < 10 || ACK_ONLY_RE.test(turn)) continue;
+        if (
+          turn.length < 10 ||
+          ACK_ONLY_RE.test(turn) ||
+          isInjectedMessage(message, turn)
+        )
+          continue;
         break;
       }
       if (message?.role !== "assistant") continue;

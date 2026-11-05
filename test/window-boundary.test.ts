@@ -362,6 +362,28 @@ describe("resolveCompactionWindow tool-result boundary", () => {
     expect(result.compactionPlan.relaxedSoftBoundaries).not.toContain("recent-user-turn");
   });
 
+  it("protects human turns, not trailing custom messages, without changing the raw tail", () => {
+    const branch = [
+      messageEntry("u1", null, { role: "user", content: [{ type: "text", text: "first " + "x".repeat(60_000) }] }),
+      messageEntry("a1", "u1", { role: "assistant", content: [{ type: "text", text: "first answer " + "x".repeat(60_000) }] }),
+      messageEntry("u2", "a1", { role: "user", content: [{ type: "text", text: "second request" }] }),
+      messageEntry("a2", "u2", { role: "assistant", content: [{ type: "text", text: "second answer " + "x".repeat(30_000) }] }),
+      messageEntry("u3", "a2", { role: "user", content: [{ type: "text", text: "third request" }] }),
+      messageEntry("a3", "u3", { role: "assistant", content: [{ type: "text", text: "third answer" }] }),
+      { type: "custom_message", id: "c1", parentId: "a3", timestamp: "2026-01-01T00:00:00Z", customType: "agent_mesh", content: "Peer status: review round requested on the open PR.", display: true },
+      { type: "custom_message", id: "c2", parentId: "c1", timestamp: "2026-01-01T00:00:00Z", customType: "ad-process:notification", content: "Process build exited with code 0.", display: true },
+    ] as unknown as SessionMessageEntry[];
+    const rc = makePreparedRc(branch, 100);
+    rc.profileCfg.summaryBudgetTokens = 10;
+    rc.ctx.getContextUsage = () => ({ tokens: 40_000, contextWindow: 150_000, percent: 27 } as any);
+
+    const result = resolveCompactionWindow(rc)!;
+
+    // The token budget already ends the tail at a2; the second-latest human turn (u2) is older.
+    expect(result.firstKeptId).toBe("a2");
+    expect(result.compactionPlan.relaxedSoftBoundaries).toContain("recent-user-turn");
+  });
+
   it("summarizes an old prefix of one long user turn when the full turn exceeds the tail budget", () => {
     const branch: SessionMessageEntry[] = [
       messageEntry("long-turn-user", null, {
