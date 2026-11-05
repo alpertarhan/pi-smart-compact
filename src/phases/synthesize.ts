@@ -42,6 +42,7 @@ import {
  inferSessionType,
 } from "../utils/helpers.ts";
 import { getDefaultServices, type SmartCompactServices } from "../infra/services.ts";
+import { transcriptRole } from "../infra/ai-messages.ts";
 import {
  batchCacheKey,
  getCachedBatch,
@@ -188,7 +189,7 @@ function renderBatchMessage(message: LlmMessage): string {
   .slice(0, TRUNC.PREVIEW_XL);
  return (
   "[" +
-  message.role +
+  transcriptRole(message) +
   "] " +
   content +
   (toolCalls ? "\n[tool_calls] " + toolCalls : "")
@@ -742,7 +743,7 @@ export async function summarizeBatch(
    .map(
     (m) =>
      "[" +
-     (m?.role ?? "unknown") +
+     (transcriptRole(m) ?? "unknown") +
      "] " +
      extractText(m?.content).slice(0, TRUNC.CHUNK_FALLBACK),
    )

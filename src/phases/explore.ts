@@ -35,6 +35,7 @@ import { errorDetail, recordIssue } from "../utils/issues.ts";
 import * as log from "../utils/logger.ts";
 import type { SmartCompactServices } from "../infra/services.ts";
 import { getDefaultServices } from "../infra/services.ts";
+import { transcriptRole } from "../infra/ai-messages.ts";
 import { buildExtractionContext } from "../utils/helpers.ts";
 import { classifyTelemetryFailure } from "../domain/telemetry.ts";
 import { SecretScrubber } from "../domain/scrub.ts";
@@ -231,7 +232,7 @@ export function executeExplorationTool(
    );
    output = llmMessages.slice(s, e).map((m, i) => ({
     idx: s + i,
-    role: m?.role,
+    role: transcriptRole(m),
     preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
     toolCalls: getToolCallNames(m?.content),
     isError: m?.isError,
@@ -287,7 +288,7 @@ export function executeExplorationTool(
    }
    output = matches.map(({ idx, m }) => ({
     idx,
-    role: m?.role,
+    role: transcriptRole(m),
     preview: extractText(m?.content).slice(0, TRUNC.PREVIEW),
    }));
    break;
@@ -295,7 +296,8 @@ export function executeExplorationTool(
   case "get_recent_user_messages": {
    const count = boundedInteger(args.count, 10, 1, 50);
    output = llmMessages
-    .filter((m) => m?.role === "user")
+    // Custom messages arrive as user turns but were injected, not typed by the user.
+    .filter((m) => m?.role === "user" && !m.customType)
     .slice(-count)
     .map((m) => extractText(m.content).slice(0, TRUNC.PREVIEW_XL));
    break;
@@ -312,7 +314,7 @@ export function executeExplorationTool(
     e = Math.min(llmMessages.length, idx + radius + 1);
    output = llmMessages.slice(s, e).map((m, i) => ({
     idx: s + i,
-    role: m?.role,
+    role: transcriptRole(m),
     text: extractText(m?.content).slice(0, TRUNC.DETAIL),
     toolCalls: getToolCallNames(m?.content),
     isError: m?.isError,
@@ -402,7 +404,7 @@ export function executeExplorationTool(
     e = Math.min(llmMessages.length, errIdx + ctxRadius + 1);
    output = llmMessages.slice(s, e).map((m, i) => ({
     idx: s + i,
-    role: m?.role,
+    role: transcriptRole(m),
     text: extractText(m?.content).slice(0, TRUNC.PREVIEW_XL),
     isError: m?.isError,
     toolCalls: getToolCallNames(m?.content),
@@ -923,7 +925,7 @@ async function explorationRetry(
   .slice(-5)
   .map(
    (m) =>
-    "[" + m?.role + "] " + extractText(m?.content).slice(0, TRUNC.PREVIEW),
+    "[" + transcriptRole(m) + "] " + extractText(m?.content).slice(0, TRUNC.PREVIEW),
   )
   .join("\n");
  const retryPrompt =
@@ -986,7 +988,7 @@ export function buildDirectExplorationRequest(
  prevSummary?: string, userNote?: string,
 ): { context: Context; maxTokens: number } {
  const first3 = llmMessages
-  .filter((m) => m?.role === "user")
+  .filter((m) => m?.role === "user" && !m.customType) // injected custom messages are not user turns
   .slice(0, 3)
   .map((m) => extractText(m?.content).slice(0, TRUNC.PREVIEW_MID))
   .join("\n---\n");
@@ -994,7 +996,7 @@ export function buildDirectExplorationRequest(
   .slice(-30)
   .map(
    (m) =>
-    "[" + m?.role + "] " + extractText(m?.content).slice(0, TRUNC.DETAIL),
+    "[" + transcriptRole(m) + "] " + extractText(m?.content).slice(0, TRUNC.DETAIL),
   )
   .join("\n");
  const prompt =

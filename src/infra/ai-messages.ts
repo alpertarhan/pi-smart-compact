@@ -40,10 +40,18 @@ export function contextMessageEntries(entries: readonly unknown[]): SessionMessa
 
 /** Text transcript without the host summarizer's implicit 2,000-character tool-result cap. */
 export function serializeConversationText(messages: LlmMessage[]): string {
-  return asSerializableMessages(messages).map(message => message.role === "toolResult"
-    ? "[Tool result]: " + contentText(message.content, "")
-    : serializeConversation([message]),
-  ).filter(Boolean).join("\n\n");
+  return asSerializableMessages(messages).map((message, index) => {
+    if (message.role === "toolResult") return "[Tool result]: " + contentText(message.content, "");
+    if (!messages[index].customType) return serializeConversation([message]);
+    // Pi would print "[User]:" and present injected text as the user's; same shape, empty text skipped.
+    const text = contentText(message.content, "");
+    return text && "[" + transcriptRole(messages[index]) + "]: " + text;
+  }).filter(Boolean).join("\n\n");
+}
+
+/** Role tag for LLM-facing transcripts: a custom message names its extension, never "user". */
+export function transcriptRole(message: LlmMessage | undefined): string | undefined {
+  return message?.customType ? "Extension message: " + message.customType : message?.role;
 }
 
 /**
