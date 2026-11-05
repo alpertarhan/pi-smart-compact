@@ -276,13 +276,24 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     // -e/--expression or -f/--file supplies it; every other literal operand
     // is an edited file. Backup suffixes (-i.bak, BSD's -i '') are options or
     // an empty word, so they never reach the operand walk.
-    if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || word.startsWith("--in-place"))) {
+    // In-place gate: bare/attached -i ("-i", "-i.bak", BSD's separate
+    // suffix word), or a bundle of sed's value-less flags with i ("-ni",
+    // "-nEi"). The bundle only admits [nErszu], so attached scripts
+    // ("-ffixes.sed", "-fsedscript", "-es/a/b/") never match: they are
+    // read-only -f/-e forms.
+    if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || /^-[nErszu]*i[nErszu]*$/.test(word) || word.startsWith("--in-place"))) {
       let scriptSeen = false;
       let options = true;
       for (let index = commandIndex + 1; index < words.length; index++) {
         const word = words[index];
         if (options && word === "--") {
           options = false;
+          continue;
+        }
+        if (options && word === "-i" && words[index + 1]?.startsWith(".")) {
+          // BSD separate-suffix form: `sed -i .bak 's/a/b/' f` — the dotted
+          // word is the backup suffix, never the script or an edited file.
+          index++;
           continue;
         }
         if (options && (word === "-e" || word === "--expression" || word === "-f" || word === "--file")) {

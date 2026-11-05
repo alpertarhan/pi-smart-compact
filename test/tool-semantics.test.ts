@@ -218,6 +218,20 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: ["src/a.ts"], deleted: [] });
   });
 
+  it("records bundled -ni flags and BSD's separate dotted suffix", () => {
+    expect(extractShellFileOperations({ command: "sed -ni 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -in 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i .bak 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i .bak -e 's/a/b/' f" })).toEqual({ modified: ["f"], deleted: [] });
+  });
+
+  it("never treats attached -e/-f scripts as in-place flags", () => {
+    // Attached script forms contain dots/slashes and must stay read-only.
+    expect(extractShellFileOperations({ command: "sed -ffixes.sed input" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -fsedscript input" })).toEqual({ modified: [], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -es/a/b/ f" })).toEqual({ modified: [], deleted: [] });
+  });
+
   it("records nothing for read-only sed or in-place sed without a literal file", () => {
     expect(extractShellFileOperations({ command: "sed -n '40,75p' src/x.ts" })).toEqual({ modified: [], deleted: [] });
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' *.ts" })).toEqual({ modified: [], deleted: [] });
