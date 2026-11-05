@@ -296,7 +296,21 @@ function commandFileOperations(words: string[]): ShellFileOperations {
       const args = words.slice(commandIndex + 1);
       const bareIndex = args.indexOf("-i");
       const ambiguous = args[bareIndex + 1];
+      // A script already supplied before the bare -i (first bare operand, or
+      // any -e/-f/--expression/--file form) means the word after -i is the
+      // GNU input file, not a BSD suffix — the normal walk records it.
+      const scriptBefore =
+        bareIndex !== -1 &&
+        args.slice(0, bareIndex).some(
+          (word) =>
+            !word.startsWith("-") ||
+            word.startsWith("-e") ||
+            word.startsWith("-f") ||
+            word.startsWith("--expression") ||
+            word.startsWith("--file"),
+        );
       if (
+        !scriptBefore &&
         bareIndex !== -1 &&
         ambiguous !== undefined &&
         !ambiguous.startsWith("-") &&
@@ -305,6 +319,11 @@ function commandFileOperations(words: string[]): ShellFileOperations {
       ) {
         const rest = args.slice(bareIndex + 2);
         const lastRaw = rest[rest.length - 1];
+        // Address scripts (/^$/d) usually carry regex metachars the literal
+        // filter already rejects; only the s|y prefix is excluded explicitly.
+        // A no-target command may leave a path-looking last word — harmless:
+        // trackFileOps only records successful executions, and genuine
+        // literal absolute targets (/tmp/a.ts) stay valid files.
         if (
           lastRaw !== undefined &&
           literalShellPath(lastRaw) === lastRaw &&
@@ -642,9 +661,6 @@ export function exitOneIsExpectedNoMatch(
   // can leave the exit owned by an unknown earlier command.
   for (let index = statements.length - 2; index >= 0; index--) {
     if (statements[index + 1].sepBefore !== "&&") break;
-    // A redirected predecessor can fail silently (cd /missing 2>/dev/null),
-    // leaving the exit owned by an unknown failure.
-    if (statements[index].redirected) return false;
     const priorWords = statements[index].words
       .filter((item) => item.kind === "word")
       .map((item) => item.value);

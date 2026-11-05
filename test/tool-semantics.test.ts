@@ -253,6 +253,17 @@ describe("extractShellFileOperations sed in place", () => {
       .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
     expect(extractShellFileOperations({ command: "sed -i bak 's/a/b/' /tmp/a.ts" }))
       .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
+    // A script already supplied before the bare -i: the next word is the file.
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -e 's/a/b/' -i file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -f fixes.sed -i file" }))
+      .toEqual({ modified: ["file"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i /tmp/a.ts" }))
+      .toEqual({ modified: ["/tmp/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i $F" }))
+      .toEqual({ modified: [], deleted: [] });
     // Unambiguous multi-file form is unchanged.
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
       .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
