@@ -27,7 +27,7 @@ import { buildRestoreMessage } from "../src/utils/backups.ts";
 import { findSection } from "../src/domain/summary-parse.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
 import { createServices } from "../src/infra/services.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeReaderTokenEstimator, makeTokenEstimator } from "../src/utils/tokens.ts";
 import { PROFILES, VERSION } from "../src/constants.ts";
 import type { TieredRc } from "../src/app/run-context.ts";
 import type { CompactionState, LlmMessage, OpenLoop } from "../src/types.ts";
@@ -166,6 +166,7 @@ describe("custom-message provenance", () => {
         config: { backupEnabled: false, pinPaths: [] },
         profileCfg: { ...PROFILES.balanced },
         estimator: makeTokenEstimator("openai", "gpt-5", services.tokenCalibration),
+        readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "gpt-5", api: "openai-responses" }, services.tokenCalibration),
         providerCaps: {
           maxOutputTokens: 8192, supportsTools: true, jsonReliability: "high", instructionFollowing: "high",
           tokenRatioEstimate: 4, concurrencyLimit: 5, cacheStrategy: "none", timeoutMultiplier: 1,

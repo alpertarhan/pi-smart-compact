@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { estimateFinalSummaryAllowance, planCompactionWindow, resolveCompactionWindow } from "../src/app/steps/window.ts";
 import type { PreparedRc } from "../src/app/run-context.ts";
 import type { SessionMessageEntry } from "../src/types.ts";
-import { getProviderCaps, makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
+import { getProviderCaps, makeReaderTokenEstimator,
+  makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
 import { POST_SUMMARY_RESERVE_RATIO } from "../src/constants.ts";
 import { verifyCompactionYield } from "../src/domain/yield-gate.ts";
 import { buildSessionContext, convertToLlm, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -36,6 +37,7 @@ function makePreparedRc(branch: SessionMessageEntry[], keepRecentTokens = 30_000
       },
     },
     estimator: makeTokenEstimator("openai", "test", new TokenCalibrationStore()),
+    readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "test", api: "openai-responses" }, new TokenCalibrationStore()),
     profileCfg: {
       keepRecentTokens,
       summaryBudgetTokens: 6_000,

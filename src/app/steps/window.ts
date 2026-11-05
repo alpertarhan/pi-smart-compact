@@ -357,7 +357,7 @@ function nativeOverridePlan(
  if (!isNativeApi(model.api)) return null;
  const cut = nativeCompactionCut(msgs, keepFrom);
  if (cut === null) return null;
- const tokens = msgs.map((entry) => rc.estimator.message(entry.message as LlmMessage));
+ const tokens = msgs.map((entry) => rc.readerEstimator.message(entry.message as LlmMessage));
  const estimate = tokens.reduce((sum, value) => sum + value, 0);
  const prefix = tokens.slice(0, cut).reduce((sum, value) => sum + value, 0);
  // Same split as the native attempt: measured context beyond the estimate is
@@ -368,6 +368,36 @@ function nativeOverridePlan(
   retainedTokens: Math.round((estimate - prefix) * scale),
   route: nativeRouteLabel(model),
  };
+}
+
+/**
+ * Reader-domain per-message estimates. The active model replays its own
+ * unchanged assistant messages (proxy eligibility), while projected edits and
+ * the live turn boundary change what the wire carries.
+ */
+export function estimateReaderMessageTokens(
+ readerEstimator: TokenEstimator,
+ msgs: ReturnType<typeof contextMessageEntries>,
+): number[] {
+ let lastHumanTurn = -1;
+ for (let index = 0; index < msgs.length; index++) {
+  const message = msgs[index]!.message;
+  if (
+   isRecord(message) &&
+   message.role === "user" &&
+   !msgs[index]!.customType &&
+   !isInjectedMessage(message as unknown as LlmMessage)
+  ) {
+   lastHumanTurn = index;
+  }
+ }
+ return msgs.map((entry, index) =>
+  readerEstimator.message(entry.message as LlmMessage, {
+   contextEdited: entry.contextEdited,
+   // No human turn anywhere means nothing is provably in the live turn.
+   currentTurn: lastHumanTurn >= 0 && index > lastHumanTurn,
+  }),
+ );
 }
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
@@ -394,20 +424,21 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
  const plan = planCompactionWindow({
   msgs,
   branch: branch as unknown[],
-  messageTokens: msgs.map((entry) =>
-   rc.estimator.message(entry.message as LlmMessage),
-  ),
+  messageTokens: estimateReaderMessageTokens(rc.readerEstimator, msgs),
   totalTokens,
   modelContextWindow: rc.ctx.model?.contextWindow,
   mode,
   profileCfg: rc.profileCfg,
   force: rc.flags.force,
+  // The allowance lands in the READER's post-compaction prompt: chars come
+  // from the summary budget via the summary model's ratio, priced in reader
+  // tokens by the reader estimator.
   finalSummaryAllowanceTokens: estimateFinalSummaryAllowance(
    rc.profileCfg,
-   rc.estimator,
+   rc.readerEstimator,
    rc.providerCaps,
   ),
- });
+ });;
 
  if (!plan.viable) {
   if (rc.flags.force) {

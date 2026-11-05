@@ -140,6 +140,8 @@ export interface PreparedExt {
   profileCfg: ProfileConfig;
   providerCaps: ProviderCapabilities;
   estimator: TokenEstimator;
+  /** Prices what the ACTIVE model's wire carries (replay proxies, image rules). */
+  readerEstimator: TokenEstimator;
   adapted: boolean;
   summaryAuth?: ResolvedAuth;
   /** Optional routes resolve credentials only when the stage actually runs. */

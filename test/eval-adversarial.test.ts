@@ -303,6 +303,7 @@ describe("adversarial planning and safety", () => {
       },
       profileCfg: PROFILES.balanced,
       estimator,
+      readerEstimator: estimator,
       mode: "balanced",
       profile: "balanced",
       flags: { force: true },

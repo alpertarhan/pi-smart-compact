@@ -155,7 +155,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
 
   const detModified = extraction.modifiedFiles.map(f => f.path);
   const detRead = extraction.readFiles;
-  const yieldEstimate = verifyCompactionYield(rc.totalTokens, rc.estimator.text(summary), rc.compactionPlan);
+  const yieldEstimate = verifyCompactionYield(rc.totalTokens, rc.readerEstimator.text(summary), rc.compactionPlan);
   const tokensSaved = yieldEstimate.estimatedSavedTokens;
 
   const details: SmartCompactDetails = {

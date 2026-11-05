@@ -10,7 +10,7 @@ import type { RcBase, PreparedRc, ResolvedAuth } from "../run-context.ts";
 import { advance } from "../run-context.ts";
 import { effectiveBudget, resolveCallBudget, resolveOutputBudget, MODE_POLICIES } from "../mode-policy.ts";
 import { DEFAULT_CONFIG } from "../../constants.ts";
-import { getProviderCaps } from "../../utils/tokens.ts";
+import { getProviderCaps, makeReaderTokenEstimator } from "../../utils/tokens.ts";
 import { loadConfig } from "../../utils/config.ts";
 import { preparePreflightProfile } from "../preflight.ts";
 import { readerSignature } from "../pending-slot.ts";
@@ -37,6 +37,15 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
   );
  }
  const providerCaps = getProviderCaps(rc.summaryModel.provider);
+ // Reader-domain pricing for everything the ACTIVE model replays: the window
+ // walk, the native split, and the final-yield check. Summary requests keep
+ // rc.estimator (the summarizer's own domain).
+ const readerEstimator = rc.ctx.model
+  ? makeReaderTokenEstimator(
+    { provider: rc.ctx.model.provider, id: rc.ctx.model.id, api: rc.ctx.model.api },
+    rc.services.tokenCalibration,
+   )
+  : estimator;
  rc.services.thinkingLevels = {
   summaryThinkingLevel: config.summaryThinkingLevel,
   segmentationThinkingLevel: config.segmentationThinkingLevel,
@@ -88,6 +97,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
   profileCfg: typeof profileCfg;
   providerCaps: typeof providerCaps;
   estimator: typeof estimator;
+  readerEstimator: ReturnType<typeof makeReaderTokenEstimator>;
   adapted: boolean;
   summaryAuth?: ResolvedAuth;
   segAuth?: ResolvedAuth;
@@ -98,6 +108,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
  out.profileCfg = profileCfg;
  out.providerCaps = providerCaps;
  out.estimator = estimator;
+ out.readerEstimator = readerEstimator;
  out.adapted = adapted;
  return advance<RcBase, PreparedRc>(out, "_prepared");
 }

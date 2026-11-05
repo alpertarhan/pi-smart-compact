@@ -928,7 +928,7 @@ describe("native attempt accounting", () => {
   const msgs = branch.map((entry) => ({ type: "message", id: entry.id, message: entry.message }));
   const totalEstimate = msgs.reduce((sum, entry) => sum + estimator.message(entry.message), 0);
   const rc = {
-   ctx: harness.ctx, msgs, branch, keepFrom: msgs.length - 4, estimator,
+   ctx: harness.ctx, msgs, branch, keepFrom: msgs.length - 4, estimator, readerEstimator: estimator,
    services: { budget, scrubber: new SecretScrubber() },
    cancellation: { signal: new AbortController().signal },
    sessionId: "native-session", totalTokens: totalEstimate + extraTokens, runId: "run-direct",

@@ -12,6 +12,7 @@ import { pruneRedundant } from "../utils/pruning.ts";
 import { createBatches, getPreviousCompactionContext } from "../utils/helpers.ts";
 import { resolveModels } from "./model-routing.ts";
 import { planManualPreflight, preflightDamageMedian, prepareManualPreflightContext, preparePreflightProfile } from "./preflight.ts";
+import { estimateReaderMessageTokens } from "./steps/window.ts";
 import { batchOutputLimit, continuityRisk, deterministicExtractionConfidence, MODE_POLICIES, resolveMode } from "./mode-policy.ts";
 import { recoverSourceMessages } from "./steps/recover.ts";
 import { loadExtractionContinuity, selectCachedExtraction } from "./steps/extract.ts";
@@ -96,7 +97,7 @@ export async function createModelFeasibilityResolver(
  function plan(model: Model<Api>, modePreference: CompactionMode): SummaryRequestPlan {
   const initialMode = resolveMode(modePreference, shared.contextPercent);
   const prepared = preparePreflightProfile({ cwd: ctx.cwd, summaryModel: model, mode: initialMode, tokenCalibration: services.tokenCalibration, config, damageMedian });
-  const messageTokens = shared.msgs.map(entry => prepared.estimator.message(entry.message as LlmMessage));
+  const messageTokens = estimateReaderMessageTokens(shared.readerEstimator, shared.msgs);
   const preview = planManualPreflight(ctx, model, initialMode, services.tokenCalibration, config, damageMedian, {
    ...shared, messageTokens, rawEstimatedMessageTokens: messageTokens.reduce((sum, count) => sum + count, 0),
   });

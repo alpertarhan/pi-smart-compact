@@ -154,11 +154,11 @@ export async function attemptNativeCompaction(
   const prefix = rc.msgs.slice(0, cut);
   const messages = prefix.map((entry) => entry.message as Message);
   const prefixTokens = prefix.reduce(
-    (sum, entry) => sum + rc.estimator.message(entry.message as LlmMessage),
+    (sum, entry) => sum + rc.readerEstimator.message(entry.message as LlmMessage),
     0,
   );
   const totalEstimate = rc.msgs.reduce(
-    (sum, entry) => sum + rc.estimator.message(entry.message as LlmMessage),
+    (sum, entry) => sum + rc.readerEstimator.message(entry.message as LlmMessage),
     0,
   );
   const retainedTailTokens = Math.max(0, totalEstimate - prefixTokens);

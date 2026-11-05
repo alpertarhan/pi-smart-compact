@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { TokenCalibrationStore, estimateTokens, makeReaderTokenEstimator, makeTokenEstimator } from "../src/utils/tokens.ts";
+import { estimateReaderMessageTokens } from "../src/app/steps/window.ts";
 
 const ANTHROPIC = { provider: "anthropic", id: "claude-test", api: "anthropic-messages" } as const;
 const CODEX = { provider: "openai-codex", id: "gpt-code", api: "openai-codex-responses" } as const;
@@ -142,5 +143,35 @@ describe("token density and binary-safe counting", () => {
     expect(estimator.message(signed)).toBe(estimator.message(clean));
     const withImage = { role: "user", content: [{ type: "image", data: "A".repeat(200_000) }] } as any;
     expect(estimator.message(withImage)).toBeLessThan(1500);
+  });
+});
+
+describe("reader window estimates (estimateReaderMessageTokens)", () => {
+  const cal = new TokenCalibrationStore();
+  const sameModel = assistant({ provider: "openai-codex", api: "openai-codex-responses", model: "gpt-code", content: [{ type: "text", text: "x".repeat(80_000) }] });
+
+  it("carries per-entry edit and live-turn context into the proxy", () => {
+    const reader = makeReaderTokenEstimator(CODEX, cal);
+    const msgs = [
+      { type: "message" as const, id: "1", message: sameModel },
+      { type: "message" as const, id: "2", message: sameModel, contextEdited: true },
+      { type: "message" as const, id: "3", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+      { type: "message" as const, id: "4", message: sameModel },
+    ];
+    const tokens = estimateReaderMessageTokens(reader, msgs as any);
+    expect(tokens[0]).toBe(100); // prior turn: output - reasoning
+    expect(tokens[1]).toBeGreaterThan(80_000 / 4); // edited: char fallback, no proxy
+    expect(tokens[3]).toBe(1000); // live turn: full measured output
+  });
+
+  it("treats custom messages as non-human for the live-turn boundary", () => {
+    const reader = makeReaderTokenEstimator(CODEX, cal);
+    const msgs = [
+      { type: "message" as const, id: "1", message: sameModel },
+      { type: "message" as const, id: "2", message: { role: "user", content: [{ type: "text", text: "injected" }] }, customType: "smart-compact-context" },
+      { type: "message" as const, id: "3", message: sameModel },
+    ];
+    const tokens = estimateReaderMessageTokens(reader, msgs as any);
+    expect(tokens[2]).toBe(100); // custom turn is not a human turn
   });
 });

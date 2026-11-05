@@ -15,6 +15,7 @@ import { computeToolCharPercentage } from "../utils/helpers.ts";
 import { readRecentDamageScores } from "../utils/damage.ts";
 import {
   getProviderCaps,
+  makeReaderTokenEstimator,
   makeTokenEstimator,
   safeContextPercent,
   type TokenCalibrationStore,
@@ -25,6 +26,7 @@ import { contextMessageEntries } from "../infra/ai-messages.ts";
 import type { CompactionWindowPlan } from "./run-context.ts";
 import {
   estimateFinalSummaryAllowance,
+  estimateReaderMessageTokens,
   planCompactionWindow,
 } from "./steps/window.ts";
 
@@ -110,6 +112,8 @@ export interface ManualPreflightContext {
   branch: unknown[];
   msgs: SessionMessageEntry[];
   messageTokens: number[];
+  /** Reader-domain estimator for the ACTIVE model; summaries keep their own domain. */
+  readerEstimator: TokenEstimator;
   totalTokens: number;
   rawEstimatedMessageTokens: number;
   modelContextWindow?: number;
@@ -142,13 +146,19 @@ export function prepareManualPreflightContext(
     summaryModel.id,
     tokenCalibration,
   );
-  const messageTokens = msgs.map((entry) =>
-    estimator.message(entry.message as LlmMessage),
-  );
+  // The window plan describes the ACTIVE model's replay, not the summarizer's.
+  const readerEstimator = ctx.model
+    ? makeReaderTokenEstimator(
+      { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api },
+      tokenCalibration,
+    )
+    : estimator;
+  const messageTokens = estimateReaderMessageTokens(readerEstimator, msgs);
   return {
     branch,
     msgs,
     messageTokens,
+    readerEstimator,
     totalTokens,
     rawEstimatedMessageTokens: messageTokens.reduce(
       (sum, tokens) => sum + tokens,
@@ -223,7 +233,7 @@ export function planManualPreflight(
     force: true,
     finalSummaryAllowanceTokens: estimateFinalSummaryAllowance(
       prepared.profileCfg,
-      prepared.estimator,
+      shared.readerEstimator,
       prepared.providerCaps,
     ),
   });
