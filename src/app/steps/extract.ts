@@ -30,6 +30,7 @@ import { pruneRedundant } from "../../utils/pruning.ts";
 import {
  extractStructured,
  buildToolCallIndex,
+ injectedCarriedFacts,
 } from "../../utils/extraction.ts";
 import type { PruningResult } from "../../utils/pruning.ts";
 import {
@@ -77,7 +78,16 @@ export function loadExtractionContinuity(
   schemaVersion: 2 as const, projectId, sessionId: rc.sessionId,
   ...(ancestryIds.length ? { branchHeadId: ancestryIds[ancestryIds.length - 1], branchAncestryIds: ancestryIds } : {}),
  };
- const previousState = loadScopedCompactionState(continuityScope, ancestryIds, options);
+ const saved = loadScopedCompactionState(continuityScope, ancestryIds, options);
+ // Saved facts may predate provenance; drop those that repeat injected text.
+ const isInjectedCarried = injectedCarriedFacts(rc.llmMessages);
+ const previousState = saved && {
+  ...saved,
+  constraints: saved.constraints.filter(item => !isInjectedCarried(item.text)),
+  // Dialog answers and tool-error loops never come from a custom message.
+  decisions: saved.decisions.filter(item => item.type === "explicit" || !isInjectedCarried(item.summary)),
+  openLoops: saved.openLoops.filter(loop => loop.type === "bugfix" || !isInjectedCarried(loop.summary)),
+ };
  // A released user constraint must not return through an older snapshot.
  const factOverrides = retireSupersededConstraints([
   ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence })),

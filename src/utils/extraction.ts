@@ -526,7 +526,7 @@ export function collapseDecisionsByQuestion<
  * mined as goal, constraint, decision, or recent user request.
  */
 const HARNESS_INJECTED_RE =
-  /^(?:<(?:process_event|memory_status)\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply)\b)/;
+  /^(?:<(?:process_event|memory_status)\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply|question)\b)/;
 
 export function isHarnessInjectedText(text: string): boolean {
   return HARNESS_INJECTED_RE.test(text.trim());
@@ -542,6 +542,50 @@ export function isInjectedMessage(
   text = extractText(message.content),
 ): boolean {
   return message.customType !== undefined || isHarnessInjectedText(text);
+}
+
+/** Comparable form of a fact: bullets, headings, whitespace and case never decide equality. */
+function factKey(text: string): string {
+  return normalizeFactKey(summaryEvidenceLine(text, text.length));
+}
+
+/**
+ * Carried facts (a previous summary's sections, the saved state) have no
+ * provenance, and those carried from before it existed repeat custom messages,
+ * e.g. a rule set an extension re-injects after every compaction. The returned
+ * test marks a carried fact injected when it is harness text or equals, whole,
+ * what mining takes from a custom message in `msgs` (a line, or the bounded
+ * text of an implicit decision or loop), unless the user typed it in `msgs`.
+ */
+export function injectedCarriedFacts(
+  msgs: LlmMessage[],
+): (text: string) => boolean {
+  const injected = new Set<string>();
+  const typed = new Set<string>();
+  for (const message of msgs) {
+    if (message?.role !== "user") continue;
+    const text = extractText(message.content);
+    // A prior summary holds the carried facts themselves: evidence for neither side.
+    if (HISTORY_SUMMARY_RE.test(text)) continue;
+    const keys = isInjectedMessage(message, text) ? injected : typed;
+    for (const line of text.split(/\n+/))
+      keys.add(
+        factKey(
+          line
+            .replace(/^\s*[-*]\s+/, "")
+            .trim()
+            .slice(0, TRUNC.CONSTRAINT_TEXT),
+        ),
+      );
+    keys.add(factKey(text.slice(0, TRUNC.DECISION_SUMMARY)));
+    keys.add(factKey(text.slice(0, TRUNC.OPEN_LOOP_SUMMARY)));
+  }
+  return (text) => {
+    const key = factKey(text);
+    return (
+      !typed.has(key) && (injected.has(key) || isHarnessInjectedText(text))
+    );
+  };
 }
 
 export function extractDecisions(
@@ -686,6 +730,7 @@ export function mineConstraints(
 ): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
+  const isInjectedCarried = injectedCarriedFacts(msgs);
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
     const text = extractText(msgs[i].content);
@@ -702,7 +747,8 @@ export function mineConstraints(
     // the entire recap (including notices) into one bogus constraint.
     // A host compaction summary contributes only its Constraints section, as it
     // contributes only its Goal to extractMainGoal: other sections are history.
-    const source = HISTORY_SUMMARY_RE.test(text)
+    const carried = HISTORY_SUMMARY_RE.test(text);
+    const source = carried
       ? (findSection(text, "constraints")?.body ?? "")
       : text;
     for (const raw of source.split(/\n+/)) {
@@ -712,6 +758,11 @@ export function mineConstraints(
         .replace(CONTINUITY_LABEL_RE, "");
       if (candidate.length < 10 || isNonLiveConstraintText(candidate)) continue;
       if (ownOutputMessage && OWN_OUTPUT_PHRASE_RE.test(candidate)) continue;
+      if (
+        carried &&
+        isInjectedCarried(candidate.slice(0, TRUNC.CONSTRAINT_TEXT))
+      )
+        continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
         if (!re.test(candidate)) continue;
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
