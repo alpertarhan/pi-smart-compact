@@ -288,6 +288,15 @@ function commandFileOperations(words: string[]): ShellFileOperations {
     // word), or a bundle of sed's value-less flags with i followed only by
     // more such flags or a suffix separator ("-ni", "-Ei.bak", "-Ei~").
     // Attached scripts ("-ffixes.sed", "-es/a/b/") never match.
+    // Last raw operand, ignoring trailing valueless flags (-n): GNU option
+    // permutations can place flags after the target (sed 's/a/b/' -i f -n).
+    // Nonliteral words ($F) are kept as the selection and rejected after.
+    const lastOperand = (rest: string[]): string | undefined => {
+      for (let i = rest.length - 1; i >= 0; i--) {
+        if (!rest[i].startsWith("-")) return rest[i];
+      }
+      return undefined;
+    };
     if (words.slice(commandIndex + 1).some(word => /^-i/.test(word) || /^-[nErszu]*i(?:[nErszu]*$|[^A-Za-z])/.test(word) || word.startsWith("--in-place"))) {
       // BSD's ambiguous bare suffix (`sed -i bak 's/a/b/' f`: suffix or GNU
       // script — the dialect cannot be decided). Original last-target
@@ -322,7 +331,7 @@ function commandFileOperations(words: string[]): ShellFileOperations {
         !ambiguous.includes("/")
       ) {
         const rest = args.slice(bareIndex + 2);
-        const lastRaw = rest[rest.length - 1];
+        const lastRaw = lastOperand(rest);
         // Address scripts (/^$/d) usually carry regex metachars the literal
         // filter already rejects; only the s|y prefix is excluded explicitly.
         // A no-target command may leave a path-looking last word — harmless:
@@ -342,7 +351,7 @@ function commandFileOperations(words: string[]): ShellFileOperations {
         // valid BSD suffix+input; the dialect is ambiguous, so keep main's
         // conservative last-target rule and never fabricate the suffix.
         const rest = args.slice(bareIndex + 1);
-        const lastRaw = rest[rest.length - 1];
+        const lastRaw = lastOperand(rest);
         if (
           lastRaw !== undefined &&
           literalShellPath(lastRaw) === lastRaw &&

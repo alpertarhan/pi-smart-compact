@@ -279,6 +279,13 @@ describe("extractShellFileOperations sed in place", () => {
     // GNU two-target form stays conservative: last target only.
     expect(extractShellFileOperations({ command: "sed 's/a/b/' -i f1 f2" }))
       .toEqual({ modified: ["f2"], deleted: [] });
+    // Trailing valueless flags are not target operands.
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i src/a.ts -n" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed -i d src/a.ts -n" }))
+      .toEqual({ modified: ["src/a.ts"], deleted: [] });
+    expect(extractShellFileOperations({ command: "sed 's/a/b/' -i $F -n" }))
+      .toEqual({ modified: [], deleted: [] });
     // Unambiguous multi-file form is unchanged.
     expect(extractShellFileOperations({ command: "sed -i 's/a/b/' src/a.ts src/b.ts" }))
       .toEqual({ modified: ["src/a.ts", "src/b.ts"], deleted: [] });
