@@ -52,6 +52,14 @@ describe("write-tier evidence", () => {
     expect(cacheWriteTierMs({ cacheWrite: 5_000, cacheWrite1h: 0 }, { long: 3_600 })).toBeNull();
   });
 
+  it("lets later short-tier writes lower the advertised fallback a pure read set", () => {
+    const ledger = ledgerWithMetadata(tiers);
+    ledger.reset("s1");
+    ledger.observe({ usage: usage(0, 80_000) }, 0); // resumed session: first request is a pure read
+    ledger.observe({ usage: usage(1_000, 80_000, 2_000, { cacheWrite1h: 0 }) }, MINUTE);
+    expect(ledger.observe({ usage: usage(0, 0, 82_000, { cacheWrite1h: 0 }) }, 8 * MINUTE)?.cause).toBe("idle-expiry");
+  });
+
   it("labels a gap of more than 5 min after short-tier writes as idle expiry, not foreign", () => {
     const ledger = ledgerWithMetadata(tiers);
     ledger.reset("s1");

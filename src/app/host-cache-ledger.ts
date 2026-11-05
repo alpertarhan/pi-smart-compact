@@ -105,6 +105,8 @@ export function createHostCacheLedger(): HostCacheLedger {
   // Keep the longest known lifetime on a route; a short tail write must not
   // retire a longer-lived prefix. Unknown metadata and route changes reset it.
   let lifetimeMs: number | null = null;
+  // Longest tier proven by writes on this route; the advertised fallback never outranks it.
+  let writtenTierMs: number | null = null;
   let previousRoute: string | undefined;
   let pendingEdit: ContextEditKind | undefined;
   // Per-route all-miss streaks: consecutive large requests with zero cache reads.
@@ -115,6 +117,7 @@ export function createHostCacheLedger(): HostCacheLedger {
     previousAt = undefined;
     warmedAt = undefined;
     lifetimeMs = null;
+    writtenTierMs = null;
     previousRoute = undefined;
     pendingEdit = undefined;
     routeStreaks.clear();
@@ -211,8 +214,9 @@ export function createHostCacheLedger(): HostCacheLedger {
       // Write-tier evidence sets the effective tier, and any 1h write in the
       // prefix wins over later short writes; a pure read keeps the tier in
       // effect; without evidence the longest advertised tier governs.
-      lifetimeMs = writtenTier !== null ? Math.max(sameRoute ? lifetimeMs ?? 0 : 0, writtenTier)
-        : sameRoute ? lifetimeMs ?? currentLifetime : currentLifetime;
+      if (!sameRoute) writtenTierMs = null; // a route change discards the evidence
+      if (writtenTier !== null) writtenTierMs = Math.max(writtenTierMs ?? 0, writtenTier);
+      lifetimeMs = writtenTierMs ?? (sameRoute ? lifetimeMs ?? currentLifetime : currentLifetime);
       previousRoute = route;
       previousAt = time;
       warmedAt = undefined;
