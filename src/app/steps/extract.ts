@@ -30,6 +30,7 @@ import { pruneRedundant } from "../../utils/pruning.ts";
 import {
  extractStructured,
  buildToolCallIndex,
+ injectedCarriedFacts,
 } from "../../utils/extraction.ts";
 import type { PruningResult } from "../../utils/pruning.ts";
 import {
@@ -77,7 +78,16 @@ export function loadExtractionContinuity(
   schemaVersion: 2 as const, projectId, sessionId: rc.sessionId,
   ...(ancestryIds.length ? { branchHeadId: ancestryIds[ancestryIds.length - 1], branchAncestryIds: ancestryIds } : {}),
  };
- const previousState = loadScopedCompactionState(continuityScope, ancestryIds, options);
+ const saved = loadScopedCompactionState(continuityScope, ancestryIds, options);
+ // Saved facts may predate provenance; drop those that repeat injected text.
+ const isInjectedCarried = injectedCarriedFacts(rc.llmMessages);
+ const previousState = saved && {
+  ...saved,
+  constraints: saved.constraints.filter(item => !isInjectedCarried(item.text)),
+  // Dialog answers and tool-error loops never come from a custom message.
+  decisions: saved.decisions.filter(item => item.type === "explicit" || !isInjectedCarried(item.summary)),
+  openLoops: saved.openLoops.filter(loop => loop.type === "bugfix" || !isInjectedCarried(loop.summary)),
+ };
  // A released user constraint must not return through an older snapshot.
  const factOverrides = retireSupersededConstraints([
   ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence })),
@@ -137,11 +147,19 @@ export function selectCachedExtraction(input: {
  if (!cacheUsable || !cachedExt) {
   return { extraction: extractStructured(llmMessages, profileCfg, buildToolCallIndex(llmMessages)), cache: "miss", missReason };
  }
- if (cacheExact) return { extraction: cachedExt.extraction, cache: "exact" };
+ if (cacheExact) return { extraction: dropInjectedConstraints(cachedExt.extraction, llmMessages), cache: "exact" };
  const newMsgs = llmMessages.slice(cachedExt.messageCount);
  const deltaTcIdx = buildToolCallIndex(newMsgs);
  const delta = extractStructured(newMsgs, profileCfg, deltaTcIdx);
- return { extraction: mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx), cache: "incremental" };
+ const merged = mergeExtractions(cachedExt.extraction, delta, cachedExt.messageCount, newMsgs, deltaTcIdx);
+ return { extraction: dropInjectedConstraints(merged, llmMessages), cache: "incremental" };
+}
+
+/** Cached and delta mining each saw part of the window (or predate this filter): re-check against all of it. */
+function dropInjectedConstraints(extraction: StructuredExtraction, llmMessages: LlmMessage[]): StructuredExtraction {
+ const isInjectedCarried = injectedCarriedFacts(llmMessages);
+ const constraints = extraction.constraints.filter(item => !isInjectedCarried(item.text));
+ return constraints.length === extraction.constraints.length ? extraction : { ...extraction, constraints };
 }
 
 /**

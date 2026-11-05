@@ -12,6 +12,7 @@ import {
   extractStructured,
   nestedToolCallId,
   collapseDecisionsByQuestion,
+  isHarnessInjectedText,
 } from "../src/utils/extraction.ts";
 import type { LlmMessage, ProfileConfig } from "../src/types.ts";
 import { EXTRACTION_LIMITS, PROFILES } from "../src/constants.ts";
@@ -1173,6 +1174,20 @@ describe("harness-injected follow-ups", () => {
     expect(ex.constraints.some((c) => /make before commit/.test(c.text))).toBe(
       false,
     );
+  });
+
+  it("ignores agent-mesh questions without provenance", () => {
+    const mesh =
+      "**agent-mesh question from torro-console-developer (01a19264-b386)** [f6a8efcd9c00f536]\n\nShould we avoid the cache and always run make before commit?";
+    expect(isHarnessInjectedText(mesh)).toBe(true);
+    const ex = extractStructured(
+      [msg("user", goal), msg("assistant", "ok"), msg("user", mesh)],
+      PROFILES.balanced,
+    );
+    expect(ex.mainGoal).toBe(goal);
+    expect(ex.constraints).toEqual([]);
+    expect(ex.decisions).toEqual([]);
+    expect(ex.lastUserMessages).toEqual([goal]);
   });
 
   it("strips stacked continuity labels and dedupes", () => {

@@ -266,6 +266,49 @@ describe("extractOpenLoops", () => {
     );
     expect(loops.find((l) => l.type === "follow-up")?.status).toBe("resolved");
   });
+
+  it("never turns a prior compaction or branch summary into a loop", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const summary = (prefix: string) =>
+      prefix + "\n\n<summary>\n## Goal\nShip the billing worker\n\n## Blocked\n- Waiting for the DBA\n\n## Next Steps\n1. Next step: add the retry test\n</summary>";
+    const loops = extractOpenLoops(
+      [
+        { role: "user", content: summary("The conversation history before this point was compacted into the following summary:") },
+        { role: "user", content: summary("The following is a summary of a branch that this conversation came back from:") },
+        { role: "assistant", content: "Continuing." },
+      ],
+      extraction,
+    );
+    expect(loops).toEqual([]);
+  });
+
+  it("retires follow-ups completed after injected messages", () => {
+    const extraction = makeExtraction({ errors: [] });
+    const loops = extractOpenLoops(
+      [
+        { role: "user", content: "next step is to add the migration script" },
+        { role: "assistant", content: "Looking into it." },
+        // Custom messages arrive as user turns: with provenance, and without it.
+        {
+          role: "user",
+          content: "Peer status: review round requested on the open PR.",
+          customType: "agent_mesh",
+        },
+        {
+          role: "user",
+          content: '<process_event type="lifecycle" kind="success">exited 0</process_event>',
+        },
+        {
+          role: "assistant",
+          content: "The migration script is added and verified.",
+        },
+      ],
+      extraction,
+    );
+    expect(loops.map((l) => [l.type, l.status])).toEqual([
+      ["follow-up", "resolved"],
+    ]);
+  });
 });
 
 describe("loop overrides", () => {

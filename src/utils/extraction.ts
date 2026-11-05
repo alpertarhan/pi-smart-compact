@@ -526,7 +526,7 @@ export function collapseDecisionsByQuestion<
  * mined as goal, constraint, decision, or recent user request.
  */
 const HARNESS_INJECTED_RE =
-  /^(?:<(?:process_event|memory_status)\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply)\b)/;
+  /^(?:<(?:process_event|memory_status)\b|Native compaction continuity bridge\b|## Continuity Ledger\b|\[agent-mesh\]|(?:\*\*)?agent-mesh (?:message|reply|question)\b)/;
 
 export function isHarnessInjectedText(text: string): boolean {
   return HARNESS_INJECTED_RE.test(text.trim());
@@ -542,6 +542,60 @@ export function isInjectedMessage(
   text = extractText(message.content),
 ): boolean {
   return message.customType !== undefined || isHarnessInjectedText(text);
+}
+
+/** Custom types whose text can quote the session verbatim (incl. user rules). */
+const QUOTING_CUSTOM_TYPE_RE = /^(?:smart-compact-|smart-context-|agent_mesh)/;
+
+/** Comparable form of a fact: bullets, headings, whitespace and case never decide equality. */
+function factKey(text: string): string {
+  return normalizeFactKey(summaryEvidenceLine(text, text.length));
+}
+
+/**
+ * Carried facts (a previous summary's sections, the saved state) have no
+ * provenance, and those carried from before it existed repeat custom messages,
+ * e.g. a rule set an extension re-injects after every compaction. The returned
+ * test marks a carried fact injected when it is harness text or equals, whole,
+ * what mining takes from a custom message in `msgs` (a line, or the bounded
+ * text of an implicit decision or loop), unless the user typed it in `msgs`.
+ * Custom types that can quote session content (this extension's reports,
+ * anchors and bridges; peer relays) never count: they restate user rules.
+ */
+export function injectedCarriedFacts(
+  msgs: LlmMessage[],
+): (text: string) => boolean {
+  const injected = new Set<string>();
+  const typed = new Set<string>();
+  for (const message of msgs) {
+    if (message?.role !== "user") continue;
+    const text = extractText(message.content);
+    // A prior summary holds the carried facts themselves: evidence for neither side.
+    if (HISTORY_SUMMARY_RE.test(text)) continue;
+    let keys = typed;
+    if (isInjectedMessage(message, text)) {
+      if (!message.customType || QUOTING_CUSTOM_TYPE_RE.test(message.customType))
+        continue;
+      keys = injected;
+    }
+    for (const line of text.split(/\n+/))
+      keys.add(
+        factKey(
+          line
+            .replace(/^\s*[-*]\s+/, "")
+            .trim()
+            .slice(0, TRUNC.CONSTRAINT_TEXT),
+        ),
+      );
+    keys.add(factKey(text.slice(0, TRUNC.DECISION_SUMMARY)));
+    keys.add(factKey(text.slice(0, TRUNC.OPEN_LOOP_SUMMARY)));
+  }
+  return (text) => {
+    const key = factKey(text);
+    return (
+      !typed.has(key) && (injected.has(key) || isHarnessInjectedText(text))
+    );
+  };
 }
 
 export function extractDecisions(
@@ -686,6 +740,7 @@ export function mineConstraints(
 ): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
+  const isInjectedCarried = injectedCarriedFacts(msgs);
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
     const text = extractText(msgs[i].content);
@@ -702,7 +757,8 @@ export function mineConstraints(
     // the entire recap (including notices) into one bogus constraint.
     // A host compaction summary contributes only its Constraints section, as it
     // contributes only its Goal to extractMainGoal: other sections are history.
-    const source = HISTORY_SUMMARY_RE.test(text)
+    const carried = HISTORY_SUMMARY_RE.test(text);
+    const source = carried
       ? (findSection(text, "constraints")?.body ?? "")
       : text;
     for (const raw of source.split(/\n+/)) {
@@ -712,6 +768,11 @@ export function mineConstraints(
         .replace(CONTINUITY_LABEL_RE, "");
       if (candidate.length < 10 || isNonLiveConstraintText(candidate)) continue;
       if (ownOutputMessage && OWN_OUTPUT_PHRASE_RE.test(candidate)) continue;
+      if (
+        carried &&
+        isInjectedCarried(candidate.slice(0, TRUNC.CONSTRAINT_TEXT))
+      )
+        continue;
       for (const { re, cat, conf } of CONSTRAINT_PATTERNS) {
         if (!re.test(candidate)) continue;
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
@@ -1018,7 +1079,13 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/") || isInjectedMessage(msg, txt))
+    if (
+      txt.length < 10 ||
+      txt.startsWith("/") ||
+      isInjectedMessage(msg, txt) ||
+      // A prior summary's open work is carried by the continuity state.
+      HISTORY_SUMMARY_RE.test(txt)
+    )
       continue;
     if (FOLLOWUP_RE.test(txt)) {
       // Avoid duplicates with errors
@@ -1048,7 +1115,13 @@ export function extractOpenLoops(
     const msg = msgs[idx];
     if (msg.role !== "user") continue;
     const txt = extractText(msg.content);
-    if (txt.length < 10 || txt.startsWith("/") || isInjectedMessage(msg, txt))
+    if (
+      txt.length < 10 ||
+      txt.startsWith("/") ||
+      isInjectedMessage(msg, txt) ||
+      // A prior summary's open work is carried by the continuity state.
+      HISTORY_SUMMARY_RE.test(txt)
+    )
       continue;
     if (BLOCKED_RE.test(txt)) {
       const isDup = loops.some((l) => isNearbyDuplicate(l, txt, idx));
@@ -1083,9 +1156,15 @@ export function extractOpenLoops(
       if (message?.role === "user") {
         // Ack-only nudges ("devam et", "ok", "go ahead") continue the same
         // request rather than supersede it; scanning past them retires loops
-        // whose completion lands one user turn later.
+        // whose completion lands one user turn later. Injected messages (peer
+        // requests, process events) are no new user request either.
         const turn = extractText(message.content);
-        if (turn.length < 10 || ACK_ONLY_RE.test(turn)) continue;
+        if (
+          turn.length < 10 ||
+          ACK_ONLY_RE.test(turn) ||
+          isInjectedMessage(message, turn)
+        )
+          continue;
         break;
       }
       if (message?.role !== "assistant") continue;
