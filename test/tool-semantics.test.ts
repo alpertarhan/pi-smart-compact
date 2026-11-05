@@ -302,15 +302,20 @@ describe("exitOneIsExpectedNoMatch", () => {
   });
 
   it.each([
-    ["terminal count grep after an edit", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
     ["ls piped into grep", "ls /tmp/dir | grep 2026-11-05"],
     ["git-diff producer piped into grep", "git diff main... --stat | tail -1 | grep -i hindsight"],
+    ["read-only ;-joined statements", "pwd; ls /tmp/dir | grep 2026-11-05"],
     ["git diff name-only piped into grep", "git diff main... --name-only | grep -i hindsight"],
     ["git diff --exit-code", "git diff --exit-code main -- src/"],
     ["test condition", "test -f /tmp/lock"],
-    ["loop body before the terminal grep", "for i in 1 2 3; do bun test test/x.test.ts 2>&1 | grep -E \"pass|fail\" | tr '\\n' ' '; echo; done; git diff main... --name-only | grep -i hindsight"],
   ])("accepts %s", (_label, command) => {
     expect(exitOneIsExpectedNoMatch(command)).toBe(true);
+  });
+
+  it("accepts a read-only multi-statement chain with counting-terminal evidence", () => {
+    const chain = 'cd ~/.pi/s && sed -n 682,712p src/index.ts; grep -rn "n" src --include=*.ts | head -3; cd ~/.pi/d && grep -c "n" file.jsonl';
+    expect(exitOneIsExpectedNoMatch(chain, { terminalCountZero: true })).toBe(true);
+    expect(exitOneIsExpectedNoMatch(chain)).toBe(false); // no zero-count evidence for the cd
   });
 
   it("accepts a cd predecessor only with a counting terminal that printed zero", () => {
@@ -325,6 +330,11 @@ describe("exitOneIsExpectedNoMatch", () => {
     ["glued background ampersand", "grep -q pat f& node build.js"],
     ["cd failing at exit 1 (not a directory)", "cd /f-not-dir && grep -q missing file"],
     ["cd failing at exit 1 (too many arguments)", "cd a b && grep -q missing file"],
+    ["quiet deploy ;-joined before a benign terminal", "./deploy --quiet; grep -q missing file"],
+    ["quiet deploy ||-joined before a benign terminal", "./deploy --quiet || grep -q missing file"],
+    ["mutating sed before a zero-count grep", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
+    ["unknown loop body before a benign terminal", "for i in 1 2 3; do bun test t.test.ts 2>&1 | grep -E \"pass|fail\"; done; git diff main... --name-only | grep -i hindsight"],
+    ["unknown ;-joined statement", "python check.py; ls /tmp | grep x"],
   ])("rejects %s", (_label, command) => {
     expect(exitOneIsExpectedNoMatch(command)).toBe(false);
   });

@@ -603,6 +603,30 @@ export function exitOneIsExpectedNoMatch(
         wordValues.some((w) => w === "--exit-code" || w === "--quiet")) ||
       (name === "diff" && wordValues.some((w) => w === "-q" || w === "--brief" || w === "--exit-code")));
   if (!benign) return false;
+  // The terminal's no-match exit proves nothing about earlier statements: a
+  // ;-list discards their status and || even proves the left side failed.
+  // Every pipe unit of every earlier statement must be provably read-only, a
+  // condition, or a plain assignment — unknown/mutating segments fail closed.
+  const unitPasses = (unit: string[]): boolean => {
+    if (unit.length && unit.every((word) => isEnvAssignment(word))) return true;
+    if (readOnlyShellSegment(unit)) return true;
+    const unitName = unit.find((word) => !isEnvAssignment(word));
+    return (
+      unitName !== undefined &&
+      !unitName.includes("/") &&
+      (NO_MATCH_EXIT_ONE_COMMANDS.has(unitName) ||
+        (unitName === "git" && unit[1] === "diff" && unit.some((w) => w === "--exit-code" || w === "--quiet")) ||
+        (unitName === "diff" && unit.some((w) => w === "-q" || w === "--brief" || w === "--exit-code")))
+    );
+  };
+  for (let index = 0; index < statements.length - 1; index++) {
+    const units: string[][] = [[]];
+    for (const item of statements[index].words) {
+      if (item.kind === "pipe") units.push([]);
+      else units[units.length - 1].push(item.value);
+    }
+    if (units.some((unit) => unit.length > 0 && !unitPasses(unit))) return false;
+  }
   // `set` anywhere changes exit semantics (pipefail makes an earlier pipeline
   // producer own the exit; errexit aborts before the terminal) — reject.
   if (

@@ -346,6 +346,9 @@ function isCleanCommandExitOne(text: string, command?: string): boolean {
   const exit = text.match(/Command exited with code (\d+)\s*$/i)?.[1];
   if (exit !== "1") return false;
   if (command === undefined) return false;
+  // A truncated body may simply have lost its error line — fail closed. The
+  // marker is tested unanchored: the harness appends the exit line after it.
+  if (/…✂\d+/.test(text)) return false;
   const body = text.replace(/Command exited with code \d+\s*$/i, "");
   // Positive evidence a counting terminal actually ran: its zero count line.
   const terminalCountZero = /(?:^|\n)\s*0\s*(?:\n|$)/.test(body);

@@ -326,16 +326,6 @@ describe("catalogErrors", () => {
 
   const benignExitOne: Array<[string, string, string]> = [
     [
-      "looped tests then a terminal name-only grep with no match",
-      "for i in 1 2 3; do bun test test/x.test.ts 2>&1 | grep -E \"^ *[0-9]+ (pass|fail)\" | tr '\\n' ' '; done; git diff main... --name-only | grep -i hindsight",
-      " 25 pass  0 fail \n 25 pass  0 fail \n 6 files changed, 63 insertions(+), 20 deletions(-)\nCommand exited with code 1",
-    ],
-    [
-      "in-place edit then a zero-count grep",
-      "F=docs/status.md; sed -i 's/\\u2192/→/g' \"$F\"; grep -c 'u2192' \"$F\"",
-      "0\n\n\nCommand exited with code 1",
-    ],
-    [
       "git diff --exit-code with clean hunks",
       "git diff --exit-code main -- src/",
       "3c3\n< old\n---\n> new\nCommand exited with code 1",
@@ -372,6 +362,24 @@ describe("catalogErrors", () => {
     },
   );
 
+  it("still catalogs a benign-terminal exit 1 with truncated output", () => {
+    // A missing error line could simply have been cut off.
+    const truncated = "head of output…✂12345\nCommand exited with code 1";
+    for (const isError of [false, true]) {
+      expect(catalogErrors(run("c1", "git diff --exit-code main -- src/", truncated, isError))).toHaveLength(1);
+    }
+  });
+
+  it("never resolves an error through a quiet ;-compound retry", () => {
+    const command = "./deploy --quiet; grep -q missing file";
+    const errors = catalogErrors([
+      ...run("1", command, "Error: deploy failed", true),
+      ...run("2", command, "\nCommand exited with code 1", true),
+    ]);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors.every((error) => !error.resolved)).toBe(true);
+  });
+
   it("still catalogs a benign-terminal exit 1 whose body carries bare 'failing'", () => {
     const errors = catalogErrors(
       run("c1", "git diff --exit-code main -- src/", "--- a/src/x.ts\n-// failing tests disabled\nCommand exited with code 1", true),
@@ -400,6 +408,10 @@ describe("catalogErrors", () => {
     ["glued background ampersand", "grep -q pat f& node build.js"],
     ["cd failing at exit 1 (not a directory)", "cd /f-not-dir && grep -q missing file"],
     ["cd failing at exit 1 (too many arguments)", "cd a b && grep -q missing file"],
+    ["quiet deploy before a ;-joined benign terminal", "./deploy --quiet; grep -q missing file"],
+    ["quiet deploy before an ||-joined benign terminal", "./deploy --quiet || grep -q missing file"],
+    ["mutating sed before a zero-count grep", "F=docs/status.md; sed -i 's/a/b/' \"$F\"; grep -c 'x' \"$F\""],
+    ["unknown loop body before a benign terminal", "for i in 1 2 3; do bun test t.test.ts 2>&1 | grep -E \"pass|fail\"; done; git diff main... --name-only | grep -i hindsight"],
   ])("still catalogs a quiet exit-1 failure (%s)", (_label, command) => {
     const output = "\nCommand exited with code 1";
     for (const isError of [false, true]) {
