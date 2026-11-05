@@ -859,6 +859,27 @@ describe("extractMainGoal", () => {
   });
 
   it.each([
+    ["EN open", "Please do not open so many agents"],
+ ])("skips clear agent-usage steering (%s)", (_label, steering) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "verify the compaction plans in the torro session" },
+      { role: "user", content: steering },
+    ];
+    expect(extractMainGoal(msgs)).toBe("verify the compaction plans in the torro session");
+  });
+
+  it.each([
+    ["desire form without a task verb (EN)", "I want OAuth instead; never keep password login"],
+    ["desire form without a task verb (TR)", "Bana OAuth girişi lazım, asla şifre saklama"],
+  ])("a new task request stays the goal even without a known verb (%s)", (_label, request) => {
+    const msgs: LlmMessage[] = [
+      { role: "user", content: "keep the password login working" },
+      { role: "user", content: request },
+    ];
+    expect(extractMainGoal(msgs)).toBe(request);
+  });
+
+  it.each([
     ["Turkish", "tamam bulduğun sorunları çözelim"],
     ["English", "now add the retry budget test"],
   ])("a new %s task request still becomes the goal", (_label, request) => {

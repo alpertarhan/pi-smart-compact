@@ -1010,13 +1010,18 @@ const ACK_ONLY_RE =
   /^(?:(?:ok(?:ay)?|tamam|evet|yes|thanks?|teşekkürler|continue|devam(?:\s+et)?|go\s+ahead|proceed)[\s.!]*){1,3}$/iu;
 
 /**
- * Work-item signals (EN + TR stems, suffix-tolerant on the right). A message
- * that both asks for work and states rules is still the goal; only a message
- * with no work item at all is steering. When unsure, the goal stays the latest
- * substantive request (main's behavior).
+ * Clear procedural steering about agent/session/process usage ("bu kadar çok
+ * agent açma", "don't open so many agents"). Positive evidence only: an
+ * agent-usage noun AND a directive marker in the same message. Anything
+ * without this signature — including ambiguous or new task requests — stays
+ * the latest substantive goal (main's behavior).
  */
-const TASK_REQUEST_RE =
-  /(?<![A-Za-z0-9_])(?:add|fix|implement|solve|refactor|write|create|build|test|update|change|remove|delete|move|rename|extract|migrate|clean|check|verify|review|find|run|continue|finish|complete|handle|enable|disable|restore|revert|merge|split|ship|deploy|investigate|open|close|make|extend|adjust|rewrite|plan|prepare|gather|collect|report|çöz|ekle|düzelt|de[ğg]i[şs]tir|yaz|olu[şs]tur|kur|ta[şs]ı|kaldır|sil|güncelle|tamamla|otomatikle[şs]tir|analiz|incele|kontrol|do[ğg]rula|toparla|birle[şs]tir|devam|gönder|yap)/iu;
+const AGENT_USAGE_NOUN_RE =
+  /\b(?:agents?|ajanlar?|workers?|processes|instances?|sessions?|oturumlar?|parallel)\b/i;
+// Word-bounded or multi-word only: bare Turkish stems like "kullanma" also
+// occur inside verbal nouns ("kullanmasını") and must not match as substrings.
+const STEERING_DIRECTIVE_RE =
+  /\b(?:don't|do not|never|stop|avoid|fewer)\b|(?:too many|so many|this many|bu kadar çok|çok fazla)/i;
 
 /** Machine status from an earlier compaction is context, not an active user goal. */
 export function isCompactionStatusText(text: string): boolean {
@@ -1045,12 +1050,11 @@ export function extractMainGoal(msgs: LlmMessage[]): string | null {
       return carried && !isCompactionStatusText(carried) ? carried : null;
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
-    // A clearly steering message (a preference about HOW to work: "don't open
-    // so many agents") is not the task. Skip it only when the constraint
-    // miner classifies it AND it carries no work item; a message that also
-    // asks for work stays the goal. If nothing else remains in-window, the
-    // caller falls back to the carried goal.
-    if (mineConstraints([m]).length && !TASK_REQUEST_RE.test(text)) continue;
+    // A clearly steering message about agent usage is not the task. The
+    // signature is positive evidence (agent-usage noun + directive), never
+    // the absence of a known task verb; anything else stays the goal, and if
+    // nothing else remains in-window the caller falls back to the carried goal.
+    if (AGENT_USAGE_NOUN_RE.test(text) && STEERING_DIRECTIVE_RE.test(text)) continue;
     return summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
   }
   return null;
