@@ -14,8 +14,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
-import { contextPressure } from "./background-preparation.ts";
-import { ATTENTION_CUSTOM_TYPE, inspectContext, planContextTrim } from "./context-operations.ts";
+import { compactionDue, contextPressure } from "./background-preparation.ts";
+import { ATTENTION_CUSTOM_TYPE, inspectContext, planContextTrim, trimBreakEvenRequests, trimTokens } from "./context-operations.ts";
 import { NAVIGATION_TOOL_NAME } from "./navigation-data.ts";
 
 export { ATTENTION_CUSTOM_TYPE } from "./context-operations.ts";
@@ -112,8 +112,13 @@ function renderAttention(
       checkpointLabel = checkpoint?.label;
       if (canCleanup && !checkpoint) {
         const plan = planContextTrim(branch, undefined, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
-        if (!plan.blockedReason) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
-        else cleanupBlocked = plan.blockedReason;
+        if (plan.blockedReason) cleanupBlocked = plan.blockedReason;
+        else if (plan.automatic === "ready" && !compactionDue(ctx, settings)) {
+          // Name a trim only when it is ready and pays back its cache rewrite; the trim action itself checks neither.
+          const { savedTokens, tailTokens } = trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
+          const breakEven = trimBreakEvenRequests(ctx.model?.cost, savedTokens, tailTokens);
+          if (breakEven !== null && breakEven <= settings.autoTrimBreakEvenRequests) trimmable = plan.entries.filter(entry => entry.type === "context_edit").length;
+        }
       }
     } catch {
       // Advice must not turn an unavailable plan into permission to edit history.

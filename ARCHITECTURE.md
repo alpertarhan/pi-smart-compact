@@ -286,7 +286,11 @@ drop conditions are in [configuration](./docs/configuration.md);
 its labels are temporal observations, not proof of causality. Costs are
 catalog-price estimates, not measured cache billing. Manual and agent trims
 commit at the next boundary with cause `manual` or `agent`; explicit trim
-bypasses batching, not safety.
+bypasses batching, not safety. `manual` also covers an early anchor the user
+confirmed in Pi's dialog. Standing approval (`requireApproval: false`) waives
+only that dialog: the anchor is saved and its cleanup keeps the agent's
+pressure and readiness gates. Attention notes name a trim only for a ready
+batch that pays back within the break-even limit.
 
 Instruction and skill sources stay inline through trim, rewind, artifact,
 bitmap and pre-compaction pruning; recovery tool output is not recursively

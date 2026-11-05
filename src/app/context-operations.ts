@@ -311,7 +311,7 @@ export function thinkingEditReason(branch: SessionEntry[], entries: SessionBound
     if (changed && messages.some(message => message.role === "assistant" && message.api === "anthropic-messages"
       && message.content.some(block => block.type === "thinking" && Boolean(block.thinkingSignature)))) {
       // ponytail: conservatively protect all signed Anthropic thinking; narrow only with a public binding capability.
-      return "Cleanup would invalidate retained signed Anthropic thinking. Use provider-native compaction instead.";
+      return "Cleanup would invalidate retained signed Anthropic thinking, so history stays unchanged. Continue the task; compaction still reduces context.";
     }
   }
 }

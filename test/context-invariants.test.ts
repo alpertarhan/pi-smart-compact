@@ -104,6 +104,9 @@ describe("assistant content invariant", () => {
     const plan = trimPlan(s);
     expect(plan.entries).toEqual([]);
     expect(plan.blockedReason).toContain("signed Anthropic thinking");
+    // The model cannot run provider-native compaction; the refusal names what it can do instead.
+    expect(plan.blockedReason).not.toContain("provider-native");
+    expect(plan.blockedReason).toContain("Continue the task");
     expect(() => planContextRewind(s.getBranch(), s.getSessionId(), "cp", "done")).toThrow("signed Anthropic thinking");
     // The refusal names what was kept, so the agent knows which batches blocked the rewind.
     expect(() => planContextRewind(s.getBranch(), s.getSessionId(), "cp", "done")).toThrow("Kept tool batches after the checkpoint:");
