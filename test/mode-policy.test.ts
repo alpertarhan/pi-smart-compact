@@ -10,9 +10,12 @@ const extraction = (partial: Partial<StructuredExtraction> = {}): StructuredExtr
 
 describe("compaction mode policy", () => {
   it("adds thinking headroom per allowed call to the run output budget only for reasoning models", () => {
-    expect(resolveOutputBudget("fast", 3, false)).toBe(MODE_POLICIES.fast.maxOutputTokens);
-    expect(resolveOutputBudget("fast", 3, true)).toBe(MODE_POLICIES.fast.maxOutputTokens + 3 * REASONING_OUTPUT_HEADROOM_TOKENS);
-    expect(resolveOutputBudget("thorough", 4, true)).toBe(MODE_POLICIES.thorough.maxOutputTokens + 4 * REASONING_OUTPUT_HEADROOM_TOKENS);
+    const plain = { reasoning: false }, thinking = { reasoning: true };
+    expect(resolveOutputBudget("fast", 3, [plain, plain, plain])).toBe(MODE_POLICIES.fast.maxOutputTokens);
+    expect(resolveOutputBudget("fast", 3, [thinking, plain, plain])).toBe(MODE_POLICIES.fast.maxOutputTokens + 3 * REASONING_OUTPUT_HEADROOM_TOKENS);
+    expect(resolveOutputBudget("thorough", 4, [thinking])).toBe(MODE_POLICIES.thorough.maxOutputTokens + 4 * REASONING_OUTPUT_HEADROOM_TOKENS);
+    // A plain summary model with a reasoning verification model still needs headroom for repair calls.
+    expect(resolveOutputBudget("thorough", 4, [plain, plain, thinking])).toBe(MODE_POLICIES.thorough.maxOutputTokens + 4 * REASONING_OUTPUT_HEADROOM_TOKENS);
   });
 
   it("keeps preset defaults finite, automatic runs capped, and explicit manual overrides usable", () => {

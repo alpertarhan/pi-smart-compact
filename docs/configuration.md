@@ -339,7 +339,9 @@ the same routes. Choosing a summary model never switches the chat model.
 
 `summaryThinkingLevel` covers synthesis, assembly and repair. Both default to
 `minimal` because reasoning tokens add up over multi-call compaction. An
-explicit call-level reasoning option takes precedence.
+explicit call-level reasoning option takes precedence. A reasoning stage model
+gets 16,384 more completion tokens for thinking on every synthesis,
+exploration and repair request; stated output targets do not change.
 
 Choosing a route based on evidence is covered in
 [provider routing evidence](./evaluation.md#provider-routing-evidence).

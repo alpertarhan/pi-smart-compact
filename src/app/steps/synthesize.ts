@@ -79,7 +79,7 @@ export async function summarizeConversation(
    rc.services.budget.setLimits(
     callBudget,
     effectiveBudget(rc.config.maxLlmInputTokens, policy.maxInputTokens, rc.maxLlmInputTokens),
-    resolveOutputBudget(refined, callBudget, rc.summaryModel.reasoning),
+    resolveOutputBudget(refined, callBudget, [rc.summaryModel, rc.segModel, rc.verifyModel]),
    );
    // The retention window and output allowance were already planned before
    // extraction. Refine strategy depth only; changing profileCfg here would

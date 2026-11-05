@@ -61,7 +61,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
   rc.timeoutMs,
   rc.services.clock,
   inputBudget,
-  resolveOutputBudget(rc.mode, callBudget, rc.summaryModel.reasoning),
+  resolveOutputBudget(rc.mode, callBudget, [rc.summaryModel, rc.segModel, rc.verifyModel]),
  );
 
  if (rc.timeoutMs > 0) {
