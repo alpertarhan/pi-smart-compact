@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { FIVE_MINUTES_MS, ONE_HOUR_MS, REBUILD_MIN_TOKENS } from "../src/constants.ts";
 import type { ModelPromptCache } from "@earendil-works/pi-ai";
-import { cacheLifetimeMs, createHostCacheLedger, formatCacheLedgerSummary } from "../src/app/host-cache-ledger.ts";
+import { cacheLifetimeMs, cacheWriteTierMs, createHostCacheLedger, formatCacheLedgerSummary } from "../src/app/host-cache-ledger.ts";
 
 const MINUTE = 60_000;
 function usage(input: number, cacheRead: number, cacheWrite = 0, extra: Record<string, unknown> = {}) {
@@ -34,6 +34,47 @@ describe("model cache lifetime", () => {
 
   it.each([0, -1, NaN, Infinity, Number.MAX_VALUE])("fails closed on invalid lifetime %s", invalid => {
     expect(cacheLifetimeMs(undefined, { short: 300, long: invalid })).toBeNull();
+  });
+});
+
+describe("write-tier evidence", () => {
+  const tiers: ModelPromptCache = { short: 300, long: 3_600 };
+
+  it("derives the written tier only from a cache write with a numeric 1h split", () => {
+    expect(cacheWriteTierMs({ cacheWrite: 5_000, cacheWrite1h: 0 }, tiers)).toBe(FIVE_MINUTES_MS);
+    expect(cacheWriteTierMs({ cacheWrite: 5_000, cacheWrite1h: 5_000 }, tiers)).toBe(ONE_HOUR_MS);
+    // No write, no split or non-numeric split: no evidence, keep the previous tier.
+    expect(cacheWriteTierMs({ cacheRead: 9_000, cacheWrite: 0, cacheWrite1h: 0 }, tiers)).toBeNull();
+    expect(cacheWriteTierMs({ cacheWrite: 5_000 }, tiers)).toBeNull();
+    expect(cacheWriteTierMs({ cacheWrite: 5_000, cacheWrite1h: Number.NaN }, tiers)).toBeNull();
+    expect(cacheWriteTierMs({ cacheWrite1h: 5_000 }, tiers)).toBeNull();
+    // A short write without an advertised short tier proves nothing.
+    expect(cacheWriteTierMs({ cacheWrite: 5_000, cacheWrite1h: 0 }, { long: 3_600 })).toBeNull();
+  });
+
+  it("labels a gap of more than 5 min after short-tier writes as idle expiry, not foreign", () => {
+    const ledger = ledgerWithMetadata(tiers);
+    ledger.reset("s1");
+    ledger.observe({ usage: usage(1_000, 0, 80_000, { cacheWrite1h: 0 }) }, 0);
+    ledger.observe({ usage: usage(0, 80_000) }, MINUTE);
+    expect(ledger.observe({ usage: usage(0, 0, 80_000, { cacheWrite1h: 0 }) }, 7 * MINUTE)?.cause).toBe("idle-expiry");
+  });
+
+  it("keeps an older 1h write winning over a newer short-tier write", () => {
+    const ledger = ledgerWithMetadata(tiers);
+    ledger.reset("s1");
+    ledger.observe({ usage: usage(1_000, 0, 80_000, { cacheWrite1h: 80_000 }) }, 0);
+    ledger.observe({ usage: usage(0, 0, 500, { cacheWrite1h: 0 }) }, MINUTE);
+    expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 30 * MINUTE)?.cause).toBe("foreign");
+    expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 31 * MINUTE + ONE_HOUR_MS + 1)?.cause).toBe("idle-expiry");
+  });
+
+  it("keeps the longest advertised tier when no write reports a tier split", () => {
+    const ledger = ledgerWithMetadata(tiers);
+    ledger.reset("s1");
+    ledger.observe({ usage: usage(1_000, 0, 80_000) }, 0);
+    expect(ledger.observe({ usage: usage(0, 0, 80_000) }, 6 * MINUTE)?.cause).toBe("foreign");
+    expect(ledger.observe({ usage: usage(0, 0, 80_000) }, ONE_HOUR_MS + 6 * MINUTE + 1)?.cause).toBe("idle-expiry");
   });
 });
 

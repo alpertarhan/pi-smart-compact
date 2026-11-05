@@ -13,7 +13,7 @@ import { compactionDue, contextPressure } from "./background-preparation.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { contextEvidence, evidencePage, MAX_READ_CHARS } from "./context-evidence.ts";
 import { loadLineage } from "./session-lineage.ts";
-import { cacheLifetimeMs, type ContextEditKind } from "./host-cache-ledger.ts";
+import { cacheLifetimeMs, cacheWriteTierMs, type ContextEditKind } from "./host-cache-ledger.ts";
 import {
  expandedRow,
  firstTextContent,
@@ -99,8 +99,10 @@ interface TrimMark extends DeferredTrim {
  * Test hook: exported for cache-economics coverage.
  */
 export function cachedPrefix(branch: SessionEntry[], model: ExtensionContext["model"]): { since: number; lifetimeMs: number } | null {
-  let lifetimeMs = cacheLifetimeMs(undefined, model?.promptCache);
-  if (!model || lifetimeMs === null) return null;
+  const advertised = cacheLifetimeMs(undefined, model?.promptCache);
+  if (!model || advertised === null) return null;
+  // Tier proven by write evidence while walking; pure reads keep it.
+  let lifetimeMs: number | null = null;
   let since: number | undefined;
   for (let index = branch.length - 1; index >= 0; index--) {
     const entry = branch[index]!;
@@ -109,10 +111,13 @@ export function cachedPrefix(branch: SessionEntry[], model: ExtensionContext["mo
     const message = entry.message as AssistantMessage;
     if (message.provider !== model.provider || message.model !== model.id) break;
     since ??= requestStartEstimate(branch, index, message.timestamp);
-    // A later short-lived tail write must not shorten an older 1h prefix.
-    lifetimeMs = Math.max(lifetimeMs, cacheLifetimeMs(message.usage, model.promptCache) ?? lifetimeMs);
+    // The tier actually written governs; a later short tail write must not
+    // shorten an older 1h prefix, so any 1h write in the prefix wins.
+    const written = cacheWriteTierMs(message.usage, model.promptCache);
+    if (written !== null) lifetimeMs = Math.max(lifetimeMs ?? 0, written);
   }
-  return since === undefined || !Number.isFinite(since) ? null : { since, lifetimeMs };
+  // Without write-tier evidence, today's behavior: the longest advertised tier.
+  return since === undefined || !Number.isFinite(since) ? null : { since, lifetimeMs: lifetimeMs ?? advertised };
 }
 
 /** Preceding message entry's timestamp; non-message or out-of-order predecessors fall back. */
