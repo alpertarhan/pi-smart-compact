@@ -64,14 +64,28 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
   // old prefix must never mask real retained-tail growth (and tail removal
   // cannot shrink the estimate below what was staged).
   let growth: number;
+  let currentTail: number | null = null;
   if (pending.usagePricing) {
+    // Like-for-like RAW tails: weights are computed on each FULL message list
+    // (live-turn options come from full wire context) and sliced numerically at
+    // the kept boundary. The staged baseline derives from the fingerprinted
+    // snapshot prefix — never from the planner-normalized retainedTailTokens —
+    // and advances on success so revalidating a returned candidate never
+    // charges the same append twice.
     const msgs = contextMessageEntries(ctx.sessionManager.getBranch());
     const cut = msgs.findIndex(entry => entry.id === pending.firstKeptEntryId);
-    if (cut < 0) return null; // kept boundary unverifiable: insufficient proof
-    const currentTail = estimateReaderMessageTokens(pending.usagePricing.estimate, msgs.slice(cut))
-      .reduce((sum, value) => sum + value, 0);
-    const stagedTail = typeof pending.details.retainedTailTokens === "number" && Number.isFinite(pending.details.retainedTailTokens) ? pending.details.retainedTailTokens : currentTail;
-    const tailGrowth = Math.max(0, currentTail - stagedTail);
+    const staged = msgs.slice(0, pending.contextSnapshot?.messageCount ?? msgs.length);
+    const stagedCut = staged.findIndex(entry => entry.id === pending.firstKeptEntryId);
+    if (cut < 0 || stagedCut < 0) return null; // kept boundary unverifiable: insufficient proof
+    const currentWeights = estimateReaderMessageTokens(pending.usagePricing.estimate, msgs);
+    const stagedWeights = estimateReaderMessageTokens(pending.usagePricing.estimate, staged);
+    currentTail = currentWeights.slice(cut).reduce((sum, value) => sum + value, 0);
+    const stagedRawTail = stagedWeights.slice(stagedCut).reduce((sum, value) => sum + value, 0);
+    const baseline = typeof pending.tailBaselineTokens === "number" && Number.isFinite(pending.tailBaselineTokens)
+      && pending.tailBaselineTokens >= 0
+      ? pending.tailBaselineTokens
+      : stagedRawTail;
+    const tailGrowth = Math.max(0, currentTail - baseline);
     // Whole-total growth stays authoritative when a fresh measurement reports
     // MORE context than the staged basis (underestimated prefix or framing);
     // tail growth catches the masked case where a correcting measurement is
@@ -92,6 +106,7 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
     tokensSaved: tokens - after, estimatedSavedTokens: tokens - after, estimatedYield: (tokens - after) / tokens,
   };
   return { ...pending, tokensBefore: tokens, details,
+    ...(currentTail !== null ? { tailBaselineTokens: currentTail } : {}),
     metricsSnapshot: pending.metricsSnapshot && {
       ...pending.metricsSnapshot, tokensBefore: tokens, estimatedAfterTokens: after,
       retainedTailTokens: details.retainedTailTokens, tokensSaved: details.tokensSaved,

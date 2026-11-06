@@ -307,6 +307,49 @@ describe("contextUsage stale-producer repricing", () => {
     expect(revalidatePending({ ...pending, usagePricing: undefined } as never, ctx as never)).toBeNull();
   });
 
+  it("accepts an unchanged same-reader candidate without fake scaled-vs-raw growth", () => {
+    const reader: ReaderIdentity = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", input: ["text"] };
+    const sm = session([
+      say("a".repeat(200_000)),
+      reply({ provider: reader.provider, api: reader.api, model: reader.id }, { usage: usageOf(100, 0, 29_800), stopReason: "stop" }),
+      say("b".repeat(80_000)),
+    ]);
+    const pricing = createUsagePricing(reader, new TokenCalibrationStore());
+    const ctx = { ...makeCtx(sm, { tokens: 50_000, prompt: "System" }), model: makeModel({ provider: reader.provider, api: reader.api as string, id: reader.id }) };
+    const msgs = contextMessageEntries(sm.getBranch());
+    const weights = estimateReaderMessageTokens(pricing.estimate, msgs);
+    const sum = weights.reduce((a, b) => a + b, 0);
+    const scale = 50_000 / sum;
+    const tail = Math.round(weights.at(-1)! * scale); // planner-normalized staged tail
+    const summaryTokens = pricing.estimate.text("## Goal\nRetain.\n" + "s".repeat(4_000));
+    const after = summaryTokens + tail;
+    const base = {
+      sessionId: sm.getSessionId(), originBranchHeadId: sm.getLeafId(), firstKeptEntryId: sm.getLeafId(),
+      readerSignature: readerSignature(ctx as never), contextSnapshot: fingerprintContext(msgs),
+      summary: "## Goal\nRetain.", tokensBefore: 50_000,
+      details: { estimatedAfterTokens: after, retainedTailTokens: tail, summaryTokens, targetAfterTokens: Math.ceil(after * 1.04) },
+    };
+    // Legacy control accepts; attaching the exact pricing must not invent growth
+    // by comparing the RAW current tail against the SCALED staged one.
+    expect(revalidatePending(base as never, ctx as never)).not.toBeNull();
+    const priced = revalidatePending({ ...base, usagePricing: pricing } as never, ctx as never)!;
+    expect(priced.details.estimatedAfterTokens).toBe(after);
+    // Small valid append still applies...
+    sm.appendMessage({ role: "user", content: [{ type: "text", text: "c".repeat(1_000) }], timestamp: 4 });
+    const grownCtx = { ...makeCtx(sm, { tokens: 50_257, prompt: "System" }), model: makeModel({ provider: reader.provider, api: reader.api as string, id: reader.id }) };
+    const once = revalidatePending({ ...base, usagePricing: pricing } as never, grownCtx as never);
+    expect(once).not.toBeNull();
+    expect(once!.details.estimatedAfterTokens).toBeGreaterThan(after);
+    // ...and revalidating the returned candidate is idempotent: the same append
+    // is never charged twice.
+    const twice = revalidatePending(once as never, grownCtx as never);
+    expect(twice).not.toBeNull();
+    expect(twice!.details.estimatedAfterTokens).toBe(once!.details.estimatedAfterTokens);
+    // A corrupt baseline never becomes apply authority.
+    const corrupt = revalidatePending({ ...base, usagePricing: pricing, tailBaselineTokens: Number.NaN } as never, grownCtx as never);
+    expect(corrupt).not.toBeNull(); // falls back to the snapshot-derived raw baseline
+  });
+
   it("labels a proven-stale basis even when repricing throws", () => {
     const sm = session([
       say("question"),
