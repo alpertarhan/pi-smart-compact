@@ -252,6 +252,7 @@ export async function summarizeConversation(
    pc.summaryBudgetTokens,
    rc.verificationContinuity,
    rc.factOverrides,
+   rc.goalEvidence,
   );
   setCachedSynthesis(cacheKey, {
    finalSummary,
@@ -349,6 +350,7 @@ export async function summarizeConversation(
    pc.summaryBudgetTokens,
    rc.verificationContinuity,
    rc.factOverrides,
+   rc.goalEvidence,
   );
   method = "heuristic";
  } else if (singleRequest) {
@@ -385,6 +387,7 @@ export async function summarizeConversation(
     pc.summaryBudgetTokens,
     rc.verificationContinuity,
     rc.factOverrides,
+    rc.goalEvidence,
    );
    method = "heuristic";
   }
@@ -806,6 +809,7 @@ export async function summarizeConversation(
     pc.summaryBudgetTokens,
     rc.verificationContinuity,
     rc.factOverrides,
+    rc.goalEvidence,
    );
   }
  }

@@ -12,6 +12,7 @@ import type {
  ProfileConfig,
  CompactionState,
  ContinuityOverride,
+ GoalEvidence,
 } from "../types.ts";
 import {
  COMPACT_SYSTEM_PREFIX,
@@ -52,6 +53,7 @@ import {
 import {
  buildSummaryPathEvidence,
  summaryEvidenceLine,
+ renderGoalEvidence,
 } from "../domain/summary-parse.ts";
 
 /** Lazily compiled per-field label patterns; labels come from a fixed set. */
@@ -889,6 +891,7 @@ export function assembleFallback(
  budgetTokens: number = 6_000,
  continuity: CompactionState | null = null,
  factOverrides: readonly ContinuityOverride[] = [],
+ goalEvidence?: GoalEvidence | null,
 ): string {
  const safe = (value: string, max: number = TRUNC.PREVIEW_MID) =>
   summaryEvidenceLine(value, max);
@@ -904,6 +907,7 @@ export function assembleFallback(
  const required = collectVerificationEvidence(extraction, continuity, {
   steering,
   factOverrides,
+  goalEvidence: goalEvidence ?? undefined,
  });
  const unresolved = required.unresolved
   .map((error) => safe(error.message, TRUNC.PREVIEW))
@@ -947,6 +951,10 @@ export function assembleFallback(
    TRUNC.PREVIEW,
   ) || "Continue from the latest preserved context.";
  const goal = whole(required.goal ?? "") || "Continue the current task.";
+ // Owned honest-label rendering (pair or single evidence label); falls back
+ // to today's plain line when there is no raw labeled value, so default
+ // callers without goalEvidence stay byte-identical.
+ const goalSection = (goalEvidence && renderGoalEvidence(goalEvidence)) || goal;
  const overflow = Object.entries(extraction.evidenceOverflow ?? {})
   .filter(([, count]) => typeof count === "number" && count > 0)
   .map(
@@ -967,7 +975,7 @@ export function assembleFallback(
  ].filter((line) => !/: $/.test(line));
  return [
   "## Goal",
-  goal,
+  goalSection,
   "",
   "## Constraints & Preferences",
   ...(constraints.length ? constraints : ["- None recorded."]),

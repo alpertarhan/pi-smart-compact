@@ -1093,26 +1093,68 @@ export function isCompactionStatusText(text: string): boolean {
   );
 }
 
-export function extractMainGoal(msgs: LlmMessage[]): string | null {
-  // The latest substantive request is the active goal. Commands and bare
-  // acknowledgements do not supersede it; a host compaction message contributes
-  // only its canonical Goal section and forms a boundary to older raw history.
+/** Raw, message-pure goal evidence: which real user turn (if any) is the
+ * latest substantive direction, and what the nearest host compaction boundary
+ * carried as its Goal section. Pure on messages so it never enters the
+ * cached extraction; state/carrier resolution happens per run. */
+export interface RawGoalEvidence {
+  direction: string | null;
+  directionSource: "user-turn" | "carried";
+  hostSummaryGoal: string | null;
+}
+
+function hostSummaryGoalOf(text: string): string | null {
+  const carried = summaryEvidenceLine(
+    (findSection(text, "goal")?.body ?? "").replace(/\s*<\/summary>\s*$/, ""),
+    TRUNC.MESSAGE,
+  );
+  return carried && !isCompactionStatusText(carried) ? carried : null;
+}
+
+export function extractGoalEvidence(msgs: LlmMessage[]): RawGoalEvidence {
+  // Walk backward exactly like extractMainGoal: the latest substantive real
+  // user request is the direction; commands and bare acknowledgements never
+  // supersede it; a host compaction message contributes only its canonical
+  // Goal section and forms a boundary to older raw history. After a fresh
+  // user turn is found, the scan continues only to the FIRST host boundary to
+  // capture its carried Goal — never to arbitrary older raw messages.
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m?.role !== "user") continue;
     const text = extractText(m.content).trim();
     if (!text || isInjectedMessage(m, text)) continue;
     if (HISTORY_SUMMARY_RE.test(text)) {
-      const carried = summaryEvidenceLine(
-        (findSection(text, "goal")?.body ?? "").replace(/\s*<\/summary>\s*$/, ""),
-        TRUNC.MESSAGE,
-      );
-      return carried && !isCompactionStatusText(carried) ? carried : null;
+      const carried = hostSummaryGoalOf(text);
+      // The boundary is authoritative even when its Goal section is unusable;
+      // exactly like extractMainGoal, an invalid carried goal stops the scan.
+      return {
+        direction: carried,
+        directionSource: "carried",
+        hostSummaryGoal: carried,
+      };
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
-    return summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
+    const direction = summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
+    if (direction) {
+      let hostSummaryGoal: string | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        const older = msgs[j];
+        if (older?.role !== "user") continue;
+        const olderText = extractText(older.content).trim();
+        if (!olderText || isInjectedMessage(older, olderText)) continue;
+        if (HISTORY_SUMMARY_RE.test(olderText)) {
+          hostSummaryGoal = hostSummaryGoalOf(olderText);
+          break;
+        }
+      }
+      return { direction, directionSource: "user-turn", hostSummaryGoal };
+    }
   }
-  return null;
+  return { direction: null, directionSource: "carried", hostSummaryGoal: null };
+}
+
+export function extractMainGoal(msgs: LlmMessage[]): string | null {
+  return extractGoalEvidence(msgs).direction;
 }
 
 const FOLLOWUP_COMPLETION_RE =

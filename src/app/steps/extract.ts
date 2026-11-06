@@ -31,6 +31,7 @@ import {
  extractStructured,
  buildToolCallIndex,
  injectedCarriedFacts,
+ extractGoalEvidence,
 } from "../../utils/extraction.ts";
 import type { PruningResult } from "../../utils/pruning.ts";
 import {
@@ -55,6 +56,8 @@ import { prepareConversationBackup } from "../../utils/backups.ts";
 import {
  loadScopedCompactionState,
  previewMergedContinuity,
+ resolveGoalEvidence,
+ activeCarrierCompactionState,
  renderContinuityCapsule,
  retireSupersededConstraints,
 } from "../../utils/state.ts";
@@ -102,8 +105,17 @@ export function loadExtractionContinuity(
  // Synthesis and both verification gates must agree on the required evidence;
  // the state step's merge is the authority, so preview it here.
  const verificationContinuity = previewMergedContinuity(extraction, previousState, factOverrides);
+ // Raw goal pair for the deterministic fallback policy: message-pure
+ // evidence resolved against the two owned metadata sources (scoped state
+ // file and the active native compaction-entry carrier). The caller scrubs
+ // it before it reaches render/persist/verify.
+ const goalEvidence = resolveGoalEvidence(
+  extractGoalEvidence(rc.llmMessages),
+  previousState,
+  activeCarrierCompactionState(rc.branch),
+ );
  return {
-  projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity,
+  projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity, goalEvidence,
   continuity: previousState ? renderContinuityCapsule(previousState) : "",
  };
 }
@@ -298,10 +310,14 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   rc.llmMessages,
  );
 
- const { projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity, continuity } = loadExtractionContinuity({
+ const { projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity, goalEvidence, continuity } = loadExtractionContinuity({
   cwd: rc.ctx.cwd, sessionId: rc.sessionId, llmMessages: rc.llmMessages,
   branch: rc.ctx.sessionManager?.getBranch?.() ?? rc.branch,
  }, extraction);
+ // Scrub once here so render, persist and both verify gates see the same
+ // scrubbed raw values (the summary and state scrubbers stay the final
+ // write boundaries; scrubbing is idempotent on already-clean text).
+ const scrubbedGoalEvidence = rc.services.scrubber.scrubValue(goalEvidence).value;
  if (fingerprint) {
   rc.notify(
    "Project: " +
@@ -328,6 +344,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
   previousState: import("../../types.ts").CompactionState | null;
   verificationContinuity: import("../../types.ts").CompactionState;
   factOverrides: import("../../types.ts").ContinuityOverride[];
+  goalEvidence: import("../../types.ts").GoalEvidence;
   convText: string;
   convTokens: number;
   backupPath: string | null;
@@ -345,6 +362,7 @@ export function extractWithCache(rc: TieredRc): ExtractedRc {
  out.previousState = previousState;
  out.verificationContinuity = verificationContinuity;
  out.factOverrides = factOverrides;
+ out.goalEvidence = scrubbedGoalEvidence;
  out.convText = convText;
  out.convTokens = convTokens;
  out.backupPath = backupPath;

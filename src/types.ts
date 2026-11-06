@@ -581,6 +581,7 @@ export type VerificationGap =
  | { kind: "missing-constraint"; text: string; /** Where the required rule came from, for diagnosis. */ origin?: string }
  | { kind: "missing-decision"; summary: string; answer?: string }
  | { kind: "missing-goal"; goal: string }
+ | { kind: "missing-prior-goal"; prior: string }
  | { kind: "fabricated-file"; ref: string }
  | { kind: "inconsistency"; detail: string }
  | { kind: "unsupported-claim"; claim: string }
@@ -590,6 +591,24 @@ export interface VerificationResult {
  ok: boolean;
  gaps: VerificationGap[];
  score: number;
+}
+
+/** Resolved raw goal evidence for the deterministic fallback pair policy
+ * (user-approved: keep the previously tracked goal and the latest user
+ * direction under separate honest labels). Values are raw and bounded —
+ * never rendered label text — and carry no authority beyond their source. */
+export interface GoalEvidence {
+ /** Raw previously-tracked goal anchor, when source-backed evidence exists. */
+ prior: string | null;
+ /** Raw latest substantive user direction ("user-turn"/"carried-raw"), or
+  * opaque carried host text ("carried-text") that must never be re-labeled. */
+ direction: string | null;
+ directionSource: "user-turn" | "carried-raw" | "carried-text";
+ /** True when prior and direction both exist and differ: render both labels. */
+ pair: boolean;
+ /** Set only by call sites that know the summary under verification is this
+  * extension's own deterministic output (fallback floor / zero-call). */
+ ownedFallback?: boolean;
 }
 
 export interface VerificationProvenance {
@@ -821,6 +840,10 @@ export interface CompactionState {
  goal: string | null;
  /** Deterministic extraction identity; unlike `goal`, never stores an LLM paraphrase. */
  goalKey?: string;
+ /** Raw previously-tracked goal anchor kept by deterministic fallback runs
+  * (user-approved pair policy). Never holds rendered label text; a successful
+  * LLM semantic goal clears it. Additive optional; absent on pre-10.9 states. */
+ priorGoal?: string;
  decisions: Array<{
   id: string;
   summary: string;

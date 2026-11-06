@@ -11,7 +11,7 @@ import type { CompactConfig, CompactionState } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { errorDetail, notifyUser } from "../utils/issues.ts";
-import { loadScopedCompactionState, renderContinuityCapsule } from "../utils/state.ts";
+import { loadScopedCompactionState, renderContinuityCapsule, isCompactionStateRecord } from "../utils/state.ts";
 import { isRecord } from "../utils/type-guards.ts";
 import { lastAnchorBoundary } from "./context-operations.ts";
 import { ANCHOR_CUSTOM_TYPE, anchorFromEntry } from "./navigation-data.ts";
@@ -39,19 +39,11 @@ export interface Handoff {
  summary: string;
 }
 
-function isCompactionState(value: unknown): value is CompactionState {
- return isRecord(value)
-  && (value.goal === null || typeof value.goal === "string")
-  && Array.isArray(value.constraints) && Array.isArray(value.decisions)
-  && Array.isArray(value.unresolvedErrors) && Array.isArray(value.resolvedErrors)
-  && Array.isArray(value.openLoops) && Array.isArray(value.criticalContext);
-}
-
 function branchCompactionState(branch: SessionEntry[]): CompactionState | null {
  for (let index = branch.length - 1; index >= 0; index--) {
   const entry = branch[index];
   if (entry.type !== "compaction" || !isRecord(entry.details)) continue;
-  if (isCompactionState(entry.details.compactionState)) return entry.details.compactionState;
+  if (isCompactionStateRecord(entry.details.compactionState)) return entry.details.compactionState;
  }
  return null;
 }

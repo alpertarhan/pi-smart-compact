@@ -22,16 +22,24 @@ import { errorDetail, recordIssue } from "../../utils/issues.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { assembleFallback } from "../../phases/synthesize.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
+import { summarySourceOf } from "../../domain/telemetry.ts";
 
 export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 	const extraction = rc.extraction;
 	let summary = rc.finalSummary;
 	const summaryBudgetTokens = rc.profileCfg?.summaryBudgetTokens ?? 6_000;
+	// Owned-deterministic detection uses the sanctioned summary-source helper
+	// (exact "fallback"/"zero-call" only — undefined/native never qualifies).
+	const synthesisSource = summarySourceOf({ method: rc.methodForMetrics });
+	const synthesisOwned = synthesisSource === "fallback" || synthesisSource === "zero-call";
 	const evidence = {
 		sourceMessages: rc.llmMessages,
 		steering: { focus: rc.focus, note: rc.userNote },
 		summaryBudgetTokens,
 		factOverrides: rc.factOverrides,
+		goalEvidence: rc.goalEvidence
+			? { ...rc.goalEvidence, ownedFallback: synthesisOwned }
+			: undefined,
 	};
 
 	showProgressOverlay(rc.ctx, {
@@ -169,19 +177,28 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 			summaryBudgetTokens,
 			rc.verificationContinuity,
 			rc.factOverrides,
+			rc.goalEvidence,
 		);
+		// This exact string was assembled by our own renderer, so the goal pair
+		// checks may trust the owned metadata regardless of how synthesis went.
+		const floorEvidence = {
+			...evidence,
+			goalEvidence: rc.goalEvidence
+				? { ...rc.goalEvidence, ownedFallback: true }
+				: undefined,
+		};
 		let deterministicVerification = verifySummary(
 			deterministic,
 			extraction,
 			rc.verificationContinuity,
-			evidence,
+			floorEvidence,
 		);
 		const repaired = repairSummaryDeterministically(
 			deterministic,
 			deterministicVerification,
 			extraction,
 			rc.verificationContinuity,
-			evidence,
+			floorEvidence,
 		);
 		deterministic = repaired.summary;
 		deterministicVerification = repaired.result;
