@@ -22,6 +22,7 @@ import type { Model, Api } from "@earendil-works/pi-ai";
 import type {
  ChunkSummary,
  EffectiveCompactionMode,
+ LlmChunk,
  StructuredExtraction,
  TopicBoundary,
 } from "../../types.ts";
@@ -98,7 +99,7 @@ import type { SmartCompactServices } from "../../infra/services.ts";
  * serve, with nothing oversized dispatched.
  */
 export function repackBatchesForCallBudget(
- batches: import("../../types.ts").LlmChunk[][],
+ batches: LlmChunk[][],
  extraction: StructuredExtraction,
  model: Model<Api>,
  mode: EffectiveCompactionMode,
@@ -116,7 +117,7 @@ export function repackBatchesForCallBudget(
   Math.min(batchOutput.max, providerMaxOutputTokens) / perChunk,
  );
  if (maxGroupChunks < 1) return batches;
- const groupAdmissible = (group: import("../../types.ts").LlmChunk[]): boolean => {
+ const groupAdmissible = (group: LlmChunk[]): boolean => {
   const visible = batchOutputLimit(mode, group.length, providerMaxOutputTokens);
   if (visible < group.length * perChunk) return false;
   const request = buildBatchRequest(group, extraction, model, visible);
@@ -144,6 +145,10 @@ export function repackBatchesForCallBudget(
   const end = Math.min(total, i + maxGroupChunks);
   for (let j = i + 1; j <= end; j++) {
    if (dp[j] === Number.POSITIVE_INFINITY) continue;
+   // Bound before the expensive scrub/estimate: a suffix that cannot
+   // strictly improve dp[i] never needs its edge re-verified (the tie is
+   // strict/earliest, so it could not replace the incumbent anyway).
+   if (dp[j] + 1 >= dp[i]) continue;
    if (!groupAdmissible(chunks.slice(i, j))) continue;
    const candidate = 1 + dp[j];
    // Strict improvement only: with equal request counts the earlier (smaller)
@@ -157,7 +162,7 @@ export function repackBatchesForCallBudget(
  // No all-admissible cover: keep the original plan; its inadmissible
  // requests fail the dispatch capacity check and fall back deterministically.
  if (dp[0] === Number.POSITIVE_INFINITY) return batches;
- const plan: import("../../types.ts").LlmChunk[][] = [];
+ const plan: LlmChunk[][] = [];
  for (let i = 0; i < total; i = cut[i]) plan.push(chunks.slice(i, cut[i]));
  return plan.length < batches.length ? plan : batches;
 }
@@ -553,7 +558,8 @@ export async function summarizeConversation(
   if (plan.length < batches.length) {
    rc.notify(
     "Call budget: re-packed " + batches.length + " batches into " + plan.length +
-    " request(s) — every chunk keeps LLM coverage",
+    " request(s)" +
+    (plan.length <= batchCallAllowance ? " — every chunk keeps LLM coverage" : ""),
     "info",
    );
   }

@@ -531,5 +531,22 @@ describe("exploration cannot spend a feasible full-coverage synthesis allowance"
     expect(services.budget.callCount()).toBe(0);
     expect(result.rounds).toBe(0);
     expect(SYNTHESIS_CALL_RESERVE).toBe(2); // default floor stays one batch + assembly
+    // A caller passing less than the floor is normalized up: with 2 calls
+    // remaining and a (floored) reserve of 2, the probe is still skipped.
+    const floored = createServices({
+      llm: {
+        complete: async () => {
+          throw new Error("no exploration call may be dispatched");
+        },
+      },
+    });
+    floored.budget = new BudgetGuard(2);
+    const flooredResult = await explore(
+      messages, unitExtraction, openAiModel, { apiKey: "k" },
+      undefined, undefined, undefined, undefined, undefined, floored, 1,
+    );
+    expect(floored.metrics.snapshot()).toEqual([]);
+    expect(floored.budget.callCount()).toBe(0);
+    expect(flooredResult.rounds).toBe(0);
   });
 });

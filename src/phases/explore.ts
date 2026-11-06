@@ -646,6 +646,9 @@ export async function exploreConversation(
  services?: SmartCompactServices,
  synthesisCallReserve = SYNTHESIS_CALL_RESERVE,
 ): Promise<{ report: ExplorationReport; rounds: number; toolSupported: boolean }> {
+ // The floor (one batch + final assembly) is contractual, not caller-discipline:
+ // a smaller reserve would let exploration spend synthesis coverage calls.
+ synthesisCallReserve = Math.max(SYNTHESIS_CALL_RESERVE, synthesisCallReserve);
  const svc = services ?? getDefaultServices();
  const request = buildExplorerRequest(extraction, model, prevSummary, userNote);
  const userContent = request.userContent;
