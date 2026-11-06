@@ -658,6 +658,41 @@ export function injectedCarriedFacts(
   };
 }
 
+/**
+ * Latest raw human typing of each given fact text: the newest message mining
+ * itself would accept (user turn, not injected, not a carried summary) whose
+ * normalized line equals the fact, with that message's timestamp when present.
+ * Only current messages prove a fresh assertion; origin/index fields carried
+ * on cached or merged records are copies and never count as new typing.
+ */
+export function latestRawAssertions(
+  msgs: LlmMessage[],
+  texts: readonly string[],
+): (text: string) => { index: number; timestamp?: number } | undefined {
+  const wanted = new Set(texts.map((text) => factKey(text)));
+  const latest = new Map<string, { index: number; timestamp?: number }>();
+  for (let i = 0; i < msgs.length; i++) {
+    const message = msgs[i];
+    if (message?.role !== "user") continue;
+    const text = extractText(message.content);
+    if (!text || isInjectedMessage(message, text) || HISTORY_SUMMARY_RE.test(text))
+      continue;
+    for (const raw of text.split(/\n+/)) {
+      const candidate = raw
+        .replace(/^\s*[-*]\s+/, "")
+        .trim()
+        .replace(CONTINUITY_LABEL_RE, "");
+      const key = factKey(candidate.slice(0, TRUNC.CONSTRAINT_TEXT));
+      if (!wanted.has(key)) continue;
+      latest.set(key, {
+        index: i,
+        ...(message.timestamp !== undefined ? { timestamp: message.timestamp } : {}),
+      });
+    }
+  }
+  return (text) => latest.get(factKey(text));
+}
+
 export function extractDecisions(
   msgs: LlmMessage[],
   _tcIdx?: ToolCallIndex,
@@ -800,7 +835,7 @@ export function mineConstraints(
 ): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
-  const carriedCopies = new Map<string, StructuredExtraction["constraints"][number]>();
+  const firstRecords = new Map<string, StructuredExtraction["constraints"][number]>();
   const isInjectedCarried = injectedCarriedFacts(msgs);
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
@@ -849,13 +884,13 @@ export function mineConstraints(
             ...(carried ? {} : { origin: "human" as const }),
           };
           constraints.push(record);
-          if (carried) carriedCopies.set(normalized, record);
+          firstRecords.set(normalized, record);
         } else if (!carried) {
-          // The user just typed a rule this window first saw as a carried
-          // copy: the raw typing is the human origin that copy lacked, and
+          // The user just typed a rule this window recorded earlier (a carried
+          // copy or a prior typing): the raw typing carries human origin, and
           // its index — a release before the typing must not retire the rule
           // the user has just reasserted.
-          const copy = carriedCopies.get(normalized);
+          const copy = firstRecords.get(normalized);
           if (copy) {
             copy.origin = "human";
             copy.index = i;

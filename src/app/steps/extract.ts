@@ -91,10 +91,8 @@ export function loadExtractionContinuity(
   openLoops: saved.openLoops.filter(loop => loop.type === "bugfix" || !isInjectedCarried(loop.summary)),
  };
  // A released user constraint must not return through an older snapshot.
- // Extraction copies carry origin so a fresh raw reassertion can revive a
- // rule; previous-state copies never do (no current-window index).
  const factOverrides = retireSupersededConstraints([
-  ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence, ...(item.origin ? { origin: item.origin } : {}) })),
+  ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence })),
   ...(previousState?.constraints ?? []).map(item => ({ text: item.text, confidence: item.confidence })),
  ], rc.llmMessages, previousState?.factOverrides ?? []);
  // The run's override result replaces the snapshot's list: an override the

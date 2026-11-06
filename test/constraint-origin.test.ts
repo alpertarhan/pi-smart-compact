@@ -18,7 +18,7 @@ import { loadExtractionContinuity, selectCachedExtraction } from "../src/app/ste
 import { extractStructured, mineConstraints } from "../src/utils/extraction.ts";
 import { mergeExtractions } from "../src/utils/cache.ts";
 import {
-  buildCompactionState, mergeCompactionStates, previewMergedContinuity, retireSupersededConstraints, saveCompactionState,
+  buildCompactionState, mergeCompactionStates, previewMergedContinuity, retireSupersededConstraints, saveCompactionState, upsertContinuityOverride,
 } from "../src/utils/state.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
 import { verifySummary } from "../src/phases/verify.ts";
@@ -34,8 +34,8 @@ const RELEASED_RULE = "Do not push or open a PR yet; I want to test slice 2 loca
 const RELEASE = "ok push it now";const GOAL = "Ship the billing worker migration.";
 const DUP_TYPE = "i-have-adhd-rules"; // non-quoting custom type
 
-function user(text: string, customType?: string): LlmMessage {
-  return { role: "user", content: text, ...(customType ? { customType } : {}) } as LlmMessage;
+function user(text: string, customType?: string, timestamp?: number): LlmMessage {
+  return { role: "user", content: text, ...(customType ? { customType } : {}), ...(timestamp !== undefined ? { timestamp } : {}) } as LlmMessage;
 }
 
 function carriedSummary(constraintLine: string): LlmMessage {
@@ -228,8 +228,14 @@ describe("human-origin continuity across compactions", () => {
         (item) => item.summaryKey === normalizeFactKey(RELEASED_RULE) && item.status === "superseded",
       ),
     ).toBe(true);
-    // A genuinely new raw reassertion clears the old override and revives the rule.
-    const reasserted = reload([carriedSummary(RELEASED_RULE), user(GOAL), user(RELEASED_RULE)]);
+    // A genuinely newer raw typing (timestamp after the override decision)
+    // clears the old override and revives the rule; an old raw author still
+    // projected (timestamp before the decision) would not.
+    const reasserted = reload([
+      carriedSummary(RELEASED_RULE),
+      user(GOAL),
+      user(RELEASED_RULE, undefined, retired.updatedAt + 1),
+    ]);
     expect(
       reasserted.factOverrides.some((item) => item.summaryKey === normalizeFactKey(RELEASED_RULE)),
     ).toBe(false);
@@ -435,5 +441,50 @@ describe("origin across equal copies in cache and state merges", () => {
         [],
       ),
     ).toEqual([]);
+  });
+
+  it("a later carried copy after release is not a human reassertion (warm equals fresh)", () => {
+    // The raw author sits at index 0, the release at 1, the summary copy at 2.
+    // The cache grafts origin onto the summary copy; only the raw message
+    // proves a fresh assertion, so warm retirement must match fresh mining.
+    const messages = [user(RELEASED_RULE), user(RELEASE), carriedSummary(RELEASED_RULE)];
+    const fresh = extractStructured(messages, PROFILES.balanced);
+    const warm = mergeExtractions(
+      extractStructured(messages.slice(0, 2), PROFILES.balanced),
+      extractStructured(messages.slice(2), PROFILES.balanced),
+      2,
+      messages.slice(2),
+      new Map(),
+    );
+    const expected = retireSupersededConstraints(fresh.constraints, messages, []);
+    expect(expected.some((item) => item.status === "superseded")).toBe(true);
+    expect(
+      retireSupersededConstraints(warm.constraints, messages, []).some(
+        (item) => item.status === "superseded",
+      ),
+    ).toBe(true);
+  });
+
+  it("an older raw author still visible cannot undo a newer manual resolution", () => {
+    const messages = [user(RELEASED_RULE, undefined, 1)];
+    const overrides = upsertContinuityOverride([], "constraint", RELEASED_RULE, { status: "resolved" });
+    expect(retireSupersededConstraints(extractStructured(messages, PROFILES.balanced).constraints, messages, overrides)).toEqual(overrides);
+  });
+
+  it("a causally newer direct human reassertion supersedes the old resolution", () => {
+    const overrides = upsertContinuityOverride([], "constraint", RELEASED_RULE, { status: "resolved" });
+    const messages = [user(RELEASED_RULE, undefined, overrides[0].updatedAt + 1)];
+    expect(
+      retireSupersededConstraints(extractStructured(messages, PROFILES.balanced).constraints, messages, overrides).some(
+        (item) => item.status !== "active",
+      ),
+    ).toBe(false);
+  });
+
+  it("a human-first reassertion also advances the source author index", () => {
+    const messages = [user(RELEASED_RULE), user(RELEASE), user(RELEASED_RULE)];
+    const extraction = extractStructured(messages, PROFILES.balanced);
+    expect(extraction.constraints.find((item) => item.text === RELEASED_RULE)?.index).toBe(2);
+    expect(retireSupersededConstraints(extraction.constraints, messages, [])).toEqual([]);
   });
 });
