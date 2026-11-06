@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+## [10.8.1] - 2026-11-06
+
+The release owner explicitly requested this stable release under the
+version-specific stable exception in `docs/RELEASE.md`. No external canary
+cohort is available; this is not a telemetry `PROMOTE` result. Live evidence
+is limited to the selected MiniMax-M3.1-Flash route: three transport-success
+runs with synthetic raw verifier scores 73/95/57 and latencies of
+8153/2512/13573 ms — not full-pipeline, applied-host or canary-quality
+evidence, and no other live route has proof. The deterministic release gate
+and required PR CI remain mandatory. No automatic stored-state migration,
+stage-model reroute, or local-installation update.
+
+### Changed
+
+- CI audits dependencies on every run and opens or comments on a tracking
+  issue when the scheduled pi-latest job fails red unseen. (#143)
+
+### Fixed
+
+- Compaction is priced in the active reader's token domain. The window walk,
+  native split, manual-preflight preview and final yield check price the
+  active model's per-API replay: measured output for unchanged same-model
+  messages, API-verified image rules with two-tier Claude pricing, opaque
+  signatures and base64 payloads no longer priced by opaque character length
+  (retained content and images still carry provider- and replay-aware cost),
+  and codex whole-prompt trim pricing keyed on the API rather than the
+  provider name. Mid-session model switches reproject the stale measured
+  usage on a frozen basis, staged compactions revalidate idempotently
+  against a raw tail baseline, and an unproven reprojected basis refuses
+  application while legacy staged compactions without carried pricing keep
+  the old formula. (#148)
+- Synthesis keeps full LLM coverage within call budgets: when the remaining
+  calls cannot cover one request per batch plus final assembly, contiguous
+  history chunks repack into the minimum admissible request plan with the
+  same coverage, and exploration derives its reserve from that minimum
+  instead of spending a feasible full-coverage synthesis allowance. (#145)
+- Deterministic evidence stays accurate: in-place `sed` scripts are no longer
+  recorded as edited files, and passing command chains that end with a
+  clean-output exit 1 are no longer cataloged as unresolved errors even when
+  marked `isError`. (#144)
+- Extraction caches are stamped with the writing build's version; a missing,
+  old or malformed stamp is a miss before any fingerprint match. Constraints
+  typed by the user keep their `human` origin through compaction continuity:
+  the injected-fact filters and state merges retain them instead of dropping
+  the rule as a repeated custom message. (#146, #147)
+- The deterministic fallback keeps the previously tracked goal and the latest
+  user direction as a raw, separately labeled pair: label-shaped text never
+  gains raw authority, owned-pair verification requires exactly the canonical
+  pair, and a missing pair is repaired by re-rendering it without nesting. (#149)
+
+### Upgrade notes
+
+- Extraction caches written by older builds miss once and are re-extracted.
+- Facts and goals that older builds lost or never proved are not reconstructed.
+- The legacy 30-constraint cap and characters-per-token estimates remain limits.
+
 ## [10.8.0] - 2026-11-05
 
 The release owner explicitly approved this release on npm `latest` under the
