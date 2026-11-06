@@ -449,7 +449,7 @@ export interface ReaderIdentity {
   id: string;
   api?: string;
   /** Explicit input modalities (e.g. ["text"]); absent means unknown, never an assumption. */
-  input?: string[];
+  input?: readonly string[];
 }
 
 /**
