@@ -660,7 +660,8 @@ export function injectedCarriedFacts(
 
 /**
  * Latest raw human typing of each given fact text: the newest message mining
- * itself would accept (user turn, not injected, not a carried summary) whose
+ * itself would accept (user turn, not a command, not injected, not a carried
+ * summary, line not non-live, not this extension's own quoted output) whose
  * normalized line equals the fact, with that message's timestamp when present.
  * Only current messages prove a fresh assertion; origin/index fields carried
  * on cached or merged records are copies and never count as new typing.
@@ -675,13 +676,20 @@ export function latestRawAssertions(
     const message = msgs[i];
     if (message?.role !== "user") continue;
     const text = extractText(message.content);
-    if (!text || isInjectedMessage(message, text) || HISTORY_SUMMARY_RE.test(text))
+    if (!text || text.length < 10 || text.startsWith("/")) continue;
+    if (isInjectedMessage(message, text) || HISTORY_SUMMARY_RE.test(text))
       continue;
+    // Same own-output rule as the miner: an unambiguous marker anywhere in
+    // the message marks its ambiguous shared phrases as ours too; a
+    // standalone user rule with the same words stays a raw assertion.
+    const ownOutputMessage = OWN_OUTPUT_CONTEXT_RE.test(text);
     for (const raw of text.split(/\n+/)) {
       const candidate = raw
         .replace(/^\s*[-*]\s+/, "")
         .trim()
         .replace(CONTINUITY_LABEL_RE, "");
+      if (isNonLiveConstraintText(candidate)) continue;
+      if (ownOutputMessage && OWN_OUTPUT_PHRASE_RE.test(candidate)) continue;
       const key = factKey(candidate.slice(0, TRUNC.CONSTRAINT_TEXT));
       if (!wanted.has(key)) continue;
       latest.set(key, {

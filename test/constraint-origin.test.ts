@@ -487,4 +487,37 @@ describe("origin across equal copies in cache and state merges", () => {
     expect(extraction.constraints.find((item) => item.text === RELEASED_RULE)?.index).toBe(2);
     expect(retireSupersededConstraints(extraction.constraints, messages, [])).toEqual([]);
   });
+
+  it("a slash-command message cannot revive a retired rule", () => {
+    const overrides = upsertContinuityOverride([], "constraint", RELEASED_RULE, { status: "superseded" });
+    // A command body may quote the rule; the miner rejects the whole message.
+    const messages = [user(RELEASE), user("/focus the billing worker\n" + RELEASED_RULE, undefined, overrides[0].updatedAt + 1)];
+    const result = retireSupersededConstraints([{ text: RELEASED_RULE, confidence: 0.8 }], messages, overrides);
+    expect(result.some((item) => item.kind === "constraint" && item.status === "superseded")).toBe(true);
+  });
+
+  it("a pasted own-output notice cannot revive a retired rule; the standalone rule can", () => {
+    const OWN_RULE = "Do not bypass verification.";
+    const overrides = upsertContinuityOverride([], "constraint", OWN_RULE, { status: "superseded" });
+    const notice = "Smart compact failed: the gate rejected the summary.\nDo not bypass verification.";
+    const pasted = [user(notice, undefined, overrides[0].updatedAt + 1)];
+    expect(retireSupersededConstraints([{ text: OWN_RULE, confidence: 0.85 }], pasted, overrides)).toEqual(overrides);
+    const standalone = [user(OWN_RULE, undefined, overrides[0].updatedAt + 1)];
+    expect(
+      retireSupersededConstraints(extractStructured(standalone, PROFILES.balanced).constraints, standalone, overrides).some(
+        (item) => item.status !== "active",
+      ),
+    ).toBe(false);
+  });
+
+  it("a completed-checklist quote is not a raw reassertion", () => {
+    const messages = [user(RELEASED_RULE), user(RELEASE), user("[x] " + RELEASED_RULE)];
+    const extraction = extractStructured(messages, PROFILES.balanced);
+    expect(extraction.constraints.find((item) => item.text === RELEASED_RULE)?.index).toBe(0);
+    expect(
+      retireSupersededConstraints([...extraction.constraints, { text: RELEASED_RULE, confidence: 0.8 }], messages, []).some(
+        (item) => item.status === "superseded",
+      ),
+    ).toBe(true);
+  });
 });
