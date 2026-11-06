@@ -155,7 +155,7 @@ function measuredProducerIdentity(message: unknown): { provider?: string; api?: 
 /**
  * Same reader when every PRESENT identity field matches. Missing api/model alone is
  * not proof of a different model (partial metadata must stay compatible); a
- * difference on any present field is.
+ * difference on any present field is. Lenient by design: staleness detection.
  */
 function sameReader(producer: { provider?: string; api?: string; model?: string }, reader: { provider?: string; api?: string; id?: string }): boolean {
   if (producer.provider === undefined && producer.model === undefined) return false; // no identity to match
@@ -163,6 +163,17 @@ function sameReader(producer: { provider?: string; api?: string; model?: string 
   if (producer.api !== undefined && producer.api !== reader.api) return false;
   if (producer.model !== undefined && producer.model !== reader.id) return false;
   return true;
+}
+
+/**
+ * FULL identity equality — required where a measurement is used as POSITIVE
+ * evidence (a framing reserve): a partially identified legacy record cannot
+ * prove it ran on this exact reader and turn opaque output into framing.
+ */
+function sameReaderExact(producer: { provider?: string; api?: string; model?: string }, reader: { provider?: string; api?: string; id?: string }): boolean {
+  return producer.provider !== undefined && producer.provider === reader.provider
+    && producer.api !== undefined && producer.api === reader.api
+    && producer.model !== undefined && producer.model === reader.id;
 }
 
 /** Bounded single-slot memo: the stale path serializes the branch, and contextUsage is hot. */
@@ -244,7 +255,7 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
         const entry = branch[i];
         if (measuredTokens(entry) <= 0) continue;
         const identity = measuredProducerIdentity((entry as { message?: unknown }).message);
-        if (!identity.provider || !sameReader(identity, pricing.reader)) continue;
+        if (!sameReaderExact(identity, pricing.reader)) continue;
         const ownPrefix = contextMessageEntries(branch.slice(0, i + 1));
         const ownBody = estimateReaderMessageTokens(pricing.estimate, ownPrefix).reduce((a, b) => a + b, 0);
         const ownResidual = measuredTokens(entry) - ownBody;

@@ -1,12 +1,12 @@
 /** Session-scoped pending compaction store with TTL and bounded memory. */
 
-import { contextUsage } from "./context-usage.ts";
+import { contextUsage, estimateReaderMessageTokens } from "./context-usage.ts";
+import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MIN_COMPACTION_SAVING_RATIO } from "../constants.ts";
 import { exceedsYieldTarget } from "../domain/yield-gate.ts";
 import type { PendingCompaction, SessionMessageEntry } from "../types.ts";
-import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { branchEntryIds, resolveSessionId, type SessionIdentityContext } from "../infra/session-identity.ts";
 
 export function fingerprintContext(messages: readonly SessionMessageEntry[]): NonNullable<PendingCompaction["contextSnapshot"]> {
@@ -58,7 +58,28 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
     || !Number.isFinite(pending.tokensBefore) || pending.tokensBefore <= 0
     || typeof estimatedAfter !== "number" || !Number.isFinite(estimatedAfter) || estimatedAfter < 0
     || !Number.isFinite(model.contextWindow) || model.contextWindow <= 0 || !Number.isFinite(reserveTokens)) return null;
-  const growth = Math.max(0, tokens - pending.tokensBefore);
+  // Growth accounting with a carried pricing snapshot: recompute the CURRENT
+  // kept-tail with the frozen estimator and grow the estimate by exactly the
+  // append-only tail delta. A fresh measurement that CORRECTS an overestimated
+  // old prefix must never mask real retained-tail growth (and tail removal
+  // cannot shrink the estimate below what was staged).
+  let growth: number;
+  if (pending.usagePricing) {
+    const msgs = contextMessageEntries(ctx.sessionManager.getBranch());
+    const cut = msgs.findIndex(entry => entry.id === pending.firstKeptEntryId);
+    if (cut < 0) return null; // kept boundary unverifiable: insufficient proof
+    const currentTail = estimateReaderMessageTokens(pending.usagePricing.estimate, msgs.slice(cut))
+      .reduce((sum, value) => sum + value, 0);
+    const stagedTail = typeof pending.details.retainedTailTokens === "number" && Number.isFinite(pending.details.retainedTailTokens) ? pending.details.retainedTailTokens : currentTail;
+    const tailGrowth = Math.max(0, currentTail - stagedTail);
+    // Whole-total growth stays authoritative when a fresh measurement reports
+    // MORE context than the staged basis (underestimated prefix or framing);
+    // tail growth catches the masked case where a correcting measurement is
+    // lower. Both directions conservative.
+    growth = Math.max(tailGrowth, Math.max(0, tokens - pending.tokensBefore));
+  } else {
+    growth = Math.max(0, tokens - pending.tokensBefore);
+  }
   const after = estimatedAfter + growth;
   const reserve = Math.max(8_192, model.maxTokens ?? 0, reserveTokens);
   const target = pending.details.targetAfterTokens;

@@ -298,37 +298,50 @@ describe("synthesis batch re-packing within the call budget", () => {
   });
 
   it("packs through non-monotone input estimates where a longer group is cheaper than a shorter one", () => {
-    // The estimator samples JSON/language density over a bounded prefix and
-    // the extraction context is range-dependent: a modified path with a
-    // density-triggering character (ğ) only enters the context when its index
-    // falls inside the group's range, so the 3-chunk request can estimate
-    // CHEAPER than the 2-chunk one. A max-fill scan stops at the failing
+    // Structural-density analogue (the estimator prices JSON density over a
+    // capped sample): the 2-chunk context sits just over the structural
+    // threshold and pays the density penalty; the 3-chunk context's extra
+    // prose chunk dilutes the sampled ratio below the threshold, so the
+    // LONGER request estimates CHEAPER. A max-fill scan stops at the failing
     // 2-chunk edge and loses the feasible single-request cover; the DP must
-    // scan past failed ends. The window is derived from the live estimator so
-    // the case tracks estimator changes instead of hard-coding token counts.
+    // scan past failed ends. Padding is derived from the live estimator so the
+    // case tracks estimator changes instead of hard-coding token counts.
     const services = createServices();
     const model = { ...openAiModel, maxTokens: 2_000 } as Model<Api>;
-    const densityExtraction: StructuredExtraction = {
-      ...unitExtraction,
-      modifiedFiles: [{ path: "src/ğ.ts", toolCalls: 1, lastModifiedIndex: 50 }],
-      messageCount: 51,
-    };
-    const bulk = () => Array.from({ length: 25 }, () => sizedMsg(1));
-    const chunks: LlmChunk[] = [
+    // Bulk message texts carry one structural character each on ~60% of the
+    // messages: the 2-chunk sample lands inside the JSON-density penalty band,
+    // and chunk C's prose dilutes the 3-chunk sample below the threshold.
+    let messageOrdinal = 0;
+    const bulk = () => Array.from({ length: 25 }, () => {
+      const dense = messageOrdinal++ % 50 < 30;
+      return {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: (dense ? "[" : "") + "p".repeat(31) }] as never,
+      };
+    });
+    const chunksFor = (padding: number): LlmChunk[] => [
       { topic: "A", startIndex: 0, endIndex: 24, tokenEstimate: 3_000, priority: "normal", messages: bulk() },
       { topic: "B", startIndex: 25, endIndex: 49, tokenEstimate: 3_000, priority: "normal", messages: bulk() },
-      { topic: "C", startIndex: 50, endIndex: 50, tokenEstimate: 30, priority: "normal", messages: [sizedMsg(2)] },
+      { topic: "C", startIndex: 50, endIndex: 50, tokenEstimate: 30 + padding / 4, priority: "normal",
+        messages: [{ role: "assistant", content: [{ type: "text", text: "p".repeat(padding) }] } as LlmMessage] },
     ];
-    const request = (group: LlmChunk[]) => buildBatchRequest(group, densityExtraction, model, 800);
+    const request = (group: LlmChunk[]) => buildBatchRequest(group, { ...unitExtraction, messageCount: 51 }, model, 800);
     const input = (req: { context: unknown }) => estimateTokens(
       JSON.stringify(services.scrubber.scrubValue(req.context).value), model.provider, model.id, services.tokenCalibration,
     );
-    const two = request(chunks.slice(0, 2));
-    const three = request(chunks);
-    expect(input(three)).toBeLessThan(input(two)); // fixture depends on the current density adjustment; adapt analogously if the estimator changes
+    // Search the dilution padding until the LONGER request prices strictly cheaper.
+    let chunks = chunksFor(64);
+    let two = request(chunks.slice(0, 2));
+    let three = request(chunks);
+    for (let padding = 64; padding <= 512 && input(three) >= input(two) - 1; padding *= 2) {
+      chunks = chunksFor(padding);
+      two = request(chunks.slice(0, 2));
+      three = request(chunks);
+    }
+    expect(input(three)).toBeLessThan(input(two)); // density dilution: longer group cheaper
     const contextWindow = input(two) + two.maxTokens + 4_096 - 1; // 2-chunk fails by one token, 3-chunk fits
     const original = [[chunks[0]], [chunks[1], chunks[2]]];
-    const plan = repackBatchesForCallBudget(original, densityExtraction, { ...model, contextWindow } as Model<Api>, "fast", 8_192, services, 1);
+    const plan = repackBatchesForCallBudget(original, { ...unitExtraction, messageCount: 51 }, { ...model, contextWindow } as Model<Api>, "fast", 8_192, services, 1);
     expect(plan.map(group => group.length)).toEqual([3]);
     expect(plan.flat().map(ch => ch.startIndex)).toEqual([0, 25, 50]);
   });
@@ -342,13 +355,19 @@ describe("synthesis batch re-packing within the call budget", () => {
     // must not win the tie with the invalid [A],[B+C].
     const services = createServices();
     const model = { ...openAiModel, maxTokens: 320 } as Model<Api>;
-    const densityExtraction: StructuredExtraction = {
-      ...unitExtraction,
-      modifiedFiles: [{ path: "src/ğ.ts", toolCalls: 1, lastModifiedIndex: 50 }],
-      messageCount: 52,
-    };
-    const bulk = () => Array.from({ length: 50 }, () => sizedMsg(1));
-    const thoughtChunk = (index: number): LlmChunk => ({
+    const densityExtraction: StructuredExtraction = { ...unitExtraction, messageCount: 52 };
+    // Structural-density mechanism (same rule as the non-monotone case): A's
+    // bulk sits inside the JSON-density penalty band; the thought chunk's
+    // prose text dilutes A+B's sampled ratio below the threshold.
+    let ordinal = 0;
+    const bulk = () => Array.from({ length: 50 }, () => {
+      const dense = ordinal++ % 50 < 30;
+      return {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: (dense ? "[" : "") + "p".repeat(31) }] as never,
+      };
+    });
+    const thoughtChunk = (index: number, padding: number): LlmChunk => ({
       topic: "Thought " + index,
       startIndex: index,
       endIndex: index,
@@ -356,25 +375,30 @@ describe("synthesis batch re-packing within the call budget", () => {
       priority: "normal",
       messages: [{
         role: "assistant",
-        content: [{ type: "thinking", thinking: "r".repeat(23_000) }, { type: "text", text: "x" }],
+        content: [{ type: "thinking", thinking: "r".repeat(23_000) }, { type: "text", text: "p".repeat(padding) }],
       } as LlmMessage],
     });
-    const chunks: LlmChunk[] = [
+    const chunksFor = (padding: number): LlmChunk[] => [
       { topic: "A", startIndex: 0, endIndex: 49, tokenEstimate: 5_740, priority: "normal", messages: bulk() },
-      thoughtChunk(50),
-      thoughtChunk(51),
+      thoughtChunk(50, padding),
+      thoughtChunk(51, Math.max(1, Math.floor(padding / 4))),
     ];
     const request = (group: LlmChunk[]) => buildBatchRequest(group, densityExtraction, model, 800);
     const cost = (req: { context: unknown }) => estimateTokens(
       JSON.stringify(services.scrubber.scrubValue(req.context).value), model.provider, model.id, services.tokenCalibration,
     );
-    const a = request(chunks.slice(0, 1));
+    const a = request(chunksFor(1).slice(0, 1));
     const fits = (group: LlmChunk[]) => {
       const req = request(group);
       return cost(req) + (clampCompletionMaxTokens(model, req.maxTokens) ?? 0) + 4_096 <= contextWindow;
     };
     const contextWindow = cost(a) + (clampCompletionMaxTokens(model, a.maxTokens) ?? 0) + 4_096 - 1; // A alone fails by one token
-    expect(fits(chunks.slice(0, 2))).toBe(true); // A+B admissible: density adjustment on the ğ path
+    let chunks = chunksFor(1);
+    for (let padding = 64; padding <= 512 && !fits(chunksFor(padding).slice(0, 2)); padding *= 2) {
+      chunks = chunksFor(padding);
+    }
+    chunks = fits(chunks.slice(0, 2)) ? chunks : chunksFor(512);
+    expect(fits(chunks.slice(0, 2))).toBe(true); // A+B admissible: prose dilution of the density penalty
     expect(fits(chunks.slice(1))).toBe(true); // B+C and C alone admissible
     expect(fits(chunks.slice(2))).toBe(true);
     const original = chunks.map(chunk => [chunk]);
