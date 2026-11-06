@@ -648,7 +648,13 @@ stay user turns. Carried facts (a previous summary's constraints, saved
 constraints, implicit decisions and loops) have no provenance; one that equals,
 whole, a line or bounded text of a custom message in the window (not one that
 can quote the session: smart-compact/smart-context types, agent_mesh), or is
-harness text, is dropped unless the user typed it in the window. A prior
+harness text, is dropped unless the user typed it in the window. Constraints
+mined from a directly typed human turn carry `origin: "human"`, which survives
+scrubbing, extraction caches, state merge and reloads: a known human rule is
+never dropped just because a custom message now repeats it. Only raw human
+mining mints the origin — summaries, custom/peer quotes and forged text cannot
+promote themselves — and an explicit release or supersession still retires the
+rule. A prior
 summary never becomes an open loop. Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
 than a fixed next-message window. Fresh extraction and cached reconciliation
 share retry-result classification and inspect later/sibling retries; a false

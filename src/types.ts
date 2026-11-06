@@ -652,6 +652,9 @@ export interface StructuredExtraction {
   text: string;
   category: "requirement" | "preference" | "prohibition";
   confidence: number;
+  /** Set only when mining saw the user type this rule as a live human turn;
+   *  carried summaries and custom/peer quotes never get it. */
+  origin?: "human";
  }>;
  topics: Array<{
   startIndex: number;
@@ -817,6 +820,9 @@ export interface CompactionState {
   text: string;
   category: "requirement" | "preference" | "prohibition";
   confidence: number;
+  /** Durable copy of the extraction origin: the rule was typed by the user in
+   *  an earlier window. Additive optional; absent on pre-10.9 states. */
+  origin?: "human";
  }>;
  modifiedFiles: string[];
  readFiles: string[];

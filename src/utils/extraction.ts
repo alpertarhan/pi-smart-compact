@@ -800,6 +800,7 @@ export function mineConstraints(
 ): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
+  const carriedCopies = new Map<string, StructuredExtraction["constraints"][number]>();
   const isInjectedCarried = injectedCarriedFacts(msgs);
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
@@ -838,12 +839,22 @@ export function mineConstraints(
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
         if (!seen.has(normalized)) {
           seen.add(normalized);
-          constraints.push({
+          // Only a directly typed human turn sets origin; a carried summary
+          // line repeats a rule without proving who typed it.
+          const record: StructuredExtraction["constraints"][number] = {
             index: i,
             text: candidate.slice(0, TRUNC.CONSTRAINT_TEXT),
             category: cat,
             confidence: conf,
-          });
+            ...(carried ? {} : { origin: "human" as const }),
+          };
+          constraints.push(record);
+          if (carried) carriedCopies.set(normalized, record);
+        } else if (!carried) {
+          // The user just typed a rule this window first saw as a carried
+          // copy: the raw typing is the human origin that copy lacked.
+          const copy = carriedCopies.get(normalized);
+          if (copy) copy.origin = "human";
         }
         break;
       }

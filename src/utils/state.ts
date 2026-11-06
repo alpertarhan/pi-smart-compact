@@ -483,6 +483,7 @@ export function buildCompactionState(
    text: c.text.slice(0, TRUNC.CONSTRAINT_TEXT),
    category: c.category,
    confidence: c.confidence,
+   ...(c.origin ? { origin: c.origin } : {}),
   })),
   modifiedFiles: extraction.modifiedFiles.map((f) => f.path),
   readFiles: extraction.readFiles,
@@ -694,12 +695,27 @@ export function mergeCompactionStates(
  ]
   .slice(0, 30)
   .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
+ // An equal current record is often only the summary's copy of a rule the
+ // user typed in an earlier window; the merge keeps current-first ordering
+ // but must not let that copy downgrade the previous record's human origin.
+ const humanPreviousConstraints = new Set(
+  activePrevious.constraints
+   .filter((item) => item.origin === "human")
+   .map((item) => normalizeFactKey(item.text)),
+ );
  const constraints = mergeBy(
   activeCurrent.constraints,
   activePrevious.constraints,
   (item) => normalizeFactKey(item.text),
   30,
- ).map((item, index) => ({ ...item, id: "constraint-" + (index + 1) }));
+ ).map((item, index) => ({
+  ...item,
+  ...(item.origin !== "human" &&
+   humanPreviousConstraints.has(normalizeFactKey(item.text))
+   ? { origin: "human" as const }
+   : {}),
+  id: "constraint-" + (index + 1),
+ }));
  const unresolvedErrors = mergeBy(
   activeCurrent.unresolvedErrors,
   activePrevious.unresolvedErrors.filter(
