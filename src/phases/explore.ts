@@ -632,8 +632,10 @@ export function explorationToolSupportKey(model: Model<Api>): string {
  return [model.provider, model.api, model.baseUrl ?? "", model.id].join("\0");
 }
 
-// Optional exploration must leave one batch call and one final assembly call.
-const SYNTHESIS_CALL_RESERVE = 2;
+// Optional exploration must leave one batch call and one final assembly call;
+// callers that know a full-coverage synthesis plan needs more pass a larger
+// reserve so exploration cannot spend it.
+export const SYNTHESIS_CALL_RESERVE = 2;
 
 export async function exploreConversation(
  llmMessages: LlmMessage[], extraction: StructuredExtraction, model: Model<Api>,
@@ -642,7 +644,11 @@ export async function exploreConversation(
  maxRounds = MAX_EXPLORATION_ROUNDS,
  notify?: (msg: string, type?: "info" | "success" | "warning" | "error") => void,
  services?: SmartCompactServices,
+ synthesisCallReserve = SYNTHESIS_CALL_RESERVE,
 ): Promise<{ report: ExplorationReport; rounds: number; toolSupported: boolean }> {
+ // The floor (one batch + final assembly) is contractual, not caller-discipline:
+ // a smaller reserve would let exploration spend synthesis coverage calls.
+ synthesisCallReserve = Math.max(SYNTHESIS_CALL_RESERVE, synthesisCallReserve);
  const svc = services ?? getDefaultServices();
  const request = buildExplorerRequest(extraction, model, prevSummary, userNote);
  const userContent = request.userContent;
@@ -655,7 +661,7 @@ export async function exploreConversation(
  const cachedSupport = toolSupport.get(cacheKey, now);
 
  let supportsTools = cachedSupport === true;
- if (svc.budget.remainingCalls() <= SYNTHESIS_CALL_RESERVE) {
+ if (svc.budget.remainingCalls() <= synthesisCallReserve) {
   notify?.("Explore skipped · remaining calls reserved for synthesis", "info");
   return { report: fallbackExplorationReport(llmMessages), rounds: 0, toolSupported: supportsTools };
  }
@@ -673,6 +679,7 @@ export async function exploreConversation(
     userNote,
     signal,
     svc,
+    synthesisCallReserve,
    );
    if (!report.boundaries.length) {
     const retried = await explorationRetry(
@@ -683,6 +690,7 @@ export async function exploreConversation(
      userNote,
      signal,
      svc,
+     synthesisCallReserve,
     );
     if (retried.boundaries.length)
      return { report: retried, rounds: 1, toolSupported: false };
@@ -742,7 +750,7 @@ export async function exploreConversation(
    }
 
    let rounds = 1;
-   while (rounds < maxRounds && svc.budget.remainingCalls() > SYNTHESIS_CALL_RESERVE) {
+   while (rounds < maxRounds && svc.budget.remainingCalls() > synthesisCallReserve) {
     rounds++;
     let response: Awaited<ReturnType<typeof trackedComplete>>;
     try {
@@ -788,6 +796,7 @@ export async function exploreConversation(
        userNote,
        signal,
        svc,
+       synthesisCallReserve,
       );
       if (report.boundaries.length) rounds++;
      }
@@ -856,6 +865,7 @@ export async function exploreConversation(
      userNote,
      signal,
      svc,
+     synthesisCallReserve,
     );
    }
    if (parsedOk) toolSupport.set(cacheKey, true, svc.clock.now());
@@ -893,6 +903,7 @@ export async function exploreConversation(
   userNote,
   signal,
   svc,
+  synthesisCallReserve,
  );
  if (!report.boundaries.length) {
   const retried = await explorationRetry(
@@ -903,6 +914,7 @@ export async function exploreConversation(
    userNote,
    signal,
    svc,
+   synthesisCallReserve,
   );
   if (retried.boundaries.length)
    return { report: retried, rounds: 1, toolSupported: false };
@@ -918,9 +930,10 @@ async function explorationRetry(
  userNote: string | undefined,
  signal?: AbortSignal,
  services?: SmartCompactServices,
+ synthesisCallReserve = SYNTHESIS_CALL_RESERVE,
 ): Promise<ExplorationReport> {
  const svc = services ?? getDefaultServices();
- if (svc.budget.remainingCalls() <= SYNTHESIS_CALL_RESERVE) return fallbackExplorationReport(llmMessages);
+ if (svc.budget.remainingCalls() <= synthesisCallReserve) return fallbackExplorationReport(llmMessages);
  const last5 = llmMessages
   .slice(-5)
   .map(
@@ -1031,9 +1044,10 @@ async function directExploration(
  auth: { apiKey: string; headers?: ProviderHeaders },
  prevSummary: string | undefined, userNote: string | undefined, signal?: AbortSignal,
  services?: SmartCompactServices,
+ synthesisCallReserve = SYNTHESIS_CALL_RESERVE,
 ): Promise<ExplorationReport> {
  const svc = services ?? getDefaultServices();
- if (svc.budget.remainingCalls() <= SYNTHESIS_CALL_RESERVE) return fallbackExplorationReport(llmMessages);
+ if (svc.budget.remainingCalls() <= synthesisCallReserve) return fallbackExplorationReport(llmMessages);
  const request = buildDirectExplorationRequest(llmMessages, extraction, model, prevSummary, userNote);
  try {
   const resp = await trackedComplete("explore-direct", model, request.context, {

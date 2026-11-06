@@ -667,8 +667,10 @@ calling the system falls back to a direct structured analysis. The tool
 conversation is capped at three rounds, each response is capped where the
 provider supports output limits (a reasoning model gets the synthesis thinking
 headroom on top), and the shared prefix uses short-lived prompt caching. Every
-exploration path leaves two calls for batch synthesis and final assembly; with
-two or fewer calls remaining it uses deterministic boundaries.
+exploration path leaves the calls a feasible full-coverage synthesis needs —
+at minimum two (one batch, final assembly), more when the summary model cannot
+merge the batches further; once no more calls than that remain it uses
+deterministic boundaries.
 
 ### Synthesize
 
@@ -685,8 +687,17 @@ two or fewer calls remaining it uses deterministic boundaries.
 Session-aware prompting, decision propagation across later batches,
 mode-specific thresholds and output limits, provider-aware wave concurrency,
 aggregate prompt-token reservation and deterministic fallback assembly when any
-budget or LLM call fails. Batch retries and queued workers recheck remaining
-calls before dispatch so they cannot spend the final assembly call.
+budget or LLM call fails. When the remaining calls cannot cover one request per
+batch plus assembly, the chunk sequence is re-partitioned across batch
+boundaries into the fewest requests a minimum-count contiguous packing (a
+bounded DP over feasible edges, since the token estimate is not monotone in
+group size) can
+admit — a group is admissible only if the actually built request fits the
+summary model and its clamped wire output still covers the mode's per-chunk
+visible allowance; plans that already fit are unchanged, and infeasible
+groupings keep the deterministic fallback. Batch retries and queued
+workers recheck remaining calls before dispatch so they cannot spend the final
+assembly call.
 Single-pass and final assembly reject known nonterminal stop reasons and
 unclosed Markdown fences before the synthesis cache can retain the result.
 Prompts state their output targets. Single-pass and assembly allow up to twice

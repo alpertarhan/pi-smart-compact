@@ -18,11 +18,19 @@
  * once you exceed 2-3 concurrent calls.
  */
 
-import type { ChunkSummary, TopicBoundary } from "../../types.ts";
+import type { Model, Api } from "@earendil-works/pi-ai";
+import type {
+ ChunkSummary,
+ EffectiveCompactionMode,
+ LlmChunk,
+ StructuredExtraction,
+ TopicBoundary,
+} from "../../types.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
-import { exploreConversation, shouldExplore } from "../../phases/explore.ts";
+import { exploreConversation, shouldExplore, SYNTHESIS_CALL_RESERVE } from "../../phases/explore.ts";
 import {
  chunkLlmMessages,
+ buildBatchRequest,
  buildSinglePassRequest,
  heuristicTopicBoundaries,
  singlePassCompact,
@@ -54,8 +62,110 @@ import {
 } from "../../infra/synthesis-cache.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
 import { formatGenerationFailureForUi } from "../../ui/error-format.ts";
-import { modelRequestCapacityReason, ModelCapacityError } from "../../domain/model-capacity.ts";
+import { modelRequestCapacityReason, ModelCapacityError, clampCompletionMaxTokens } from "../../domain/model-capacity.ts";
 import { estimateTokens } from "../../utils/tokens.ts";
+import type { SmartCompactServices } from "../../infra/services.ts";
+
+/**
+ * Re-pack the greedy batch plan into the fewest LLM requests that cover every
+ * chunk, for when the remaining call budget cannot fit one request per batch
+ * plus final assembly. Old batch boundaries are not constraints: the
+ * contiguous chunk sequence is re-partitioned directly, preserving chunk
+ * order and IDs.
+ *
+ * A group of neighbouring chunks is admissible only when the request the run
+ * would really dispatch — `buildBatchRequest` output, scrubbed and estimated
+ * exactly like `trackedComplete` — fits the summary model
+ * (`modelRequestCapacityReason`: input + clamped output + SDK headroom, with
+ * `outputCeiling`'s reasoning headroom already inside `maxTokens`), every
+ * chunk keeps the mode's per-chunk visible output allowance before clamping
+ * (`batchOutputLimit`), and the wire cap after the model clamp
+ * (`clampCompletionMaxTokens`) still covers that allowance, so a merged
+ * request cannot truncate its sections into budget-stealing retries.
+ *
+ * Input-capacity admissibility is NOT monotone in the group extent: the
+ * token estimator samples JSON/language density over a bounded prefix and the
+ * extraction context is range-dependent, so a larger contiguous group can
+ * estimate cheaper than a shorter one. A minimum-count contiguous DP over
+ * all feasible edges therefore finds covers a max-fill scan can miss, and an
+ * input-capacity failure for one candidate end never ends the scan for later
+ * ends. Candidate group length is bounded by the input-independent,
+ * monotone per-chunk visible/output cap (chunks*perChunk <= min(mode max,
+ * provider cap)), which no larger group can ever satisfy. Every edge —
+ * singletons included — must be admissible, so a forced invalid singleton can
+ * never compete with (or beat on a tie) an existing fully admissible cover.
+ * When no all-admissible cover exists the original plan is returned unchanged
+ * and the caller's deterministic budget fallback covers what the model cannot
+ * serve, with nothing oversized dispatched.
+ */
+export function repackBatchesForCallBudget(
+ batches: LlmChunk[][],
+ extraction: StructuredExtraction,
+ model: Model<Api>,
+ mode: EffectiveCompactionMode,
+ providerMaxOutputTokens: number,
+ services: SmartCompactServices,
+ allowedBatchCalls: number,
+): import("../../types.ts").LlmChunk[][] {
+ if (allowedBatchCalls < 1 || batches.length <= allowedBatchCalls) return batches;
+ const batchOutput = MODE_POLICIES[mode].batchOutput;
+ const perChunk = batchOutput.perChunk;
+ // Input-independent monotone bound: chunks*perChunk above
+ // min(mode max, provider cap) can never keep the per-chunk visible
+ // allowance, so no admissible group is longer than this.
+ const maxGroupChunks = Math.floor(
+  Math.min(batchOutput.max, providerMaxOutputTokens) / perChunk,
+ );
+ if (maxGroupChunks < 1) return batches;
+ const groupAdmissible = (group: LlmChunk[]): boolean => {
+  const visible = batchOutputLimit(mode, group.length, providerMaxOutputTokens);
+  if (visible < group.length * perChunk) return false;
+  const request = buildBatchRequest(group, extraction, model, visible);
+  if ((clampCompletionMaxTokens(model, request.maxTokens) ?? 0) < group.length * perChunk)
+   return false;
+  const input = estimateTokens(
+   JSON.stringify(services.scrubber.scrubValue(request.context).value),
+   model.provider,
+   model.id,
+   services.tokenCalibration,
+  );
+  return !modelRequestCapacityReason(model, input, request.maxTokens);
+ };
+ const chunks = batches.flat();
+ const total = chunks.length;
+ // dp[i] = fewest all-admissible requests covering chunks[i..); Infinity when
+ // no all-admissible cover of that suffix exists. cut[i] reconstructs the
+ // partition. Every edge — singletons included — must pass admissibility, so
+ // only fully valid covers compete and a forced invalid singleton can never
+ // win a tie against one.
+ const dp = new Array<number>(total + 1).fill(Number.POSITIVE_INFINITY);
+ const cut = new Array<number>(total + 1).fill(total);
+ dp[total] = 0;
+ for (let i = total - 1; i >= 0; i--) {
+  const end = Math.min(total, i + maxGroupChunks);
+  for (let j = i + 1; j <= end; j++) {
+   if (dp[j] === Number.POSITIVE_INFINITY) continue;
+   // Bound before the expensive scrub/estimate: a suffix that cannot
+   // strictly improve dp[i] never needs its edge re-verified (the tie is
+   // strict/earliest, so it could not replace the incumbent anyway).
+   if (dp[j] + 1 >= dp[i]) continue;
+   if (!groupAdmissible(chunks.slice(i, j))) continue;
+   const candidate = 1 + dp[j];
+   // Strict improvement only: with equal request counts the earlier (smaller)
+   // first group wins, keeping older history on finer-grained requests.
+   if (candidate < dp[i]) {
+    dp[i] = candidate;
+    cut[i] = j;
+   }
+  }
+ }
+ // No all-admissible cover: keep the original plan; its inadmissible
+ // requests fail the dispatch capacity check and fall back deterministically.
+ if (dp[0] === Number.POSITIVE_INFINITY) return batches;
+ const plan: LlmChunk[][] = [];
+ for (let i = 0; i < total; i = cut[i]) plan.push(chunks.slice(i, cut[i]));
+ return plan.length < batches.length ? plan : batches;
+}
 
 export async function summarizeConversation(
  rc: ExtractedRc,
@@ -293,6 +403,34 @@ export async function summarizeConversation(
    try {
     const segAuth = await resolveStageAuth(rc, "explore");
     rc.cancellation.signal.throwIfAborted();
+    // Optional exploration must not spend calls a known feasible full-coverage
+    // synthesis still needs: estimate the fewest batch requests the summary
+    // model can admit for this conversation (heuristic boundaries — the
+    // exploration report only refines that split, and the dispatch-time
+    // re-pack below merges it back) and reserve them plus final assembly.
+    const preBatches = createBatches(
+     chunkLlmMessages(
+      rc.llmMessages,
+      heuristicTopicBoundaries(extraction),
+      pc,
+      rc.estimator,
+      rc.config.focusWeighting ? rc.focus : undefined,
+     ),
+     pc.batchMaxTokens,
+    );
+    const synthesisCallReserve = Math.max(
+     SYNTHESIS_CALL_RESERVE,
+     repackBatchesForCallBudget(
+      preBatches,
+      extraction,
+      rc.summaryModel,
+      rc.mode,
+      rc.providerCaps.maxOutputTokens,
+      rc.services,
+      1,
+     ).length + 1,
+    );
+    rc.vlog("Explore reserve: " + synthesisCallReserve + " calls (fewest full-coverage batch requests + assembly)");
     const expResult = await exploreConversation(
      rc.llmMessages,
      extraction,
@@ -311,6 +449,7 @@ export async function summarizeConversation(
      MAX_EXPLORATION_ROUNDS,
      rc.notify,
      rc.services,
+     synthesisCallReserve,
     );
     explorationReport = expResult.report;
     explorationRounds = expResult.rounds;
@@ -396,7 +535,35 @@ export async function summarizeConversation(
   );
 
   const batches = createBatches(chunks, pc.batchMaxTokens);
-  const totalBatches = batches.length;
+  // Full LLM coverage within the call budget: when one request per batch plus
+  // the reserved final assembly call exceeds the remaining calls, merge
+  // neighbouring batches the summary model can actually serve in a single
+  // request. Plans that already fit stay unchanged; when merging is
+  // infeasible the deterministic budget fallback below still covers the rest.
+  const batchCallAllowance = Math.max(
+   0,
+   rc.services.budget.remainingCalls() - 1,
+  );
+  const plan = batches.length > batchCallAllowance
+   ? repackBatchesForCallBudget(
+    batches,
+    extraction,
+    rc.summaryModel,
+    rc.mode,
+    rc.providerCaps.maxOutputTokens,
+    rc.services,
+    batchCallAllowance,
+   )
+   : batches;
+  if (plan.length < batches.length) {
+   rc.notify(
+    "Call budget: re-packed " + batches.length + " batches into " + plan.length +
+    " request(s)" +
+    (plan.length <= batchCallAllowance ? " — every chunk keeps LLM coverage" : ""),
+    "info",
+   );
+  }
+  const totalBatches = plan.length;
   showProgressOverlay(rc.ctx, {
    phase: 3,
    phaseName: "Synthesize",
@@ -423,7 +590,7 @@ export async function summarizeConversation(
 
   rc.cancellation.signal.throwIfAborted();
   if (totalBatches <= 1) {
-   const single = batches[0];
+   const single = plan[0];
    if (single) {
     if (rc.services.budget.remainingCalls() <= 1) {
      summaries.push(...single.map((ch) => fallbackChunkSummary(ch, extraction, "budget")));
@@ -487,7 +654,7 @@ export async function summarizeConversation(
     Math.min(totalBatches, rc.services.budget.remainingCalls() - 1),
    );
    for (let index = batchCallLimit; index < totalBatches; index++) {
-    results[index] = batches[index].map((chunk) =>
+    results[index] = plan[index].map((chunk) =>
      fallbackChunkSummary(chunk, extraction, "budget"),
     );
    }
@@ -514,12 +681,12 @@ export async function summarizeConversation(
      // Retries can consume the allowance calculated before workers start.
      if (budgetStopped || rc.services.budget.reason() || rc.services.budget.remainingCalls() <= 1) {
       budgetStopped = true;
-      results[idx] = batches[idx].map((chunk) =>
+      results[idx] = plan[idx].map((chunk) =>
        fallbackChunkSummary(chunk, extraction, "budget"),
       );
      } else {
       try {
-       const batch = batches[idx];
+       const batch = plan[idx];
        results[idx] = await summarizeBatch(
         batch,
         extraction,
@@ -537,7 +704,7 @@ export async function summarizeConversation(
       } catch (err) {
        rc.cancellation.signal.throwIfAborted();
        errors[idx] = err instanceof Error ? err : new Error(String(err));
-       results[idx] = batches[idx].map((chunk) =>
+       results[idx] = plan[idx].map((chunk) =>
         fallbackChunkSummary(chunk, extraction, "batch-failed"),
        );
       }
@@ -606,7 +773,7 @@ export async function summarizeConversation(
    profile: rc.profile,
    extraction,
    explorationRounds,
-   totalBatches: batches.length,
+   totalBatches: plan.length,
   });
   method = "eesv";
   try {
