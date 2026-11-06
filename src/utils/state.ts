@@ -696,10 +696,11 @@ export function mergeCompactionStates(
   .slice(0, 30)
   .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
  // An equal current record is often only the summary's copy of a rule the
- // user typed in an earlier window; the merge keeps current-first ordering
- // but must not let that copy downgrade the previous record's human origin.
- const humanPreviousConstraints = new Set(
-  activePrevious.constraints
+ // user typed in an earlier window (or the earlier copy in the same run's
+ // cache merge); current-first ordering must not downgrade that proof, no
+ // matter which side of the merge holds the human-origin record.
+ const humanConstraintKeys = new Set(
+  [...activeCurrent.constraints, ...activePrevious.constraints]
    .filter((item) => item.origin === "human")
    .map((item) => normalizeFactKey(item.text)),
  );
@@ -711,7 +712,7 @@ export function mergeCompactionStates(
  ).map((item, index) => ({
   ...item,
   ...(item.origin !== "human" &&
-   humanPreviousConstraints.has(normalizeFactKey(item.text))
+   humanConstraintKeys.has(normalizeFactKey(item.text))
    ? { origin: "human" as const }
    : {}),
   id: "constraint-" + (index + 1),

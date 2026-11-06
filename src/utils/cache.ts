@@ -60,6 +60,7 @@ import {
  type SmartCompactServices,
 } from "../infra/services.ts";
 import { toolOperationSignature } from "../domain/tool-semantics.ts";
+import { normalizeFactKey } from "./helpers.ts";
 import { classifyTelemetryFailure } from "../domain/telemetry.ts";
 import { clampCompletionMaxTokens, modelRequestCapacityReason, ModelCapacityError } from "../domain/model-capacity.ts";
 
@@ -634,8 +635,21 @@ export function mergeExtractions(
   [...base.decisions, ...offsetDecisions],
   EXTRACTION_LIMITS.DECISIONS,
  );
+ // Known human proof must survive the bound: when an equal summary copy in
+ // the other side evicts the older human record of the same rule, the
+ // retained copy keeps the origin. Ordering, text and bounds are unchanged.
+ const humanConstraintKeys = new Set(
+  [...base.constraints, ...delta.constraints]
+   .filter((item) => item.origin === "human")
+   .map((item) => normalizeFactKey(item.text)),
+ );
  const constraints = boundedTail(
-  [...base.constraints, ...offsetConstraints],
+  [...base.constraints, ...offsetConstraints].map((item) =>
+   item.origin === "human" ||
+   !humanConstraintKeys.has(normalizeFactKey(item.text))
+    ? item
+    : { ...item, origin: "human" as const },
+  ),
   EXTRACTION_LIMITS.CONSTRAINTS,
  );
  const topics = boundedTail(

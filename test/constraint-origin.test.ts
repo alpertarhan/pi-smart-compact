@@ -14,21 +14,24 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 import { recoverSourceMessages } from "../src/app/steps/recover.ts";
-import { loadExtractionContinuity } from "../src/app/steps/extract.ts";
+import { loadExtractionContinuity, selectCachedExtraction } from "../src/app/steps/extract.ts";
 import { extractStructured, mineConstraints } from "../src/utils/extraction.ts";
+import { mergeExtractions } from "../src/utils/cache.ts";
 import {
-  buildCompactionState, mergeCompactionStates, previewMergedContinuity, saveCompactionState,
+  buildCompactionState, mergeCompactionStates, previewMergedContinuity, retireSupersededConstraints, saveCompactionState,
 } from "../src/utils/state.ts";
+import { assembleFallback } from "../src/phases/synthesize.ts";
+import { verifySummary } from "../src/phases/verify.ts";
+import { buildEntryIdFingerprint, hashMessages } from "../src/utils/id-fingerprint.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
 import { deriveProjectIdFromCwd } from "../src/utils/fingerprint.ts";
-import { PROFILES } from "../src/constants.ts";
+import { EXTRACTION_LIMITS, PROFILES, VERSION } from "../src/constants.ts";
 import { normalizeFactKey } from "../src/utils/helpers.ts";
 import type { CompactionState, LlmMessage, OpenLoop, StructuredExtraction } from "../src/types.ts";
 
 const RULE = "Never force-push the shared release branch.";
 const RELEASED_RULE = "Do not push or open a PR yet; I want to test slice 2 locally first.";
-const RELEASE = "ok push it now";
-const GOAL = "Ship the billing worker migration.";
+const RELEASE = "ok push it now";const GOAL = "Ship the billing worker migration.";
 const DUP_TYPE = "i-have-adhd-rules"; // non-quoting custom type
 
 function user(text: string, customType?: string): LlmMessage {
@@ -159,6 +162,31 @@ describe("human-origin continuity across compactions", () => {
     expect(third.continuity).toContain("- Constraint: " + RULE);
   });
 
+  it("writes the preserved human rule into the fallback and both gates require it", () => {
+    const { save, reload } = harness();
+    save(mergeCompactionStates(null, buildCompactionState(extractStructured([user(GOAL), user(RULE)], PROFILES.balanced), [], null, [], [])));
+    const secondWindow = [carriedSummary(RULE), user(GOAL), user(RULE, DUP_TYPE)];
+    const second = reload(secondWindow);
+    const extractionB = extractStructured(secondWindow, PROFILES.balanced);
+    // The deterministic floor must carry the rule even though fresh extraction
+    // dropped it as an injected duplicate.
+    const fallback = assembleFallback([], extractionB, {}, 6_000, second.verificationContinuity, second.factOverrides);
+    expect(fallback).toContain("- " + RULE);
+    expect(verifySummary(fallback, extractionB, second.verificationContinuity, { factOverrides: second.factOverrides }).ok).toBe(true);
+    const missing = fallback.split("\n").filter((line) => line !== "- " + RULE).join("\n");
+    // Pre-summary gate view: the merged continuity preview.
+    const preGate = verifySummary(missing, extractionB, second.verificationContinuity, { factOverrides: second.factOverrides });
+    expect(preGate.ok).toBe(false);
+    expect(preGate.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
+    // Post-state gate view: the saved state the next cycle loads.
+    save(second.verificationContinuity);
+    const thirdWindow = [carriedSummary(RULE), user(GOAL)];
+    const third = reload(thirdWindow);
+    const postGate = verifySummary(missing, extractStructured(thirdWindow, PROFILES.balanced), third.previousState, { factOverrides: third.factOverrides });
+    expect(postGate.ok).toBe(false);
+    expect(postGate.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
+  });
+
   it("drops a legacy saved rule without origin exactly as before", () => {
     const { save, reload } = harness();
     save(savedState({
@@ -276,5 +304,52 @@ describe("origin alignment with merge, scrub and reordering", () => {
     const state = buildCompactionState(scrubbed, [], null, [], []);
     expect(state.constraints[0].origin).toBe("human");
     expect(state.constraints[0].text).toBe(scrubbed.constraints[0].text);
+  });
+});
+
+describe("origin across equal copies in cache and state merges", () => {
+  it("keeps a newly human-origin equal rule at incremental state dedup", () => {
+    const baseWindow = [carriedSummary(RELEASED_RULE)];
+    const all = [...baseWindow, user(RELEASED_RULE)];
+    const base = extractStructured(baseWindow, PROFILES.balanced);
+    expect(base.constraints[0].origin).toBeUndefined();
+    const ids = all.map((_, index) => "m-" + index);
+    const selection = selectCachedExtraction({
+      llmMessages: all, profileCfg: PROFILES.balanced, currentEntryIds: ids, currentKeptEntryIds: ids,
+      cachedExt: {
+        generation: VERSION, extraction: base, lastMessageIndex: 0, messageCount: 1, timestamp: Date.now(),
+        entryIdsFp: buildEntryIdFingerprint(ids.slice(0, 1)), keptEntryIdsFp: buildEntryIdFingerprint(ids.slice(0, 1)),
+        messagePrefixHash: hashMessages(all, 1),
+      },
+    });
+    expect(selection.cache).toBe("incremental");
+    // Current-first dedup keeps the earlier carried copy; the later raw human
+    // retyping in the same run must not lose its origin at the state merge.
+    const saved = mergeCompactionStates(
+      buildCompactionState(base, [], null, [], []),
+      buildCompactionState(selection.extraction, [], null, [], []),
+    );
+    expect(saved.constraints).toHaveLength(1);
+    expect(saved.constraints[0]).toMatchObject({ text: RELEASED_RULE, origin: "human" });
+  });
+
+  it("keeps known origin on the equal surviving summary copy at the cache bound", () => {
+    const count = EXTRACTION_LIMITS.CONSTRAINTS;
+    const lines = [RELEASED_RULE, ...Array.from({ length: count - 1 }, (_, i) => "Never change sentinel " + i + " without approval.")];
+    const base = extractStructured([user(lines.join("\n"))], PROFILES.balanced);
+    expect(base.constraints).toHaveLength(count);
+    expect(base.constraints[0]).toMatchObject({ text: RELEASED_RULE, origin: "human" });
+    const delta = extractStructured([carriedSummary(RELEASED_RULE)], PROFILES.balanced);
+    const merged = mergeExtractions(base, delta, 1, [carriedSummary(RELEASED_RULE)], new Map());
+    expect(merged.constraints.length).toBeLessThanOrEqual(count);
+    expect(merged.constraints).toContainEqual(expect.objectContaining({ text: RELEASED_RULE, origin: "human" }));
+  });
+
+  it("an earlier release cannot retire a later reasserted human rule", () => {
+    const messages = [carriedSummary(RELEASED_RULE), user(RELEASE), user(RELEASED_RULE)];
+    const extraction = extractStructured(messages, PROFILES.balanced);
+    const rule = extraction.constraints.find((item) => item.text === RELEASED_RULE);
+    expect(rule).toMatchObject({ origin: "human", index: 2 });
+    expect(retireSupersededConstraints(extraction.constraints, messages, [])).toEqual([]);
   });
 });

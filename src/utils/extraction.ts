@@ -852,9 +852,14 @@ export function mineConstraints(
           if (carried) carriedCopies.set(normalized, record);
         } else if (!carried) {
           // The user just typed a rule this window first saw as a carried
-          // copy: the raw typing is the human origin that copy lacked.
+          // copy: the raw typing is the human origin that copy lacked, and
+          // its index — a release before the typing must not retire the rule
+          // the user has just reasserted.
           const copy = carriedCopies.get(normalized);
-          if (copy) copy.origin = "human";
+          if (copy) {
+            copy.origin = "human";
+            copy.index = i;
+          }
         }
         break;
       }
