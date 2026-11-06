@@ -80,10 +80,12 @@ export function loadExtractionContinuity(
  };
  const saved = loadScopedCompactionState(continuityScope, ancestryIds, options);
  // Saved facts may predate provenance; drop those that repeat injected text.
+ // A constraint already known to be human-typed keeps its origin even when a
+ // custom message now duplicates it: the filter cannot unmine the raw turn.
  const isInjectedCarried = injectedCarriedFacts(rc.llmMessages);
  const previousState = saved && {
   ...saved,
-  constraints: saved.constraints.filter(item => !isInjectedCarried(item.text)),
+  constraints: saved.constraints.filter(item => item.origin === "human" || !isInjectedCarried(item.text)),
   // Dialog answers and tool-error loops never come from a custom message.
   decisions: saved.decisions.filter(item => item.type === "explicit" || !isInjectedCarried(item.summary)),
   openLoops: saved.openLoops.filter(loop => loop.type === "bugfix" || !isInjectedCarried(loop.summary)),
@@ -93,6 +95,10 @@ export function loadExtractionContinuity(
   ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence })),
   ...(previousState?.constraints ?? []).map(item => ({ text: item.text, confidence: item.confidence })),
  ], rc.llmMessages, previousState?.factOverrides ?? []);
+ // The run's override result replaces the snapshot's list: an override the
+ // window cleared (fresh raw reassertion) must not return through the
+ // previous-state fallbacks in the preview and the state merge.
+ if (previousState) previousState.factOverrides = factOverrides;
  // Synthesis and both verification gates must agree on the required evidence;
  // the state step's merge is the authority, so preview it here.
  const verificationContinuity = previewMergedContinuity(extraction, previousState, factOverrides);
@@ -166,7 +172,7 @@ export function selectCachedExtraction(input: {
 /** Cached and delta mining each saw part of the window (or predate this filter): re-check against all of it. */
 function dropInjectedConstraints(extraction: StructuredExtraction, llmMessages: LlmMessage[]): StructuredExtraction {
  const isInjectedCarried = injectedCarriedFacts(llmMessages);
- const constraints = extraction.constraints.filter(item => !isInjectedCarried(item.text));
+ const constraints = extraction.constraints.filter(item => item.origin === "human" || !isInjectedCarried(item.text));
  return constraints.length === extraction.constraints.length ? extraction : { ...extraction, constraints };
 }
 

@@ -31,6 +31,7 @@ import {
  isNonLiveConstraintText,
  isInjectedMessage,
  isTransientToolDiagnostic,
+ latestRawAssertions,
  extractText,
  collapseDecisionsByQuestion,
 } from "./extraction.ts";
@@ -379,12 +380,33 @@ export function retireSupersededConstraints(
   if (isNonLiveConstraintText(text) || isInjectedMessage(msgs[i], text)) continue;
   userTexts.push({ index: i, text: text.slice(0, TRUNC.MESSAGE) });
  }
+ // Callers pass the union of current extraction and previous-state copies;
+ // their origin/index fields are copies too (cache merges graft origin onto
+ // summary copies). Freshness is proven only by raw human typing in the
+ // current window: the latest such message is the rule's effective position.
+ const rawAssertionOf = latestRawAssertions(
+  msgs,
+  constraints.map((item) => item.text),
+ );
+ // A genuinely newer typing — the raw message's timestamp is after the
+ // override decision — revives a rule an older override retired. A raw
+ // occurrence without a timestamp cannot prove it is newer than the
+ // decision, so the override stands; a later release re-creates it anyway.
+ const revives = (item: ContinuityOverride): boolean => {
+  if (item.kind !== "constraint" || item.status === "active") return false;
+  const raw = rawAssertionOf(item.summaryKey);
+  return raw?.timestamp !== undefined && raw.timestamp > item.updatedAt;
+ };
+ const cleared = overrides.filter((item) => !revives(item));
+ let next = cleared.length === overrides.length ? overrides : cleared;
  // The gate's evidence threshold: only rules it requires can block it.
  const required = (item: { confidence?: number }) => (item.confidence ?? 1) >= 0.8;
- let next = overrides;
  for (const [position, constraint] of constraints.entries()) {
-  // A state-carried constraint has no index: every current message is newer.
-  const from = constraint.index ?? -1;
+  // A rule raw-typed in this window stands at its latest typing; without
+  // one, a state-carried constraint has no index and every current message
+  // is newer, while a carried copy sits at its summary boundary.
+  const from =
+   rawAssertionOf(constraint.text)?.index ?? constraint.index ?? -1;
   const release =
    userTexts.find(
     (msg) =>
@@ -483,6 +505,7 @@ export function buildCompactionState(
    text: c.text.slice(0, TRUNC.CONSTRAINT_TEXT),
    category: c.category,
    confidence: c.confidence,
+   ...(c.origin ? { origin: c.origin } : {}),
   })),
   modifiedFiles: extraction.modifiedFiles.map((f) => f.path),
   readFiles: extraction.readFiles,
@@ -694,12 +717,28 @@ export function mergeCompactionStates(
  ]
   .slice(0, 30)
   .map((item, index) => ({ ...item, id: ID_PREFIX.DECISION + (index + 1) }));
+ // An equal current record is often only the summary's copy of a rule the
+ // user typed in an earlier window (or the earlier copy in the same run's
+ // cache merge); current-first ordering must not downgrade that proof, no
+ // matter which side of the merge holds the human-origin record.
+ const humanConstraintKeys = new Set(
+  [...activeCurrent.constraints, ...activePrevious.constraints]
+   .filter((item) => item.origin === "human")
+   .map((item) => normalizeFactKey(item.text)),
+ );
  const constraints = mergeBy(
   activeCurrent.constraints,
   activePrevious.constraints,
   (item) => normalizeFactKey(item.text),
   30,
- ).map((item, index) => ({ ...item, id: "constraint-" + (index + 1) }));
+ ).map((item, index) => ({
+  ...item,
+  ...(item.origin !== "human" &&
+   humanConstraintKeys.has(normalizeFactKey(item.text))
+   ? { origin: "human" as const }
+   : {}),
+  id: "constraint-" + (index + 1),
+ }));
  const unresolvedErrors = mergeBy(
   activeCurrent.unresolvedErrors,
   activePrevious.unresolvedErrors.filter(

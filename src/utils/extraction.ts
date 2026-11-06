@@ -658,6 +658,49 @@ export function injectedCarriedFacts(
   };
 }
 
+/**
+ * Latest raw human typing of each given fact text: the newest message mining
+ * itself would accept (user turn, not a command, not injected, not a carried
+ * summary, line not non-live, not this extension's own quoted output) whose
+ * normalized line equals the fact, with that message's timestamp when present.
+ * Only current messages prove a fresh assertion; origin/index fields carried
+ * on cached or merged records are copies and never count as new typing.
+ */
+export function latestRawAssertions(
+  msgs: LlmMessage[],
+  texts: readonly string[],
+): (text: string) => { index: number; timestamp?: number } | undefined {
+  const wanted = new Set(texts.map((text) => factKey(text)));
+  const latest = new Map<string, { index: number; timestamp?: number }>();
+  for (let i = 0; i < msgs.length; i++) {
+    const message = msgs[i];
+    if (message?.role !== "user") continue;
+    const text = extractText(message.content);
+    if (!text || text.length < 10 || text.startsWith("/")) continue;
+    if (isInjectedMessage(message, text) || HISTORY_SUMMARY_RE.test(text))
+      continue;
+    // Same own-output rule as the miner: an unambiguous marker anywhere in
+    // the message marks its ambiguous shared phrases as ours too; a
+    // standalone user rule with the same words stays a raw assertion.
+    const ownOutputMessage = OWN_OUTPUT_CONTEXT_RE.test(text);
+    for (const raw of text.split(/\n+/)) {
+      const candidate = raw
+        .replace(/^\s*[-*]\s+/, "")
+        .trim()
+        .replace(CONTINUITY_LABEL_RE, "");
+      if (isNonLiveConstraintText(candidate)) continue;
+      if (ownOutputMessage && OWN_OUTPUT_PHRASE_RE.test(candidate)) continue;
+      const key = factKey(candidate.slice(0, TRUNC.CONSTRAINT_TEXT));
+      if (!wanted.has(key)) continue;
+      latest.set(key, {
+        index: i,
+        ...(message.timestamp !== undefined ? { timestamp: message.timestamp } : {}),
+      });
+    }
+  }
+  return (text) => latest.get(factKey(text));
+}
+
 export function extractDecisions(
   msgs: LlmMessage[],
   _tcIdx?: ToolCallIndex,
@@ -800,6 +843,7 @@ export function mineConstraints(
 ): StructuredExtraction["constraints"] {
   const constraints: StructuredExtraction["constraints"] = [];
   const seen = new Set<string>();
+  const firstRecords = new Map<string, StructuredExtraction["constraints"][number]>();
   const isInjectedCarried = injectedCarriedFacts(msgs);
   for (let i = 0; i < msgs.length; i++) {
     if (msgs[i]?.role !== "user") continue;
@@ -838,12 +882,27 @@ export function mineConstraints(
         const normalized = candidate.toLowerCase().replace(/\s+/g, " ");
         if (!seen.has(normalized)) {
           seen.add(normalized);
-          constraints.push({
+          // Only a directly typed human turn sets origin; a carried summary
+          // line repeats a rule without proving who typed it.
+          const record: StructuredExtraction["constraints"][number] = {
             index: i,
             text: candidate.slice(0, TRUNC.CONSTRAINT_TEXT),
             category: cat,
             confidence: conf,
-          });
+            ...(carried ? {} : { origin: "human" as const }),
+          };
+          constraints.push(record);
+          firstRecords.set(normalized, record);
+        } else if (!carried) {
+          // The user just typed a rule this window recorded earlier (a carried
+          // copy or a prior typing): the raw typing carries human origin, and
+          // its index — a release before the typing must not retire the rule
+          // the user has just reasserted.
+          const copy = firstRecords.get(normalized);
+          if (copy) {
+            copy.origin = "human";
+            copy.index = i;
+          }
         }
         break;
       }
