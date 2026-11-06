@@ -915,20 +915,29 @@ export function resolveGoalEvidence(
  goalSource?.goal !== null && typeof goalSource?.goal === "string"
  ? goalSource.goal
  : null;
+ // Bound the carried-raw direction ONCE at resolution, exactly like prior:
+ // renderers truncate to TRUNC.MESSAGE anyway, and an unbounded legacy/
+ // carrier goal would make verification compare against text no renderer
+ // can emit, wedging the gate (missing-goal forever). A stored goal that
+ // sanitizes to empty is not raw authority.
+ const boundedRawGoal = rawGoal
+ ? summaryEvidenceLine(rawGoal, TRUNC.MESSAGE)
+ : null;
  let direction = raw.direction;
  let directionSource: GoalEvidence["directionSource"] =
  raw.directionSource === "user-turn" ? "user-turn" : "carried-text";
  if (
  raw.directionSource !== "user-turn" &&
  rawGoal &&
- !isGoalLabelShaped(rawGoal)
+ !isGoalLabelShaped(rawGoal) &&
+ boundedRawGoal
  ) {
  // Raw owned metadata beats the rendered host-summary Goal section — but
  // only when it is genuinely raw: label-shaped stored text (an opaque
  // composite that once reached persistence) is rejected, so nothing gains
  // raw authority merely by being saved, and a composite is never
  // re-derived as the direction.
- direction = rawGoal;
+ direction = boundedRawGoal;
  directionSource = "carried-raw";
  }
  let prior: string | null = null;

@@ -1135,20 +1135,26 @@ export function extractGoalEvidence(msgs: LlmMessage[]): RawGoalEvidence {
     }
     if (text.startsWith("/") || ACK_ONLY_RE.test(text)) continue;
     const direction = summaryEvidenceLine(text, TRUNC.MESSAGE) || null;
-    if (direction) {
-      let hostSummaryGoal: string | null = null;
-      for (let j = i - 1; j >= 0; j--) {
-        const older = msgs[j];
-        if (older?.role !== "user") continue;
-        const olderText = extractText(older.content).trim();
-        if (!olderText || isInjectedMessage(older, olderText)) continue;
-        if (HISTORY_SUMMARY_RE.test(olderText)) {
-          hostSummaryGoal = hostSummaryGoalOf(olderText);
-          break;
-        }
-      }
-      return { direction, directionSource: "user-turn", hostSummaryGoal };
+    if (!direction) {
+      // Keep legacy extractMainGoal semantics: the FIRST substantive turn
+      // ends the scan even when it yields no evidence line (e.g. a turn of
+      // only control characters sanitizes to empty), so an evidence-less
+      // turn can never resurrect an older request or host Goal as the
+      // "latest direction".
+      return { direction: null, directionSource: "carried", hostSummaryGoal: null };
     }
+    let hostSummaryGoal: string | null = null;
+    for (let j = i - 1; j >= 0; j--) {
+      const older = msgs[j];
+      if (older?.role !== "user") continue;
+      const olderText = extractText(older.content).trim();
+      if (!olderText || isInjectedMessage(older, olderText)) continue;
+      if (HISTORY_SUMMARY_RE.test(olderText)) {
+        hostSummaryGoal = hostSummaryGoalOf(olderText);
+        break;
+      }
+    }
+    return { direction, directionSource: "user-turn", hostSummaryGoal };
   }
   return { direction: null, directionSource: "carried", hostSummaryGoal: null };
 }

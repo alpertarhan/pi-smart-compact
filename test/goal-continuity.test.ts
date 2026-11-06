@@ -16,6 +16,7 @@ import {
 	PRIOR_GOAL_LABEL,
 	LATEST_DIRECTION_LABEL,
 	CARRIED_GOAL_LABEL,
+	summaryEvidenceLine,
 } from "../src/domain/summary-parse.ts";
 import { createServices } from "../src/infra/services.ts";
 import { makeTokenEstimator, makeReaderTokenEstimator } from "../src/utils/tokens.ts";
@@ -98,6 +99,17 @@ describe("extractGoalEvidence (message-pure raw evidence)", () => {
 		expect(ge.direction).toBe(A);
 		expect(ge.directionSource).toBe("carried");
 		expect(ge.hostSummaryGoal).toBe(A);
+	});
+
+	it("a substantive latest turn that sanitizes empty stops extraction (legacy null, no resurrection)", () => {
+		// summaryEvidenceLine strips the control-character class; legacy
+		// extractMainGoal STOPPED at this turn and returned null.
+		expect(extractMainGoal([user(A), user("\u0001\u0002\u007f")])).toBeNull();
+		const ge = extractGoalEvidence([user(A), user("\u0001\u0002\u007f")]);
+		expect(ge).toEqual({ direction: null, directionSource: "carried", hostSummaryGoal: null });
+		// Even with a host boundary present, the evidence-less turn ends the scan.
+		const withHost = extractGoalEvidence([hostSummary(A), user("\u0001\u0002\u007f")]);
+		expect(withHost).toEqual({ direction: null, directionSource: "carried", hostSummaryGoal: null });
 	});
 });
 
@@ -213,6 +225,28 @@ describe("resolveGoalEvidence (authoritative raw pair)", () => {
 			expect(ge.prior).toBe(A);
 			expect(ge.direction).toBe(B);
 		}
+	});
+
+	it("oversized legacy/carrier direction is bounded once for render, verify and save", () => {
+		// 120 unique component names: far past TRUNC.MESSAGE; a host boundary
+		// already carries the bounded 300-char form, the carrier keeps raw long.
+		const long = Array.from({ length: 120 }, (_, i) => "Component" + i + "Name").join(" ");
+		const bounded = summaryEvidenceLine(long, 300);
+		const carrier = makeState({ goal: long, updatedAt: 9_000 });
+		const ge = resolveGoalEvidence(
+			{ direction: bounded, directionSource: "carried", hostSummaryGoal: bounded },
+			null,
+			carrier,
+		);
+		expect(ge.directionSource).toBe("carried-raw");
+		expect(ge.direction).toBe(bounded);
+		expect((ge.direction ?? "").length).toBeLessThanOrEqual(300);
+		// The full state cycle must succeed (no wedged missing-goal gate).
+		const summary = assembleFallback([], makeExtraction({ mainGoal: bounded }), {}, 6_000, null, [], ge);
+		const result = verifySummary(summary, makeExtraction({ mainGoal: bounded }), null, {
+			goalEvidence: { ...ge, ownedFallback: true },
+		});
+		expect(result.gaps.filter((g) => g.kind === "missing-goal")).toEqual([]);
 	});
 });
 
