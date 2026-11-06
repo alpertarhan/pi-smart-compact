@@ -899,34 +899,49 @@ export function resolveGoalEvidence(
  scoped: CompactionState | null,
  carrier: CompactionState | null,
 ): GoalEvidence {
- // The carrier is the newest applied compaction; a scoped file whose write
- // failed is stale and must not resurrect an old goal chain (updatedAt decides,
- // ties prefer the carrier — same run writes both with equal values).
- const goalSource =
- carrier && scoped
- ? (scoped.updatedAt ?? 0) > (carrier.updatedAt ?? 0)
- ? scoped
- : carrier
- : (carrier ?? scoped);
+ // The latest ACTIVE guarded carrier is the goal authority — it is the most
+ // recent APPLIED compaction. A scoped file is consulted only when no
+ // applicable carrier exists; its updatedAt timestamp is never goal authority
+ // (an unrelated fact write can bump it while carrying an old goal chain).
+ const goalSource = carrier ?? scoped;
+ // Optional new field on legacy/foreign records: validate at use, never
+ // coerce. A malformed priorGoal is treated as absent and the state's other
+ // facts stay usable; no string conversion can gain authority.
+ const rawPriorGoal =
+ typeof goalSource?.priorGoal === "string" && goalSource.priorGoal
+ ? goalSource.priorGoal
+ : null;
+ const rawGoal =
+ goalSource?.goal !== null && typeof goalSource?.goal === "string"
+ ? goalSource.goal
+ : null;
  let direction = raw.direction;
  let directionSource: GoalEvidence["directionSource"] =
  raw.directionSource === "user-turn" ? "user-turn" : "carried-text";
- if (raw.directionSource !== "user-turn" && goalSource?.goal) {
- // Raw owned metadata beats the rendered host-summary Goal section: a
- // carried two-label composite is never re-derived as the direction.
- direction = goalSource.goal;
+ if (
+ raw.directionSource !== "user-turn" &&
+ rawGoal &&
+ !isGoalLabelShaped(rawGoal)
+ ) {
+ // Raw owned metadata beats the rendered host-summary Goal section — but
+ // only when it is genuinely raw: label-shaped stored text (an opaque
+ // composite that once reached persistence) is rejected, so nothing gains
+ // raw authority merely by being saved, and a composite is never
+ // re-derived as the direction.
+ direction = rawGoal;
  directionSource = "carried-raw";
  }
  let prior: string | null = null;
  if (direction && directionSource !== "carried-text") {
  const bounded = (value: string) => summaryEvidenceLine(value, TRUNC.MESSAGE);
- if (goalSource?.priorGoal) prior = bounded(goalSource.priorGoal);
+ if (rawPriorGoal && !isGoalLabelShaped(rawPriorGoal))
+ prior = bounded(rawPriorGoal);
  else if (!goalSource && raw.hostSummaryGoal && !isGoalLabelShaped(raw.hostSummaryGoal))
  // No owned metadata at all: a host summary's single semantic Goal is
  // legitimate prior evidence, but label-shaped text is rejected outright.
  prior = bounded(raw.hostSummaryGoal);
- else if (goalSource?.goal && goalSource.goal !== direction)
- prior = bounded(goalSource.goal);
+ else if (rawGoal && rawGoal !== direction && !isGoalLabelShaped(rawGoal))
+ prior = bounded(rawGoal);
  if (prior === direction) prior = null;
  }
  return {

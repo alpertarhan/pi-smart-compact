@@ -52,7 +52,6 @@ import {
  goalPairLines,
  renderGoalEvidence,
  PRIOR_GOAL_LABEL,
- LATEST_DIRECTION_LABEL,
 } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
@@ -1811,19 +1810,33 @@ function verifySemanticCoverage(
   const goalTarget = findSection(parsed, "goal")?.body ?? "";
   const ge = goalEvidence;
   if (ge?.ownedFallback && ge.pair && ge.prior && ge.direction) {
-   // Owned deterministic pair: verify BOTH raw values. The current direction
-   // is probed against the owned current line only — a historical prior that
-   // lexically contains the direction must not satisfy coverage, and the
-   // prior's historical polarity is never read as a current contradiction.
-   const currentLine =
-    goalTarget
-     .split(/\r?\n/)
-     .find((line) => line.trimStart().startsWith(LATEST_DIRECTION_LABEL)) ?? "";
-   if (!hasSemanticEvidence(ge.direction, currentLine)) {
+   // Owned deterministic pair: verify BOTH raw values. The Goal section must
+   // be EXACTLY the canonical pair — any extra or altered line (an added
+   // `Latest user direction:` directive, an injected unlabeled instruction, a
+   // forged `Previously tracked goal:` line, LLM-patch drift) fails here and
+   // deterministic repair re-renders the trusted pair. Only the exact
+   // metadata-backed historical line is non-active for the semantic probes,
+   // and prior text that lexically contains the direction cannot satisfy
+   // coverage.
+   const expectedPrior = PRIOR_GOAL_LABEL + ge.prior;
+   const canonicalPair = goalPairLines(ge.prior, ge.direction);
+   const normalizedTarget = goalTarget
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+   if (normalizedTarget !== canonicalPair) {
+    addGap(accumulator, { kind: "missing-goal", goal: ge.direction }, 12);
+   }
+   const activeGoalText = goalTarget
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== expectedPrior)
+    .join("\n");
+   if (!hasSemanticEvidence(ge.direction, activeGoalText)) {
     addGap(accumulator, { kind: "missing-goal", goal: ge.direction }, 12);
    }
    if (
-    hasSemanticContradiction(ge.direction, currentLine, exemptFor(ge.direction))
+    hasSemanticContradiction(ge.direction, activeGoalText, exemptFor(ge.direction))
    ) {
     addGap(
      accumulator,
@@ -1834,7 +1847,6 @@ function verifySemanticCoverage(
      20,
     );
    }
-   const expectedPrior = PRIOR_GOAL_LABEL + ge.prior;
    if (!goalTarget.split(/\r?\n/).some((line) => line.trim() === expectedPrior)) {
     // Historical evidence is required, not optional: deleting the prior
     // line cannot pass just because the current direction is present.
