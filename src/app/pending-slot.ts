@@ -36,6 +36,11 @@ export function readerSignature(ctx: Pick<ExtensionContext, "model"> & Partial<P
     prompt === undefined ? null : createHash("sha256").update(prompt).digest("hex")]);
 }
 
+/** An uncertain or provably-stale-unpriced basis never authorizes application. */
+export function usageRefusesApplication(usage: { basis?: string; staleProducer?: boolean } | undefined): boolean {
+  return usage?.basis === "uncertain" || (usage?.basis === "unavailable" && !!usage.staleProducer);
+}
+
 /** Shared final gate for foreground and background candidates. Missing proof fails closed. */
 export function revalidatePending(pending: PendingCompaction, ctx: ExtensionContext, reserveTokens = 0): PendingCompaction | null {
   const model = ctx.model;
@@ -43,7 +48,7 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
   const tokens = usage?.tokens;
   // Insufficient basis proof fails closed: an uncertain reprojected basis, or a
   // stale measurement nobody could reprice, must never authorize application.
-  if (usage?.basis === "uncertain" || (usage?.basis === "unavailable" && usage.staleProducer)) return null;
+  if (usageRefusesApplication(usage)) return null;
   const estimatedAfter = pending.details.estimatedAfterTokens;
   if (!model || !pending.readerSignature || pending.readerSignature !== readerSignature(ctx)
     || pending.sessionId !== resolveSessionId(ctx) || !pendingMatchesBranch(pending, ctx.sessionManager.getBranch())

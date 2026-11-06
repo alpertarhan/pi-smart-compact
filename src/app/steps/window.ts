@@ -1,6 +1,7 @@
 /** Step 2: select and validate the active-context prefix to summarize. */
 
-import { contextUsage } from "../context-usage.ts";
+import { contextUsage, estimateReaderMessageTokens } from "../context-usage.ts";
+export { estimateReaderMessageTokens };
 import { nativeCompactionCut, nativeRouteLabel } from "../native-compaction.ts";
 import { isNativeApi } from "../../infra/native-protocol.ts";
 import type {
@@ -357,7 +358,7 @@ function nativeOverridePlan(
  if (!isNativeApi(model.api)) return null;
  const cut = nativeCompactionCut(msgs, keepFrom);
  if (cut === null) return null;
- const tokens = msgs.map((entry) => rc.readerEstimator.message(entry.message as LlmMessage));
+ const tokens = estimateReaderMessageTokens(rc.readerEstimator, msgs);
  const estimate = tokens.reduce((sum, value) => sum + value, 0);
  const prefix = tokens.slice(0, cut).reduce((sum, value) => sum + value, 0);
  // Same split as the native attempt: measured context beyond the estimate is
@@ -368,33 +369,6 @@ function nativeOverridePlan(
   retainedTokens: Math.round((estimate - prefix) * scale),
   route: nativeRouteLabel(model),
  };
-}
-
-/**
- * Reader-domain per-message estimates. The active model replays its own
- * unchanged assistant messages (proxy eligibility), while projected edits and
- * the live turn boundary change what the wire carries.
- */
-export function estimateReaderMessageTokens(
- readerEstimator: TokenEstimator,
- msgs: ReturnType<typeof contextMessageEntries>,
-): number[] {
- // Replay turn accounting follows the WIRE, not human-turn policy: custom and
- // host-summary messages convert to user items, so every projected user item
- // starts a new API turn. (Retention protection elsewhere keeps its stricter
- // human-only boundary.)
- let lastWireUserItem = -1;
- for (let index = 0; index < msgs.length; index++) {
-  const message = msgs[index]!.message;
-  if (isRecord(message) && message.role === "user") lastWireUserItem = index;
- }
- return msgs.map((entry, index) =>
-  readerEstimator.message(entry.message as LlmMessage, {
-   contextEdited: entry.contextEdited,
-   // No user item anywhere means nothing is provably in the live turn.
-   currentTurn: lastWireUserItem >= 0 && index > lastWireUserItem,
-  }),
- );
 }
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {

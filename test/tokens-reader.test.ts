@@ -117,8 +117,13 @@ describe("reader token estimator replay proxies", () => {
     // same wire API is unknown and keeps the measured-subset rule.
     const alias = makeReaderTokenEstimator({ provider: "fixture", id: "claude-opus-5-5", api: "anthropic-messages" }, new TokenCalibrationStore());
     expect(alias.message(assistant({ provider: "fixture", api: "anthropic-messages", model: "claude-opus-5-5" }))).toBe(1000);
-    const glm = makeReaderTokenEstimator({ provider: "zai-anthropic", id: "glm-4.6", api: "anthropic-messages" }, new TokenCalibrationStore());
-    expect(glm.message(assistant({ provider: "zai-anthropic", api: "anthropic-messages", model: "glm-4.6" }))).toBe(100);
+    // Unknown retention policy (other vendors on this wire, or a versionless
+    // Claude alias): the measured output bounds possibly-retained thinking from
+    // above — never assume the server discarded the reasoning.
+    for (const id of ["glm-4.6", "claude-opus-latest"]) {
+      const unknown = makeReaderTokenEstimator({ provider: "zai-anthropic", id, api: "anthropic-messages" }, new TokenCalibrationStore());
+      expect(unknown.message(assistant({ provider: "zai-anthropic", api: "anthropic-messages", model: id }))).toBe(1000);
+    }
   });
 
   it("prices unsigned prior thinking as retained text on keep-last-turn models", () => {
@@ -278,6 +283,18 @@ describe("reader token estimator image pricing", () => {
       expect(value).toBeGreaterThanOrEqual(1200);
       expect(value).toBeLessThan(1300);
     }
+  });
+
+  it("parses dated and major-only Claude versions correctly", () => {
+    // Dated snapshots keep their table version: 4.5 stays keep-all and standard-tier vision.
+    expectTokens("claude-opus-4-5-20251101", 3840, 2160, 1560); // standard tier (keep-all thinking)
+    expectTokens("claude-haiku-4-5-20251001", 3840, 2160, 1560); // standard tier (keep-last thinking)
+    // Major-only names read as X.0: claude-opus-4 is 4.0 — standard tier, NOT keep-all.
+    expectTokens("claude-opus-4", 3840, 2160, 1560);
+    expectTokens("claude-4-0", 3840, 2160, 1560);
+    // Versionless aliases stay unknown: high image tier (never under-count) and
+    // unknown thinking retention (upper-bounded elsewhere), never table rules.
+    expectTokens("claude-opus-latest", 3840, 2160, 4784);
   });
 
   it("downgrades images to the SDK placeholder for explicit text-only readers", () => {

@@ -136,7 +136,7 @@ export function prepareManualPreflightContext(
   const usagePricing = createUsagePricing(
     ctx.model
       ? { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api, input: ctx.model.input }
-      : { provider: summaryModel.provider, id: summaryModel.id, api: summaryModel.api },
+      : { provider: summaryModel.provider, id: summaryModel.id, api: summaryModel.api, input: summaryModel.input },
     tokenCalibration,
   );
   const totalTokens = contextUsage(ctx, usagePricing)?.tokens ?? 0;

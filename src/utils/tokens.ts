@@ -290,13 +290,21 @@ const CLAUDE_IMAGE_TIERS = {
   high: { maxEdge: 2_576, maxVisualTokens: 4_784 },
 } as const;
 
+/** Claude model version: [major, minor], date suffixes stripped, major-only reads as X.0. Null when unparseable. */
+function parseClaudeVersion(model: string): [number, number] | null {
+  const undated = model.toLowerCase().replace(/\d{8}/g, ""); // dated snapshots (20251101) are not minors
+  const version = /(\d+)(?:[.-](\d+))?/.exec(undated);
+  if (!version) return null;
+  return [Number(version[1]), Number(version[2] ?? 0)];
+}
+
 /** "Claude 4.7 and later" is the documented high-resolution membership. */
 function claudeImageTier(model: string | undefined): ClaudeImageTier | null {
   if (!model?.toLowerCase().startsWith("claude")) return null;
   if (/^claude-(?:2|instant)/i.test(model)) return null; // pre-patch-grid billing
-  const version = /claude[a-z-]*?(\d+)[.-](\d+)/i.exec(model);
+  const version = parseClaudeVersion(model);
   if (!version) return CLAUDE_IMAGE_TIERS.high; // unknown current name: price high, never under-count
-  const [major, minor] = [Number(version[1]), Number(version[2])];
+  const [major, minor] = version;
   return major > 4 || (major === 4 && minor >= 7) ? CLAUDE_IMAGE_TIERS.high : CLAUDE_IMAGE_TIERS.standard;
 }
 
@@ -495,15 +503,27 @@ function keepsAllPriorThinking(model: string | undefined): boolean {
   const id = model.toLowerCase();
   if (id.startsWith("claude-mythos-preview")) return true;
   const family = /opus|sonnet|haiku|fable|mythos/.exec(id)?.[0];
-  const version = /(\d+)[.-](\d+)/.exec(id);
+  const version = parseClaudeVersion(id);
   if (!family || !version) return false;
-  const [major, minor] = [Number(version[1]), Number(version[2])];
+  const [major, minor] = version;
   if (major >= 5) return true; // every 5-family model listed keeps all prior turns
   switch (family) {
     case "opus": return major === 4 && minor >= 5;
     case "sonnet": return major === 4 && minor >= 6;
     default: return false; // haiku through 4.5, fable/mythos only exist at 5+
   }
+}
+
+/**
+ * Whether a table-backed thinking-retention policy is VERIFIED for this reader:
+ * the documented Responses/Completions families, or Claude models whose version
+ * the docs cover. An unknown alias (claude-opus-latest, other vendors on the
+ * anthropic-messages wire) has no verified policy — the estimator bounds
+ * possibly-retained thinking from above instead of assuming discard.
+ */
+export function thinkingRetentionKnown(reader: { id: string; api?: string }): boolean {
+  if (reader.api === "openai-responses" || reader.api === "openai-codex-responses" || reader.api === "openai-completions") return true;
+  return reader.api === "anthropic-messages" && reader.id.toLowerCase().startsWith("claude") && parseClaudeVersion(reader.id) !== null;
 }
 
 type AssistantMetadata = {
@@ -533,6 +553,12 @@ function replayProxyTokens(
     // Keep-all models (and the live tool loop) replay and bill every thinking
     // block: usage.output measured exactly that content at generation time.
     if (options?.currentTurn || keepsAllPriorThinking(reader.id)) return Math.round(output);
+    // Unknown retention policy: output-reasoning is only a non-reasoning LOWER
+    // bound — the server may keep the thinking. Price the measured UPPER bound
+    // (everything output could be retained); missing metadata stays unboundable.
+    if (!thinkingRetentionKnown({ id: reader.id, api: reader.api })) {
+      return measuredSubset ? Math.round(output) : null;
+    }
     // Keep-last-turn models strip prior SIGNED thinking on replay: with every
     // block signed or redacted, output-reasoning is the exact measured remainder.
     // Unsigned thinking converts to plain text before the wire and survives the

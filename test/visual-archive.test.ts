@@ -4,7 +4,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { DEFAULT_CONFIG } from "../src/constants.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
 import { createServices } from "../src/infra/services.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeReaderTokenEstimator, makeTokenEstimator, TokenCalibrationStore } from "../src/utils/tokens.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 import { estimateVisualTokens, renderVisualPages, VISUAL_COLUMNS, VISUAL_ROWS, visualPageSize } from "../src/infra/visual-renderer.ts";
 import { activeVisualArchive, injectVisualArchive, selectVisualSources, validVisualArchive, visualEconomics, visualPages, VISUAL_CONTEXT_TYPE } from "../src/app/visual-archive.ts";
@@ -48,6 +48,8 @@ function stated(): StatedRc {
     ctx: f.ctx, config: { ...DEFAULT_CONFIG, visualArchiveEnabled: true }, branch: f.session.getBranch(),
     toCompact: messages.slice(0, -1), finalSummary: summary, flags: {}, cancellation: { signal: new AbortController().signal },
     services, estimator: { text: () => 1_000 }, totalTokens: 100_000,
+    // The run's frozen reader estimator: visual economics price in the reader's domain.
+    readerEstimator: makeReaderTokenEstimator({ provider: model.provider, id: model.id, api: model.api, input: model.input }, services.tokenCalibration),
     compactionPlan: { fixedContextTokens: 1_000, retainedTokens: 10_000, targetAfterTokens: 60_000 },
     details: { estimatedAfterTokens: 12_000, summaryTokens: 1_000 },
   } as unknown as StatedRc;
@@ -221,6 +223,9 @@ describe("hybrid pipeline step", () => {
     source.message.content = [{ type: "text", text: "const expiry = now >= expiresAt; preserve the async signature.\n".repeat(40) }];
     rc.toCompact = contextMessageEntries(rc.ctx.sessionManager.getBranch()).slice(0, -1);
     rc.estimator = makeTokenEstimator(provider, "summary-only", calibration);
+    // Admission follows the READER's economics: keep the expensive summarizer
+    // calibration but leave the reader uncalibrated — pixels must not be admitted.
+    rc.readerEstimator = makeReaderTokenEstimator({ provider: model.provider, id: model.id, api: model.api, input: model.input }, new TokenCalibrationStore());
     const before = structuredClone(rc.details);
     let renders = 0;
     await attachVisualArchive(rc, async (pages, signal) => { renders++; return renderVisualPages(pages, signal); });
@@ -236,8 +241,8 @@ describe("hybrid pipeline step", () => {
     expect(rc.finalSummary).toBe(summary);
     expect(validVisualArchive(rc.details.visualArchive)).toBe(true);
     expect(rc.details.visualTokens).toBeGreaterThan(256);
-    expect(rc.details.estimatedAfterTokens).toBe(12_000 + rc.details.visualTokens!);
-    expect(rc.details.summaryTokens).toBe(1_000);
+    expect(rc.details.estimatedAfterTokens).toBe(12_000 - 1_000 + rc.readerEstimator.text(summary) + rc.details.visualTokens!);
+    expect(rc.details.summaryTokens).toBe(rc.readerEstimator.text(summary));
     expect(rc.tokensSaved).toBe(100_000 - rc.details.estimatedAfterTokens!);
   });
   it.each(["disabled", "text-only", "unknown-cost", "unprofitable", "overflow", "budget", "aborted", "missing-native", "bad-render"])("keeps text on %s without calling the renderer unnecessarily", async kind => {
@@ -246,7 +251,7 @@ describe("hybrid pipeline step", () => {
     if (kind === "disabled") rc.config.visualArchiveEnabled = false;
     if (kind === "text-only") rc.ctx.model = { ...model, input: ["text"] };
     if (kind === "unknown-cost") rc.ctx.model = { ...model, id: "unmeasured" };
-    if (kind === "unprofitable") rc.services.tokenCalibration.clear();
+    if (kind === "unprofitable") rc.readerEstimator = makeReaderTokenEstimator({ provider: model.provider, id: model.id, api: model.api, input: model.input }, new TokenCalibrationStore());
     if (kind === "overflow") rc.flags.overflowRecovery = true;
     if (kind === "budget") rc.compactionPlan.targetAfterTokens = 12_000;
     if (kind === "aborted") rc.cancellation.signal = AbortSignal.abort();

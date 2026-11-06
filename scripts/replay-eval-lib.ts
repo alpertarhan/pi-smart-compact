@@ -263,9 +263,9 @@ function replayPolicy(
       append(materialize(trimEntries(plan, cause)));
       record(cause, result.requests + 1, removedTokens);
     };
-    if (pressure) return commit("pressure", trimTokens(working, plan.entries, message.provider, message.model).savedTokens);
+    if (pressure) return commit("pressure", trimTokens(working, plan.entries, message.provider, message.model, message.api).savedTokens);
     if (policy.kind !== "timed") return;
-    const economics = trimTokens(working, plan.entries, message.provider, message.model);
+    const economics = trimTokens(working, plan.entries, message.provider, message.model, message.api);
     const breakEven = trimBreakEvenRequests(info?.cost, economics.savedTokens, economics.tailTokens);
     if (breakEven !== null && breakEven <= policy.breakEven) return commit("break-even", economics.savedTokens);
     mark = { leafId: working.at(-1)!.id, entries: materialize(trimEntries(plan, "cold")), removedTokens: economics.savedTokens };

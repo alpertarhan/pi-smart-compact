@@ -6,7 +6,6 @@ import { verifyCompactionYield } from "../../domain/yield-gate.ts";
 import { canReadVisual, selectVisualSources, validVisualArchive, visualEconomics, visualPages } from "../visual-archive.ts";
 import type { StatedRc } from "../run-context.ts";
 import { errorDetail, reportIssue } from "../../utils/issues.ts";
-import { makeReaderTokenEstimator } from "../../utils/tokens.ts";
 
 export async function attachVisualArchive(rc: StatedRc, render = renderVisualPages): Promise<void> {
   const model = rc.ctx.model;
@@ -15,7 +14,7 @@ export async function attachVisualArchive(rc: StatedRc, render = renderVisualPag
   try {
     let sources = selectVisualSources(rc.branch as SessionEntry[], rc.toCompact, rc.finalSummary, rc.services.scrubber);
     let pages = visualPages(sources);
-    const textTokens = rc.estimator.text(rc.finalSummary);
+    const textTokens = rc.readerEstimator.text(rc.finalSummary);
     const before = rc.details.estimatedAfterTokens ?? rc.totalTokens;
     const allowance = Math.min(rc.compactionPlan.targetAfterTokens - before,
       model.contextWindow - Math.max(8_192, model.maxTokens ?? 0) - before) - 256;
@@ -29,8 +28,9 @@ export async function attachVisualArchive(rc: StatedRc, render = renderVisualPag
       pages = visualPages(sources);
     }
     const reader = { provider: model.provider, id: model.id, api: model.api };
-    // rc.estimator prices the summarizer; these excerpts would be sent to the reader.
-    const readerEstimator = makeReaderTokenEstimator({ provider: model.provider, id: model.id, api: model.api, input: model.input }, rc.services.tokenCalibration);
+    // The run's frozen reader estimator: the summary and these excerpts are sent
+    // to the reader, priced in its domain under the same snapshot everywhere else.
+    const readerEstimator = rc.readerEstimator;
     if (!sources.length || !visualEconomics(reader, sources, pages.map(visualPageSize), readerEstimator.text).worthwhile) return;
     const frames = await render(pages, AbortSignal.any([rc.cancellation.signal, AbortSignal.timeout(5_000)]));
     if (rc.cancellation.signal.aborted) return;

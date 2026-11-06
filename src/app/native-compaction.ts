@@ -21,6 +21,7 @@ import type {
   SmartCompactDetails,
 } from "../types.ts";
 import { VERSION } from "../constants.ts";
+import { estimateReaderMessageTokens } from "./context-usage.ts";
 import { cacheHitRateOf, effectivePromptInputTokens } from "../utils/cache.ts";
 import { clampCompletionMaxTokens } from "../domain/model-capacity.ts";
 import { runType } from "./steps/metrics.ts";
@@ -153,14 +154,9 @@ export async function attemptNativeCompaction(
   }
   const prefix = rc.msgs.slice(0, cut);
   const messages = prefix.map((entry) => entry.message as Message);
-  const prefixTokens = prefix.reduce(
-    (sum, entry) => sum + rc.readerEstimator.message(entry.message as LlmMessage),
-    0,
-  );
-  const totalEstimate = rc.msgs.reduce(
-    (sum, entry) => sum + rc.readerEstimator.message(entry.message as LlmMessage),
-    0,
-  );
+  const weights = estimateReaderMessageTokens(rc.readerEstimator, rc.msgs);
+  const prefixTokens = weights.slice(0, cut).reduce((sum, value) => sum + value, 0);
+  const totalEstimate = weights.reduce((sum, value) => sum + value, 0);
   const retainedTailTokens = Math.max(0, totalEstimate - prefixTokens);
 
   // One whole-prefix request; the per-mode input allowance sizes EESV chunks and

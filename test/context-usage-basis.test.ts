@@ -2,15 +2,17 @@ import { describe, expect, it } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { TokenCalibrationStore, type ReaderIdentity } from "../src/utils/tokens.ts";
-import { contextUsage, createUsagePricing } from "../src/app/context-usage.ts";
+import { contextUsage, createUsagePricing, estimateReaderMessageTokens } from "../src/app/context-usage.ts";
+import { usageRefusesApplication } from "../src/app/pending-slot.ts";
+import { contextMessageEntries } from "../src/infra/ai-messages.ts";
 import { readerSignature } from "../src/app/pending-slot.ts";
 
 const CLAUDE: ReaderIdentity = { provider: "anthropic", id: "claude-opus-5-5", api: "anthropic-messages", input: ["text", "image"] };
 const CODEX = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" } as const;
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-const usageOf = (output: number, reasoning: number) => ({
-  input: 10, output, reasoning, cacheRead: 0, cacheWrite: 0, totalTokens: output + 10, cost: ZERO_COST,
+const usageOf = (output: number, reasoning: number, framing = 10) => ({
+  input: 10, output, reasoning, cacheRead: 0, cacheWrite: 0, totalTokens: output + 10 + framing, cost: ZERO_COST,
 });
 
 /** Typed fixture builder: SessionManager owns entry ids, timestamps, and parent links. */
@@ -34,6 +36,15 @@ const reply = (identity: Record<string, unknown>, changes: Partial<AssistantMess
     ...changes,
   } as AssistantMessage);
 
+/** Minimal typed Model for the active-reader slot. */
+function makeModel(identity: { provider: string; api: string; id: string }) {
+  return {
+    provider: identity.provider, id: identity.id, api: identity.api, name: identity.id,
+    input: ["text", "image"], reasoning: true, contextWindow: 400_000, maxTokens: 32_000,
+    baseUrl: "https://fixture.invalid", cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+  } as never;
+}
+
 function makeCtx(sm: SessionManager, opts: { tokens: number; prompt?: string } = { tokens: 0 }) {
   return {
     getContextUsage: () => ({ tokens: opts.tokens, contextWindow: 400_000, percent: opts.tokens / 400_000 * 100 }),
@@ -46,7 +57,7 @@ describe("contextUsage stale-producer repricing", () => {
   it("reprices in the reader domain without any old-total floor", () => {
     const sm = session([
       say("question one two three four five"),
-      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100) }),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100, 8_000) }),
       say("follow up"),
     ]);
     const pricing = createUsagePricing(CLAUDE, new TokenCalibrationStore());
@@ -54,12 +65,13 @@ describe("contextUsage stale-producer repricing", () => {
     // Reserve = producer prompt beyond its own message estimate; body = reader-domain messages.
     expect(usage.basis).toBe("reprojected");
     expect(usage.staleProducer).toBe(true);
-    expect(usage.producerEvidence).toMatchObject({ model: CODEX.id, measuredTokens: 5_010 });
+    expect(usage.producerEvidence).toMatchObject({ model: CODEX.id, measuredTokens: 13_010 });
     // tokens = reader body + producer residual exactly — never floored at the old
-    // total, never normalized by it (small fixture: both land near the residual).
-    expect(usage.tokens!).toBeGreaterThan(4_900);
-    expect(usage.tokens!).toBeLessThan(5_200);
-    expect(usage.tokens!).not.toBe(5_000);
+    // total, never normalized by it. Residual = framing the producer carried
+    // beyond its REPLAY-priced messages (thinking priced at its live turn).
+    expect(usage.tokens!).toBeGreaterThan(7_900);
+    expect(usage.tokens!).toBeLessThan(8_400);
+    expect(usage.tokens!).not.toBe(13_010);
   });
 
   it("keeps same-reader and legacy paths on today's behavior", () => {
@@ -84,13 +96,13 @@ describe("contextUsage stale-producer repricing", () => {
     const mixed = session([
       say("q1 " + "w".repeat(4_000)),
       // Earlier SAME-READER measurement with a positive residual.
-      reply({ provider: CLAUDE.provider, api: CLAUDE.api, model: CLAUDE.id }, { usage: usageOf(3_000, 100) }),
+      reply({ provider: CLAUDE.provider, api: CLAUDE.api, model: CLAUDE.id }, { usage: usageOf(3_000, 100, 2_000) }),
       say("q2 " + "w".repeat(40_000)),
       reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(10, 0) }),
     ]);
     const usage = contextUsage(makeCtx(mixed, { tokens: 10, prompt: "" }), pricing)!;
     expect(usage.basis).toBe("reprojected");
-    expect(usage.tokens!).toBeGreaterThan(2_000); // same-reader reserve honored
+    expect(usage.tokens!).toBeGreaterThan(1_800); // same-reader reserve honored
     // No same-reader anchor and no system prompt: partial evidence refuses to assert certainty.
     const noReserve = contextUsage(
       makeCtx(session([
@@ -104,7 +116,7 @@ describe("contextUsage stale-producer repricing", () => {
 
   it("bounds possibly-retained thinking for unknown-retention readers", () => {
     const glm: ReaderIdentity = { provider: "zai-anthropic", id: "glm-4.6", api: "anthropic-messages" };
-    const anchor = reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(500, 10) });
+    const anchor = reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(500, 10, 900) });
     // Stale anchor from another model; the branch also carries the READER's own
     // prior-turn thinking, whose retention rules are unverified for this vendor.
     const bounded = session([
@@ -138,7 +150,7 @@ describe("contextUsage stale-producer repricing", () => {
     const pricing = createUsagePricing(CLAUDE, calibration);
     const base = session([
       say("question one two three four five"),
-      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100) }),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100, 8_000) }),
       say("follow up"),
     ]);
     const ctx = makeCtx(base, { tokens: 5_000, prompt: "" });
@@ -161,6 +173,107 @@ describe("contextUsage stale-producer repricing", () => {
     const textOnly = contextUsage(imageCtx, createUsagePricing({ ...CLAUDE, input: ["text"] }, calibration))!;
     expect(vision.basis).toBe("reprojected");
     expect(vision.tokens! - textOnly.tokens!).toBeGreaterThan(4_000); // 4784 patches vs ~placeholder text
+  });
+
+  it("labels an unpriced stale measurement so apply gates refuse it", () => {
+    // ctx.model is the ACTIVE reader; the anchor came from a different model and
+    // no run pricing exists (attention/pressure/pending paths): the old figure
+    // must never pass as a current-reader measurement.
+    const sm = session([
+      say("question"),
+      reply({ provider: "anthropic", api: "anthropic-messages", model: "claude-opus-5-5" }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    const ctx = { ...makeCtx(sm, { tokens: 13_010, prompt: "" }), model: makeModel({ provider: CODEX.provider, api: CODEX.api as string, id: CODEX.id }) };
+    const usage = contextUsage(ctx)!;
+    expect(usage.tokens).toBe(13_010); // display keeps the number
+    expect(usage.basis).toBe("unavailable");
+    expect(usage.staleProducer).toBe(true);
+    expect(usageRefusesApplication(usage)).toBe(true);
+    // Same-model active reader without pricing stays on today's behavior.
+    const same = contextUsage({ ...makeCtx(sm, { tokens: 13_010, prompt: "" }), model: makeModel({ provider: CLAUDE.provider as string, api: CLAUDE.api as string, id: CLAUDE.id }) })!;
+    expect(same.basis).toBeUndefined();
+    expect(usageRefusesApplication(same)).toBe(false);
+  });
+
+  it("bounds possibly-retained thinking per message, not only in the aggregate", () => {
+    const glm: ReaderIdentity = { provider: "zai-anthropic", id: "glm-4.6", api: "anthropic-messages" };
+    const sm = session([
+      say("question"),
+      reply({ provider: glm.provider, api: glm.api, model: glm.id }, { usage: usageOf(1_000, 900, 500) }),
+      say("next"),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(400, 0, 700) }),
+    ]);
+    const pricing = createUsagePricing(glm, new TokenCalibrationStore());
+    const usage = contextUsage(makeCtx(sm, { tokens: 1_510, prompt: "" }), pricing)!;
+    // The SAME per-message weights the window walk uses must carry the upper
+    // bound; otherwise total-sum would invent uncompactable fixed framing.
+    const weights = estimateReaderMessageTokens(pricing.estimate, contextMessageEntries(sm.getBranch()));
+    const sum = weights.reduce((a, b) => a + b, 0);
+    expect(sum).toBeGreaterThanOrEqual(1_000); // glm thinking message priced at its full measured output
+    expect(usage.basis).toBe("reprojected");
+    expect(usage.tokens! - sum).toBeLessThan(1_300); // reserve stays bounded (codex framing), not thinking-sized
+  });
+
+  it("treats a versionless Claude alias as unknown retention, not table-backed", () => {
+    const alias: ReaderIdentity = { provider: "fixture", id: "claude-opus-latest", api: "anthropic-messages" };
+    const anchor = reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(500, 10, 900) });
+    const bounded = session([
+      say("question"),
+      reply({ provider: alias.provider, api: alias.api, model: alias.id }, { usage: usageOf(1_000, 900) }),
+      say("next"),
+      anchor,
+    ]);
+    const pricing = createUsagePricing(alias, new TokenCalibrationStore());
+    const usage = contextUsage(makeCtx(bounded, { tokens: 1_510, prompt: "" }), pricing)!;
+    expect(usage.basis).toBe("reprojected"); // clean metadata bounds retained thinking
+    expect(usage.tokens!).toBeGreaterThan(900);
+    const unboundable = contextUsage(
+      makeCtx(session([
+        say("question"),
+        reply({ provider: alias.provider, api: alias.api, model: alias.id }, {
+          usage: undefined,
+          content: [{ type: "thinking", thinking: "opaque retained reasoning" }, { type: "text", text: "done" }],
+        }),
+        anchor,
+      ]), { tokens: 1_000, prompt: "" }),
+      pricing,
+    )!;
+    expect(unboundable.basis).toBe("uncertain");
+    expect(usageRefusesApplication(unboundable)).toBe(true);
+  });
+
+  it("prices an edited producer prefix on retained content, not invalid metadata", () => {
+    const sm = session([
+      say("question"),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    // Edit the anchor's covered prefix: replay proxies no longer apply to it.
+    sm.appendContextEdit(sm.getBranch().at(-1)!.id, { content: "edited" });
+    const pricing = createUsagePricing(CLAUDE, new TokenCalibrationStore());
+    const usage = contextUsage(makeCtx(sm, { tokens: 13_010, prompt: "" }), pricing)!;
+    expect(usage.basis === "reprojected" || usage.basis === "anchored").toBe(true);
+    // The reserve stays in a sane band: full framing, never the edited thinking.
+    expect(usage.tokens!).toBeLessThan(13_010);
+    expect(usage.tokens!).toBeGreaterThan(100);
+  });
+
+  it("reprices upward when the reader domain prices above the old measurement", () => {
+    const calibration = new TokenCalibrationStore();
+    // Reader prices 3x its default estimate: its body must exceed the old total.
+    calibration.calibrate(100, 300, CLAUDE.provider, CLAUDE.id);
+    const pricing = createUsagePricing(CLAUDE, calibration);
+    const sm = session([
+      say("question " + "w".repeat(60_000)),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(400, 0, 31_000) }),
+      say("follow up " + "w".repeat(60_000)),
+    ]);
+    const usage = contextUsage(makeCtx(sm, { tokens: 31_410, prompt: "" }), pricing)!;
+    expect(usage.basis).toBe("reprojected");
+    expect(usage.tokens!).toBeGreaterThan(60_000); // upward reprice, no old-total ceiling either
+    const fresh = createUsagePricing(CLAUDE, new TokenCalibrationStore());
+    expect(fresh.factors()).not.toBe(pricing.factors()); // snapshot fingerprints differ
   });
 
   it("includes the input capability in the pending reader signature", () => {

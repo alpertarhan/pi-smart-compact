@@ -10,13 +10,15 @@
 
 import { calculateContextTokens, estimateTokens, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
+import { createHash } from "node:crypto";
 import {
   makeReaderTokenEstimator,
-  makeTokenEstimator,
+  thinkingRetentionKnown,
   type ReaderIdentity,
   type TokenCalibrationStore,
   type TokenEstimator,
 } from "../utils/tokens.ts";
+import type { LlmMessage } from "../types.ts";
 
 type Estimate = (message: Parameters<typeof estimateTokens>[0]) => number;
 
@@ -54,6 +56,35 @@ export function anchoredContextTokens(branch: SessionEntry[], estimate: Estimate
 type UsageContext = Partial<Pick<ExtensionContext, "getContextUsage" | "sessionManager" | "model" | "getSystemPrompt">>;
 
 /**
+ * Reader-domain per-message estimates. The active model replays its own
+ * unchanged assistant messages (proxy eligibility), while projected edits and
+ * the live turn boundary change what the wire carries. Every consumer of the
+ * basis — window walk, native split, picker, reserve prefixes — prices through
+ * this one helper so per-message weights and the aggregate can never disagree.
+ */
+export function estimateReaderMessageTokens(
+  readerEstimator: TokenEstimator,
+  msgs: ReturnType<typeof contextMessageEntries>,
+): number[] {
+  // Replay turn accounting follows the WIRE, not human-turn policy: custom and
+  // host-summary messages convert to user items, so every projected user item
+  // starts a new API turn. (Retention protection elsewhere keeps its stricter
+  // human-only boundary.)
+  let lastWireUserItem = -1;
+  for (let index = 0; index < msgs.length; index++) {
+    const message = msgs[index]!.message;
+    if (message && typeof message === "object" && (message as { role?: string }).role === "user") lastWireUserItem = index;
+  }
+  return msgs.map((entry, index) =>
+    readerEstimator.message(entry.message as unknown as LlmMessage, {
+      contextEdited: entry.contextEdited,
+      // No user item anywhere means nothing is provably in the live turn.
+      currentTurn: lastWireUserItem >= 0 && index > lastWireUserItem,
+    }),
+  );
+}
+
+/**
  * Run-scoped pricing for the active reader: one calibration snapshot, factors
  * captured at creation (and at first use per identity) so a mid-run summary
  * calibration can never silently reprice an in-flight basis. The estimator
@@ -64,29 +95,34 @@ export interface UsagePricing {
   /** Reader-domain message price (replay rules included). */
   estimate: TokenEstimator;
   /** Producer-domain price for the model that measured the anchor. */
-  estimateAs: (identity: { provider?: string; model?: string }) => TokenEstimator;
+  estimateAs: (identity: { provider: string; model: string; api?: string }) => TokenEstimator;
   /** Factor fingerprint for memo keying; contains no secrets. */
   factors: () => string;
 }
 
 export function createUsagePricing(reader: ReaderIdentity, calibration: TokenCalibrationStore): UsagePricing {
   const estimate = makeReaderTokenEstimator(reader, calibration);
-  const captured = new Map<string, TokenEstimator>();
-  const factors = [reader.provider, reader.id, calibration.get(reader.provider, reader.id)].join("|");
+  const readerFactor = calibration.get(reader.provider, reader.id);
+  const captured = new Map<string, { estimator: TokenEstimator; factor: number }>();
   return {
     reader,
     estimate,
+    // Producer prefixes price in the PRODUCER's own reader domain (full
+    // provider/api/model identity + replay rules), never generic character
+    // estimates: opaque old reasoning must not leak into the framing reserve.
     estimateAs: identity => {
-      const key = identity.provider + "/" + identity.model;
-      let estimator = captured.get(key);
-      if (!estimator) {
-        // First use freezes this identity's factor for the pricing's lifetime.
-        estimator = makeTokenEstimator(identity.provider, identity.model, calibration);
-        captured.set(key, estimator);
+      const key = identity.provider + "/" + identity.model + "/" + (identity.api ?? "");
+      let entry = captured.get(key);
+      if (!entry) {
+        // First use freezes this identity's factors for the pricing's lifetime.
+        entry = { estimator: makeReaderTokenEstimator({ provider: identity.provider, id: identity.model, api: identity.api }, calibration), factor: calibration.get(identity.provider, identity.model) };
+        captured.set(key, entry);
       }
-      return estimator;
+      return entry.estimator;
     },
-    factors: () => factors + "|" + [...captured.keys()].sort().join(","),
+    // Frozen numeric factors actually used: a mid-run calibration change can
+    // neither reprice this snapshot nor let a new one hit the old result.
+    factors: () => JSON.stringify([readerFactor, ...[...captured.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v.factor)]),
   };
 }
 
@@ -119,21 +155,12 @@ function sameReader(producer: { provider?: string; api?: string; model?: string 
   return producer.provider === reader.provider && producer.api === reader.api && producer.model === reader.id;
 }
 
-/** Verified thinking-retention rules exist for these readers; anything else is unknown. */
-function retentionRulesVerified(reader: ReaderIdentity): boolean {
-  if (reader.api === "openai-responses" || reader.api === "openai-codex-responses" || reader.api === "openai-completions") return true;
-  return reader.api === "anthropic-messages" && reader.id.toLowerCase().startsWith("claude");
-}
-
 /** Bounded single-slot memo: the stale path serializes the branch, and contextUsage is hot. */
-const basisMemo: { key: string; tokens: number; reserve: number; reserveKind: string; basis: ContextUsageBasis } | null = { key: "", tokens: 0, reserve: 0, reserveKind: "", basis: { basis: "measured" } };
-let basisMemoSlot: { key: string; value: NonNullable<typeof basisMemo> } | null = null;
+let basisMemoSlot: { key: string; value: { tokens: number; reserve: number; reserveKind: string; basis: ContextUsageBasis } } | null = null;
 
 function hashFingerprint(text: string | undefined): string {
   if (text === undefined) return "none";
-  let hash = 5381;
-  for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
-  return hash.toString(36) + ":" + text.length;
+  return createHash("sha256").update(text).digest("hex");
 }
 
 /**
@@ -150,9 +177,20 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
     const branch = ctx.sessionManager.getBranch();
     const anchor = branch.findLastIndex(entry => measuredTokens(entry) > 0);
     const producer = anchor >= 0 ? { ...measuredProducerIdentity((branch[anchor] as { message?: unknown }).message), measuredTokens: measuredTokens(branch[anchor]) } : undefined;
-    const stale = !!pricing && !!producer?.provider && !sameReader(producer, pricing.reader);
-    if (!edited && !stale) {
+    const activeModel = ctx.model as { provider?: string; api?: string; id?: string } | undefined;
+    // Staleness is proven from identity alone — even WITHOUT run pricing, a
+    // measured figure from a different model must never masquerade as a current
+    // reader measurement for pending/attention/pressure consumers.
+    const provablyStale = !!producer?.provider
+      && (!!pricing ? !sameReader(producer, pricing.reader) : !!activeModel?.provider
+        && (producer.provider !== activeModel.provider || producer.api !== activeModel.api || producer.model !== activeModel.id));
+    const stale = !!pricing && provablyStale;
+    if (!edited && !provablyStale) {
       return usage;
+    }
+    if (provablyStale && !pricing) {
+      // Labeled but unpriced: display paths keep the number, apply gates refuse.
+      return { ...usage, basis: "unavailable" as const, staleProducer: true, producerEvidence: producer };
     }
     if (!stale) {
       // Same-reader (or legacy unknown-producer) paths keep today's behavior exactly.
@@ -165,9 +203,13 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
     if (!pricing || anchor < 0 || !producer?.provider) return { ...usage, basis: "unavailable" as const, staleProducer: true, producerEvidence: producer };
 
     // Stale measurement: reprice conservatively in the active reader's domain.
+    // The producer's factors are primed BEFORE the key so the memo can never
+    // compare against a result computed under different captured factors.
+    const producerEstimator = pricing.estimateAs({ provider: producer.provider, api: producer.api, model: producer.model! });
     const memoKey = JSON.stringify([
-      ctx.sessionManager.getLeafEntry?.()?.id ?? "leaf",
-      (branch[anchor] as { id?: string }).id, pricing.reader.provider, pricing.reader.id, pricing.reader.api, pricing.reader.input ?? null,
+      ctx.sessionManager.getLeafEntry?.()?.id ?? "leaf", branch.length,
+      (branch[anchor] as { id?: string }).id, producer.measuredTokens,
+      pricing.reader.provider, pricing.reader.id, pricing.reader.api, pricing.reader.input ?? null,
       usage.contextWindow, hashFingerprint(ctx.getSystemPrompt?.()), pricing.factors(),
     ]);
     if (basisMemoSlot?.key === memoKey) {
@@ -178,11 +220,11 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
 
     const messages = contextMessageEntries(branch);
     const anchorPrefix = contextMessageEntries(branch.slice(0, anchor + 1));
-    // Known-domain framing reserve: what the producer's own prompt carried beyond its message
-    // estimates, priced entirely in the producer's units. A clamped zero is NOT proof of zero
+    // Known-domain framing reserve: what the producer's own prompt carried beyond its
+    // REPLAY-AWARE message pricing (its own reader domain, live-turn and edit options),
+    // priced entirely in the producer's units. A clamped zero is NOT proof of zero
     // framing — fall through to same-reader or visible-system evidence, else refuse.
-    const producerEstimator = pricing.estimateAs({ provider: producer.provider, model: producer.model });
-    const producerBody = anchorPrefix.reduce((sum, entry) => sum + producerEstimator.message(entry.message as unknown as import("../types.ts").LlmMessage), 0);
+    const producerBody = estimateReaderMessageTokens(producerEstimator, anchorPrefix).reduce((a, b) => a + b, 0);
     let reserve = Math.max(0, producer.measuredTokens - producerBody);
     let reserveKind = reserve > 0 ? "estimated-producer" : "none";
     if (reserve <= 0) {
@@ -193,8 +235,7 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
         const identity = measuredProducerIdentity((entry as { message?: unknown }).message);
         if (!identity.provider || !sameReader(identity, pricing.reader)) continue;
         const ownPrefix = contextMessageEntries(branch.slice(0, i + 1));
-        const ownEstimator = pricing.estimateAs({ provider: identity.provider, model: identity.model });
-        const ownBody = ownPrefix.reduce((sum, e) => sum + ownEstimator.message(e.message as unknown as import("../types.ts").LlmMessage), 0);
+        const ownBody = estimateReaderMessageTokens(pricing.estimate, ownPrefix).reduce((a, b) => a + b, 0);
         const ownResidual = measuredTokens(entry) - ownBody;
         if (ownResidual > 0) { reserve = ownResidual; reserveKind = "same-reader"; }
         break;
@@ -209,24 +250,20 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
     let basis: ContextUsageBasis["basis"] = "reprojected";
     if (reserve <= 0 || reserveKind === "partial-visible-system") basis = "uncertain";
 
-    let body = messages.reduce((sum, entry) => sum + pricing.estimate.message(entry.message as unknown as import("../types.ts").LlmMessage), 0);
-    if (!retentionRulesVerified(pricing.reader)) {
-      // Unknown retention rules: output-reasoning is only a non-reasoning LOWER bound. Bound the
-      // possibly-retained thinking with the measured reasoning of clean same-model messages; a
-      // thinking message without valid metadata is unboundable — insufficient confidence.
-      for (const entry of messages) {
-        const message = entry.message as { role?: string; provider?: string; api?: string; model?: string; usage?: { output?: unknown; reasoning?: unknown } };
+    // Reader body through the SAME options-correct per-message pricing the window
+    // walk and picker use, so per-message weights and the aggregate never disagree.
+    // Unknown-retention readers already price same-model thinking at its measured
+    // upper bound inside the estimator; thinking WITHOUT valid metadata is
+    // unboundable — insufficient confidence, not zero unknown overhead.
+    const readerWeights = estimateReaderMessageTokens(pricing.estimate, messages);
+    if (basis !== "uncertain" && !thinkingRetentionKnown({ id: pricing.reader.id, api: pricing.reader.api })) {
+      for (let i = 0; i < messages.length; i++) {
+        const message = messages[i]!.message as { role?: string; provider?: string; model?: string; usage?: unknown };
         if (message?.role !== "assistant" || message.provider !== pricing.reader.provider || message.model !== pricing.reader.id) continue;
-        const reasoning = message.usage?.reasoning;
-        const output = message.usage?.output;
-        if (typeof reasoning === "number" && Number.isFinite(reasoning) && reasoning > 0) {
-          body += reasoning;
-        } else if (hasThinking(message)) {
-          basis = "uncertain"; // unboundable retained thinking
-        }
+        if (hasThinking(message) && !validThinkingUsage(message.usage)) basis = "uncertain";
       }
     }
-    const tokens = Math.round(body + reserve);
+    const tokens = Math.round(readerWeights.reduce((a, b) => a + b, 0) + reserve);
     const value = { key: memoKey, tokens, reserve: Math.round(reserve), reserveKind, basis: { basis, staleProducer: true, producerEvidence: producer } as ContextUsageBasis };
     basisMemoSlot = { key: memoKey, value };
     return { ...usage, tokens, percent: usage.contextWindow > 0 ? tokens / usage.contextWindow * 100 : usage.percent,
@@ -240,4 +277,12 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
 function hasThinking(message: unknown): boolean {
   const content = (message as { content?: unknown }).content;
   return Array.isArray(content) && content.some(block => block && typeof block === "object" && (block as { type?: string }).type === "thinking");
+}
+
+/** A finite 0<=reasoning<=output subset; anything else cannot bound retained thinking. */
+function validThinkingUsage(usage: unknown): boolean {
+  const u = usage as { output?: unknown; reasoning?: unknown } | undefined;
+  return typeof u?.output === "number" && Number.isFinite(u.output)
+    && typeof u.reasoning === "number" && Number.isFinite(u.reasoning)
+    && u.reasoning >= 0 && u.reasoning <= u.output;
 }

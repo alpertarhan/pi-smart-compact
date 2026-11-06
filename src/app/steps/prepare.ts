@@ -50,7 +50,7 @@ export async function prepareRun(rc: RcBase): Promise<PreparedRc> {
  const usagePricing = createUsagePricing(
   rc.ctx.model
    ? { provider: rc.ctx.model.provider, id: rc.ctx.model.id, api: rc.ctx.model.api, input: rc.ctx.model.input }
-   : { provider: rc.summaryModel.provider, id: rc.summaryModel.id, api: rc.summaryModel.api },
+   : { provider: rc.summaryModel.provider, id: rc.summaryModel.id, api: rc.summaryModel.api, input: rc.summaryModel.input },
   rc.services.tokenCalibration,
  );
  rc.services.thinkingLevels = {
