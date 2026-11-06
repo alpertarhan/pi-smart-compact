@@ -28,7 +28,7 @@ import { findSection } from "../src/domain/summary-parse.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
 import { createServices } from "../src/infra/services.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
-import { PROFILES } from "../src/constants.ts";
+import { PROFILES, VERSION } from "../src/constants.ts";
 import type { TieredRc } from "../src/app/run-context.ts";
 import type { CompactionState, LlmMessage, OpenLoop } from "../src/types.ts";
 import { renderContinuityCapsule, saveCompactionState } from "../src/utils/state.ts";
@@ -129,7 +129,7 @@ describe("custom-message provenance", () => {
     const stale = extractStructured(legacy, PROFILES.balanced);
     const selection = selectCachedExtraction({
       llmMessages: messages, profileCfg: PROFILES.balanced, currentEntryIds: ids, currentKeptEntryIds: ids,
-      cachedExt: { lastMessageIndex: legacy.length - 1, extraction: stale, messageCount: legacy.length, timestamp: 1, entryIds: ids, keptEntryIds: ids, messagePrefixHash: hashMessages(legacy) },
+      cachedExt: { lastMessageIndex: legacy.length - 1, extraction: stale, messageCount: legacy.length, timestamp: 1, generation: VERSION, entryIds: ids, keptEntryIds: ids, messagePrefixHash: hashMessages(legacy) },
     });
     expect(selection.missReason).toBe("content-prefix-changed");
     userFactsOnly(selection.extraction);
@@ -309,7 +309,7 @@ describe("facts carried from before provenance", () => {
     const selection = selectCachedExtraction({
       llmMessages: messages, profileCfg: PROFILES.balanced, currentEntryIds: ids, currentKeptEntryIds: ids,
       cachedExt: { lastMessageIndex: prefix.length - 1, extraction: extractStructured(prefix, PROFILES.balanced), messageCount: prefix.length,
-        timestamp: 1, entryIds: prefixIds, keptEntryIds: prefixIds, messagePrefixHash: hashMessages(prefix) },
+        timestamp: 1, generation: VERSION, entryIds: prefixIds, keptEntryIds: prefixIds, messagePrefixHash: hashMessages(prefix) },
     });
     expect(selection.cache).toBe("incremental");
     const texts = selection.extraction.constraints.map(item => item.text);

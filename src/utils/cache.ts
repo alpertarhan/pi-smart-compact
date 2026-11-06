@@ -52,6 +52,7 @@ import {
  ERROR_RETRY_WINDOW,
  ERROR_RESOLVE_WINDOW,
  EXTRACTION_LIMITS,
+ VERSION,
 } from "../constants.ts";
 import { buildEntryIdFingerprint, hashMessages } from "./id-fingerprint.ts";
 import {
@@ -353,6 +354,7 @@ export function saveCachedExtraction(
    extraction,
    messageCount: msgCount,
    timestamp: Date.now(),
+   generation: VERSION,
    messagePrefixHash: messages ? hashMessages(messages) : undefined,
    firstEntryId,
    lastEntryId,
