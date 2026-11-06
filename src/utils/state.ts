@@ -365,7 +365,7 @@ export function upsertContinuityOverride(
  * too: the gate can never accept both.
  */
 export function retireSupersededConstraints(
- constraints: ReadonlyArray<{ text: string; index?: number; confidence?: number }>,
+ constraints: ReadonlyArray<{ text: string; index?: number; confidence?: number; origin?: "human" }>,
  msgs: LlmMessage[],
  overrides: ContinuityOverride[],
 ): ContinuityOverride[] {
@@ -379,12 +379,45 @@ export function retireSupersededConstraints(
   if (isNonLiveConstraintText(text) || isInjectedMessage(msgs[i], text)) continue;
   userTexts.push({ index: i, text: text.slice(0, TRUNC.MESSAGE) });
  }
+ // Callers pass the union of current extraction and previous-state copies.
+ // The newest current-window occurrence of a rule is its effective
+ // position: an equal older copy (a state record without an index, a
+ // carried summary copy, a cached duplicate) must not let an earlier
+ // release retire a rule the user has since reasserted.
+ const latestIndexOf = new Map<string, number>();
+ for (const constraint of constraints) {
+  if (constraint.index === undefined) continue;
+  const key = normalizeFactKey(constraint.text);
+  const prior = latestIndexOf.get(key);
+  if (prior === undefined || constraint.index > prior)
+   latestIndexOf.set(key, constraint.index);
+ }
+ // A genuinely new raw human reassertion revives a rule an older override
+ // retired. Carried and cached copies never clear an override alone: fresh
+ // assertion means typed in this window, not historical human proof.
+ const reassertedKeys = new Set(
+  constraints
+   .filter((item) => item.origin === "human" && item.index !== undefined)
+   .map((item) => normalizeFactKey(item.text)),
+ );
+ let next = reassertedKeys.size
+  ? overrides.filter(
+    (item) =>
+     !(
+      item.kind === "constraint" &&
+      item.status !== "active" &&
+      reassertedKeys.has(item.summaryKey)
+     ),
+   )
+  : overrides;
  // The gate's evidence threshold: only rules it requires can block it.
  const required = (item: { confidence?: number }) => (item.confidence ?? 1) >= 0.8;
- let next = overrides;
  for (const [position, constraint] of constraints.entries()) {
   // A state-carried constraint has no index: every current message is newer.
-  const from = constraint.index ?? -1;
+  const from =
+   latestIndexOf.get(normalizeFactKey(constraint.text)) ??
+   constraint.index ??
+   -1;
   const release =
    userTexts.find(
     (msg) =>

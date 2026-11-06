@@ -27,7 +27,7 @@ import { SecretScrubber } from "../src/domain/scrub.ts";
 import { deriveProjectIdFromCwd } from "../src/utils/fingerprint.ts";
 import { EXTRACTION_LIMITS, PROFILES, VERSION } from "../src/constants.ts";
 import { normalizeFactKey } from "../src/utils/helpers.ts";
-import type { CompactionState, LlmMessage, OpenLoop, StructuredExtraction } from "../src/types.ts";
+import type { CompactionState, ContinuityOverride, LlmMessage, OpenLoop, StructuredExtraction } from "../src/types.ts";
 
 const RULE = "Never force-push the shared release branch.";
 const RELEASED_RULE = "Do not push or open a PR yet; I want to test slice 2 locally first.";
@@ -185,6 +185,57 @@ describe("human-origin continuity across compactions", () => {
     const postGate = verifySummary(missing, extractStructured(thirdWindow, PROFILES.balanced), third.previousState, { factOverrides: third.factOverrides });
     expect(postGate.ok).toBe(false);
     expect(postGate.gaps.some((gap) => gap.kind === "missing-constraint")).toBe(true);
+  });
+
+  it("keeps a released-then-reasserted rule active through the real continuity load", () => {
+    const { save, reload } = harness();
+    save(savedState({
+      constraints: [{ id: "constraint-1", text: RELEASED_RULE, category: "prohibition", confidence: 0.8 }],
+    }));
+    // The saved copy predates the window; the user releases, then re-types it.
+    const continuity = reload([carriedSummary(RELEASED_RULE), user(RELEASE), user(RELEASED_RULE)]);
+    expect(
+      continuity.factOverrides.filter(
+        (item) => item.kind === "constraint" && item.status !== "active",
+      ),
+    ).toEqual([]);
+    const active = (state: CompactionState) =>
+      state.constraints.some((item) => normalizeFactKey(item.text) === normalizeFactKey(RELEASED_RULE));
+    expect(active(continuity.previousState!)).toBe(true);
+    expect(active(continuity.verificationContinuity)).toBe(true);
+    expect(continuity.continuity).toContain("- Constraint: " + RELEASED_RULE);
+  });
+
+  it("a fresh raw reassertion revives a released rule; a summary copy alone never does", () => {
+    const { save, reload } = harness();
+    const retired: ContinuityOverride = {
+      id: "constraint-override-1",
+      kind: "constraint",
+      summaryKey: normalizeFactKey(RELEASED_RULE),
+      status: "superseded",
+      replacement: RELEASE,
+      updatedAt: Date.now(),
+    };
+    save(savedState({
+      constraints: [{ id: "constraint-1", text: RELEASED_RULE, category: "prohibition", confidence: 0.8 }],
+      factOverrides: [retired],
+    }));
+    // Carried summary copy only: the release stands, nothing resurrects.
+    const summaryOnly = reload([carriedSummary(RELEASED_RULE), user(GOAL)]);
+    expect(summaryOnly.verificationContinuity.constraints.map((item) => item.text)).not.toContain(RELEASED_RULE);
+    expect(
+      summaryOnly.factOverrides.some(
+        (item) => item.summaryKey === normalizeFactKey(RELEASED_RULE) && item.status === "superseded",
+      ),
+    ).toBe(true);
+    // A genuinely new raw reassertion clears the old override and revives the rule.
+    const reasserted = reload([carriedSummary(RELEASED_RULE), user(GOAL), user(RELEASED_RULE)]);
+    expect(
+      reasserted.factOverrides.some((item) => item.summaryKey === normalizeFactKey(RELEASED_RULE)),
+    ).toBe(false);
+    expect(reasserted.verificationContinuity.constraints).toContainEqual(
+      expect.objectContaining({ text: RELEASED_RULE, origin: "human" }),
+    );
   });
 
   it("drops a legacy saved rule without origin exactly as before", () => {
@@ -351,5 +402,38 @@ describe("origin across equal copies in cache and state merges", () => {
     const rule = extraction.constraints.find((item) => item.text === RELEASED_RULE);
     expect(rule).toMatchObject({ origin: "human", index: 2 });
     expect(retireSupersededConstraints(extraction.constraints, messages, [])).toEqual([]);
+  });
+
+  it("union copies cannot let a previous unindexed record cancel a later human reassertion", () => {
+    // loadExtractionContinuity passes current extraction records plus equal
+    // previous-state copies (no index) to retirement in one union.
+    const messages = [user(RELEASE), user(RELEASED_RULE)];
+    const extraction = extractStructured(messages, PROFILES.balanced);
+    expect(
+      retireSupersededConstraints(
+        [...extraction.constraints, { text: RELEASED_RULE, confidence: 0.8 }],
+        messages,
+        [],
+      ),
+    ).toEqual([]);
+  });
+
+  it("warm incremental merged copies cannot cancel the newest raw author", () => {
+    const messages = [carriedSummary(RELEASED_RULE), user(RELEASE), user(RELEASED_RULE)];
+    const base = extractStructured(messages.slice(0, 1), PROFILES.balanced);
+    const merged = mergeExtractions(
+      base,
+      extractStructured(messages.slice(1), PROFILES.balanced),
+      1,
+      messages.slice(1),
+      new Map(),
+    );
+    expect(
+      retireSupersededConstraints(
+        [...merged.constraints, { text: RELEASED_RULE, confidence: 0.8 }],
+        messages,
+        [],
+      ),
+    ).toEqual([]);
   });
 });

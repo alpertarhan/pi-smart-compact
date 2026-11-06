@@ -91,10 +91,16 @@ export function loadExtractionContinuity(
   openLoops: saved.openLoops.filter(loop => loop.type === "bugfix" || !isInjectedCarried(loop.summary)),
  };
  // A released user constraint must not return through an older snapshot.
+ // Extraction copies carry origin so a fresh raw reassertion can revive a
+ // rule; previous-state copies never do (no current-window index).
  const factOverrides = retireSupersededConstraints([
-  ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence })),
+  ...extraction.constraints.map(item => ({ text: item.text, index: item.index, confidence: item.confidence, ...(item.origin ? { origin: item.origin } : {}) })),
   ...(previousState?.constraints ?? []).map(item => ({ text: item.text, confidence: item.confidence })),
  ], rc.llmMessages, previousState?.factOverrides ?? []);
+ // The run's override result replaces the snapshot's list: an override the
+ // window cleared (fresh raw reassertion) must not return through the
+ // previous-state fallbacks in the preview and the state merge.
+ if (previousState) previousState.factOverrides = factOverrides;
  // Synthesis and both verification gates must agree on the required evidence;
  // the state step's merge is the authority, so preview it here.
  const verificationContinuity = previewMergedContinuity(extraction, previousState, factOverrides);
