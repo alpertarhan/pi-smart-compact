@@ -18,7 +18,7 @@ import {
 	CARRIED_GOAL_LABEL,
 } from "../src/domain/summary-parse.ts";
 import { createServices } from "../src/infra/services.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeTokenEstimator, makeReaderTokenEstimator } from "../src/utils/tokens.ts";
 import type {
 	CompactionState,
 	GoalEvidence,
@@ -374,6 +374,12 @@ describe("state persistence seam (buildState)", () => {
 			config: { pinPaths: [] },
 			services,
 			estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
+			// K's reader-domain pricing: buildState prices the final summary in the
+			// active reader's domain (house fixture pattern from state-step-continuity).
+			readerEstimator: makeReaderTokenEstimator(
+				{ provider: "openai", id: "test", api: "openai-responses" },
+				services.tokenCalibration,
+			),
 			profile: "balanced",
 			mode: "balanced",
 			method: "heuristic",
