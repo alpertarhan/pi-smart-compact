@@ -757,6 +757,9 @@ export interface CachedExtraction {
  keptEntryIdsFp?: EntryIdFingerprint;
  /** Hash of the exact pruned message domain; IDs alone do not capture context edits. */
  messagePrefixHash?: string;
+ /** Package VERSION that wrote this cache. Missing/old/malformed stamps are
+  *  cache misses: fingerprints prove the message domain, not the extractor. */
+ generation?: string;
 }
 
 /** An open loop — unresolved task detected during compaction */

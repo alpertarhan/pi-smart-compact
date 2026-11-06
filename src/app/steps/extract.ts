@@ -62,7 +62,7 @@ import {
  boundedBranchLineageIds,
  branchEntryIds,
 } from "../../infra/session-identity.ts";
-import { EXTRACTION_LIMITS } from "../../constants.ts";
+import { EXTRACTION_LIMITS, VERSION } from "../../constants.ts";
 
 /** Shared continuity input; previews must request a read-only state load. */
 export function loadExtractionContinuity(
@@ -112,36 +112,44 @@ export function selectCachedExtraction(input: {
  let cacheUsable = false;
  let cacheExact = false;
  if (cachedExt) {
-  const hasNewFp = !!(cachedExt.keptEntryIdsFp && cachedExt.entryIdsFp);
-  const hasLegacy = !!(cachedExt.keptEntryIds && cachedExt.keptEntryIds.length > 0);
-  const branchPrefixMatch = hasNewFp ? isPrefixOf(cachedExt.entryIdsFp, currentEntryIds) : legacyPrefixMatch(cachedExt.entryIds, currentEntryIds);
-  const prunedPrefixMatch = hasNewFp ? isPrefixOf(cachedExt.keptEntryIdsFp, currentKeptEntryIds) : legacyPrefixMatch(cachedExt.keptEntryIds, currentKeptEntryIds);
-  const keptCount = hasNewFp ? (cachedExt.keptEntryIdsFp?.count ?? 0) : (cachedExt.keptEntryIds?.length ?? 0);
-  if (hasNewFp || hasLegacy) {
-   const boundedCacheShape =
-    cachedExt.extraction.modifiedFiles.length <= EXTRACTION_LIMITS.MODIFIED_FILES &&
-    (cachedExt.extraction.referencedFiles?.length ?? 0) <= EXTRACTION_LIMITS.REFERENCED_FILES &&
-    cachedExt.extraction.readFiles.length <= EXTRACTION_LIMITS.READ_FILES &&
-    cachedExt.extraction.deletedFiles.length <= EXTRACTION_LIMITS.DELETED_FILES &&
-    cachedExt.extraction.errors.length <= EXTRACTION_LIMITS.ERRORS &&
-    cachedExt.extraction.decisions.length <= EXTRACTION_LIMITS.DECISIONS &&
-    cachedExt.extraction.constraints.length <= EXTRACTION_LIMITS.CONSTRAINTS &&
-    cachedExt.extraction.topics.length <= EXTRACTION_LIMITS.TOPICS &&
-    cachedExt.extraction.timeline.length <= EXTRACTION_LIMITS.TIMELINE &&
-    (cachedExt.extraction.mediaAttachments?.length ?? 0) <= EXTRACTION_LIMITS.MEDIA_ATTACHMENTS;
-   cacheUsable = branchPrefixMatch && prunedPrefixMatch && boundedCacheShape &&
-    cachedExt.messageCount === keptCount && cachedExt.messageCount <= llmMessages.length;
-   cacheExact = cacheUsable && cachedExt.messageCount === llmMessages.length;
-   if (!cacheUsable) {
-    missReason = branchPrefixMatch ? prunedPrefixMatch ? boundedCacheShape
-     ? cachedExt.messageCount === keptCount ? "cache-domain-ahead" : "cache-shape-mismatch"
-     : "cache-evidence-unbounded" : "pruned-prefix-changed" : "entry-prefix-mismatch";
-   }
-   if (cacheUsable && (!cachedExt.messagePrefixHash || cachedExt.messagePrefixHash !== hashMessages(llmMessages, cachedExt.messageCount))) {
-    cacheUsable = false; cacheExact = false; missReason = "content-prefix-changed";
-   }
+  if (cachedExt.generation !== VERSION) {
+   // A cache written by another extractor build is not proof about this
+   // algorithm's facts, even when every fingerprint matches: repaired
+   // mining defects must not resurrect through old caches. Fail closed for
+   // missing, old and malformed stamps; re-extract from current messages.
+   missReason = "stale-extractor-generation";
   } else {
-   missReason = "legacy-no-kept-entryids";
+   const hasNewFp = !!(cachedExt.keptEntryIdsFp && cachedExt.entryIdsFp);
+   const hasLegacy = !!(cachedExt.keptEntryIds && cachedExt.keptEntryIds.length > 0);
+   const branchPrefixMatch = hasNewFp ? isPrefixOf(cachedExt.entryIdsFp, currentEntryIds) : legacyPrefixMatch(cachedExt.entryIds, currentEntryIds);
+   const prunedPrefixMatch = hasNewFp ? isPrefixOf(cachedExt.keptEntryIdsFp, currentKeptEntryIds) : legacyPrefixMatch(cachedExt.keptEntryIds, currentKeptEntryIds);
+   const keptCount = hasNewFp ? (cachedExt.keptEntryIdsFp?.count ?? 0) : (cachedExt.keptEntryIds?.length ?? 0);
+   if (hasNewFp || hasLegacy) {
+    const boundedCacheShape =
+     cachedExt.extraction.modifiedFiles.length <= EXTRACTION_LIMITS.MODIFIED_FILES &&
+     (cachedExt.extraction.referencedFiles?.length ?? 0) <= EXTRACTION_LIMITS.REFERENCED_FILES &&
+     cachedExt.extraction.readFiles.length <= EXTRACTION_LIMITS.READ_FILES &&
+     cachedExt.extraction.deletedFiles.length <= EXTRACTION_LIMITS.DELETED_FILES &&
+     cachedExt.extraction.errors.length <= EXTRACTION_LIMITS.ERRORS &&
+     cachedExt.extraction.decisions.length <= EXTRACTION_LIMITS.DECISIONS &&
+     cachedExt.extraction.constraints.length <= EXTRACTION_LIMITS.CONSTRAINTS &&
+     cachedExt.extraction.topics.length <= EXTRACTION_LIMITS.TOPICS &&
+     cachedExt.extraction.timeline.length <= EXTRACTION_LIMITS.TIMELINE &&
+     (cachedExt.extraction.mediaAttachments?.length ?? 0) <= EXTRACTION_LIMITS.MEDIA_ATTACHMENTS;
+    cacheUsable = branchPrefixMatch && prunedPrefixMatch && boundedCacheShape &&
+     cachedExt.messageCount === keptCount && cachedExt.messageCount <= llmMessages.length;
+    cacheExact = cacheUsable && cachedExt.messageCount === llmMessages.length;
+    if (!cacheUsable) {
+     missReason = branchPrefixMatch ? prunedPrefixMatch ? boundedCacheShape
+      ? cachedExt.messageCount === keptCount ? "cache-domain-ahead" : "cache-shape-mismatch"
+      : "cache-evidence-unbounded" : "pruned-prefix-changed" : "entry-prefix-mismatch";
+    }
+    if (cacheUsable && (!cachedExt.messagePrefixHash || cachedExt.messagePrefixHash !== hashMessages(llmMessages, cachedExt.messageCount))) {
+     cacheUsable = false; cacheExact = false; missReason = "content-prefix-changed";
+    }
+   } else {
+    missReason = "legacy-no-kept-entryids";
+   }
   }
  }
  if (!cacheUsable || !cachedExt) {

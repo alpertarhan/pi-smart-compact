@@ -1001,7 +1001,7 @@ metrics records).
 | Continuity ledger | `utils/state.ts` | prior facts carry forward until positive resolution evidence or an explicit override; goal shifts become non-destructive breadcrumbs |
 | Cross-compaction delta | `utils/state.ts` | "Changes Since Last Compaction" section |
 | Native continuity handoff | `app/native-continuity-bridge.ts` | one-shot, bounded, keyed by project + session + branch head |
-| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | bounded entry-ID fingerprint plus projected/recovered content hash; reuse requires both prefix proofs |
+| Incremental extraction cache | `utils/cache.ts` + `utils/id-fingerprint.ts` | bounded entry-ID fingerprint plus projected/recovered content hash and the writing build's package version; reuse requires both prefix proofs and a matching extractor generation |
 | Synthesis cache | `infra/synthesis-cache.ts` | key includes normalized focus, route, mode, profile limits, run-level call/input/latency limits and reasoning |
 | Session-log recovery | `utils/session-log.ts` | async bounded-memory JSONL scan; recovers only truncated, unedited messages by entry ID without resurrecting intentional replacements or omissions |
 | Project fingerprint | `utils/fingerprint.ts` | locked read/merge/write; bounded language/framework/key dirs; `sessionCount` tracks distinct hashed sessions |
