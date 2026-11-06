@@ -306,7 +306,9 @@ describe("owned pair verification and repair", () => {
 		const summary = assembleFallback([], makeExtraction({ mainGoal: direction }), {}, 6_000, null, [], pairGe)
 			.replace(LATEST_DIRECTION_LABEL + direction, LATEST_DIRECTION_LABEL + "Write release notes");
 		const result = verifySummary(summary, makeExtraction({ mainGoal: direction }), null, { goalEvidence: pairGe });
-		expect(result.gaps.some((g) => g.kind === "missing-goal")).toBe(true);
+		// Exactly ONE missing-goal gap: shape violation and missing coverage are
+		// the same defect (duplicate -12/-24 was the reviewed bug).
+		expect(result.gaps.filter((g) => g.kind === "missing-goal").length).toBe(1);
 	});
 
 	it("a genuinely wrong current direction still fails contradiction", () => {

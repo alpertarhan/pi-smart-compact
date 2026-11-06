@@ -1825,14 +1825,17 @@ function verifySemanticCoverage(
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
-   if (normalizedTarget !== canonicalPair) {
-    addGap(accumulator, { kind: "missing-goal", goal: ge.direction }, 12);
-   }
    const activeGoalText = goalTarget
     .split(/\r?\n/)
     .filter((line) => line.trim() !== expectedPrior)
     .join("\n");
-   if (!hasSemanticEvidence(ge.direction, activeGoalText)) {
+   // One failure, one gap: a non-canonical shape and missing semantic coverage
+   // of the current line are the same defect (the trusted pair must be
+   // re-rendered), so they add a single missing-goal penalty.
+   if (
+    normalizedTarget !== canonicalPair ||
+    !hasSemanticEvidence(ge.direction, activeGoalText)
+   ) {
     addGap(accumulator, { kind: "missing-goal", goal: ge.direction }, 12);
    }
    if (
