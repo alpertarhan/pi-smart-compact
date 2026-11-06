@@ -1,12 +1,12 @@
 /** Session-scoped pending compaction store with TTL and bounded memory. */
 
-import { contextUsage } from "./context-usage.ts";
+import { contextUsage, estimateReaderMessageTokens } from "./context-usage.ts";
+import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { MIN_COMPACTION_SAVING_RATIO } from "../constants.ts";
 import { exceedsYieldTarget } from "../domain/yield-gate.ts";
 import type { PendingCompaction, SessionMessageEntry } from "../types.ts";
-import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { branchEntryIds, resolveSessionId, type SessionIdentityContext } from "../infra/session-identity.ts";
 
 export function fingerprintContext(messages: readonly SessionMessageEntry[]): NonNullable<PendingCompaction["contextSnapshot"]> {
@@ -30,14 +30,27 @@ export function pendingMatchesBranch(pending: PendingCompaction, branch: readonl
 export function readerSignature(ctx: Pick<ExtensionContext, "model"> & Partial<Pick<ExtensionContext, "getSystemPrompt">>): string | undefined {
   const model = ctx.model;
   const prompt = ctx.getSystemPrompt?.();
-  return model && JSON.stringify([model.provider, model.id, model.api, model.baseUrl, model.contextWindow, model.maxTokens,
+  // Input capability is part of the priced replay (text-only readers send image
+  // placeholders, vision readers send images); a same-id capability flip must invalidate.
+  return model && JSON.stringify([model.provider, model.id, model.api, model.baseUrl, model.contextWindow, model.maxTokens, model.input ?? null,
     prompt === undefined ? null : createHash("sha256").update(prompt).digest("hex")]);
+}
+
+/** An uncertain or provably-stale-unpriced basis never authorizes application. */
+export function usageRefusesApplication(usage: { basis?: string; staleProducer?: boolean } | undefined): boolean {
+  return usage?.basis === "uncertain" || (usage?.basis === "unavailable" && !!usage.staleProducer);
 }
 
 /** Shared final gate for foreground and background candidates. Missing proof fails closed. */
 export function revalidatePending(pending: PendingCompaction, ctx: ExtensionContext, reserveTokens = 0): PendingCompaction | null {
   const model = ctx.model;
-  const tokens = contextUsage(ctx)?.tokens;
+  // A staged run carries its immutable pricing: reprice a proven-stale measurement
+  // in the SAME domain instead of waiting for the new reader's first reply.
+  const usage = contextUsage(ctx, pending.usagePricing);
+  const tokens = usage?.tokens;
+  // Insufficient basis proof fails closed: an uncertain reprojected basis, or a
+  // stale measurement nobody could reprice, must never authorize application.
+  if (usageRefusesApplication(usage)) return null;
   const estimatedAfter = pending.details.estimatedAfterTokens;
   if (!model || !pending.readerSignature || pending.readerSignature !== readerSignature(ctx)
     || pending.sessionId !== resolveSessionId(ctx) || !pendingMatchesBranch(pending, ctx.sessionManager.getBranch())
@@ -45,7 +58,46 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
     || !Number.isFinite(pending.tokensBefore) || pending.tokensBefore <= 0
     || typeof estimatedAfter !== "number" || !Number.isFinite(estimatedAfter) || estimatedAfter < 0
     || !Number.isFinite(model.contextWindow) || model.contextWindow <= 0 || !Number.isFinite(reserveTokens)) return null;
-  const growth = Math.max(0, tokens - pending.tokensBefore);
+  // Growth accounting with a carried pricing snapshot: recompute the CURRENT
+  // kept-tail with the frozen estimator and grow the estimate by exactly the
+  // append-only tail delta. A fresh measurement that CORRECTS an overestimated
+  // old prefix must never mask real retained-tail growth (and tail removal
+  // cannot shrink the estimate below what was staged).
+  let growth: number;
+  let currentTail: number | null = null;
+  if (pending.usagePricing) {
+    // Like-for-like RAW tails: weights are computed on each FULL message list
+    // (live-turn options come from full wire context) and sliced numerically at
+    // the kept boundary. The staged baseline derives from the fingerprinted
+    // snapshot prefix — never from the planner-normalized retainedTailTokens —
+    // and advances on success so revalidating a returned candidate never
+    // charges the same append twice.
+    // Proof gap fails closed: pricing without a fingerprinted snapshot cannot
+    // establish the staged baseline, so tail growth would silently read as 0
+    // and reintroduce the masked retained-tail bypass.
+    if (!pending.contextSnapshot) return null;
+    const msgs = contextMessageEntries(ctx.sessionManager.getBranch());
+    const cut = msgs.findIndex(entry => entry.id === pending.firstKeptEntryId);
+    const staged = msgs.slice(0, pending.contextSnapshot.messageCount);
+    const stagedCut = staged.findIndex(entry => entry.id === pending.firstKeptEntryId);
+    if (cut < 0 || stagedCut < 0) return null; // kept boundary unverifiable: insufficient proof
+    const currentWeights = estimateReaderMessageTokens(pending.usagePricing.estimate, msgs);
+    const stagedWeights = estimateReaderMessageTokens(pending.usagePricing.estimate, staged);
+    currentTail = currentWeights.slice(cut).reduce((sum, value) => sum + value, 0);
+    const stagedRawTail = stagedWeights.slice(stagedCut).reduce((sum, value) => sum + value, 0);
+    const baseline = typeof pending.tailBaselineTokens === "number" && Number.isFinite(pending.tailBaselineTokens)
+      && pending.tailBaselineTokens >= 0
+      ? pending.tailBaselineTokens
+      : stagedRawTail;
+    const tailGrowth = Math.max(0, currentTail - baseline);
+    // Whole-total growth stays authoritative when a fresh measurement reports
+    // MORE context than the staged basis (underestimated prefix or framing);
+    // tail growth catches the masked case where a correcting measurement is
+    // lower. Both directions conservative.
+    growth = Math.max(tailGrowth, Math.max(0, tokens - pending.tokensBefore));
+  } else {
+    growth = Math.max(0, tokens - pending.tokensBefore);
+  }
   const after = estimatedAfter + growth;
   const reserve = Math.max(8_192, model.maxTokens ?? 0, reserveTokens);
   const target = pending.details.targetAfterTokens;
@@ -58,6 +110,7 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
     tokensSaved: tokens - after, estimatedSavedTokens: tokens - after, estimatedYield: (tokens - after) / tokens,
   };
   return { ...pending, tokensBefore: tokens, details,
+    ...(currentTail !== null ? { tailBaselineTokens: currentTail } : {}),
     metricsSnapshot: pending.metricsSnapshot && {
       ...pending.metricsSnapshot, tokensBefore: tokens, estimatedAfterTokens: after,
       retainedTailTokens: details.retainedTailTokens, tokensSaved: details.tokensSaved,

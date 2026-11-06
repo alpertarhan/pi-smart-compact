@@ -1,6 +1,7 @@
 /** Step 2: select and validate the active-context prefix to summarize. */
 
-import { contextUsage } from "../context-usage.ts";
+import { contextUsage, estimateReaderMessageTokens } from "../context-usage.ts";
+export { estimateReaderMessageTokens };
 import { nativeCompactionCut, nativeRouteLabel } from "../native-compaction.ts";
 import { isNativeApi } from "../../infra/native-protocol.ts";
 import type {
@@ -357,7 +358,7 @@ function nativeOverridePlan(
  if (!isNativeApi(model.api)) return null;
  const cut = nativeCompactionCut(msgs, keepFrom);
  if (cut === null) return null;
- const tokens = msgs.map((entry) => rc.estimator.message(entry.message as LlmMessage));
+ const tokens = estimateReaderMessageTokens(rc.readerEstimator, msgs);
  const estimate = tokens.reduce((sum, value) => sum + value, 0);
  const prefix = tokens.slice(0, cut).reduce((sum, value) => sum + value, 0);
  // Same split as the native attempt: measured context beyond the estimate is
@@ -371,7 +372,8 @@ function nativeOverridePlan(
 }
 
 export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
- const totalTokens = contextUsage(rc.ctx)?.tokens ?? 0;
+ const usageBasis = contextUsage(rc.ctx, rc.usagePricing);
+ const totalTokens = usageBasis?.tokens ?? 0;
  const branch = rc.ctx.sessionManager.getBranch();
  const msgs = contextMessageEntries(branch);
  if (msgs.length < 3) {
@@ -394,20 +396,21 @@ export function resolveCompactionWindow(rc: PreparedRc): WindowedRc | null {
  const plan = planCompactionWindow({
   msgs,
   branch: branch as unknown[],
-  messageTokens: msgs.map((entry) =>
-   rc.estimator.message(entry.message as LlmMessage),
-  ),
+  messageTokens: estimateReaderMessageTokens(rc.readerEstimator, msgs),
   totalTokens,
   modelContextWindow: rc.ctx.model?.contextWindow,
   mode,
   profileCfg: rc.profileCfg,
   force: rc.flags.force,
+  // The allowance lands in the READER's post-compaction prompt: chars come
+  // from the summary budget via the summary model's ratio, priced in reader
+  // tokens by the reader estimator.
   finalSummaryAllowanceTokens: estimateFinalSummaryAllowance(
    rc.profileCfg,
-   rc.estimator,
+   rc.readerEstimator,
    rc.providerCaps,
   ),
- });
+ });;
 
  if (!plan.viable) {
   if (rc.flags.force) {

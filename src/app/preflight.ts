@@ -1,4 +1,4 @@
-import { contextUsage } from "./context-usage.ts";
+import { contextUsage, createUsagePricing } from "./context-usage.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { PROFILES } from "../constants.ts";
@@ -15,6 +15,7 @@ import { computeToolCharPercentage } from "../utils/helpers.ts";
 import { readRecentDamageScores } from "../utils/damage.ts";
 import {
   getProviderCaps,
+  makeReaderTokenEstimator,
   makeTokenEstimator,
   safeContextPercent,
   type TokenCalibrationStore,
@@ -25,6 +26,7 @@ import { contextMessageEntries } from "../infra/ai-messages.ts";
 import type { CompactionWindowPlan } from "./run-context.ts";
 import {
   estimateFinalSummaryAllowance,
+  estimateReaderMessageTokens,
   planCompactionWindow,
 } from "./steps/window.ts";
 
@@ -110,6 +112,8 @@ export interface ManualPreflightContext {
   branch: unknown[];
   msgs: SessionMessageEntry[];
   messageTokens: number[];
+  /** Reader-domain estimator for the ACTIVE model; summaries keep their own domain. */
+  readerEstimator: TokenEstimator;
   totalTokens: number;
   rawEstimatedMessageTokens: number;
   modelContextWindow?: number;
@@ -127,7 +131,15 @@ export function prepareManualPreflightContext(
 ): ManualPreflightContext {
   const branch = ctx.sessionManager.getBranch();
   const msgs = contextMessageEntries(branch);
-  const totalTokens = contextUsage(ctx)?.tokens ?? 0;
+  // Run-scoped pricing snapshot: the basis reprices a stale cross-model
+  // measurement in the ACTIVE reader's domain, never the summarizer's.
+  const usagePricing = createUsagePricing(
+    ctx.model
+      ? { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api, input: ctx.model.input }
+      : { provider: summaryModel.provider, id: summaryModel.id, api: summaryModel.api, input: summaryModel.input },
+    tokenCalibration,
+  );
+  const totalTokens = contextUsage(ctx, usagePricing)?.tokens ?? 0;
   const modelContextWindow = ctx.model?.contextWindow;
   const contextWindowTokens =
     Number.isFinite(modelContextWindow) && (modelContextWindow ?? 0) > 0
@@ -142,13 +154,19 @@ export function prepareManualPreflightContext(
     summaryModel.id,
     tokenCalibration,
   );
-  const messageTokens = msgs.map((entry) =>
-    estimator.message(entry.message as LlmMessage),
-  );
+  // The window plan describes the ACTIVE model's replay, not the summarizer's.
+  const readerEstimator = ctx.model
+    ? makeReaderTokenEstimator(
+      { provider: ctx.model.provider, id: ctx.model.id, api: ctx.model.api, input: ctx.model.input },
+      tokenCalibration,
+    )
+    : estimator;
+  const messageTokens = estimateReaderMessageTokens(readerEstimator, msgs);
   return {
     branch,
     msgs,
     messageTokens,
+    readerEstimator,
     totalTokens,
     rawEstimatedMessageTokens: messageTokens.reduce(
       (sum, tokens) => sum + tokens,
@@ -223,7 +241,7 @@ export function planManualPreflight(
     force: true,
     finalSummaryAllowanceTokens: estimateFinalSummaryAllowance(
       prepared.profileCfg,
-      prepared.estimator,
+      shared.readerEstimator,
       prepared.providerCaps,
     ),
   });

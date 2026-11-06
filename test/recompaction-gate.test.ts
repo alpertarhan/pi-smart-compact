@@ -12,7 +12,7 @@ import { formatVerificationGap, verifySummary, releasesConstraint } from "../src
 import { assembleFallback } from "../src/phases/synthesize.ts";
 import { buildState } from "../src/app/steps/state.ts";
 import { createServices } from "../src/infra/services.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeReaderTokenEstimator, makeTokenEstimator } from "../src/utils/tokens.ts";
 import { normalizeFactKey } from "../src/utils/helpers.ts";
 import type {
 	CompactionState,
@@ -485,6 +485,7 @@ describe("buildState persists retirement through the merged continuity state", (
 			config: { pinPaths: [] },
 			services,
 			estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
+readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "test", api: "openai-responses" }, services.tokenCalibration),
 			profile: "balanced",
 			mode: "balanced",
 			method: "eesv",

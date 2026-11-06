@@ -4,7 +4,7 @@
  * Architecture: Extract -> Explore -> Synthesize -> Verify
  */
 
-import { contextUsage } from "./app/context-usage.ts";
+import { readerUsage } from "./app/context-usage.ts";
 import {
  convertToLlm,
  type ExtensionAPI,
@@ -469,7 +469,7 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   }
   if (!config.autoTrigger) return;
   try {
-   const usage = contextUsage(ctx);
+   const usage = readerUsage(ctx);
    const totalTokens = usage?.tokens ?? 0;
    if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) return;
    // Threshold is advisory during overflow recovery: Pi already has a

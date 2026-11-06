@@ -48,7 +48,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { TieredRc } from "../src/app/run-context.ts";
 import type { LlmMessage } from "../src/types.ts";
 import { BudgetGuard, createServices } from "../src/infra/services.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeReaderTokenEstimator, makeTokenEstimator } from "../src/utils/tokens.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/constants.ts";
 import { commitPreparedConversationBackup } from "../src/utils/backups.ts";
@@ -114,6 +114,7 @@ function makeTieredRc(messages: LlmMessage[]): TieredRc {
       minChunkTokens: 500, maxChunkTokens: 4000,
     },
     estimator: makeTokenEstimator("openai", "gpt-5", services.tokenCalibration),
+    readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "gpt-5", api: "openai-responses" }, services.tokenCalibration),
     providerCaps: {
       maxOutputTokens: 8192, supportsTools: true as boolean | "probe",
       jsonReliability: "high", instructionFollowing: "high",

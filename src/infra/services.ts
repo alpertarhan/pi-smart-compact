@@ -306,6 +306,11 @@ export function createProductionServices(overrides: ServiceOverrides = {}): Smar
   });
 }
 
+/** The shared production calibration store createProductionServices uses; gate helpers price against it. */
+export function getProcessTokenCalibration(): TokenCalibrationStore {
+  return processTokenCalibration;
+}
+
 /** @internal Test-only: forget process-wide calibration learned from reported usage. */
 export function __resetProcessCalibrationForTests(): void {
  processTokenCalibration.clear();

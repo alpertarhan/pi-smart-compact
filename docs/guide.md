@@ -260,7 +260,7 @@ poor payback is refused too. Only reaching the
 compaction threshold lets context relief take priority over cache cost, and
 only when no automatic compaction is due: with **When idle** or background
 compaction on, that compaction replaces the context, so no trim runs first.
-`openai-codex` trims are priced as rebuilding the whole prompt cache.
+Trims on the codex Responses API (`openai-codex-responses`, whatever the provider alias) are priced as rebuilding the whole prompt cache.
 
 - `pressure`: context usage reached the compaction gate while automatic
   compaction is off or follows Pi (`native-hook`).

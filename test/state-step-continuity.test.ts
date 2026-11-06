@@ -4,7 +4,7 @@ import { assembleFallback } from "../src/phases/synthesize.ts";
 import { verifySummary } from "../src/phases/verify.ts";
 import { previewMergedContinuity } from "../src/utils/state.ts";
 import { createServices } from "../src/infra/services.ts";
-import { makeTokenEstimator } from "../src/utils/tokens.ts";
+import { makeReaderTokenEstimator, makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { CompactionState, StructuredExtraction } from "../src/types.ts";
 
 describe("buildState continuity integration", () => {
@@ -98,6 +98,7 @@ describe("buildState continuity integration", () => {
         "test",
         services.tokenCalibration,
       ),
+      readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "test", api: "openai-responses" }, services.tokenCalibration),
       profile: "balanced",
       mode: "balanced",
       method: "eesv",
@@ -238,6 +239,7 @@ describe("buildState continuity integration", () => {
           "test",
           services.tokenCalibration,
         ),
+        readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "test", api: "openai-responses" }, services.tokenCalibration),
         profile: "balanced",
         mode: "balanced",
         method: "eesv",
@@ -369,6 +371,7 @@ describe("buildState continuity integration", () => {
       config: { pinPaths: [] },
       services,
       estimator: makeTokenEstimator("openai", "test", services.tokenCalibration),
+      readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "test", api: "openai-responses" }, services.tokenCalibration),
       profile: "aggressive",
       mode: "fast",
       method: "heuristic",
@@ -453,6 +456,7 @@ describe("buildState continuity integration", () => {
         "test",
         services.tokenCalibration,
       ),
+      readerEstimator: makeReaderTokenEstimator({ provider: "openai", id: "test", api: "openai-responses" }, services.tokenCalibration),
       profile: "balanced",
       mode: "balanced",
       method: "eesv",

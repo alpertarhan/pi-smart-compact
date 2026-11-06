@@ -85,7 +85,9 @@ function activeBranch() {
       timestamp: "2026-08-09T00:00:00.000Z",
       message: {
         role,
-        content: [{ type: "text", text: evidence + "x".repeat(12_000) }],
+        // Sized so the accurate (density-corrected) estimator keeps the
+        // fast-mode 100K LLM-input budget headroom for the single-pass call.
+        content: [{ type: "text", text: evidence + "x".repeat(10_000) }],
       },
     };
   });

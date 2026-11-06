@@ -218,7 +218,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const branch = ctx.sessionManager.getBranch();
       const state = inspectContext(branch, sessionId);
       if (params.action === "plan") {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
         const payload = {
           pressure: contextPressure(ctx, config()), blockedReason: plan.blockedReason,
           outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
@@ -251,7 +251,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         const evidence = contextEvidence(branch, sessionId, new SecretScrubber(settings.scrubSecrets, settings.scrubPii), lineage);
         if (params.action === "status") {
           const sources = evidence.list.slice(offset, offset + limit);
-          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
+          const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
           const pressure = contextPressure(ctx, settings);
           const cleanup = {
             enabled: settings.contextHygieneEnabled || (settings.autoTrigger && settings.autoTriggerStrategy === "background"),
@@ -524,14 +524,14 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         entries = applied.entries;
         applied = null;
       } else {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
           const human = request.manual || request.userConfirmed;
           // Agent trims follow the automatic rule: below the compaction gate they must pay back their cache rewrite.
           // Unpriced models (null) keep today's behavior; there is no cost to weigh.
           if (!human && !urgentPressure) {
-            const { savedTokens, tailTokens } = trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
+            const { savedTokens, tailTokens } = trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id, ctx.model?.api);
             const breakEven = trimBreakEvenRequests(ctx.model?.cost, savedTokens, tailTokens);
             if (breakEven !== null && breakEven > settings.autoTrimBreakEvenRequests) {
               return cancelled(event, `This trim pays back its prompt-cache rewrite only after ~${Math.ceil(breakEven)} requests (limit ${settings.autoTrimBreakEvenRequests}); history left unchanged.`);
@@ -544,7 +544,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           if (plan.automatic !== "ready" || due) return;
           // Otherwise only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
           const cause = urgentPressure ? "pressure" : undefined;
-          const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id);
+          const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id, ctx.model?.api);
           const breakEvenRequests = economics ? trimBreakEvenRequests(ctx.model?.cost, economics.savedTokens, economics.tailTokens) : null;
           const breakEvenLimit = settings.autoTrimBreakEvenRequests;
           if (economics && (breakEvenRequests === null || breakEvenRequests > breakEvenLimit)) {
@@ -607,7 +607,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const origin = anchor ? branch.findIndex(entry => entry.id === anchor.originId) : -1;
       if (anchor && origin < 0) return { state: "unavailable", notice: "Anchor origin is no longer on this branch." };
       const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
-      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
+      const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
       if (!plan.entries.length || (anchor?.callId && !userConfirmed && plan.automatic !== "ready")) {
         return { state: "no-eligible", notice: plan.blockedReason ?? describeTrimSkip(plan, config().autoTrimMinSavingChars) };
       }

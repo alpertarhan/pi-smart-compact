@@ -13,7 +13,8 @@
 import { describe, expect, it } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { planContextTrim, trimBreakEvenRequests, trimTokens } from "../src/app/context-operations.ts";
+import { planContextTrim, missesWholePrompt,
+  trimBreakEvenRequests, trimTokens } from "../src/app/context-operations.ts";
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS } from "../src/constants.ts";
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
@@ -122,10 +123,29 @@ describe("tail-aware trim plan selection", () => {
       { id: "call-3", chars: 30_000, filler: 0 },
       ...Array.from({ length: 4 }, (_, i) => ({ id: `tail-${i}`, chars: 500, filler: 0 })),
     ]);
-    const plan = planContextTrim(sm.getBranch(), undefined, { minSavingChars: 1_000, economy: { provider: "openai-codex", model: "m", cost: PRICY } });
+    const plan = planContextTrim(sm.getBranch(), undefined, { minSavingChars: 1_000, economy: { provider: "custom-alias", model: "m", api: "openai-codex-responses", cost: PRICY } });
     expect(plan.references).toEqual(["call-0", "call-1", "call-2", "call-3"].map(id => idOf(sm, id)!));
     const codex = trimTokens(sm.getBranch(), plan.entries, "openai-codex", "m");
     expect(trimBreakEvenRequests(PRICY, codex.savedTokens, codex.tailTokens)).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
+  });
+
+  it("keys whole-prompt pricing on the API, not the provider name", () => {
+    const sm = session([
+      { id: "call-0", chars: 5_000, filler: 0 },
+      { id: "call-1", chars: 5_000, filler: 150_000 },
+      { id: "call-2", chars: 30_000, filler: 0 },
+      { id: "call-3", chars: 30_000, filler: 0 },
+      ...Array.from({ length: 4 }, (_, i) => ({ id: `tail-${i}`, chars: 500, filler: 0 })),
+    ]);
+    // Same provider name, no codex API: tail pricing applies and the frontier
+    // drops the low-value stragglers exactly like the neutral-provider case.
+    const tail = planContextTrim(sm.getBranch(), undefined, { minSavingChars: 1_000, economy: { provider: "openai-codex", model: "m", api: "openai-responses", cost: PRICY } });
+    expect(tail.references).toContain(idOf(sm, "call-2")!);
+    expect(tail.references).toContain(idOf(sm, "call-3")!);
+    expect(tail.references).not.toContain(idOf(sm, "call-0"));
+    expect(tail.references).not.toContain(idOf(sm, "call-1"));
+    expect(missesWholePrompt("openai-codex-responses")).toBe(true);
+    expect(missesWholePrompt(undefined)).toBe(false);
   });
 
   it("returns the full plan when no candidate is feasible", () => {

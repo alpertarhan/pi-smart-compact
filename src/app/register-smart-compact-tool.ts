@@ -1,4 +1,4 @@
-import { contextUsage } from "./context-usage.ts";
+import { readerUsage } from "./context-usage.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -162,7 +162,7 @@ export function registerSmartCompactTool(
         );
       }
 
-      const usage = contextUsage(ctx);
+      const usage = readerUsage(ctx);
       const totalTokens = usage?.tokens ?? 0;
       const window = effectiveContextWindow(ctx.model, config);
       const contextPercent = safeContextPercent(totalTokens, window);
