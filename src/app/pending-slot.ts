@@ -44,7 +44,9 @@ export function usageRefusesApplication(usage: { basis?: string; staleProducer?:
 /** Shared final gate for foreground and background candidates. Missing proof fails closed. */
 export function revalidatePending(pending: PendingCompaction, ctx: ExtensionContext, reserveTokens = 0): PendingCompaction | null {
   const model = ctx.model;
-  const usage = contextUsage(ctx);
+  // A staged run carries its immutable pricing: reprice a proven-stale measurement
+  // in the SAME domain instead of waiting for the new reader's first reply.
+  const usage = contextUsage(ctx, pending.usagePricing);
   const tokens = usage?.tokens;
   // Insufficient basis proof fails closed: an uncertain reprojected basis, or a
   // stale measurement nobody could reprice, must never authorize application.

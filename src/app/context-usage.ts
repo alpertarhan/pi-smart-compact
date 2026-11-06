@@ -10,6 +10,7 @@
 
 import { calculateContextTokens, estimateTokens, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
+import { getProcessTokenCalibration } from "../infra/services.ts";
 import { createHash } from "node:crypto";
 import {
   makeReaderTokenEstimator,
@@ -151,8 +152,17 @@ function measuredProducerIdentity(message: unknown): { provider?: string; api?: 
   return meta && typeof meta === "object" ? { provider: meta.provider, api: meta.api, model: meta.model } : {};
 }
 
-function sameReader(producer: { provider?: string; api?: string; model?: string }, reader: ReaderIdentity): boolean {
-  return producer.provider === reader.provider && producer.api === reader.api && producer.model === reader.id;
+/**
+ * Same reader when every PRESENT identity field matches. Missing api/model alone is
+ * not proof of a different model (partial metadata must stay compatible); a
+ * difference on any present field is.
+ */
+function sameReader(producer: { provider?: string; api?: string; model?: string }, reader: { provider?: string; api?: string; id?: string }): boolean {
+  if (producer.provider === undefined && producer.model === undefined) return false; // no identity to match
+  if (producer.provider !== undefined && producer.provider !== reader.provider) return false;
+  if (producer.api !== undefined && producer.api !== reader.api) return false;
+  if (producer.model !== undefined && producer.model !== reader.id) return false;
+  return true;
 }
 
 /** Bounded single-slot memo: the stale path serializes the branch, and contextUsage is hot. */
@@ -171,6 +181,7 @@ function hashFingerprint(text: string | undefined): string {
 export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (ReturnType<ExtensionContext["getContextUsage"]> & Partial<ContextUsageBasis>) | undefined {
   const usage = ctx.getContextUsage?.();
   if (!usage || !ctx.sessionManager) return usage;
+  let provablyStale = false;
   try {
     // The common case (no edit since the last response) never copies the branch.
     const edited = editedSinceMeasurement(ctx.sessionManager);
@@ -181,9 +192,8 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
     // Staleness is proven from identity alone — even WITHOUT run pricing, a
     // measured figure from a different model must never masquerade as a current
     // reader measurement for pending/attention/pressure consumers.
-    const provablyStale = !!producer?.provider
-      && (!!pricing ? !sameReader(producer, pricing.reader) : !!activeModel?.provider
-        && (producer.provider !== activeModel.provider || producer.api !== activeModel.api || producer.model !== activeModel.id));
+    provablyStale = !!producer?.provider
+      && (!!pricing ? !sameReader(producer, pricing.reader) : !!activeModel?.provider && !sameReader(producer, activeModel));
     const stale = !!pricing && provablyStale;
     if (!edited && !provablyStale) {
       return usage;
@@ -207,6 +217,7 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
     // compare against a result computed under different captured factors.
     const producerEstimator = pricing.estimateAs({ provider: producer.provider, api: producer.api, model: producer.model! });
     const memoKey = JSON.stringify([
+      ctx.sessionManager.getSessionId?.() ?? "", ctx.model?.maxTokens ?? null,
       ctx.sessionManager.getLeafEntry?.()?.id ?? "leaf", branch.length,
       (branch[anchor] as { id?: string }).id, producer.measuredTokens,
       pricing.reader.provider, pricing.reader.id, pricing.reader.api, pricing.reader.input ?? null,
@@ -269,9 +280,32 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
     return { ...usage, tokens, percent: usage.contextWindow > 0 ? tokens / usage.contextWindow * 100 : usage.percent,
       basis, staleProducer: true, producerEvidence: producer };
   } catch {
-    // A diagnostic estimate must never take Pi's own figure away.
+    // A diagnostic estimate must never take Pi's own figure away — but a proven
+    // stale basis must never pass as a current-reader measurement either.
+    if (provablyStale && pricing) {
+      return { ...usage, basis: "unavailable" as const, staleProducer: true, producerEvidence: undefined };
+    }
     return usage;
   }
+}
+
+/**
+ * Gate/trigger-layer basis: prices ctx.model's context against the shared
+ * PRODUCTION calibration store (the one createProductionServices uses), so
+ * pressure/attention/entry gates read the current reader's domain instead of a
+ * silently raw old-model count. Callers with their own services bag pass its
+ * store; the prepared run keeps its immutable rc.usagePricing untouched.
+ */
+export function readerUsage(
+  ctx: UsageContext,
+  calibration?: TokenCalibrationStore,
+): (ReturnType<ExtensionContext["getContextUsage"]> & Partial<ContextUsageBasis>) | undefined {
+  const model = ctx.model as { provider?: string; id?: string; api?: string; input?: readonly string[] } | undefined;
+  if (!model?.provider || !model.id) return contextUsage(ctx);
+  return contextUsage(ctx, createUsagePricing(
+    { provider: model.provider, id: model.id, api: model.api, input: model.input },
+    calibration ?? getProcessTokenCalibration(),
+  ));
 }
 
 function hasThinking(message: unknown): boolean {

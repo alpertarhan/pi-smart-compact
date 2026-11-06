@@ -512,6 +512,12 @@ export interface PreparedConversationBackup {
 export interface PendingCompaction {
  /** Unique lifecycle correlation id persisted in compaction details. */
  runId: string;
+ /**
+  * Runtime-only immutable pricing carried from the prepared run. PendingCompaction
+  * lives in the in-memory pending slot (with its callbacks) and is never serialized;
+  * this lets revalidation reprice a proven-stale measurement in the same domain.
+  */
+ usagePricing?: import("./app/context-usage.ts").UsagePricing;
  summary: string;
  firstKeptEntryId: string;
  /** Branch head that produced this summary; must still be in active ancestry. */

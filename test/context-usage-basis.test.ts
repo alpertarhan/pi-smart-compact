@@ -3,9 +3,10 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { TokenCalibrationStore, type ReaderIdentity } from "../src/utils/tokens.ts";
 import { contextUsage, createUsagePricing, estimateReaderMessageTokens } from "../src/app/context-usage.ts";
-import { usageRefusesApplication } from "../src/app/pending-slot.ts";
+import { usageRefusesApplication, readerSignature, revalidatePending, fingerprintContext } from "../src/app/pending-slot.ts";
+import { readerUsage } from "../src/app/context-usage.ts";
+import { contextPressure } from "../src/app/background-preparation.ts";
 import { contextMessageEntries } from "../src/infra/ai-messages.ts";
-import { readerSignature } from "../src/app/pending-slot.ts";
 
 const CLAUDE: ReaderIdentity = { provider: "anthropic", id: "claude-opus-5-5", api: "anthropic-messages", input: ["text", "image"] };
 const CODEX = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses" } as const;
@@ -274,6 +275,80 @@ describe("contextUsage stale-producer repricing", () => {
     expect(usage.tokens!).toBeGreaterThan(60_000); // upward reprice, no old-total ceiling either
     const fresh = createUsagePricing(CLAUDE, new TokenCalibrationStore());
     expect(fresh.factors()).not.toBe(pricing.factors()); // snapshot fingerprints differ
+  });
+
+  it("applies a fully priced stale candidate before the reader's first reply", () => {
+    const producer: ReaderIdentity = { provider: "anthropic", id: "claude-opus-5-5", api: "anthropic-messages" };
+    const reader = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", input: ["text" ] as const, contextWindow: 65_536, maxTokens: 8_192 };
+    const sm = session([
+      say("Project status: " + "a".repeat(200_000)),
+      reply({ provider: producer.provider, api: producer.api, model: producer.id }, {
+        usage: usageOf(100_000, 99_990, 60_000), stopReason: "stop",
+        content: [{ type: "thinking", thinking: "brief", thinkingSignature: "opaque" }, { type: "text", text: "Done" }],
+      }),
+      say("Continue the task"),
+    ]);
+    const ctx = { ...makeCtx(sm, { tokens: 160_010, prompt: "System" }), model: makeModel({ provider: reader.provider, api: reader.api as string, id: reader.id }) };
+    const pricing = createUsagePricing(reader, new TokenCalibrationStore());
+    const priced = contextUsage(ctx, pricing)!;
+    expect(priced.basis).toBe("reprojected");
+    const weights = estimateReaderMessageTokens(pricing.estimate, contextMessageEntries(sm.getBranch()));
+    const after = (priced.tokens! - weights.reduce((a, b) => a + b, 0)) + weights.at(-1)! + pricing.estimate.text("## Goal\nContinue the task\n");
+    const pending = {
+      sessionId: sm.getSessionId(), originBranchHeadId: sm.getLeafId(), firstKeptEntryId: sm.getLeafId(),
+      readerSignature: readerSignature(ctx as never), contextSnapshot: fingerprintContext(contextMessageEntries(sm.getBranch())),
+      summary: "## Goal\nContinue the task\n", tokensBefore: priced.tokens!,
+      usagePricing: pricing, // carried by the real constructors (persist.ts / native-compaction.ts)
+      details: { estimatedAfterTokens: after, retainedTailTokens: weights.at(-1), targetAfterTokens: Math.floor(priced.tokens! / 2) },
+    };
+    // Sufficient data applies through the real final gate; no waiting for a first reply.
+    expect(revalidatePending(pending as never, ctx as never)).not.toBeNull();
+    // A legacy pending without carried pricing still fails closed on proven stale.
+    expect(revalidatePending({ ...pending, usagePricing: undefined } as never, ctx as never)).toBeNull();
+  });
+
+  it("labels a proven-stale basis even when repricing throws", () => {
+    const sm = session([
+      say("question"),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    const pricing = createUsagePricing(CLAUDE, new TokenCalibrationStore());
+    const ctx = { ...makeCtx(sm, { tokens: 13_010, prompt: "" }), getSystemPrompt: () => { throw new Error("boom"); } };
+    const usage = contextUsage(ctx, pricing)!;
+    expect(usage.basis).toBe("unavailable");
+    expect(usage.staleProducer).toBe(true);
+    expect(usageRefusesApplication(usage)).toBe(true);
+  });
+
+  it("treats partial legacy metadata with matching fields as the same reader", () => {
+    // api/model missing on the anchor: known fields match the active reader, so
+    // this is NOT proven stale — today's fast path applies, no refusal label.
+    const sm = session([
+      say("question"),
+      reply({ provider: "anthropic" }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    const pricing = createUsagePricing(CLAUDE, new TokenCalibrationStore());
+    const ctx = { ...makeCtx(sm, { tokens: 13_010, prompt: "" }), model: makeModel({ provider: "anthropic", api: "anthropic-messages", id: "claude-opus-5-5" }) };
+    const usage = contextUsage(ctx, pricing)!;
+    expect(usage.tokens).toBe(13_010);
+    expect(usage.basis).toBeUndefined();
+    expect(usage.staleProducer).toBeUndefined();
+  });
+
+  it("reprices pressure gates through the current reader", () => {
+    const sm = session([
+      say("question"),
+      reply({ provider: CODEX.provider, api: CODEX.api, model: CODEX.id }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    const ctx = { ...makeCtx(sm, { tokens: 13_010, prompt: "" }), model: makeModel({ provider: "anthropic", api: "anthropic-messages", id: "claude-opus-5-5" }) };
+    const repriced = readerUsage(ctx)!;
+    expect(repriced.basis).toBe("reprojected");
+    expect(repriced.tokens!).not.toBe(13_010);
+    const pressure = contextPressure(ctx, { minContextPercent: 0, prepareContextPercent: 40, maxContextTokens: 1_000_000 });
+    expect(pressure.tokens).toBe(repriced.tokens); // gate sees the reader domain, not the raw old count
   });
 
   it("includes the input capability in the pending reader signature", () => {

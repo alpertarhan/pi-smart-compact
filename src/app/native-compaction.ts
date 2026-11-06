@@ -341,6 +341,7 @@ export async function attemptNativeCompaction(
     details,
     sessionId: rc.sessionId,
     ...(preparedBackup ? { preparedBackup } : {}),
+    ...(rc.usagePricing ? { usagePricing: rc.usagePricing } : {}),
     metricsSnapshot: {
       runId: rc.runId,
       metricsSchemaVersion: 2,

@@ -194,6 +194,7 @@ export function stagePendingCompaction(
     extraction: rc.extraction,
     sessionId: rc.sessionId,
     preparedBackup: rc.preparedBackup,
+    usagePricing: rc.usagePricing,
   };
   rc.pendingRef.set(pending);
   return pending;
