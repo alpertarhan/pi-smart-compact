@@ -842,7 +842,7 @@ export interface CompactionState {
  goalKey?: string;
  /** Raw previously-tracked goal anchor kept by deterministic fallback runs
   * (user-approved pair policy). Never holds rendered label text; a successful
-  * LLM semantic goal clears it. Additive optional; absent on pre-10.9 states. */
+  * LLM semantic goal clears it. Additive optional; absent on legacy states. */
  priorGoal?: string;
  decisions: Array<{
   id: string;
@@ -856,7 +856,7 @@ export interface CompactionState {
   category: "requirement" | "preference" | "prohibition";
   confidence: number;
   /** Durable copy of the extraction origin: the rule was typed by the user in
-   *  an earlier window. Additive optional; absent on pre-10.9 states. */
+   *  an earlier window. Additive optional; absent on legacy states. */
   origin?: "human";
  }>;
  modifiedFiles: string[];
