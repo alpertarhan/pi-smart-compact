@@ -72,9 +72,13 @@ export function revalidatePending(pending: PendingCompaction, ctx: ExtensionCont
     // snapshot prefix — never from the planner-normalized retainedTailTokens —
     // and advances on success so revalidating a returned candidate never
     // charges the same append twice.
+    // Proof gap fails closed: pricing without a fingerprinted snapshot cannot
+    // establish the staged baseline, so tail growth would silently read as 0
+    // and reintroduce the masked retained-tail bypass.
+    if (!pending.contextSnapshot) return null;
     const msgs = contextMessageEntries(ctx.sessionManager.getBranch());
     const cut = msgs.findIndex(entry => entry.id === pending.firstKeptEntryId);
-    const staged = msgs.slice(0, pending.contextSnapshot?.messageCount ?? msgs.length);
+    const staged = msgs.slice(0, pending.contextSnapshot.messageCount);
     const stagedCut = staged.findIndex(entry => entry.id === pending.firstKeptEntryId);
     if (cut < 0 || stagedCut < 0) return null; // kept boundary unverifiable: insufficient proof
     const currentWeights = estimateReaderMessageTokens(pending.usagePricing.estimate, msgs);

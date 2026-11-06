@@ -350,6 +350,57 @@ describe("contextUsage stale-producer repricing", () => {
     expect(corrupt).not.toBeNull(); // falls back to the snapshot-derived raw baseline
   });
 
+  it("fails closed when the producer's full reader-domain identity is missing", () => {
+    const pricing = createUsagePricing(CLAUDE, new TokenCalibrationStore());
+    // Provider/api mismatch with NO model still proves stale, but repricing
+    // cannot invent the producer's domain from a missing identity: refuse.
+    const modelless = session([
+      say("question"),
+      reply({ provider: "zai-anthropic", api: "anthropic-messages" }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    const usage = contextUsage(makeCtx(modelless, { tokens: 13_010, prompt: "" }), pricing)!;
+    expect(usage.basis).toBe("unavailable");
+    expect(usage.staleProducer).toBe(true);
+    expect(usageRefusesApplication(usage)).toBe(true);
+    // Provider+model but no API: the producer's reader domain is still not
+    // provable — same refusal, never a generic estimate as framing evidence.
+    const apiless = session([
+      say("question"),
+      reply({ provider: "zai-anthropic", model: "glm-4.6" }, { usage: usageOf(5_000, 100, 8_000) }),
+      say("follow up"),
+    ]);
+    const apilessUsage = contextUsage(makeCtx(apiless, { tokens: 13_010, prompt: "" }), pricing)!;
+    expect(apilessUsage.basis).toBe("unavailable");
+    expect(apilessUsage.staleProducer).toBe(true);
+  });
+
+  it("refuses a priced pending without a fingerprinted snapshot", () => {
+    const reader: ReaderIdentity = { provider: "openai-codex", id: "gpt-6.1-sol", api: "openai-codex-responses", input: ["text"] };
+    const sm = session([
+      say("a".repeat(200_000)),
+      reply({ provider: reader.provider, api: reader.api, model: reader.id }, { usage: usageOf(100, 0, 29_800) }),
+      say("b".repeat(80_000)),
+    ]);
+    const pricing = createUsagePricing(reader, new TokenCalibrationStore());
+    const ctx = { ...makeCtx(sm, { tokens: 50_000, prompt: "System" }), model: makeModel({ provider: reader.provider, api: reader.api as string, id: reader.id }) };
+    const msgs = contextMessageEntries(sm.getBranch());
+    const weights = estimateReaderMessageTokens(pricing.estimate, msgs);
+    const tail = Math.round(weights.at(-1)! * (50_000 / weights.reduce((a, b) => a + b, 0)));
+    const after = pricing.estimate.text("## Goal\nRetain.") + tail;
+    const base = {
+      sessionId: sm.getSessionId(), originBranchHeadId: sm.getLeafId(), firstKeptEntryId: sm.getLeafId(),
+      readerSignature: readerSignature(ctx as never), contextSnapshot: fingerprintContext(msgs),
+      summary: "## Goal\nRetain.", tokensBefore: 50_000,
+      details: { estimatedAfterTokens: after, retainedTailTokens: tail, targetAfterTokens: after + 500 },
+    };
+    expect(revalidatePending({ ...base, usagePricing: pricing } as never, ctx as never)).not.toBeNull();
+    // Proof gap: pricing without the fingerprinted snapshot cannot establish
+    // the staged baseline — fail closed instead of reading tail growth as 0.
+    const { contextSnapshot: _omitted, ...withoutSnapshot } = { ...base, usagePricing: pricing } as never as { contextSnapshot?: unknown };
+    expect(revalidatePending(withoutSnapshot as never, ctx as never)).toBeNull();
+  });
+
   it("labels a proven-stale basis even when repricing throws", () => {
     const sm = session([
       say("question"),

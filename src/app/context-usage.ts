@@ -221,12 +221,18 @@ export function contextUsage(ctx: UsageContext, pricing?: UsagePricing): (Return
       const tokens = Math.max(anchored, usage.tokens ?? 0);
       return { ...usage, tokens, percent: usage.contextWindow > 0 ? tokens / usage.contextWindow * 100 : usage.percent, basis: "anchored" as const };
     }
-    if (!pricing || anchor < 0 || !producer?.provider) return { ...usage, basis: "unavailable" as const, staleProducer: true, producerEvidence: producer };
+    // The producer's FULL reader-domain identity is required for positive
+    // repricing evidence: a missing api or model would silently price in a
+    // generic domain the producer never ran in, so those cases fail closed.
+    // (An unknown-but-present api string keeps its conservative estimator.)
+    if (!pricing || anchor < 0 || !producer?.provider || !producer.api || !producer.model) {
+      return { ...usage, basis: "unavailable" as const, staleProducer: true, producerEvidence: producer };
+    }
 
     // Stale measurement: reprice conservatively in the active reader's domain.
     // The producer's factors are primed BEFORE the key so the memo can never
     // compare against a result computed under different captured factors.
-    const producerEstimator = pricing.estimateAs({ provider: producer.provider, api: producer.api, model: producer.model! });
+    const producerEstimator = pricing.estimateAs({ provider: producer.provider, api: producer.api, model: producer.model });
     const memoKey = JSON.stringify([
       ctx.sessionManager.getSessionId?.() ?? "", ctx.model?.maxTokens ?? null,
       ctx.sessionManager.getLeafEntry?.()?.id ?? "leaf", branch.length,
