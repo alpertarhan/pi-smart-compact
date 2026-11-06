@@ -90,13 +90,12 @@ import type { SmartCompactServices } from "../../infra/services.ts";
  * input-capacity failure for one candidate end never ends the scan for later
  * ends. Candidate group length is bounded by the input-independent,
  * monotone per-chunk visible/output cap (chunks*perChunk <= min(mode max,
- * provider cap)), which no larger group can ever satisfy. A chunk the model
- * cannot serve even alone keeps its
- * own request, so the caller's deterministic budget fallback still covers it
- * and nothing oversized is dispatched. The original array is returned
- * unchanged when the plan already fits; when full coverage is impossible the
- * partial improvement is returned unless it cannot reduce the request count,
- * in which case the original plan stays.
+ * provider cap)), which no larger group can ever satisfy. Every edge —
+ * singletons included — must be admissible, so a forced invalid singleton can
+ * never compete with (or beat on a tie) an existing fully admissible cover.
+ * When no all-admissible cover exists the original plan is returned unchanged
+ * and the caller's deterministic budget fallback covers what the model cannot
+ * serve, with nothing oversized dispatched.
  */
 export function repackBatchesForCallBudget(
  batches: import("../../types.ts").LlmChunk[][],
@@ -133,17 +132,19 @@ export function repackBatchesForCallBudget(
  };
  const chunks = batches.flat();
  const total = chunks.length;
- // dp[i] = fewest requests covering chunks[i..); cut[i] reconstructs the
- // partition. dp[0] is always finite because the singleton edge is allowed:
- // a chunk no request can serve keeps its own request so the caller's
- // deterministic budget fallback still covers it.
+ // dp[i] = fewest all-admissible requests covering chunks[i..); Infinity when
+ // no all-admissible cover of that suffix exists. cut[i] reconstructs the
+ // partition. Every edge — singletons included — must pass admissibility, so
+ // only fully valid covers compete and a forced invalid singleton can never
+ // win a tie against one.
  const dp = new Array<number>(total + 1).fill(Number.POSITIVE_INFINITY);
  const cut = new Array<number>(total + 1).fill(total);
  dp[total] = 0;
  for (let i = total - 1; i >= 0; i--) {
   const end = Math.min(total, i + maxGroupChunks);
   for (let j = i + 1; j <= end; j++) {
-   if (j - i > 1 && !groupAdmissible(chunks.slice(i, j))) continue;
+   if (dp[j] === Number.POSITIVE_INFINITY) continue;
+   if (!groupAdmissible(chunks.slice(i, j))) continue;
    const candidate = 1 + dp[j];
    // Strict improvement only: with equal request counts the earlier (smaller)
    // first group wins, keeping older history on finer-grained requests.
@@ -153,6 +154,9 @@ export function repackBatchesForCallBudget(
    }
   }
  }
+ // No all-admissible cover: keep the original plan; its inadmissible
+ // requests fail the dispatch capacity check and fall back deterministically.
+ if (dp[0] === Number.POSITIVE_INFINITY) return batches;
  const plan: import("../../types.ts").LlmChunk[][] = [];
  for (let i = 0; i < total; i = cut[i]) plan.push(chunks.slice(i, cut[i]));
  return plan.length < batches.length ? plan : batches;

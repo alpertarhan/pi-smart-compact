@@ -30,6 +30,7 @@ import { clearSynthesisCache } from "../src/infra/synthesis-cache.ts";
 import { setLlmClient, resetLlmClient } from "../src/infra/llm-client.ts";
 import { makeTokenEstimator, estimateTokens } from "../src/utils/tokens.ts";
 import { buildBatchRequest } from "../src/phases/synthesize.ts";
+import { clampCompletionMaxTokens } from "../src/domain/model-capacity.ts";
 import type { LlmChunk, LlmMessage, StructuredExtraction } from "../src/types.ts";
 import type { TieredRc } from "../src/app/run-context.ts";
 
@@ -330,6 +331,56 @@ describe("synthesis batch re-packing within the call budget", () => {
     const plan = repackBatchesForCallBudget(original, densityExtraction, { ...model, contextWindow } as Model<Api>, "fast", 8_192, services, 1);
     expect(plan.map(group => group.length)).toEqual([3]);
     expect(plan.flat().map(ch => ch.startIndex)).toEqual([0, 25, 50]);
+  });
+
+  it("never lets a forced inadmissible singleton beat a fully admissible cover", () => {
+    // Thinking-heavy chunks render to almost no prompt text, so singleton
+    // groups are plausible originals, and the non-monotone estimator can make
+    // A+B admissible while A alone misses capacity by one token. With a wire
+    // cap of 320 (fast: two chunks fit 2*160, three cannot fit 480), the only
+    // all-admissible 2-request cover is [A+B],[C]; a forced singleton edge
+    // must not win the tie with the invalid [A],[B+C].
+    const services = createServices();
+    const model = { ...openAiModel, maxTokens: 320 } as Model<Api>;
+    const densityExtraction: StructuredExtraction = {
+      ...unitExtraction,
+      modifiedFiles: [{ path: "src/ğ.ts", toolCalls: 1, lastModifiedIndex: 50 }],
+      messageCount: 52,
+    };
+    const bulk = () => Array.from({ length: 50 }, () => sizedMsg(1));
+    const thoughtChunk = (index: number): LlmChunk => ({
+      topic: "Thought " + index,
+      startIndex: index,
+      endIndex: index,
+      tokenEstimate: 4_900,
+      priority: "normal",
+      messages: [{
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "r".repeat(23_000) }, { type: "text", text: "x" }],
+      } as LlmMessage],
+    });
+    const chunks: LlmChunk[] = [
+      { topic: "A", startIndex: 0, endIndex: 49, tokenEstimate: 5_740, priority: "normal", messages: bulk() },
+      thoughtChunk(50),
+      thoughtChunk(51),
+    ];
+    const request = (group: LlmChunk[]) => buildBatchRequest(group, densityExtraction, model, 800);
+    const cost = (req: { context: unknown }) => estimateTokens(
+      JSON.stringify(services.scrubber.scrubValue(req.context).value), model.provider, model.id, services.tokenCalibration,
+    );
+    const a = request(chunks.slice(0, 1));
+    const fits = (group: LlmChunk[]) => {
+      const req = request(group);
+      return cost(req) + (clampCompletionMaxTokens(model, req.maxTokens) ?? 0) + 4_096 <= contextWindow;
+    };
+    const contextWindow = cost(a) + (clampCompletionMaxTokens(model, a.maxTokens) ?? 0) + 4_096 - 1; // A alone fails by one token
+    expect(fits(chunks.slice(0, 2))).toBe(true); // A+B admissible: density adjustment on the ğ path
+    expect(fits(chunks.slice(1))).toBe(true); // B+C and C alone admissible
+    expect(fits(chunks.slice(2))).toBe(true);
+    const original = chunks.map(chunk => [chunk]);
+    const plan = repackBatchesForCallBudget(original, densityExtraction, { ...model, contextWindow } as Model<Api>, "fast", 8_192, services, 2);
+    expect(plan.map(group => group.length)).toEqual([2, 1]);
+    expect(plan.flat().map(ch => ch.startIndex)).toEqual([0, 50, 51]);
   });
 
   it("re-packs on every API family with the provider's own caps", () => {
