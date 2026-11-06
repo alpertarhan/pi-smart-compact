@@ -15,6 +15,7 @@ import type {
 import type {
  CompactionState,
  ContinuityOverride,
+ GoalEvidence,
  StructuredExtraction,
  VerificationGap,
  VerificationGateStage,
@@ -48,6 +49,9 @@ import {
  renderSummary,
  summaryEvidenceLine,
  upsertSection,
+ goalPairLines,
+ renderGoalEvidence,
+ PRIOR_GOAL_LABEL,
 } from "../domain/summary-parse.ts";
 import { canonicalHeading } from "../domain/summary-schema.ts";
 import type { CanonicalSummary } from "../domain/summary-schema.ts";
@@ -65,6 +69,10 @@ export interface VerificationEvidence {
  summaryBudgetTokens?: number;
  /** Run-scoped fact overrides (e.g. constraints retired this run). */
  factOverrides?: readonly ContinuityOverride[];
+ /** Raw resolved goal pair for the deterministic fallback policy; absent on
+  * legacy callers. `ownedFallback` is set only by call sites that know the
+  * summary under verification is this extension's own deterministic output. */
+ goalEvidence?: GoalEvidence;
 }
 
 const HIGH_RISK_OUTCOME_RE =
@@ -445,6 +453,8 @@ export function formatVerificationGap(gap: VerificationGap): string {
    );
   case "missing-goal":
    return "Main goal may be missing from summary";
+  case "missing-prior-goal":
+   return "Historical prior goal missing from fallback Goal section";
   case "fabricated-file":
    return "Potentially fabricated file: " + gap.ref;
   case "inconsistency":
@@ -1570,7 +1580,10 @@ export function collectVerificationEvidence(
   resolved,
   constraints,
   decisions,
-  goal: extraction.mainGoal ?? continuity?.goal ?? null,
+  // The raw resolved direction is the honest current goal: it equals
+  // mainGoal except when the host boundary carried our own two-label
+  // composite, where mainGoal would demand composite text in the summary.
+  goal: evidence.goalEvidence?.direction ?? extraction.mainGoal ?? continuity?.goal ?? null,
  };
 }
 
@@ -1756,6 +1769,7 @@ function verifySemanticCoverage(
  collected: CollectedVerificationEvidence,
  continuity: CompactionState | null,
  accumulator: VerificationAccumulator,
+ goalEvidence?: GoalEvidence,
 ): void {
  const evidenceKeys = requiredEvidenceKeysByPolarity(collected, continuity);
  const exemptFor = (source: string) =>
@@ -1794,14 +1808,63 @@ function verifySemanticCoverage(
  }
  if (collected.goal) {
   const goalTarget = findSection(parsed, "goal")?.body ?? "";
-  if (!hasSemanticEvidence(collected.goal, goalTarget)) {
-   addGap(accumulator, { kind: "missing-goal", goal: collected.goal }, 12);
-  }
-  if (hasSemanticContradiction(collected.goal, goalTarget, exemptFor(collected.goal))) {
-   addGap(accumulator, {
-    kind: "inconsistency",
-    detail: "semantic-contradiction: goal polarity or condition changed",
-   }, 20);
+  const ge = goalEvidence;
+  if (ge?.ownedFallback && ge.pair && ge.prior && ge.direction) {
+   // Owned deterministic pair: verify BOTH raw values. The Goal section must
+   // be EXACTLY the canonical pair — any extra or altered line (an added
+   // `Latest user direction:` directive, an injected unlabeled instruction, a
+   // forged `Previously tracked goal:` line, LLM-patch drift) fails here and
+   // deterministic repair re-renders the trusted pair. Only the exact
+   // metadata-backed historical line is non-active for the semantic probes,
+   // and prior text that lexically contains the direction cannot satisfy
+   // coverage.
+   const expectedPrior = PRIOR_GOAL_LABEL + ge.prior;
+   const canonicalPair = goalPairLines(ge.prior, ge.direction);
+   const normalizedTarget = goalTarget
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+   const activeGoalText = goalTarget
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== expectedPrior)
+    .join("\n");
+   // One failure, one gap: a non-canonical shape and missing semantic coverage
+   // of the current line are the same defect (the trusted pair must be
+   // re-rendered), so they add a single missing-goal penalty.
+   if (
+    normalizedTarget !== canonicalPair ||
+    !hasSemanticEvidence(ge.direction, activeGoalText)
+   ) {
+    addGap(accumulator, { kind: "missing-goal", goal: ge.direction }, 12);
+   }
+   if (
+    hasSemanticContradiction(ge.direction, activeGoalText, exemptFor(ge.direction))
+   ) {
+    addGap(
+     accumulator,
+     {
+      kind: "inconsistency",
+      detail: "semantic-contradiction: goal polarity or condition changed",
+     },
+     20,
+    );
+   }
+   if (!goalTarget.split(/\r?\n/).some((line) => line.trim() === expectedPrior)) {
+    // Historical evidence is required, not optional: deleting the prior
+    // line cannot pass just because the current direction is present.
+    addGap(accumulator, { kind: "missing-prior-goal", prior: ge.prior }, 12);
+   }
+  } else {
+   if (!hasSemanticEvidence(collected.goal, goalTarget)) {
+    addGap(accumulator, { kind: "missing-goal", goal: collected.goal }, 12);
+   }
+   if (hasSemanticContradiction(collected.goal, goalTarget, exemptFor(collected.goal))) {
+    addGap(accumulator, {
+     kind: "inconsistency",
+     detail: "semantic-contradiction: goal polarity or condition changed",
+    }, 20);
+   }
   }
  }
  const decisionBody = findSection(parsed, "decisions")?.body ?? "";
@@ -2018,7 +2081,7 @@ export function verifySummary(
   collected,
   accumulator,
  );
- verifySemanticCoverage(parsed, collected, continuity, accumulator);
+ verifySemanticCoverage(parsed, collected, continuity, accumulator, evidence.goalEvidence);
  verifyFileReferences(
   summary,
   extraction,
@@ -2205,13 +2268,31 @@ export function patchDeterministic(
     );
     break;
    }
-   case "missing-goal":
+   case "missing-goal": {
+    // Canonical repair re-renders the SAME resolved raw pair (or honest
+    // single label) for owned fallback output; label text never diverges
+    // from the metadata the state step will persist.
+    const ge = evidence.goalEvidence;
     canonical = upsertSection(
      canonical,
      "goal",
-     safe(gap.goal, gap.goal.length) || "Continue the current task.",
+     ge?.ownedFallback && ge.direction
+      ? (renderGoalEvidence(ge) ?? safe(gap.goal, gap.goal.length))
+      : safe(gap.goal, gap.goal.length) || "Continue the current task.",
     );
     break;
+   }
+   case "missing-prior-goal": {
+    const ge = evidence.goalEvidence;
+    if (ge?.ownedFallback && ge.pair && ge.prior && ge.direction) {
+     canonical = upsertSection(
+      canonical,
+      "goal",
+      goalPairLines(ge.prior, ge.direction),
+     );
+    }
+    break;
+   }
    case "missing-open-loops": {
     const current = extraction.errors
      .filter((error) => !error.resolved)

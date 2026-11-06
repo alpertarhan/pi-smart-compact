@@ -19,13 +19,14 @@
  */
 
 import { createHash } from "node:crypto";
-import { PROFILES } from "../constants.ts";
+import { PROFILES, TRUNC } from "../constants.ts";
 import { classifyHeading, canonicalHeading } from "./summary-schema.ts";
 import type {
 	CanonicalSummary,
 	Section,
 	SectionKind,
 } from "./summary-schema.ts";
+import type { GoalEvidence } from "../types.ts";
 
 /** H1/H2 always start sections; H3 starts one only when its kind is recognized. */
 const HEADING_RE = /^(#{1,3})\s+(.+?)\s*$/;
@@ -39,6 +40,35 @@ export function summaryEvidenceLine(value: string, maxLength: number): string {
 		.replace(/^(?:(?:#{1,6}|[-*+]|>)\s+)+/, "");
 	if (line.length <= maxLength) return line;
 	return cutBeforeSplitPath(line, maxLength).trim();
+}
+
+/** Honest goal labels for the user-approved deterministic fallback pair
+ * policy: the previously tracked goal and the latest user direction stay
+ * separate, and a single surviving value says which evidence it is. */
+export const PRIOR_GOAL_LABEL = "Previously tracked goal: ";
+export const LATEST_DIRECTION_LABEL = "Latest user direction: ";
+export const CARRIED_GOAL_LABEL = "Carried goal evidence: ";
+
+/** Deterministic Goal body for the approved fallback pair: raw bounded values,
+ * once each. Rendered label text never feeds back into state or evidence. */
+export function goalPairLines(prior: string, direction: string): string {
+	return (
+		PRIOR_GOAL_LABEL + summaryEvidenceLine(prior, TRUNC.MESSAGE) + "\n" +
+		LATEST_DIRECTION_LABEL + summaryEvidenceLine(direction, TRUNC.MESSAGE)
+	);
+}
+
+/** Owned honest-label rendering. Null when there is no raw value to label
+ * (opaque carried text): callers then render today's plain goal line, so
+ * already-labeled host text is never re-labeled and cannot nest. */
+export function renderGoalEvidence(ge: GoalEvidence): string | null {
+	if (!ge.direction) return null;
+	if (ge.pair && ge.prior) return goalPairLines(ge.prior, ge.direction);
+	if (ge.directionSource === "user-turn")
+		return LATEST_DIRECTION_LABEL + summaryEvidenceLine(ge.direction, TRUNC.MESSAGE);
+	if (ge.directionSource === "carried-raw")
+		return CARRIED_GOAL_LABEL + summaryEvidenceLine(ge.direction, TRUNC.MESSAGE);
+	return null;
 }
 
 /** Same character class the file-reference scanner treats as one token. */

@@ -16,6 +16,7 @@ import type {
  ContinuityOverride,
  ContinuityScope,
  LlmMessage,
+ GoalEvidence,
 } from "../types.ts";
 import {
  VERSION,
@@ -34,6 +35,7 @@ import {
  latestRawAssertions,
  extractText,
  collapseDecisionsByQuestion,
+ type RawGoalEvidence,
 } from "./extraction.ts";
 import { releasesConstraint, supersedesConstraint } from "../phases/verify.ts";
 import { errorDetail, recordIssue, reportIssue } from "./issues.ts";
@@ -51,6 +53,9 @@ import {
  renderSummary,
  appendToSection,
  summaryEvidenceLine,
+ PRIOR_GOAL_LABEL,
+ LATEST_DIRECTION_LABEL,
+ CARRIED_GOAL_LABEL,
 } from "../domain/summary-parse.ts";
 import { buildPathNeedles } from "./file-needles.ts";
 
@@ -842,6 +847,118 @@ export function mergeCompactionStates(
   },
   factOverrides,
  );
+}
+
+/** Host-compaction-entry state guard (same shape contract as the handoff
+ * reader; a foreign or hand-edited record is rejected, never trusted). */
+export function isCompactionStateRecord(value: unknown): value is CompactionState {
+ return (
+ typeof value === "object" &&
+ value !== null &&
+ ((value as CompactionState).goal === null || typeof (value as CompactionState).goal === "string") &&
+ Array.isArray((value as CompactionState).constraints) &&
+ Array.isArray((value as CompactionState).decisions) &&
+ Array.isArray((value as CompactionState).unresolvedErrors) &&
+ Array.isArray((value as CompactionState).resolvedErrors) &&
+ Array.isArray((value as CompactionState).openLoops) &&
+ Array.isArray((value as CompactionState).criticalContext)
+ );
+}
+
+/** Raw state recorded on the most recent ACTIVE compaction boundary. Only the
+ * first compaction entry from the branch end is read: an entry without our
+ * guarded state means a newer boundary exists and older entries are
+ * pre-boundary history, so they are never searched. This is the structured
+ * carrier that survives host compaction independently of the scoped state
+ * file (persist writes it into the entry's details). */
+export function activeCarrierCompactionState(branch: unknown): CompactionState | null {
+ if (!Array.isArray(branch)) return null;
+ for (let i = branch.length - 1; i >= 0; i--) {
+ const entry = branch[i] as { type?: unknown; details?: unknown } | null;
+ if (!entry || entry.type !== "compaction") continue;
+ const details = entry.details as { compactionState?: unknown } | null;
+ return details && isCompactionStateRecord(details.compactionState)
+ ? details.compactionState
+ : null;
+ }
+ return null;
+}
+
+const GOAL_LABEL_PREFIXES = [PRIOR_GOAL_LABEL, LATEST_DIRECTION_LABEL, CARRIED_GOAL_LABEL] as const;
+
+function isGoalLabelShaped(text: string): boolean {
+ return GOAL_LABEL_PREFIXES.some((prefix) => text.includes(prefix));
+}
+
+/** Resolve the run's authoritative raw goal pair from message-pure evidence
+ * plus the two owned metadata sources: the scoped state file and the active
+ * native compaction-entry carrier. The SAME resolved pair drives rendering
+ * and persistence; rendered label text never derives authority here. */
+export function resolveGoalEvidence(
+ raw: RawGoalEvidence,
+ scoped: CompactionState | null,
+ carrier: CompactionState | null,
+): GoalEvidence {
+ // The latest ACTIVE guarded carrier is the goal authority — it is the most
+ // recent APPLIED compaction. A scoped file is consulted only when no
+ // applicable carrier exists; its updatedAt timestamp is never goal authority
+ // (an unrelated fact write can bump it while carrying an old goal chain).
+ const goalSource = carrier ?? scoped;
+ // Optional new field on legacy/foreign records: validate at use, never
+ // coerce. A malformed priorGoal is treated as absent and the state's other
+ // facts stay usable; no string conversion can gain authority.
+ const rawPriorGoal =
+ typeof goalSource?.priorGoal === "string" && goalSource.priorGoal
+ ? goalSource.priorGoal
+ : null;
+ const rawGoal =
+ goalSource?.goal !== null && typeof goalSource?.goal === "string"
+ ? goalSource.goal
+ : null;
+ // Bound the carried-raw direction ONCE at resolution, exactly like prior:
+ // renderers truncate to TRUNC.MESSAGE anyway, and an unbounded legacy/
+ // carrier goal would make verification compare against text no renderer
+ // can emit, wedging the gate (missing-goal forever). A stored goal that
+ // sanitizes to empty is not raw authority.
+ const boundedRawGoal = rawGoal
+ ? summaryEvidenceLine(rawGoal, TRUNC.MESSAGE)
+ : null;
+ let direction = raw.direction;
+ let directionSource: GoalEvidence["directionSource"] =
+ raw.directionSource === "user-turn" ? "user-turn" : "carried-text";
+ if (
+ raw.directionSource !== "user-turn" &&
+ rawGoal &&
+ !isGoalLabelShaped(rawGoal) &&
+ boundedRawGoal
+ ) {
+ // Raw owned metadata beats the rendered host-summary Goal section — but
+ // only when it is genuinely raw: label-shaped stored text (an opaque
+ // composite that once reached persistence) is rejected, so nothing gains
+ // raw authority merely by being saved, and a composite is never
+ // re-derived as the direction.
+ direction = boundedRawGoal;
+ directionSource = "carried-raw";
+ }
+ let prior: string | null = null;
+ if (direction && directionSource !== "carried-text") {
+ const bounded = (value: string) => summaryEvidenceLine(value, TRUNC.MESSAGE);
+ if (rawPriorGoal && !isGoalLabelShaped(rawPriorGoal))
+ prior = bounded(rawPriorGoal);
+ else if (!goalSource && raw.hostSummaryGoal && !isGoalLabelShaped(raw.hostSummaryGoal))
+ // No owned metadata at all: a host summary's single semantic Goal is
+ // legitimate prior evidence, but label-shaped text is rejected outright.
+ prior = bounded(raw.hostSummaryGoal);
+ else if (rawGoal && rawGoal !== direction && !isGoalLabelShaped(rawGoal))
+ prior = bounded(rawGoal);
+ if (prior === direction) prior = null;
+ }
+ return {
+ prior,
+ direction,
+ directionSource,
+ pair: !!(prior && direction && prior !== direction),
+ };
 }
 
 /** Build the bounded, deterministic context that must survive every generation. */

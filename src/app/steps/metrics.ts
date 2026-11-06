@@ -43,6 +43,7 @@ const KNOWN_VERIFICATION_GAP_KINDS = {
  "missing-constraint": true,
  "missing-decision": true,
  "missing-goal": true,
+ "missing-prior-goal": true,
  "fabricated-file": true,
  inconsistency: true,
  "missing-open-loops": true,

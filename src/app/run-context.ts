@@ -39,7 +39,7 @@ import type {
   CompressionProfile, CompactionMode, EffectiveCompactionMode, LlmMessage, StructuredExtraction,
   ExplorationReport, ChunkSummary, SessionMessageEntry, PipelinePhaseTiming,
   CompactConfig, ProfileConfig, ProviderCapabilities, SmartCompactDetails,
-  CompactionState, ContinuityOverride, ContinuityScope, OpenLoop, Cell, PreparedConversationBackup,
+  CompactionState, ContinuityOverride, ContinuityScope, OpenLoop, Cell, PreparedConversationBackup, GoalEvidence,
 } from "../types.ts";
 import type { PendingSlot } from "./pending-slot.ts";
 import type { PruningResult } from "../utils/pruning.ts";
@@ -254,6 +254,9 @@ export interface ExtractedExt extends TieredExt {
   verificationContinuity: CompactionState;
   /** Constraints retired this run (superseded by later user messages). */
   factOverrides: ContinuityOverride[];
+  /** Raw resolved goal pair for the deterministic fallback policy, scrubbed.
+   * Additive optional: absent on runs produced before this field existed. */
+  goalEvidence?: GoalEvidence;
   /**
    * Serialized pruned conversation text. Computed once in `extractWithCache`
    * and reused by `summarizeConversation` so we don't `serializeConversation`

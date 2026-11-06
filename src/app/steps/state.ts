@@ -30,6 +30,7 @@ import {
 import { verifyCompactionYield } from "../../domain/yield-gate.ts";
 import { findSection, summaryEvidenceLine } from "../../domain/summary-parse.ts";
 import { summarySourceOf } from "../../domain/telemetry.ts";
+import { normalizeFactKey } from "../../utils/helpers.ts";
 
 export function buildState(rc: VerifiedRc): StatedRc {
   const extraction = rc.extraction;
@@ -111,10 +112,31 @@ export function buildState(rc: VerifiedRc): StatedRc {
     }
   }
 
-  // Goal text in the verified summary may be an LLM paraphrase. Persist it so
-  // the next host-compacted Goal matches, but never use it as resolution proof
-  // or delta evidence for task-scoped facts.
-  if (summarizedGoal && currentState.goal) compactionState.goal = summarizedGoal;
+  // Goal persistence. A successful LLM summary keeps today's behavior: the
+  // parsed rendered Goal (possibly a paraphrase) is persisted and the
+  // fallback-only prior anchor is retired — a genuine semantic goal closes the
+  // prior chain. An owned deterministic run (exact "fallback"/"zero-call"
+  // source) persists the SAME resolved raw pair it rendered: the raw direction
+  // in `goal`, the raw prior anchor in `priorGoal`; never the rendered label
+  // text, so repeated cycles cannot nest or grow.
+  const summarySource = summarySourceOf({
+    method: rc.methodForMetrics,
+    qualityFloorUsed: rc.verificationProvenance.qualityFloorUsed,
+  });
+  const ownedDeterministic = summarySource === "fallback" || summarySource === "zero-call";
+  if (ownedDeterministic && rc.goalEvidence?.direction) {
+    compactionState.goal = rc.goalEvidence.direction;
+    compactionState.goalKey = normalizeFactKey(rc.goalEvidence.direction) || undefined;
+    compactionState.priorGoal = rc.goalEvidence.pair && rc.goalEvidence.prior
+      ? rc.goalEvidence.prior
+      : undefined;
+  } else {
+    // Goal text in the verified summary may be an LLM paraphrase. Persist it so
+    // the next host-compacted Goal matches, but never use it as resolution
+    // proof or delta evidence for task-scoped facts.
+    if (summarizedGoal && currentState.goal) compactionState.goal = summarizedGoal;
+    compactionState.priorGoal = undefined;
+  }
 
   const continuity = renderContinuityCapsule(compactionState, undefined, summary);
   if (continuity) summary = summary.trimEnd() + "\n\n" + continuity;
@@ -132,6 +154,9 @@ export function buildState(rc: VerifiedRc): StatedRc {
     steering: { focus: rc.focus, note: rc.userNote },
     summaryBudgetTokens: rc.profileCfg?.summaryBudgetTokens ?? 6_000,
     factOverrides: rc.factOverrides,
+    goalEvidence: rc.goalEvidence
+      ? { ...rc.goalEvidence, ownedFallback: ownedDeterministic }
+      : undefined,
   };
   let postVerification = verifySummary(summary, extraction, compactionState, verificationEvidence);
   const postInitialScore = postVerification.score;
@@ -162,7 +187,7 @@ export function buildState(rc: VerifiedRc): StatedRc {
     runId: rc.runId,
     method: rc.method,
     generationFallbacks: rc.generationFallbacks,
-    summarySource: summarySourceOf({ method: rc.methodForMetrics, qualityFloorUsed: rc.verificationProvenance.qualityFloorUsed }),
+    summarySource: summarySource,
     chunkCount: rc.chunkCount || 1,
     topics: rc.summaries.length ? rc.summaries.map(s => s.topic) : [rc.method],
     readFiles: detRead, modifiedFiles: detModified,

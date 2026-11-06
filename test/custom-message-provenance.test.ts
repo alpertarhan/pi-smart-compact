@@ -188,11 +188,11 @@ describe("custom-message provenance", () => {
     }
 
     // Single-pass routes carry no chunk prose: any injected text could only come from deterministic facts.
-    function expectUserFacts(summary: string): void {
+    function expectUserFacts(summary: string, goalBody: string): void {
       expect(summary).not.toMatch(INJECTED_MARKERS);
       const lines = (kind: "constraints" | "decisions") =>
         findSection(summary, kind)?.body.split("\n").filter(line => line !== "- None recorded.");
-      expect(findSection(summary, "goal")?.body).toBe(USER_GOAL);
+      expect(findSection(summary, "goal")?.body).toBe(goalBody);
       expect(lines("constraints")).toEqual(["- " + USER_RULE]);
       expect(lines("decisions")).toEqual(["- **" + QUESTION + "** → " + ANSWER]);
       expect(summary).toContain("## Continuity Ledger\n- Decision: " + QUESTION + " → " + ANSWER);
@@ -201,7 +201,9 @@ describe("custom-message provenance", () => {
     it("keeps the heuristic summary to user facts", async () => {
       const { summary, method } = await finalSummary(null);
       expect(method).toBe("heuristic");
-      expectUserFacts(summary);
+      // Owned deterministic fallback: the one surviving value is honestly
+      // labeled with its evidence source (approved pair-policy contract).
+      expectUserFacts(summary, "Latest user direction: " + USER_GOAL);
     });
 
     it("appends only user facts to an LLM summary", async () => {
@@ -214,7 +216,7 @@ describe("custom-message provenance", () => {
       const { summary, method, patched } = await finalSummary(llm);
       expect(method).toBe("single-pass");
       expect(patched).toEqual(expect.arrayContaining(["missing-constraint", "missing-decision"]));
-      expectUserFacts(summary);
+      expectUserFacts(summary, USER_GOAL);
     });
   });
 });
