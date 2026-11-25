@@ -25,9 +25,16 @@
 
 ### Changed
 
-- The agent no longer receives injected context-fullness percentages or
-  tool-output-share figures. Tool descriptions carry the usage guidance;
-  numbers the agent asked for (status, plan, gate refusals) are unchanged.
+- The agent no longer receives context-fullness percentages or
+  tool-output-share figures, injected or in tool results: compaction gate
+  refusals are one plain sentence, and smart_context status/plan results
+  carry the decision inputs only. The numbers moved to the human-facing
+  tool rows and the footer status line (`ctx 72% · cleanup available`).
+- Memory status updates and recorded anchors render in the transcript as
+  one plain status line with the fact's title instead of a tagged block
+  with identifiers; expand the row to see the reference or the anchor
+  summary. Toasts lead with the outcome and name the reason or point at
+  /smart-compact issues.
 - Over-long agent texts (rewind reports, anchor summaries and carryovers,
   navigation messages) are shortened head+tail and accepted instead of
   bouncing the call for a rewrite. smart_save_memory keeps refusing text
