@@ -193,7 +193,7 @@ Or Home → **Clean up tool output**. Either one:
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
 - replaces old successful text results of at least 2,048 characters with a
   digest marker (512 characters for a result a later call edited or re-read
-  in full; stale content is removed first), up to 32 outputs per boundary: read-only tools, shell
+  in full; large stale content is removed first), up to 32 outputs per boundary: read-only tools, shell
   (`bash`) output, `process` `output`/`list` results, `smart_context` `read`
   pages, old process notifications and peer (`agent_mesh`) messages the agent
   already answered with a `reply`;
@@ -233,7 +233,7 @@ page points back at the source it paged
 (`[Archived smart_context read of id=<source-id>, …]`), so the agent re-reads
 the source instead of the copy.
 
-Superseded output goes first. A read-only result whose path a later call
+Superseded output goes first, except one under 2,048 characters, which goes after everything else so it never takes one of the 32 slots from a large output. A read-only result whose path a later call
 writes, edits or deletes (`write`, `edit`, path-carrying mutating tools, or a
 literal `bash` target such as `sed -i`, `>` or `rm`), or reads again in full
 (a plain `read` without `offset`/`limit`; searches, listings, symbol reads and

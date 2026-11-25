@@ -488,7 +488,14 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
   const assistantIndexes = projection.flatMap((entry, index) => entry.messages[0]?.role === "assistant" ? [index] : []);
   const cutoff = assistantIndexes.at(-KEEP_RECENT_TURNS) ?? 0;
   const superseded = supersededResults(projection, candidates);
-  const rank = (id: string) => { const reason = superseded.get(id); return reason === "edited" ? 0 : reason === "reread" ? 1 : 2; };
+  // Stale outputs go first, but a small one (under the general floor) goes last:
+  // it must never take one of the MAX_TRIM_EDITS slots from a large output.
+  const rank = (entry: { id: string; text: string }) => {
+    const reason = superseded.get(entry.id);
+    if (!reason) return 2;
+    if (entry.text.length < MIN_TRIM_CHARS) return 3;
+    return reason === "edited" ? 0 : 1;
+  };
   // Superseded outputs first (edited before reread), each group in branch order; the cap then prefers them.
   const floorChars = options.minSavingChars ?? MIN_AUTO_TRIM_SAVING_CHARS;
   const notices = archivableNotices(projection);
@@ -510,7 +517,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
     });
     if (text.length - marker.length <= 0) return [];
     return [{ id: sourceEntry.id, text, marker, savedChars: text.length - marker.length }];
-  }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
+  }).sort((left, right) => rank(left) - rank(right)).slice(0, MAX_TRIM_EDITS);
   const chosen = selectTrimFrontier(eligible, branch, options.economy, floorChars);
   const entries: SessionBoundaryDraft[] = [];
   const references: string[] = [];
@@ -542,7 +549,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
 /** Why a trim plan queues nothing, with its numbers, so a skipped cleanup is diagnosable without debug mode. */
 export function describeTrimSkip(plan: { entries: unknown[]; savedChars: number; automatic: string; cooldownTurns: number }, floorChars: number): string {
   if (!plan.entries.length) {
-    return `No safe cleanup: no eligible archived content (tool output, process notifications or answered peer messages; each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
+    return `No safe cleanup: no eligible archived content (tool output, process notifications or answered peer messages; each needs ≥${MIN_TRIM_CHARS} chars, or ≥${MIN_SUPERSEDED_TRIM_CHARS} once a later call edited or re-read it, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
   }
   if (plan.automatic === "cooldown") return `No safe cleanup yet: cooldown, ${plan.cooldownTurns} more turn(s) after the last context change.`;
   return `No safe cleanup: eligible outputs would save ${plan.savedChars} chars, under the ${floorChars}-char floor.`;
