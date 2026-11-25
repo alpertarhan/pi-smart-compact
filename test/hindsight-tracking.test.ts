@@ -180,7 +180,9 @@ describe("background Hindsight tracking", () => {
     expect(f.messages[0].message.details).toMatchObject({ total: 4,
       counts: { completed: 1, failed: 1, accepted: 1, unknown: 1 } });
     expect(f.messages[0].message.content).toContain("completion unconfirmed");
-    expect(f.messages[0].message.content).toContain("smart_recall");
+    // The notice is for the human: no advice about the agent's tools, no per-save identity noise.
+    expect(f.messages[0].message.content).not.toContain("smart_recall");
+    expect(f.messages[0].message.content).not.toContain("Operation:");
     expect(fake.requests.filter(request => request.method === "POST")).toHaveLength(4);
   });
 

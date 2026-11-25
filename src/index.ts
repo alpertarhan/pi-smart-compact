@@ -27,6 +27,7 @@ import {
  notifyAppliedCompaction,
  notifySummaryFallback,
 } from "./ui/overlays.ts";
+import { registerMessageRenderers } from "./ui/message-renderers.ts";
 import {
  branchEntryIds,
  resolveSessionId,
@@ -139,6 +140,7 @@ function unwrapConsumed(
 }
 
 export default function smartCompactExtension(pi: ExtensionAPI) {
+ registerMessageRenderers(pi);
  const delivery = registerCompactionDelivery(pi);
  // Encapsulated slot: producers call `.set(...)`, the event handler calls
  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
