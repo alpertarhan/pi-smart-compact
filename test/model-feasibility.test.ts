@@ -87,7 +87,8 @@ describe("planned-request model eligibility", () => {
     expect(eligible(f.small, "summary").largestRequestTokens).toBeGreaterThan(0);
     expect(eligible(f.small, "summary").largestRequestTokens).toBeLessThan(f.small.contextWindow);
     expect(eligible(f.tiny, "summary").selectable).toBe(false);
-    expect(eligible(f.tiny, "summary").requests).toBeGreaterThan(0);
+    // A model that cannot take any request has no plan to count.
+    expect(eligible(f.tiny, "summary").requests).toBeUndefined();
     expect(eligible(model("unknown-window", 0), "summary").selectable).toBe(false);
     expect(f.authCalls()).toBe(0);
   });
