@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Secret scrubbing now catches quoted JSON keys ({"api_key": "..."}),
+  fine-grained GitHub tokens (github_pat_...), HTTP Basic credentials, and
+  short password assignments (DB_PASSWORD=hunter2). Code that computes a
+  secret (crypto.randomBytes(32).toString()) is no longer rewritten, and
+  very long hyphen-joined input can no longer stall scrubbing for seconds.
+- A lock folder left behind by a killed process no longer blocks later
+  metrics, settings, and memory writes forever; it is reclaimed when its
+  owner is gone. Saving a setting writes through a symlinked settings.json
+  instead of replacing the link, drops the legacy semanticCompact key, and
+  no longer re-permissions pre-existing directories.
+- The agent-facing smart_compact tool can no longer raise per-run call or
+  token budgets past the configured maxLlmCalls/maxLlmInputTokens ceilings.
+- A project's fingerprint session count no longer restarts at 1 after 30
+  idle days.
+- Session-log recovery uses the host-reported session file instead of
+  scanning Pi's session directories.
+
+### Changed
+
+- When a capped metrics or damage log fills, it is trimmed to half the cap
+  instead of being rewritten on nearly every append.
+- The test suite runs against a throwaway HOME, so it neither reads nor
+  writes the developer's real Pi caches.
+- The published package drops declaration maps, and its type declarations
+  use .js import specifiers that standard module resolution accepts.
+- Removed dead code: the pre-8.1 continuity-state migration, the unused
+  synchronous locked append/trim, and one of two identical SQLite
+  transaction adapters.
+
 ## [10.8.1] - 2026-11-06
 
 The release owner explicitly requested this stable release under the
