@@ -16,10 +16,10 @@ import * as log from "../utils/logger.ts";
 
 export const ARTIFACT_DETAILS_KEY = "smartCompactArtifact";
 export const ARTIFACT_MIN_CHARS = 16_384;
-/** Offload floor relative to the active model's window: a fixed 16k chars is
- * 8% of a 200k window but noise in a 1M one. 2% of window tokens at ~4
- * chars/token, bounded so small windows still spill and huge ones stay sane;
- * a 200k window lands exactly on the old fixed floor. Unknown window keeps it. */
+/** Offload floor relative to the active model's window: 2% of window tokens
+ * at ~4 chars/token, bounded to 8k-64k characters so small windows still
+ * spill and huge ones stay sane. A 200k window lands near the old fixed floor
+ * (16,000 vs 16,384 chars); a 1M window gets 64k. Unknown window keeps it. */
 export function artifactMinChars(contextWindowTokens: number | undefined): number {
   if (!contextWindowTokens || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return ARTIFACT_MIN_CHARS;
   return Math.min(65_536, Math.max(8_192, Math.round(contextWindowTokens * 0.02 * 4)));

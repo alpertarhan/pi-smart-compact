@@ -32,10 +32,18 @@ export {
 export function boundText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const marker = (omitted: number) => "\n… [" + omitted + " characters omitted] …\n";
-  const budget = Math.max(0, maxChars - marker(text.length).length);
-  const head = Math.ceil(budget * 0.6);
-  const tail = budget - head;
-  return text.slice(0, head) + marker(text.length - budget) + text.slice(text.length - tail);
+  const budget = maxChars - marker(text.length).length;
+  if (budget <= 0) return text.slice(0, maxChars); // no room for the marker
+  // Never cut a surrogate pair in half: a lone half is not valid UTF-8.
+  const surrogate = (index: number, low: boolean) => {
+    const code = text.charCodeAt(index);
+    return low ? code >= 0xdc00 && code <= 0xdfff : code >= 0xd800 && code <= 0xdbff;
+  };
+  let head = Math.ceil(budget * 0.6);
+  if (head > 0 && surrogate(head - 1, false)) head--;
+  let tailStart = text.length - (budget - Math.ceil(budget * 0.6));
+  if (tailStart < text.length && surrogate(tailStart, true)) tailStart++;
+  return text.slice(0, head) + marker(tailStart - head) + text.slice(tailStart);
 }
 
 export function getPreviousCompactionContext(branch: unknown[]): string {
