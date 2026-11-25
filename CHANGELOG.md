@@ -9,6 +9,8 @@
   short password assignments (DB_PASSWORD=hunter2). Code that computes a
   secret (crypto.randomBytes(32).toString()) is no longer rewritten, and
   very long hyphen-joined input can no longer stall scrubbing for seconds.
+  Redacted values keep their quotes and spacing, so scrubbed JSON still
+  parses.
 - A lock folder left behind by a killed process no longer blocks later
   metrics, settings, and memory writes forever; it is reclaimed when its
   owner is gone. Saving a setting writes through a symlinked settings.json

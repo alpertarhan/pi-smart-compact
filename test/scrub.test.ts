@@ -153,6 +153,24 @@ describe("SecretScrubber", () => {
       .toBe("{ password: hashPassword(pw) }");
   });
 
+  it("keeps quotes, never re-reads a placeholder and leaves expressions alone", () => {
+    const scrubber = new SecretScrubber(true, false);
+    expect(scrubber.scrubText("DB_PASSWORD=supersecret123456").value).toBe("DB_PASSWORD=[REDACTED:credential]");
+    expect(scrubber.scrubText('{"password": "hunter2"}').value).toBe('{"password": "[REDACTED:credential]"}');
+    expect(scrubber.scrubText('{"api_key": "abcdefghij1234567890"}').value).toBe('{"api_key": "[REDACTED:credential]"}');
+    expect(scrubber.scrubText("const password = await readSecret()").value).toBe("const password = await readSecret()");
+    expect(scrubber.scrubText("password = crypto.randomBytes(32).toString('hex')").value)
+      .toBe("password = crypto.randomBytes(32).toString('hex')");
+    expect(scrubber.scrubText("Authorization: basic dXNlcjpwYXNzd29yZA==").value).toContain("[REDACTED:basic-auth]");
+  });
+
+  it("checks reference-shaped values in linear time", () => {
+    const value = "password=a" + ".b(c)".repeat(2_000) + "!";
+    const started = performance.now();
+    new SecretScrubber(true, false).scrubText(value);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
   it("stays fast on long hyphen-joined runs", () => {
     const run = "a1-".repeat(60_000) + " the end";
     const started = performance.now();

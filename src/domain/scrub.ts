@@ -16,15 +16,21 @@ interface Pattern {
 
 /** True for values that reference a secret instead of being one: a dotted
  * identifier chain (`process.env.API_KEY`) or a call expression
- * (`crypto.randomBytes(32).toString()`). Real secrets are opaque
- * single runs; they contain no parentheses and are essentially never dotted. */
+ * (`crypto.randomBytes(32).toString()`), including one cut short at a string
+ * argument (`getenv(`). Real secrets are opaque single runs; they contain no
+ * parentheses and are essentially never dotted. `[^()]*` keeps both checks
+ * linear on hostile input; nested calls are not recognised and get redacted. */
 function isReferenceValue(value: string): boolean {
   const bare = value.replace(/[;,\]]+$/, "");
   return (
     /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(bare) ||
-    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\(.*\)(?:\.[A-Za-z_$][\w$]*(?:\(.*\))?)*$/.test(bare)
+    (bare.includes("(") &&
+      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)*\(?$/.test(bare))
   );
 }
+
+/** Keywords that start an expression, not a password: `password = await read()`. */
+const EXPRESSION_START = /^(?:await|typeof|yield|function)$/;
 
 const SECRET_PATTERNS: Pattern[] = [
   {
@@ -52,20 +58,14 @@ const SECRET_PATTERNS: Pattern[] = [
   },
   {
     kind: "basic-auth",
-    regex: /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/g,
+    // Auth schemes are case-insensitive (RFC 7235), like the Bearer rule.
+    regex: /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/gi,
     // "Basic authentication ..." is prose, not a credential: only redact
     // when the blob actually decodes to user:password shaped text.
-    replacement: (blob, match) => {
-      let decoded = "";
-      try {
-        decoded = Buffer.from(blob, "base64").toString("utf8");
-      } catch {
-        return match;
-      }
-      return /^[\x20-\x7e]*:[^\x00-\x1f]*$/.test(decoded)
+    replacement: (blob, match) =>
+      /^[\x20-\x7e]*:[^\x00-\x1f]*$/.test(Buffer.from(blob, "base64").toString("utf8"))
         ? "Basic [REDACTED:basic-auth]"
-        : match;
-    },
+        : match,
   },
   {
     kind: "connection-password",
@@ -77,11 +77,12 @@ const SECRET_PATTERNS: Pattern[] = [
   {
     kind: "credential",
     regex:
-      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+){0,12})["']?\s*([:=])\s*["']?([^\s"']{16,})["']?/gi,
-    replacement: (name, separator, value, match) =>
+      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+){0,12})(["']?\s*([:=])\s*["']?)(?!\[REDACTED)([^\s"']{16,})(["']?)/gi,
+    // Quotes and spacing around the value survive, so scrubbed JSON still parses.
+    replacement: (name, gap, _separator, value, close, match) =>
       isReferenceValue(value)
         ? match
-        : name + separator + "[REDACTED:credential]",
+        : name + gap + "[REDACTED:credential]" + close,
   },
   {
     // Short passwords (`DB_PASSWORD=hunter2`) never reach the 16-char rule
@@ -89,14 +90,16 @@ const SECRET_PATTERNS: Pattern[] = [
     // type annotations like `password: string` stay readable.
     kind: "credential",
     regex:
-      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:password|passwd)(?:[_-][A-Za-z0-9]+){0,12})["']?\s*([:=])\s*(["']?)([^\s"']{4,15})["']?/gi,
-    replacement: (name, separator, quote, value, match) =>
+      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:password|passwd)(?:[_-][A-Za-z0-9]+){0,12})(["']?\s*([:=])\s*(["']?))(?!\[REDACTED)([^\s"']{4,15})(?![^\s"'])(["']?)/gi,
+    // The value must end at whitespace, a quote or the end: a longer token
+    // (one the rule above spared as a reference) is never cut in two.
+    replacement: (name, gap, separator, quote, value, close, match) =>
       // Unquoted colon values stay unless they look like a YAML secret
       // (symbol + digit, e.g. `s3cret!`); type names have no digit.
       (separator === ":" && !quote && !(/[^A-Za-z0-9_$]/.test(value) && /\d/.test(value))) ||
-      isReferenceValue(value)
+      isReferenceValue(value) || EXPRESSION_START.test(value)
         ? match
-        : name + separator + "[REDACTED:credential]",
+        : name + gap + "[REDACTED:credential]" + close,
   },
 ];
 
