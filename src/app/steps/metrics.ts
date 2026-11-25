@@ -162,6 +162,7 @@ export function buildSuccessMetrics(
    ? "budget-" + rc.services.budget.reason()
    : undefined,
   redactions: rc.services.scrubber.count(),
+  // takeArchivedReads clears the session counter: build success metrics once per run.
   archivedReads: takeArchivedReads(rc.sessionId) || undefined,
   adapted: rc.adapted,
  };
