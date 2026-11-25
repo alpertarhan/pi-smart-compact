@@ -61,7 +61,7 @@ export async function createModelFeasibilityResolver(
  }
  const services = createProductionServices({ scrubber: new SecretScrubber(config.scrubSecrets, config.scrubPii) });
  const shared = prepareManualPreflightContext(ctx, selectedSummary, services.tokenCalibration);
- const recovered = await recoverSourceMessages(sessionId, shared.msgs, ctx.cwd);
+ const recovered = await recoverSourceMessages(sessionId, shared.msgs, ctx.cwd, ctx.sessionManager.getSessionFile?.());
  const cachedExt = loadCachedExtraction(sessionId, { readOnly: true });
  const damageMedian = preflightDamageMedian(ctx.cwd, config);
  const previousCompaction = getPreviousCompactionContext(shared.branch);

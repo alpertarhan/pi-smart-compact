@@ -275,8 +275,13 @@ async function readOriginalMessageMap(
   sessionId: string,
   wantedIds: ReadonlySet<string>,
   cwd?: string,
+  sessionFile?: string,
 ): Promise<Map<string, LlmMessage> | null> {
-  const logPath = findSessionLogFile(sessionId, cwd);
+  // Prefer the host-reported session file; the directory scan below rebuilds
+  // Pi's private folder layout and is only a fallback for hosts without it.
+  const logPath = sessionFile && fs.existsSync(sessionFile)
+    ? sessionFile
+    : findSessionLogFile(sessionId, cwd);
   if (!logPath) {
     log.debug("Session log not found for " + sessionId);
     return null;
@@ -357,11 +362,12 @@ export async function resolveCompactionMessages(
   sessionId: string,
   toCompactEntries: SessionMessageEntry[],
   cwd?: string,
+  sessionFile?: string,
 ): Promise<ResolvedCompactionMessage[] | null> {
   const wantedIds = new Set(
     toCompactEntries.flatMap((entry) => (entry.id ? [entry.id] : [])),
   );
-  const logMap = await readOriginalMessageMap(sessionId, wantedIds, cwd);
+  const logMap = await readOriginalMessageMap(sessionId, wantedIds, cwd, sessionFile);
   if (!logMap) return null;
 
   let restoredCount = 0;

@@ -19,7 +19,7 @@ import { ATTENTION_CUSTOM_TYPE } from "../context-operations.ts";
 
 /** Read-only source recovery shared by preflight and execution. */
 export async function recoverSourceMessages(
- sessionId: string, entries: WindowedRc["toCompact"], cwd: string,
+ sessionId: string, entries: WindowedRc["toCompact"], cwd: string, sessionFile?: string,
 ): Promise<{ messages: Array<{ entryId: string; message: LlmMessage }>; fromLog: boolean }> {
  // Our own context-pressure hints describe a past moment of this session, never work to carry.
  const hints = new Set(entries.flatMap(entry => entry.id && entry.customType === ATTENTION_CUSTOM_TYPE ? [entry.id] : []));
@@ -36,7 +36,7 @@ export async function recoverSourceMessages(
  });
 
  if (hasTruncatedMessages(resolved.map(item => item.message))) {
-  const fromLog = await resolveCompactionMessages(sessionId, entries, cwd);
+  const fromLog = await resolveCompactionMessages(sessionId, entries, cwd, sessionFile);
   if (fromLog) return {
    messages: fromLog.flatMap(item => hints.has(item.entryId) ? [] : [{ entryId: item.entryId, message: withProvenance(item.entryId, item.message) }]),
    fromLog: true,
@@ -46,7 +46,7 @@ export async function recoverSourceMessages(
 }
 
 export async function recoverSessionLog(rc: WindowedRc): Promise<RecoveredRc> {
- const { messages: resolved, fromLog } = await recoverSourceMessages(rc.sessionId, rc.toCompact, rc.ctx.cwd);
+ const { messages: resolved, fromLog } = await recoverSourceMessages(rc.sessionId, rc.toCompact, rc.ctx.cwd, rc.ctx.sessionManager.getSessionFile?.());
  if (fromLog) rc.notify("Using untruncated session log (" + resolved.length + " msgs)", "info");
 
  const out = rc as WindowedRc & {
