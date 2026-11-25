@@ -10,6 +10,7 @@ import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identi
 import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
+import { boundText } from "../utils/helpers.ts";
 import { compactionDue, contextPressure } from "./background-preparation.ts";
 import { fingerprintContext } from "./pending-slot.ts";
 import { contextEvidence, evidencePage, MAX_READ_CHARS } from "./context-evidence.ts";
@@ -201,7 +202,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
-      report: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_REPORT_CHARS, description: "Rewind handoff: findings and evidence paths, constraints/decisions, failed attempts, next step." })),
+      report: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144, description: "Rewind handoff: findings and evidence paths, constraints/decisions, failed attempts, next step. Over 8000 characters it is shortened head+tail, never rejected." })),
       id: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Source ID." })),
       query: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Literal text." })),
       line: Type.Optional(Type.Integer({ minimum: 1, description: "Read from line." })),
@@ -316,13 +317,13 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (params.action === "checkpoint" && state.checkpoint) throw new Error(ACTIVE_CHECKPOINT_ERROR);
       if (params.action === "rewind" && !state.checkpoint) throw new Error(state.invalidReason ?? "No active checkpoint.");
       const report = params.report?.trim() ?? "";
-      if (params.action === "rewind" && (!report || report.length > MAX_REPORT_CHARS)) {
-        throw new Error("rewind requires a non-empty report of at most 8000 characters.");
+      if (params.action === "rewind" && !report) {
+        throw new Error("rewind requires a non-empty report.");
       }
       const originId = branch.at(-1)?.id;
       if (!originId) throw new Error("No active session branch.");
-      const text = scrub(params.action === "rewind" ? report : params.label?.trim() ?? "Research");
-      if (params.action === "rewind" && text.length > MAX_REPORT_CHARS) throw new Error("Shorten the report; redacted content exceeds 8000 characters.");
+      const scrubbed = scrub(params.action === "rewind" ? report : params.label?.trim() ?? "Research");
+      const text = params.action === "rewind" ? boundText(scrubbed, MAX_REPORT_CHARS) : scrubbed;
       mark = null;
       queued = {
         action: params.action, callId, sessionId, originId,

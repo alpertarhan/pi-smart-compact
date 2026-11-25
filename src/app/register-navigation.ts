@@ -8,6 +8,7 @@ import { SecretScrubber } from "../domain/scrub.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
+import { boundText } from "../utils/helpers.ts";
 import { notifyUser } from "../utils/issues.ts";
 import { readContextGuide } from "./context-guide.ts";
 import { contextPressure } from "./background-preparation.ts";
@@ -171,7 +172,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   name = scrub(name.trim());
   summary = scrub(summary.trim());
   if (!name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) throw new Error("Use an anchor name of 1–120 printable characters.");
-  if (!summary || summary.length > 12_000) throw new Error("Use a retrospective summary of 1–12000 characters.");
+  if (!summary) throw new Error("Use a non-empty retrospective summary.");
+  summary = boundText(summary, 12_000);
   if (getAnchors(ctx.sessionManager).some(entry => entry.data.name === name)
    || ctx.sessionManager.getEntries().some(entry => ctx.sessionManager.getLabel(entry.id) === name)) throw new Error("That anchor name or label is already in use; choose another name.");
   const targetId = ctx.sessionManager.getLeafId();
@@ -184,9 +186,9 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const reason = busy(ctx);
   if (reason) throw new Error(reason);
   if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority over a pivot.");
-  carryover = scrub(carryover.trim());
-  if (!carryover || carryover.length > 16_000) throw new Error("Pivot requires a carryover of 1–16000 characters.");
-  if (message !== undefined && (!message.trim() || message.length > 16_000)) throw new Error("The optional next message must have 1–16000 characters.");
+  carryover = boundText(scrub(carryover.trim()), 16_000);
+  if (!carryover) throw new Error("Pivot requires a non-empty carryover.");
+  if (message !== undefined && !message.trim()) throw new Error("The optional next message must not be empty.");
   let targetId = resolveAnchorTarget(ctx.sessionManager, target);
   const targetEntry = targetId ? ctx.sessionManager.getEntry(targetId) : undefined;
   if (targetEntry?.type === "custom_message" && anchorFromEntry(targetEntry)) {
@@ -198,7 +200,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   if (!targetId) throw new Error("Pivot target not found. Inspect anchors with view first.");
   const originId = ctx.sessionManager.getLeafId();
   if (!originId || originId === targetId) throw new Error("Choose a different history entry or anchor.");
-  return { nonce: randomUUID(), sessionId: resolveSessionId(ctx), originId, targetId, carryover, message: message ? scrub(message) : undefined };
+  return { nonce: randomUUID(), sessionId: resolveSessionId(ctx), originId, targetId, carryover, message: message ? boundText(scrub(message), 16_000) : undefined };
  };
  const valid = (operation: Pivot, ctx: ExtensionContext) => !operation.signal?.aborted
   && operation.sessionId === resolveSessionId(ctx)
@@ -242,9 +244,9 @@ export function registerNavigation(pi: ExtensionAPI, options: {
    offset: Type.Optional(Type.Integer({ minimum: 0 })),
    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
    name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-   summary: Type.Optional(Type.String({ minLength: 1, maxLength: 12_000 })),
-   carryover: Type.Optional(Type.String({ minLength: 1, maxLength: 16_000 })),
-   message: Type.Optional(Type.String({ minLength: 1, maxLength: 16_000 })),
+   summary: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144 })),
+   carryover: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144 })),
+   message: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144 })),
   }),
   executionMode: "sequential",
   async execute(callId, params, signal, _onUpdate, ctx) {

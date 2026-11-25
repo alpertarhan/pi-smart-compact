@@ -22,6 +22,22 @@ export {
   validateSmartCompactConfig,
 } from "./config.ts";
 
+/**
+ * Bound agent-supplied prose (rewind reports, pivot carryovers, anchor
+ * summaries) to an in-context budget without rejecting the call: keep the
+ * head and tail and mark the omitted middle. Schema caps stay far above
+ * these budgets so an over-long text is shortened once, never bounced back
+ * for a retry loop.
+ */
+export function boundText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = (omitted: number) => "\n… [" + omitted + " characters omitted] …\n";
+  const budget = Math.max(0, maxChars - marker(text.length).length);
+  const head = Math.ceil(budget * 0.6);
+  const tail = budget - head;
+  return text.slice(0, head) + marker(text.length - budget) + text.slice(text.length - tail);
+}
+
 export function getPreviousCompactionContext(branch: unknown[]): string {
   interface BranchEntry {
     type: string;
