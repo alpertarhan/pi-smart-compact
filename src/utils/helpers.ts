@@ -137,24 +137,6 @@ export function smartKeepBoundaryCandidates(
   return candidates;
 }
 
-export function smartKeepBoundary(
-  msgs: SessionMessageEntry[],
-  keepFromIndex: number,
-  branchEntries?: unknown[],
-): number {
-  const anchor = smartKeepBoundaryCandidates(
-    msgs,
-    keepFromIndex,
-    branchEntries,
-  ).find((candidate) => candidate.kind === "anchor");
-  const adjusted = anchor?.keepFrom ?? keepFromIndex;
-  return (
-    smartKeepBoundaryCandidates(msgs, adjusted).find(
-      (candidate) => candidate.kind === "topical",
-    )?.keepFrom ?? adjusted
-  );
-}
-
 /**
  * Recursively collect tool call IDs from assistant message blocks.
  * Handles top-level toolCall blocks and nested multi_tool_use.parallel wrappers.

@@ -10,7 +10,7 @@ import { createModelFeasibilityResolver } from "../src/app/model-feasibility.ts"
 import { deriveProjectId } from "../src/utils/fingerprint.ts";
 import { extractStructured } from "../src/utils/extraction.ts";
 import { buildCompactionState } from "../src/utils/state.ts";
-import { legacyScopedCompactionStateFile, scopedCompactionStateFile } from "../src/infra/paths.ts";
+import { scopedCompactionStateFile } from "../src/infra/paths.ts";
 
 const previousHome = process.env.HOME;
 let home: string;
@@ -134,24 +134,4 @@ describe("planned-request model eligibility", () => {
     expect(f.authCalls()).toBe(0);
   });
 
-  it.each([0, 8])("does not migrate or delete a %d-day-old legacy continuity snapshot during selection", async (ageDays) => {
-    const f = fixture();
-    const sessionId = f.manager.getSessionId();
-    const extraction = extractStructured([], PROFILES.balanced);
-    const projectId = deriveProjectId(f.cwd, extraction, sessionId);
-    const branchHeadId = f.manager.getBranch()[0].id;
-    const state = buildCompactionState(extraction, [], null, [], []);
-    state.scope = { schemaVersion: 2, projectId, sessionId, branchHeadId };
-    state.updatedAt = Date.now() - ageDays * 24 * 60 * 60 * 1000;
-    const legacy = legacyScopedCompactionStateFile(projectId, sessionId);
-    fs.mkdirSync(path.dirname(legacy), { recursive: true });
-    const bytes = JSON.stringify(state);
-    fs.writeFileSync(legacy, bytes, { mode: 0o600 });
-    const eligible = await createModelFeasibilityResolver(f.ctx, f.config);
-    expect(eligible(f.small, "summary").selectable).toBe(true);
-    expect(fs.lstatSync(legacy).isFile()).toBe(true);
-    expect(fs.readFileSync(legacy, "utf8")).toBe(bytes);
-    expect(fs.existsSync(scopedCompactionStateFile(projectId, sessionId, branchHeadId))).toBe(false);
-    expect(f.authCalls()).toBe(0);
-  });
 });

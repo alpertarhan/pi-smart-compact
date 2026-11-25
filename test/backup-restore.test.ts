@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { listBackups, readBackupContent, buildRestoreMessage } from "../src/utils/backups.ts";
+import { listBackups, readConversationBackup, buildRestoreMessage } from "../src/utils/backups.ts";
 import { resetConfigCache } from "../src/utils/helpers.ts";
 
 let prevHome: string | undefined;
@@ -63,22 +63,22 @@ describe("listBackups", () => {
   });
 });
 
-describe("readBackupContent", () => {
+describe("readConversationBackup content", () => {
   it("strips the backup header and returns the conversation body", () => {
     const fp = writeBackup("s1.md", "2026-06-01T00:00:00.000Z", "s1", "## Goal\nDo the thing.\n\nMore body.");
-    expect(readBackupContent(fp)).toBe("## Goal\nDo the thing.\n\nMore body.");
+    expect(readConversationBackup(fp)?.content ?? null).toBe("## Goal\nDo the thing.\n\nMore body.");
   });
 
   it("returns null for missing or foreign files", () => {
-    expect(readBackupContent(path.join(tmp, "nope.md"))).toBeNull();
+    expect(readConversationBackup(path.join(tmp, "nope.md"))?.content ?? null).toBeNull();
     const foreign = path.join(tmp, "notes.md");
     fs.writeFileSync(foreign, "private notes");
-    expect(readBackupContent(foreign)).toBeNull();
+    expect(readConversationBackup(foreign)?.content ?? null).toBeNull();
   });
 
   it("returns null for an empty body", () => {
     const fp = writeBackup("empty.md", "2026-06-01T00:00:00.000Z", "s1", "");
-    expect(readBackupContent(fp)).toBeNull();
+    expect(readConversationBackup(fp)?.content ?? null).toBeNull();
   });
 });
 

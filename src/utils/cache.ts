@@ -831,4 +831,3 @@ export function readMetricsLog(limit = 100): CompactMetricsEntry[] {
  }
 }
 
-// ── Backup ──

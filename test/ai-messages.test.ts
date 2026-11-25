@@ -6,7 +6,7 @@ import {
 } from "../src/infra/ai-messages.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { LlmMessage } from "../src/types.ts";
-import { computeToolCharPercentage, smartKeepBoundary } from "../src/utils/helpers.ts";
+import { computeToolCharPercentage } from "../src/utils/helpers.ts";
 
 describe("host-visible context projection", () => {
   it("applies replacements and omissions without changing source IDs", () => {
@@ -35,7 +35,6 @@ describe("host-visible context projection", () => {
     expect(msgs.map(entry => entry.id)).toEqual(["compaction", "anchor", "tool"]);
     expect(JSON.stringify(msgs)).not.toContain("PRIVATE_SENTINEL");
     expect(JSON.stringify(msgs)).toContain("Previous facts");
-    expect(smartKeepBoundary(msgs, 2, branch)).toBe(1);
     expect(computeToolCharPercentage(msgs)).toBeGreaterThan(0);
     expect(computeToolCharPercentage(msgs)).toBeLessThan(computeToolCharPercentage(branch));
   });
