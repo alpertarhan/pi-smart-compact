@@ -162,8 +162,8 @@ export function buildSuccessMetrics(
    ? "budget-" + rc.services.budget.reason()
    : undefined,
   redactions: rc.services.scrubber.count(),
-  // takeArchivedReads clears the session counter: build success metrics once per run.
-  archivedReads: takeArchivedReads(rc.sessionId) || undefined,
+  // takeArchivedReads clears the session counter, so only a real compaction consumes it.
+  archivedReads: status === "success" ? takeArchivedReads(rc.sessionId) || undefined : undefined,
   adapted: rc.adapted,
  };
 }
