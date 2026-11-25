@@ -293,8 +293,15 @@ const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;
  */
 interface RemediationHintsFile {
   files?: unknown;
-  gapKinds?: unknown;
+  /** When `files` was last written; the name predates gap kinds. */
   updatedAt?: number;
+  gapKinds?: unknown;
+  gapKindsUpdatedAt?: number;
+}
+
+/** Each hint set has its own clock, so writing one never revives the other. */
+function hintsFresh(writtenAt: unknown): boolean {
+  return typeof writtenAt !== "number" || Date.now() - writtenAt <= REMEDIATION_TTL_MS;
 }
 
 function readRemediationFile(projectId: string): RemediationHintsFile {
@@ -306,7 +313,6 @@ function writeRemediationFile(projectId: string, patch: Partial<RemediationHints
     writeJsonSync(remediationHintsFile(projectId), {
       ...readRemediationFile(projectId),
       ...patch,
-      updatedAt: Date.now(),
     });
   } catch (e) {
     recordIssue({ key: "damage.hints", message: what + " could not be saved (" + errorDetail(e) + "). The next compaction may not use them.", error: e });
@@ -322,7 +328,7 @@ export function writeRemediationHints(
     ...new Set(files.map((f) => (f ?? "").trim()).filter((f) => f.length > 0)),
   ];
   if (!cleaned.length) return;
-  writeRemediationFile(projectId, { files: cleaned }, "Re-read file hints");
+  writeRemediationFile(projectId, { files: cleaned, updatedAt: Date.now() }, "Re-read file hints");
 }
 
 /**
@@ -333,17 +339,12 @@ export function writeRemediationHints(
 export function writeVerificationGapHints(projectId: string, kinds: string[]): void {
   const cleaned = [...new Set(kinds.map((k) => (k ?? "").trim()).filter(Boolean))].slice(0, 8);
   if (!cleaned.length) return;
-  writeRemediationFile(projectId, { gapKinds: cleaned }, "Verification gap hints");
+  writeRemediationFile(projectId, { gapKinds: cleaned, gapKindsUpdatedAt: Date.now() }, "Verification gap hints");
 }
 
 export function readVerificationGapHints(projectId: string): string[] {
   const data = readRemediationFile(projectId);
-  if (!Array.isArray(data.gapKinds)) return [];
-  if (
-    typeof data.updatedAt === "number" &&
-    Date.now() - data.updatedAt > REMEDIATION_TTL_MS
-  )
-    return [];
+  if (!Array.isArray(data.gapKinds) || !hintsFresh(data.gapKindsUpdatedAt)) return [];
   return data.gapKinds.filter((k): k is string => typeof k === "string");
 }
 
@@ -352,14 +353,7 @@ export function readVerificationGapHints(projectId: string): string[] {
  * or older than the TTL.
  */
 export function readRemediationHints(projectId: string): string[] {
-  const data = readJsonSync<{ files?: unknown; updatedAt?: number }>(
-    remediationHintsFile(projectId),
-  );
-  if (!data || !Array.isArray(data.files)) return [];
-  if (
-    typeof data.updatedAt === "number" &&
-    Date.now() - data.updatedAt > REMEDIATION_TTL_MS
-  )
-    return [];
+  const data = readRemediationFile(projectId);
+  if (!Array.isArray(data.files) || !hintsFresh(data.updatedAt)) return [];
   return data.files.filter((f): f is string => typeof f === "string");
 }

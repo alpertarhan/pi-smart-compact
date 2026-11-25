@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { writeRemediationHints, readRemediationHints, writeVerificationGapHints, readVerificationGapHints } from "../src/utils/damage.ts";
+import { remediationHintsFile } from "../src/infra/paths.ts";
 
 // Per-test HOME swap so remediation hint files never touch the user's real
 // ~/.pi/agent/.cache (mirrors backup-prune.test.ts / fingerprint.test.ts).
@@ -48,6 +49,17 @@ describe("remediation hints", () => {
     writeRemediationHints(PID, ["src/b.ts"]);
     expect(readVerificationGapHints(PID)).toEqual(["missing-file", "inconsistency"]);
     expect(readVerificationGapHints("never-written")).toEqual([]);
+  });
+
+  it("keeps a separate freshness clock for file hints and gap kinds", () => {
+    writeRemediationHints(PID, ["src/a.ts"]);
+    const file = remediationHintsFile(PID);
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    data.updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    fs.writeFileSync(file, JSON.stringify(data));
+    writeVerificationGapHints(PID, ["missing-file"]);
+    expect(readRemediationHints(PID)).toEqual([]);
+    expect(readVerificationGapHints(PID)).toEqual(["missing-file"]);
   });
 
   it("returns [] when the cache file is malformed", () => {
