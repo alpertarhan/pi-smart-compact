@@ -155,7 +155,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const anchor = index < 0 ? null : anchorFromEntry(branch[index]);
   const pressure = contextPressure(ctx, config());
   const parts: string[] = [];
-  if (pressure.percent !== null) parts.push(`ctx ${Math.round(pressure.percent)}%${pressure.policyWindow !== pressure.modelWindow ? ` of ${pressure.policyWindow?.toLocaleString("en-US")} policy window` : ""}`);
+  // Plain words for a human: a number with a verb, no internal band or window terms (item 5).
+  if (pressure.percent !== null) parts.push(`ctx ${Math.round(pressure.percent)}%${pressure.compaction ? " · compaction due" : pressure.cleanup ? " · cleanup available" : ""}`);
   if (anchor) parts.push(`anchor:${anchor.name.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120)} · ${branch.length - index - 1} entries later`);
   ctx.ui.setStatus(STATUS, parts.length ? parts.join(" · ") : undefined);
  };
@@ -235,7 +236,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  pi.registerTool({
   name: NAVIGATION_TOOL_NAME,
   label: "Context Navigation",
-  description: "View/recall session anchors. Anchor completed work under pressure. In pressure-only mode, early cleanup for an explicitly user-requested anchor needs one-time host confirmation; without that dialog the anchor is only a recall point. Safe cleanup is queued once, not full compaction; never claim approval or retry a refusal. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
+  description: "Session anchors. When you finish a unit of work, anchor it with a short handoff (done, in progress, next step) so it can be returned to; anchor by name or entry ID with target. recall lists anchors from earlier sessions. pivot returns to an anchor with a carryover and ends the turn; files and processes are never rolled back. A requested cleanup may need the user's confirmation: never claim approval and never retry a refusal.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
    target: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Anchor name or entry ID (for recall/pivot)." })),

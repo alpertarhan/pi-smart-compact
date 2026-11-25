@@ -198,7 +198,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
   pi.registerTool({
     name: TOOL_NAME,
     label: "Session Context",
-    description: "For bounded read-only research: checkpoint before exploring, then rewind(report) before implementation or your final answer. Rewind replaces safe exploration with your findings; no pressure required, one active checkpoint. status shows gates; plan/trim follow cleanup policy; search/read recover archived evidence (scope=lineage includes parents). Changes apply after the batch; safety guards remain, files/processes are never rolled back.",
+    description: "Bounded read-only research: checkpoint before exploring, then rewind(report) with findings and evidence paths before implementation or your final answer; one active checkpoint. trim reclaims old tool output when cleanup is allowed; status shows whether it is. search and read recover archived evidence (scope=lineage also searches parent sessions). Changes apply after the tool batch; safety guards apply and files/processes are never rolled back.",
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
