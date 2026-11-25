@@ -133,6 +133,15 @@ describe("writeGlobalConfigValue", () => {
     expect(stored.semanticCompact).toBeUndefined();
   });
 
+  it("writes through a dangling settings.json symlink instead of replacing it", async () => {
+    const dotfiles = path.join(home, "dotfiles-new-settings.json");
+    fs.symlinkSync(dotfiles, settings);
+    resetConfigCache();
+    await writeGlobalConfigValue("mode", "thorough");
+    expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(dotfiles, "utf8")).smartCompact.mode).toBe("thorough");
+  });
+
   it("preserves unrelated root and smartCompact keys", async () => {
     writeSettings({
       theme: "dark",

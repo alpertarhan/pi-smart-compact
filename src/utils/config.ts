@@ -825,7 +825,10 @@ export async function writeGlobalConfigValues(
   // Write through a symlinked settings.json (dotfiles) instead of replacing
   // the link with a plain file: rename the temp file over the link target.
   let dest = file;
-  try { dest = fs.realpathSync(file); } catch { /* missing or dangling: write the path itself */ }
+  try { dest = fs.realpathSync(file); } catch {
+    // A dangling link (target not created yet) still names where to write.
+    try { dest = path.resolve(path.dirname(file), fs.readlinkSync(file)); } catch { /* missing: write the path itself */ }
+  }
   await atomicWriteFile(dest, JSON.stringify(root, null, 2) + "\n");
   resetConfigCache();
   return loadConfig();
