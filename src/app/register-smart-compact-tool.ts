@@ -131,20 +131,15 @@ export function registerSmartCompactTool(
       const contextPercent = safeContextPercent(totalTokens, window);
       const percent = Math.round(contextPercent);
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
-        return textResult(
-          "Context is not large enough for compaction (" +
-          totalTokens.toLocaleString() +
-          " tokens, " +
-          percent +
-          "%). No action needed.",
-        );
+        // Context fullness is the user's business (item 2): the agent gets the outcome, the numbers go to the human renderer.
+        return textResult("Compaction is not needed yet. Nothing to do.", {
+          display: { state: "skipped", reason: "too-small", tokens: totalTokens, percent },
+        });
       }
       if (contextPercent < config.minContextPercent) {
         return textResult(
-          "Compaction skipped: context " + percent + "% (" + totalTokens.toLocaleString() +
-          " / " + (window ?? 0).toLocaleString() + " tokens), below the " +
-          config.minContextPercent + "% agent-tool threshold. tool=XX% measures tool-output ratio, not context usage. " +
-          "For deliberate early compaction, the user can run /smart-compact; preview and safety checks still apply.",
+          "Compaction is not available from the agent yet. If the user asks for it, they can run /smart-compact.",
+          { display: { state: "skipped", reason: "below-threshold", tokens: totalTokens, percent, threshold: config.minContextPercent, window: window ?? null } },
         );
       }
 
@@ -301,6 +296,14 @@ function renderCompactRow(
     if (display.seconds) lines.push(metaLine(theme, "pipeline", display.seconds + "s"));
   } else if (display.state === "cancelled") {
     lines.push(statusLabel(theme, "cancelled") + " " + theme.fg("muted", "by " + String(display.source ?? "host")));
+  } else if (display.state === "skipped" && (display.reason === "too-small" || display.reason === "below-threshold")) {
+    // Fullness numbers are for the human only; the agent's text stays plain.
+    const tokens = Number(display.tokens) || 0;
+    const fact = display.reason === "too-small"
+      ? "context is small (" + tokens.toLocaleString() + " tokens, " + display.percent + "%)"
+      : "context at " + display.percent + "% (" + tokens.toLocaleString() + " of " + (Number(display.window) || 0).toLocaleString()
+        + " tokens), agent threshold " + display.threshold + "%";
+    lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "not needed: " + fact));
   } else if (display.state === "skipped") {
     lines.push(statusLabel(theme, "skipped") + " " + theme.fg("dim", summarizeLine(firstTextContent(result.content), 140)));
   } else if (display.kind === "metrics") {

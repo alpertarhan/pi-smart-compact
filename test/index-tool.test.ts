@@ -8,7 +8,7 @@ import { resetConfigCache } from "../src/utils/config.ts";
 import { recordIssue, resetIssuesForTests } from "../src/utils/issues.ts";
 
 describe("smart_compact tool cancellation", () => {
-  it("explains the actual threshold, model window, and manual early-compaction option", async () => {
+  it("keeps fullness numbers out of the agent's text and points it to the manual option", async () => {
     let tool: any;
     registerSmartCompactTool({ registerTool: (definition: any) => { tool = definition; } } as any, {
       pendingRef: { peek: () => undefined } as any, runLock: {} as any,
@@ -18,11 +18,9 @@ describe("smart_compact tool cancellation", () => {
       model: { contextWindow: 272_000 }, getContextUsage: () => ({ tokens: 102_957 }),
       sessionManager: { getSessionId: () => "early-compact" },
     });
-    expect(result.content[0].text).toContain("38%");
-    expect(result.content[0].text).toContain("272,000");
-    expect(result.content[0].text).toContain("threshold");
-    expect(result.content[0].text).toContain("/smart-compact");
-    expect(result.content[0].text).not.toContain("tool=97%");
+    expect(result.content[0].text).toBe("Compaction is not available from the agent yet. If the user asks for it, they can run /smart-compact.");
+    // The numbers stay available to the human renderer.
+    expect(result.details.display).toMatchObject({ state: "skipped", reason: "below-threshold", tokens: 102_957, percent: 38, window: 272_000 });
     expect(tool.description).toContain("stages");
   });
   it("includes recent issues in the agent's metrics report so a gate failure is diagnosable", async () => {
@@ -65,7 +63,8 @@ describe("smart_compact tool cancellation", () => {
         sessionManager: { getSessionId: () => "capped-compact" },
       });
       // 100k of the 200k cap (not 10% of the 1M window).
-      expect(result.content[0].text).toContain("context 50% (100,000 / 200,000 tokens)");
+      expect(result.content[0].text).not.toMatch(/\d%/);
+      expect(result.details.display).toMatchObject({ percent: 50, tokens: 100_000, window: 200_000 });
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
