@@ -236,10 +236,10 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  pi.registerTool({
   name: NAVIGATION_TOOL_NAME,
   label: "Context Navigation",
-  description: "Session anchors. When you finish a unit of work, anchor it with a short handoff (done, in progress, next step) so it can be returned to; anchor by name or entry ID with target. recall lists anchors from earlier sessions. pivot returns to an anchor with a carryover and ends the turn; files and processes are never rolled back. A requested cleanup may need the user's confirmation: never claim approval and never retry a refusal.",
+  description: "Session anchors. When you finish a unit of work, anchor it with a short handoff (done, in progress, next step) so it can be returned to. view lists this session's anchors, or opens one by name or entry ID (target). recall lists anchors from earlier sessions. pivot returns to an anchor (target) with a carryover and ends the turn; files and processes are never rolled back. A requested cleanup may need the user's confirmation: never claim approval and never retry a refusal.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
-   target: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Anchor name or entry ID (for recall/pivot)." })),
+   target: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Anchor name or entry ID (for view/pivot)." })),
    keyword: Type.Optional(Type.String({ maxLength: 200 })),
    scope: Type.Optional(StringEnum(["cwd", "all"] as const)),
    offset: Type.Optional(Type.Integer({ minimum: 0 })),

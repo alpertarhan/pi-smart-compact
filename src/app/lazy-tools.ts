@@ -80,8 +80,8 @@ export function createContextToolExposure(pi: Pick<ExtensionAPI, "getActiveTools
   };
   // In eager mode every group is already loaded, so the loader's schema is
   // pure per-request overhead; it appears when loading becomes meaningful
-  // (lazy), or when the user explicitly showed it in /tools.
-  select(LOADER, settings.toolLoading === "lazy" || nextUserShown.has(LOADER));
+  // (lazy), or when the user explicitly showed it in /tools; off hides it like every group.
+  select(LOADER, settings.toolLoading === "lazy" || (settings.toolLoading === "eager" && nextUserShown.has(LOADER)));
   for (const group of GROUP_NAMES) {
    for (const name of GROUPS[group]) {
     select(name, permitted(group, settings) && (settings.toolLoading === "eager" || loaded.has(group) || nextUserShown.has(name)));

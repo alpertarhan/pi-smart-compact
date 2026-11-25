@@ -261,7 +261,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             enabled: settings.contextHygieneEnabled || (settings.autoTrigger && settings.autoTriggerStrategy === "background"),
             pressureOnly: settings.contextPressureOnly, maintenanceAvailable: options.canAutoTrim?.(ctx) !== false,
             batch: plan.automatic, blockedReason: plan.blockedReason,
-            agentAllowed: options.canAgentMutate?.(ctx) !== false,
+            // Whether an agent trim would be accepted now: the pressure-only gate as a yes/no, never a percentage.
+            agentAllowed: options.canAgentMutate?.(ctx) !== false && (!settings.contextPressureOnly || pressure.cleanup),
           };
           const held = deferred(sessionId);
           const roi = trimRoi(branch, sessionId);
@@ -719,7 +720,7 @@ function renderSmartContextRow(
       if (Number(display.savedChars) > 0) lines.push(metaLine(theme, "batch saves ≈", Number(display.savedChars).toLocaleString() + " chars"));
       const roi = display.trimRoi as { savedCharsEstimate?: number } | undefined;
       if (roi && Number(roi.savedCharsEstimate) > 0) lines.push(metaLine(theme, "archived so far ≈", Number(roi.savedCharsEstimate).toLocaleString() + " chars saved"));
-      if (display.deferredTrim) lines.push(theme.fg("dim", summarizeLine(formatDeferredTrim(display.deferredTrim as DeferredTrim), 200)));
+      if (display.deferredTrim) lines.push(theme.fg("dim", summarizeLine(formatDeferredTrim(display.deferredTrim as DeferredTrim, loadConfig().autoTrimBreakEvenRequests), 200)));
     }
     return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
   }
