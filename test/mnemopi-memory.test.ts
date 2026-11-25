@@ -257,9 +257,10 @@ describe("Mnemopi confirmed project memory", () => {
       { mnemopiDataDir: null },
       deriveProjectIdFromCwd(path.join(home, "project-a"))!,
     ).dbPath;
-    // Hold the cross-process lock exactly like another live session.
+    // Hold the cross-process lock exactly like another live session
+    // (a live owner pid; a dead one would be reclaimed as a crash leftover).
     fs.mkdirSync(dbPath + ".lock", { recursive: true });
-    fs.writeFileSync(path.join(dbPath + ".lock", "owner"), "999999:held-by-test");
+    fs.writeFileSync(path.join(dbPath + ".lock", "owner"), process.pid + ":held-by-test");
 
     const result = await harness.save({ content: FACT });
     expect(result.details.mnemopi.state).toBe("failed");
