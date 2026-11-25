@@ -155,7 +155,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const anchor = index < 0 ? null : anchorFromEntry(branch[index]);
   const pressure = contextPressure(ctx, config());
   const parts: string[] = [];
-  // Plain words for a human: a number with a verb, no internal band or window terms (item 5).
+  // Plain words for a human: a number with a verb, no internal band or window terms.
   if (pressure.percent !== null) parts.push(`ctx ${Math.round(pressure.percent)}%${pressure.compaction ? " · compaction due" : pressure.cleanup ? " · cleanup available" : ""}`);
   if (anchor) parts.push(`anchor:${anchor.name.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120)} · ${branch.length - index - 1} entries later`);
   ctx.ui.setStatus(STATUS, parts.length ? parts.join(" · ") : undefined);

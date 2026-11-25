@@ -192,7 +192,8 @@ Or Home → **Clean up tool output**. Either one:
 - is queued, not applied: **the first next provider request is still sent
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
 - replaces old successful text results of at least 2,048 characters with a
-  digest marker, up to 32 outputs per boundary: read-only tools, shell
+  digest marker (512 characters for a result a later call edited or re-read
+  in full; stale content is removed first), up to 32 outputs per boundary: read-only tools, shell
   (`bash`) output, `process` `output`/`list` results, `smart_context` `read`
   pages, old process notifications and peer (`agent_mesh`) messages the agent
   already answered with a `reply`;
@@ -470,8 +471,9 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
   requirements.
 - Rewind removes successful read-only tool exchanges as complete call/result
   pairs, including supported graph queries, diagnostics and web research.
-  It removes intermediate assistant prose, the rewind call itself and this
-  extension's pressure hints created during the detour, leaving one handoff.
+  It removes intermediate assistant prose, the rewind call itself and any
+  pressure hints an earlier version of this extension added during the
+  detour, leaving one handoff.
   Unrelated extension messages stay. Errors, instruction reads, incomplete exchanges, images, writes
   and unknown tools stay. Shell commands stay unless every line and pipeline segment only reads:
   `rg`, `grep`, `cat`, `head`, `tail`, `wc`, `ls`, `sort`/`uniq` without output files, `sed -n`
@@ -618,9 +620,10 @@ decides what the agent sees:
 | **On demand** | `smart_tools` loads a missing group. Late loading can rebuild the provider cache. Loaded groups reset at session start/branch change, not compaction. |
 | **Off** | No context tools. The human UI keeps working. |
 
-`smart_tools` also answers `status`, `unload` and `guide`. The guide is the
-context workflow text; it is returned only when asked for and is never added
-to the system prompt. Loading a group adds only that group's tool declarations.
+In On demand mode, `smart_tools` also answers `status`, `unload` and `guide`;
+it stays hidden under Always available (every group is already loaded) unless
+you show it with `/tools`. The guide is the context workflow text; it is
+returned only when asked for and is never added to the system prompt. Loading a group adds only that group's tool declarations.
 Each group still needs its own permission: `compaction` follows **Agent can
 compact**, `memory` needs project memory or a Hindsight/Mnemopi backend, and
 `navigation` needs **Session navigation**. Choices you make with `/tools` win

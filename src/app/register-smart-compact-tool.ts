@@ -131,7 +131,7 @@ export function registerSmartCompactTool(
       const contextPercent = safeContextPercent(totalTokens, window);
       const percent = Math.round(contextPercent);
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
-        // Context fullness is the user's business (item 2): the agent gets the outcome, the numbers go to the human renderer.
+        // Context fullness is the user's business: the agent gets the outcome, the numbers go to the human renderer.
         return textResult("Compaction is not needed yet. Nothing to do.", {
           display: { state: "skipped", reason: "too-small", tokens: totalTokens, percent },
         });

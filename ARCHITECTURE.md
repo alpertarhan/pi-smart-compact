@@ -249,7 +249,8 @@ edit applies at the next natural completed-turn boundary. A pending return to
 an anchor or newer boundary change cancels it with a visible message.
 
 Trimming protects four recent assistant turns and the active checkpoint prefix,
-replacing up to 32 old entries of at least 2,048 characters with a bounded
+replacing up to 32 old entries of at least 2,048 characters (512 for outputs
+a later call edited or re-read in full) with a bounded
 reference marker: read-only, shell and `process` `output`/`list` results, old
 `ad-process:notification` messages (the marker keeps process name, id, status
 and summary), and `agent_mesh` deliveries a later successful `agent_mesh`
@@ -296,8 +297,7 @@ confirmed in Pi's dialog. Standing approval (`requireApproval: false`) waives
 only that dialog: the anchor is saved and its cleanup keeps the agent's
 pressure and readiness gates. Below the compaction gate an agent trim or anchor
 cleanup must also pay back within the break-even limit (unknown prices keep
-today's behavior). Attention notes name a trim only for a ready batch that pays
-back within the break-even limit.
+today's behavior).
 
 Instruction and skill sources stay inline through trim, rewind, artifact,
 bitmap and pre-compaction pruning; recovery tool output is not recursively
@@ -334,7 +334,8 @@ A conservative read-only tool allowlist plus shared nested-call normalization
 protects side effects. Rewind removes only whole successful, complete,
 text-only read exchanges (including supported graph, diagnostic and web tools)
 and successful assistant prose after the checkpoint. Owned pressure hints
-inside that suffix are omitted by native custom-entry type, never text matching;
+(written by earlier versions; none are produced now) inside that suffix are
+omitted by native custom-entry type, never text matching;
 pre-checkpoint hints and unrelated extension messages stay. Namespace lookalikes and
 mutating graph operations are not admitted. First-delivery graph source snippets
 stay whole for read-before-edit guards, just like native file/symbol reads.
@@ -655,7 +656,8 @@ never dropped just because a custom message now repeats it. Only raw human
 mining mints the origin — summaries, custom/peer quotes and forged text cannot
 promote themselves — and an explicit release or supersession still retires the
 rule. A prior
-summary never becomes an open loop. Owned pressure hints are dropped before extraction. Dialog answers follow tool-call IDs rather
+summary never becomes an open loop. Owned pressure hints (legacy entries from
+earlier versions) are dropped before extraction. Dialog answers follow tool-call IDs rather
 than a fixed next-message window. Fresh extraction and cached reconciliation
 share retry-result classification and inspect later/sibling retries; a false
 `isError` flag cannot turn an error-bearing command result into success.
@@ -1330,14 +1332,14 @@ All external-world interaction.
 | `ui/dashboard-format.ts` | shared pure formatters for metrics surfaces |
 | `ui/dashboard-insights.ts` | Data Confidence, quality/provider drilldowns, canary trust views |
 | `ui/metrics-report.ts` | text report + local HTML metrics dashboard |
+| `ui/message-renderers.ts` | plain transcript rows for memory-status and anchor custom messages |
 
 ## Host dependency boundary
 
 Pi core modules are host-supplied peers requiring 0.87.1+; `typebox` is a
-wildcard peer. Neither is bundled. Development dependencies pin Pi 0.87.1 so
-native context projection is checked against the minimum supported API.
-`bun run compat:pi [version]` validates another release in an isolated
-workspace. The optional resvg renderer and the Mnemopi engine stay external to
+wildcard peer. Neither is bundled. Development dependencies pin Pi 1.6.1;
+`bun run compat:pi latest` and `bun run compat:pi 0.87.1` check the current
+release and the minimum supported API in isolated workspaces. The optional resvg renderer and the Mnemopi engine stay external to
 the bundles.
 
 ## Design principles

@@ -220,7 +220,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const state = inspectContext(branch, sessionId);
       if (params.action === "plan") {
         const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
-        // Fullness and saving estimates are for the human renderer (item 2):
+        // Fullness and saving estimates are for the human renderer:
         // the agent gets the decision inputs, the numbers ride in display.
         const pressure = contextPressure(ctx, config());
         const payload = {
