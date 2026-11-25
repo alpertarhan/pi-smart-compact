@@ -24,7 +24,7 @@ import { anchorFromEntry } from "../src/app/navigation-data.ts";
 import { createSettledAutoTrigger } from "../src/app/settled-auto-trigger.ts";
 import { contextPressure } from "../src/app/background-preparation.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
-import { ATTENTION_CUSTOM_TYPE } from "../src/app/context-attention.ts";
+import { ATTENTION_CUSTOM_TYPE } from "../src/app/context-operations.ts";
 function assistant(content: AssistantMessage["content"] = [], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
     role: "assistant", content, api: "openai-completions", provider: "test", model: "test", stopReason, timestamp: 1,
