@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { writeRemediationHints, readRemediationHints } from "../src/utils/damage.ts";
+import { writeRemediationHints, readRemediationHints, writeVerificationGapHints, readVerificationGapHints } from "../src/utils/damage.ts";
 
 // Per-test HOME swap so remediation hint files never touch the user's real
 // ~/.pi/agent/.cache (mirrors backup-prune.test.ts / fingerprint.test.ts).
@@ -38,6 +38,16 @@ describe("remediation hints", () => {
     writeRemediationHints(PID, ["src/a.ts", "lib/b.ts"]);
     writeRemediationHints(PID, ["src/c.ts"]);
     expect(readRemediationHints(PID)).toEqual(["src/c.ts"]);
+  });
+
+  it("keeps file hints and verification gap kinds side by side in one file", () => {
+    writeRemediationHints(PID, ["src/a.ts"]);
+    writeVerificationGapHints(PID, ["missing-file", "missing-file", "inconsistency"]);
+    expect(readRemediationHints(PID)).toEqual(["src/a.ts"]);
+    expect(readVerificationGapHints(PID)).toEqual(["missing-file", "inconsistency"]);
+    writeRemediationHints(PID, ["src/b.ts"]);
+    expect(readVerificationGapHints(PID)).toEqual(["missing-file", "inconsistency"]);
+    expect(readVerificationGapHints("never-written")).toEqual([]);
   });
 
   it("returns [] when the cache file is malformed", () => {

@@ -19,6 +19,7 @@ import {
 } from "../../phases/verify.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import { errorDetail, recordIssue } from "../../utils/issues.ts";
+import { writeVerificationGapHints } from "../../utils/damage.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { assembleFallback } from "../../phases/synthesize.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
@@ -251,6 +252,12 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 		finalScore: verification.score,
 		remainingGaps: verification.gaps,
 	};
+	// Feed what this summary initially missed into the next synthesis for
+	// this project (patched and remaining kinds alike).
+	writeVerificationGapHints(rc.projectId, [
+		...deterministicPatched.map(gap => gap.kind),
+		...verification.gaps.map(gap => gap.kind),
+	]);
 	// Verification may issue an additional semantic-patch call after synthesis.
 	// Refresh the materialized count before the result/details stage consumes it.
 	out.llmCalls = rc.services.metrics.summary().totalCalls;

@@ -53,6 +53,7 @@ import {
  scrubLlmMessages,
 } from "../../infra/ai-messages.ts";
 import { prepareConversationBackup } from "../../utils/backups.ts";
+import { readVerificationGapHints } from "../../utils/damage.ts";
 import {
  loadScopedCompactionState,
  previewMergedContinuity,
@@ -75,7 +76,13 @@ export function loadExtractionContinuity(
 ) {
  const projectId = deriveProjectId(rc.cwd, extraction, rc.sessionId);
  const fingerprint = loadProjectFingerprint(projectId);
- const projectCtx = buildProjectContext(fingerprint);
+ const gapKinds = readVerificationGapHints(projectId);
+ const projectCtx = [
+  buildProjectContext(fingerprint),
+  gapKinds.length
+   ? "Previous verified summaries for this project initially missed: " + gapKinds.join(", ") + ". Take extra care to include such content."
+   : "",
+ ].filter(Boolean).join("\n");
  const ancestryIds = boundedBranchLineageIds(rc.branch as Array<{ id?: string; parentId?: string | null; type?: string }>);
  const continuityScope = {
   schemaVersion: 2 as const, projectId, sessionId: rc.sessionId,

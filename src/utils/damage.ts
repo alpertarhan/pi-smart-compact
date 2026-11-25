@@ -291,6 +291,28 @@ const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;
  * compaction treats them as must-preserve (remediation). Overwrites with the
  * latest set; a TTL bounds how long stale hints linger.
  */
+interface RemediationHintsFile {
+  files?: unknown;
+  gapKinds?: unknown;
+  updatedAt?: number;
+}
+
+function readRemediationFile(projectId: string): RemediationHintsFile {
+  return readJsonSync<RemediationHintsFile>(remediationHintsFile(projectId)) ?? {};
+}
+
+function writeRemediationFile(projectId: string, patch: Partial<RemediationHintsFile>, what: string): void {
+  try {
+    writeJsonSync(remediationHintsFile(projectId), {
+      ...readRemediationFile(projectId),
+      ...patch,
+      updatedAt: Date.now(),
+    });
+  } catch (e) {
+    recordIssue({ key: "damage.hints", message: what + " could not be saved (" + errorDetail(e) + "). The next compaction may not use them.", error: e });
+  }
+}
+
 export function writeRemediationHints(
   projectId: string,
   files: string[],
@@ -300,14 +322,29 @@ export function writeRemediationHints(
     ...new Set(files.map((f) => (f ?? "").trim()).filter((f) => f.length > 0)),
   ];
   if (!cleaned.length) return;
-  try {
-    writeJsonSync(remediationHintsFile(projectId), {
-      files: cleaned,
-      updatedAt: Date.now(),
-    });
-  } catch (e) {
-    recordIssue({ key: "damage.hints", message: "Re-read file hints could not be saved (" + errorDetail(e) + "). The next compaction may not prioritise those files.", error: e });
-  }
+  writeRemediationFile(projectId, { files: cleaned }, "Re-read file hints");
+}
+
+/**
+ * Persist the verification gap kinds a summary initially missed so the next
+ * synthesis for this project is told to take extra care with them — the
+ * smallest form of refining the compression guidance against failures.
+ */
+export function writeVerificationGapHints(projectId: string, kinds: string[]): void {
+  const cleaned = [...new Set(kinds.map((k) => (k ?? "").trim()).filter(Boolean))].slice(0, 8);
+  if (!cleaned.length) return;
+  writeRemediationFile(projectId, { gapKinds: cleaned }, "Verification gap hints");
+}
+
+export function readVerificationGapHints(projectId: string): string[] {
+  const data = readRemediationFile(projectId);
+  if (!Array.isArray(data.gapKinds)) return [];
+  if (
+    typeof data.updatedAt === "number" &&
+    Date.now() - data.updatedAt > REMEDIATION_TTL_MS
+  )
+    return [];
+  return data.gapKinds.filter((k): k is string => typeof k === "string");
 }
 
 /**
