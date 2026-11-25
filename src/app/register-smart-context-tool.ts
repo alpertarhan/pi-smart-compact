@@ -202,13 +202,13 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
-      report: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144, description: "Rewind handoff: findings and evidence paths, constraints/decisions, failed attempts, next step. Over 8000 characters it is shortened head+tail, never rejected." })),
+      report: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144, description: "Rewind report: findings, evidence, failed attempts, next step. Overlong text is shortened, not rejected." })),
       id: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Source ID." })),
       query: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Literal text." })),
       line: Type.Optional(Type.Integer({ minimum: 1, description: "Read from line." })),
       offset: Type.Optional(Type.Integer({ minimum: 0, description: "Char offset or cursor." })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_CHARS, description: "Chars/lines, sources (<=32) or hits (<=10)." })),
-      scope: Type.Optional(StringEnum(["session", "lineage"] as const, { description: "lineage: also the sessions this one was handed off or forked from (read-only, up to 3 levels)." })),
+      scope: Type.Optional(StringEnum(["session", "lineage"] as const, { description: "session (default) or lineage (parent sessions, read-only)." })),
     }),
     executionMode: "sequential",
     async execute(callId, params, signal, _onUpdate, ctx) {

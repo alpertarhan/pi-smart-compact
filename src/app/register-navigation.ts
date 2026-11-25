@@ -238,7 +238,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   description: "View/recall session anchors. Anchor completed work under pressure. In pressure-only mode, early cleanup for an explicitly user-requested anchor needs one-time host confirmation; without that dialog the anchor is only a recall point. Safe cleanup is queued once, not full compaction; never claim approval or retry a refusal. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
-   target: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+   target: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Anchor name or entry ID (for recall/pivot)." })),
    keyword: Type.Optional(Type.String({ maxLength: 200 })),
    scope: Type.Optional(StringEnum(["cwd", "all"] as const)),
    offset: Type.Optional(Type.Integer({ minimum: 0 })),

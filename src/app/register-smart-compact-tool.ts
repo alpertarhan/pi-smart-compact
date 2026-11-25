@@ -2,10 +2,7 @@ import { readerUsage } from "./context-usage.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import {
-  BUDGET_LIMITS,
-  MIN_TOKEN_THRESHOLD,
-} from "../constants.ts";
+import { MIN_TOKEN_THRESHOLD } from "../constants.ts";
 import {
   buildMetricsReport,
   writeMetricsDashboard,
@@ -32,23 +29,6 @@ import type { SessionRunLock } from "./session-run-lock.ts";
 import { parseSmartCompactTool } from "./smart-compact-input.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
 
-/** A configured budget is the user's spend ceiling: the agent tool may
- * lower the per-run budgets but never raise them past the settings (the
- * user's own /smart-compact options are used as given). */
-export function clampToolBudgets(
-  config: { maxLlmCalls: number; maxLlmInputTokens: number },
-  budgets: { maxLlmCalls?: number; maxLlmInputTokens?: number },
-): { maxLlmCalls?: number; maxLlmInputTokens?: number } {
-  return {
-    maxLlmCalls: config.maxLlmCalls > 0 && budgets.maxLlmCalls !== undefined
-      ? Math.min(budgets.maxLlmCalls, config.maxLlmCalls)
-      : budgets.maxLlmCalls,
-    maxLlmInputTokens: config.maxLlmInputTokens > 0 && budgets.maxLlmInputTokens !== undefined
-      ? Math.min(budgets.maxLlmInputTokens, config.maxLlmInputTokens)
-      : budgets.maxLlmInputTokens,
-  };
-}
-
 interface SmartCompactToolDependencies {
   pendingRef: PendingSlot;
   runLock: SessionRunLock;
@@ -73,10 +53,6 @@ export function registerSmartCompactTool(
           type: "string",
           description: "fast, balanced, thorough or auto (default).",
         },
-        profile: {
-          type: "string",
-          description: "Deprecated mode alias.",
-        },
         verbose: {
           type: "boolean",
           description: "Detailed output.",
@@ -96,33 +72,6 @@ export function registerSmartCompactTool(
         focus: {
           type: "string",
           description: "Topic/path to preserve more.",
-        },
-        max_calls: {
-          type: "number",
-          description:
-            "LLM call cap (" +
-            BUDGET_LIMITS.CALLS.min +
-            "-" +
-            BUDGET_LIMITS.CALLS.max +
-            ").",
-        },
-        max_input_tokens: {
-          type: "number",
-          description:
-            "Prompt-token cap (" +
-            BUDGET_LIMITS.INPUT_TOKENS.min +
-            "-" +
-            BUDGET_LIMITS.INPUT_TOKENS.max +
-            ").",
-        },
-        max_latency_ms: {
-          type: "number",
-          description:
-            "Latency cap ms (" +
-            BUDGET_LIMITS.LATENCY_MS.min +
-            "-" +
-            BUDGET_LIMITS.LATENCY_MS.max +
-            ").",
         },
       },
     },
@@ -155,9 +104,6 @@ export function registerSmartCompactTool(
         dryRun,
         action,
         focus,
-        maxLlmCalls,
-        maxLlmInputTokens,
-        timeoutMs: maxLatencyMs,
       } = parsedInput.value;
       if (action === "metrics" || action === "dashboard") {
         // A failed run tells the agent to review metrics; the findings live in recent issues.
@@ -171,8 +117,6 @@ export function registerSmartCompactTool(
       }
 
       const config = loadConfig();
-      const { maxLlmCalls: cappedMaxLlmCalls, maxLlmInputTokens: cappedMaxLlmInputTokens } =
-        clampToolBudgets(config, { maxLlmCalls, maxLlmInputTokens });
       const resolvedMode = mode ?? config.mode;
       const sessionId = resolveSessionId(ctx);
       if (!dryRun && pendingRef.peek(sessionId)) {
@@ -229,9 +173,7 @@ export function registerSmartCompactTool(
           skipCompact: true,
           abortSignal: signal,
           focus,
-          maxLlmCalls: cappedMaxLlmCalls,
-          maxLlmInputTokens: cappedMaxLlmInputTokens,
-          timeoutMs: maxLatencyMs,
+
         });
         if (outcome.kind === "staged" || outcome.kind === "apply-requested") {
           const staged = outcome.pending;

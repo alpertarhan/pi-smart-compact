@@ -701,7 +701,10 @@ describe("extension lifecycle end to end", () => {
 
     await dispatch(handlers, "session_start", { type: "session_start", reason: "startup" }, ctx);
     const toolSignal = new AbortController().signal;
-    const loadTools = (group: string) => tools.get("smart_tools").execute("load-" + group, { action: "load", group }, toolSignal, () => {}, ctx);
+    // Eager mode hides the loader (groups are already active); only a visible loader can be called.
+    const loadTools = (group: string) => activeTools.includes("smart_tools")
+      ? tools.get("smart_tools").execute("load-" + group, { action: "load", group }, toolSignal, () => {}, ctx)
+      : Promise.resolve();
 
     if (strategy === "background") {
       const turnEnd = { type: "turn_end", outcome: "completed", entries: [], context: { pendingMessages: [] }, toolResults: [] };

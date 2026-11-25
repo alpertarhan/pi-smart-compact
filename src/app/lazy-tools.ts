@@ -78,7 +78,10 @@ export function createContextToolExposure(pi: Pick<ExtensionAPI, "getActiveTools
    if (!wanted && active.delete(name)) nextHidden.add(name);
    else if (wanted && !nextUserHidden.has(name) && nextHidden.delete(name)) active.add(name);
   };
-  select(LOADER, settings.toolLoading !== "off");
+  // In eager mode every group is already loaded, so the loader's schema is
+  // pure per-request overhead; it appears when loading becomes meaningful
+  // (lazy), or when the user explicitly showed it in /tools.
+  select(LOADER, settings.toolLoading === "lazy" || nextUserShown.has(LOADER));
   for (const group of GROUP_NAMES) {
    for (const name of GROUPS[group]) {
     select(name, permitted(group, settings) && (settings.toolLoading === "eager" || loaded.has(group) || nextUserShown.has(name)));
@@ -148,7 +151,7 @@ export function registerContextToolLoader(pi: ExtensionAPI, exposure: ContextToo
  pi.registerTool({
   name: LOADER,
   label: "Context Tools",
-  description: "Load optional navigation, history, memory or compaction tools. Guide returns the context workflow only on request.",
+  description: "Load optional tool groups on demand (navigation, history, memory, compaction); guide/status inspect them.",
   parameters: Type.Object({
    action: StringEnum(["load", "unload", "guide", "status"] as const),
    group: Type.Optional(StringEnum(GROUP_NAMES)),
