@@ -14,7 +14,7 @@ import { registerSmartContextTool } from "../src/app/register-smart-context-tool
 import { contextEvidence, evidencePage } from "../src/app/context-evidence.ts";
 import { planContextRewind, planContextTrim, CONTEXT_CONTROL_TYPE } from "../src/app/context-operations.ts";
 import { fingerprintContext } from "../src/app/pending-slot.ts";
-import { registerArtifactOffload, ARTIFACT_DETAILS_KEY, ARTIFACT_SESSION_BYTES, ARTIFACT_MAX_BYTES, artifactId } from "../src/app/tool-artifacts.ts";
+import { registerArtifactOffload, ARTIFACT_DETAILS_KEY, ARTIFACT_SESSION_BYTES, ARTIFACT_MAX_BYTES, artifactId, artifactMinChars } from "../src/app/tool-artifacts.ts";
 
 const previousHome = process.env.HOME;
 let home: string;
@@ -364,5 +364,14 @@ describe("bounded artifact and session evidence search", () => {
     expect(evidencePage(text, 0, 2, 2).text).toBe("last\n");
     expect(evidencePage(text, 0, 2, 100_000)).toEqual({ text: "", nextOffset: null });
     expect(() => evidencePage(text, 1, 1, 1)).toThrow();
+  });
+});
+
+describe("artifactMinChars", () => {
+  it("scales the offload floor with the model window, bounded", () => {
+    expect(artifactMinChars(undefined)).toBe(16_384);
+    expect(artifactMinChars(200_000)).toBe(16_000);
+    expect(artifactMinChars(1_000_000)).toBe(65_536);
+    expect(artifactMinChars(32_000)).toBe(8_192);
   });
 });

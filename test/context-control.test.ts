@@ -1269,6 +1269,18 @@ describe("superseded outputs", () => {
     expect(JSON.stringify(planContextTrim(session.getBranch()))).toBe(JSON.stringify(plan));
   });
 
+  it("trims a small superseded read below the general floor, but keeps a small fresh one", () => {
+    const session = manager();
+    const stale = toolBatch(session, "read", "s".repeat(600), false, { path: "src/stale.ts" });
+    const fresh = toolBatch(session, "read", "f".repeat(600), false, { path: "src/fresh.ts" });
+    edit(session, "src/stale.ts");
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toContain(stale.result);
+    expect(plan.references).not.toContain(fresh.result);
+    expect(markerOf(plan, plan.references.indexOf(stale.result))).toContain("superseded: edited later");
+  });
+
   it("never matches relative against absolute paths", () => {
     const session = manager();
     const [a, b, c] = ["a", "b", "c"].map(name => toolBatch(session, "read", name.repeat(5_000), false, { path: `src/${name}.ts` }));

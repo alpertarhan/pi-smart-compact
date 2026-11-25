@@ -16,6 +16,14 @@ import * as log from "../utils/logger.ts";
 
 export const ARTIFACT_DETAILS_KEY = "smartCompactArtifact";
 export const ARTIFACT_MIN_CHARS = 16_384;
+/** Offload floor relative to the active model's window: a fixed 16k chars is
+ * 8% of a 200k window but noise in a 1M one. 2% of window tokens at ~4
+ * chars/token, bounded so small windows still spill and huge ones stay sane;
+ * a 200k window lands exactly on the old fixed floor. Unknown window keeps it. */
+export function artifactMinChars(contextWindowTokens: number | undefined): number {
+  if (!contextWindowTokens || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return ARTIFACT_MIN_CHARS;
+  return Math.min(65_536, Math.max(8_192, Math.round(contextWindowTokens * 0.02 * 4)));
+}
 export const ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 export const ARTIFACT_SESSION_BYTES = 32 * 1024 * 1024;
 export const ARTIFACT_SESSION_FILES = 256;
@@ -142,13 +150,14 @@ export function registerArtifactOffload(pi: ExtensionAPI, config: () => CompactC
     const settings = config();
     if (!settings.artifactOffloadEnabled || !retrievable() || !eligible(event)) return;
     const raw = extractText(event.content);
-    if (raw.length < ARTIFACT_MIN_CHARS || Buffer.byteLength(raw, "utf8") > ARTIFACT_MAX_BYTES) return;
+    const minChars = artifactMinChars(ctx.model?.contextWindow);
+    if (raw.length < minChars || Buffer.byteLength(raw, "utf8") > ARTIFACT_MAX_BYTES) return;
     const sessionId = resolveSessionId(ctx);
     if (isUnresolvedSessionId(sessionId)) return;
     const scrubber = new SecretScrubber(settings.scrubSecrets, settings.scrubPii);
     const text = scrubber.scrubText(raw).value;
     const bytes = Buffer.byteLength(text, "utf8");
-    if (text.length < ARTIFACT_MIN_CHARS || bytes > ARTIFACT_MAX_BYTES || text.includes("\0")) return;
+    if (text.length < minChars || bytes > ARTIFACT_MAX_BYTES || text.includes("\0")) return;
     const source = scrubber.scrubText(String(extractToolPath(event.input) ?? event.input.url ?? event.input.query ?? event.toolName))
       .value.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 200);
     const artifact: ToolArtifact = {

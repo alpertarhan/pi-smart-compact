@@ -22,6 +22,9 @@ export const MAX_CONTEXT_EDITS = 512;
 export const MAX_TRIM_EDITS = 32;
 // 2 KB keeps every edit worth ≥1.6 KB after its ≤400-char marker while reaching ~60% of output volume (4 KB: ~33%).
 export const MIN_TRIM_CHARS = 2_048;
+/** A superseded read is trimmed for correctness (stale content), not savings,
+ * so its floor is far lower; the marker names the staleness either way. */
+export const MIN_SUPERSEDED_TRIM_CHARS = 512;
 export const KEEP_RECENT_TURNS = 4;
 /** Per-line digest budget so a long first line cannot crowd out risk lines. */
 const TRIM_DIGEST_LINE_CHARS = 100;
@@ -498,13 +501,14 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
     if (protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id)) return [];
     if (notice) return notice.text.length < MIN_TRIM_CHARS || index < signedAt ? [] : [{ id: sourceEntry.id, ...notice, savedChars: notice.text.length - notice.marker.length }];
     if (!call || message?.role !== "toolResult" || message.isError || message.content.some(block => block.type !== "text")) return [];
-    const text = extractText(message.content);
-    if (text.length < MIN_TRIM_CHARS) return [];
-    const flat = flattenToolCallBlock(call);
     const reason = superseded.get(sourceEntry.id);
+    const text = extractText(message.content);
+    if (text.length < (reason ? MIN_SUPERSEDED_TRIM_CHARS : MIN_TRIM_CHARS)) return [];
+    const flat = flattenToolCallBlock(call);
     const marker = buildTrimMarker({
       toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined, note: reason && SUPERSEDED_NOTE[reason],
     });
+    if (text.length - marker.length <= 0) return [];
     return [{ id: sourceEntry.id, text, marker, savedChars: text.length - marker.length }];
   }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
   const chosen = selectTrimFrontier(eligible, branch, options.economy, floorChars);
