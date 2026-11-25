@@ -77,9 +77,7 @@ async function selectModel(
  };
  const planFacts = (model: Model<Api>): string => {
   const check = eligibility(model);
-  if (!check?.requests) return "";
-  return " · " + check.requests + (check.requests === 1 ? " summary call" : " summary batches")
-   + (check.largestRequestTokens ? ", largest ~" + compactTokenCount(check.largestRequestTokens) : "");
+  return check?.requests ? " · " + summaryPlanText(check) : "";
  };
  const options: ModelOption[] = available.map((m) => ({
   value: m.provider + "/" + m.id,
@@ -167,6 +165,7 @@ async function selectModel(
   };
   sel.onCancel = () => done(null);
   const search = new Input();
+  search.focused = true; // the picker owns focus while open; this draws the caret
   c.addChild(new Text(theme.fg("dim", "Type to search models"), 1, 0));
   c.addChild(search);
   c.addChild(sel);
@@ -192,6 +191,12 @@ async function selectModel(
  });
  if (!result?.startsWith("model:")) return null;
  return options[parseInt(result.slice(6), 10)] ?? null;
+}
+
+/** One wording for the picker and the review: "3 summary requests, largest ~120k tokens". */
+function summaryPlanText(check: { requests?: number; largestRequestTokens?: number }): string {
+ return check.requests + (check.requests === 1 ? " summary request" : " summary requests")
+  + (check.largestRequestTokens ? ", largest ~" + compactTokenCount(check.largestRequestTokens) + " tokens" : "");
 }
 
 const PRIMARY_MODES: EffectiveCompactionMode[] = [
@@ -1088,9 +1093,7 @@ export async function showCompactUI(
       else if (check.requests)
        essentials.push(
         ...para(
-         "Summary plan: " + check.requests + (check.requests === 1 ? " request" : " batch requests")
-         + (check.largestRequestTokens ? " · largest ~" + compactTokenCount(check.largestRequestTokens) + " tokens" : "")
-         + " · window " + compactTokenCount(selectedModel.model.contextWindow),
+         "Summary plan: " + summaryPlanText(check) + " · window " + compactTokenCount(selectedModel.model.contextWindow),
          "dim",
         ),
        );
