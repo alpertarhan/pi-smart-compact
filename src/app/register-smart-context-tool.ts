@@ -478,6 +478,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (settings.contextPressureOnly && !pressure) return cancelled(event, "Context pressure cleared; history left unchanged.");
       if (due) return cancelled(event, COMPACTION_DUE_ERROR);
     }
+    let coldCache = false;
     if (!request) {
       const configNow = config();
       const hygiene = configNow.contextHygieneEnabled;
@@ -486,8 +487,17 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       if (!hygiene) mark = applied = null;
       const enabled = hygiene || (configNow.autoTrigger && configNow.autoTriggerStrategy === "background");
       if (!enabled || options.canAutoTrim?.(ctx) === false) return;
-      // Roomy histories stay unchanged unless early economic cleanup is explicitly enabled.
-      if ((configNow.contextPressureOnly || !hygiene) && !pressure) { mark = null; if (!applied) return; }
+      // Roomy histories stay unchanged unless early economic cleanup is explicitly
+      // enabled — or the prompt cache is already cold, when the rewrite is free.
+      if ((configNow.contextPressureOnly || !hygiene) && !pressure) {
+        // Cold bypasses only the pressure gate, never the hygiene off-switch.
+        if (hygiene && configNow.contextPressureOnly) {
+          const prefix = cachedPrefix(ctx.sessionManager.getBranch(), ctx.model);
+          const warmAt = warm?.sessionId === resolveSessionId(ctx) ? warm.at : 0;
+          coldCache = prefix !== null && now() - Math.max(prefix.since, warmAt) > prefix.lifetimeMs;
+        }
+        if (!coldCache) { mark = null; if (!applied) return; }
+      }
     }
     const branch = ctx.sessionManager.getBranch();
     const sessionId = resolveSessionId(ctx);
@@ -546,6 +556,10 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           mark = null;
           // A due automatic compaction replaces this context; trimming first would only rewrite its cache.
           if (plan.automatic !== "ready" || due) return;
+          // A cold prefix makes the rewrite free: commit now instead of holding a mark.
+          if (coldCache && !urgentPressure) {
+            entries = trimEntries(plan, "cold");
+          } else {
           // Otherwise only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
           const cause = urgentPressure ? "pressure" : undefined;
           const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id, ctx.model?.api);
@@ -571,6 +585,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
             return;
           }
           entries = trimEntries(plan, cause ?? "break-even");
+          }
         }
       }
     } catch (error) {

@@ -1630,6 +1630,16 @@ describe("automatic trim timing", () => {
     expect(h.request().result).toBeDefined();
   });
 
+  it("commits a pressure-only trim when the prompt cache is already cold at the turn boundary", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    h.cfg.contextPressureOnly = true;
+    // Still warm: nothing happens without pressure.
+    expect(h.turn()).toBeUndefined();
+    // Past the cache lifetime the rewrite is free, so the trim commits as cold.
+    h.setNow(1 + 2 * ONE_HOUR_MS);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ action: "trim", references: [old.result], cause: "cold" });
+  });
+
   it("keeps pressure-only histories intact beyond a known cache horizon", () => {
     const { h } = deferredFixture(ANTHROPIC, true);
     h.cfg.contextPressureOnly = true;
