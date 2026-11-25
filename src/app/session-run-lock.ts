@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Cell } from "../types.ts";
 import { runLocksDir } from "../infra/paths.ts";
+import { ONE_HOUR_MS } from "../constants.ts";
 import { processAlive } from "../infra/fs.ts";
 
 export interface SessionRunLock extends Cell<boolean> {
@@ -57,9 +58,11 @@ function acquireFileLease(file: string, staleMs: number): FileLease | null {
   try { observedStat = fs.statSync(file); } catch { return null; }
   const observedAt = Math.max(Number(current?.createdAt ?? 0), observedStat.mtimeMs);
   const age = Date.now() - observedAt;
-  // A live owner is never stolen from, however old the lease looks: a laptop
-  // suspended mid-run stops heartbeating, then resumes its run on wake.
-  if (age <= staleMs || (current?.pid && processAlive(current.pid))) return null;
+  // A live owner keeps its lease through a long suspend (a laptop asleep
+  // mid-run stops heartbeating, then resumes on wake), but not forever: past
+  // a day the PID more likely belongs to a process that reused it.
+  const livePidCeiling = Math.max(24 * ONE_HOUR_MS, staleMs * 4);
+  if (age <= staleMs || (current?.pid && processAlive(current.pid) && age <= livePidCeiling)) return null;
 
   // Re-read both logical ownership and inode metadata immediately before
   // reclaim. A release/reacquire that changed either must never be unlinked.
@@ -68,7 +71,7 @@ function acquireFileLease(file: string, staleMs: number): FileLease | null {
   try { latestStat = fs.statSync(file); } catch { return null; }
   const latestAt = Math.max(Number(latest?.createdAt ?? 0), latestStat.mtimeMs);
   const latestAge = Date.now() - latestAt;
-  if (latestAge <= staleMs || (latest?.pid && processAlive(latest.pid))) return null;
+  if (latestAge <= staleMs || (latest?.pid && processAlive(latest.pid) && latestAge <= livePidCeiling)) return null;
   if (current?.token
     ? latest?.token !== current.token
     : latestStat.dev !== observedStat.dev || latestStat.ino !== observedStat.ino
