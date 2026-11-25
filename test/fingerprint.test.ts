@@ -455,6 +455,30 @@ describe("saveProjectFingerprint", () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+  it("keeps counting from stored history after 30 idle days", async () => {
+    const previousHome = process.env.HOME;
+    const home = fs.mkdtempSync(
+      path.join(os.tmpdir(), "psc-fingerprint-stale-"),
+    );
+    process.env.HOME = home;
+    try {
+      const extraction = makeExtraction({ readFiles: ["src/index.ts"] });
+      await saveProjectFingerprint("proj-stale", "session-a", extraction);
+      // Age the stored fingerprint past the load TTL.
+      const file = path.join(
+        home, ".pi", "agent", ".cache", "smart-compact", "projects", "proj-stale.json",
+      );
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      stored.updatedAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+      fs.writeFileSync(file, JSON.stringify(stored));
+      expect(loadProjectFingerprint("proj-stale")).toBeNull();
+      await saveProjectFingerprint("proj-stale", "session-b", extraction);
+      expect(loadProjectFingerprint("proj-stale")?.sessionCount).toBe(2);
+    } finally {
+      process.env.HOME = previousHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
   it("counts distinct sessions rather than compaction runs", async () => {
     const previousHome = process.env.HOME;
     const home = fs.mkdtempSync(

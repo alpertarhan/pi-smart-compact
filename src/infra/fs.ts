@@ -39,13 +39,20 @@ import * as log from "../utils/logger.ts";
 const LOCK_RETRY_MS = 25;
 const LOCK_MAX_RETRIES = 80; // ≈2s
 
-/**
- * Ensure a private directory exists. Only a directory this call created is
- * forced to 0700: normalizing an existing one re-permissions paths the user
- * pointed us at (a shared backup dir, ~/.pi/agent itself), and chmod throws
- * outright on filesystems without POSIX modes, which would break every write.
- */
+/** Ensure an extension-owned private directory exists, normalized to 0700. */
 export function ensureDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+}
+
+/**
+ * Parent directory for an atomic write. Unlike ensureDir this never
+ * re-permissions an existing directory: write targets can live in
+ * user-owned paths (a configured backup dir, a symlinked settings.json in a
+ * dotfiles repo, ~/.pi/agent itself), and chmod also throws outright on
+ * filesystems without POSIX modes, which would break every write.
+ */
+function ensureParentDirSync(dir: string): void {
   const created = fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (created !== undefined) {
     try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX filesystem */ }
@@ -70,7 +77,7 @@ function tempPath(target: string): string {
  * on latency-sensitive cache/backup writes.
  */
 export function atomicWriteFileSync(target: string, data: string | Uint8Array): void {
-  ensureDir(path.dirname(target));
+  ensureParentDirSync(path.dirname(target));
   const tmp = tempPath(target);
   try {
     fs.writeFileSync(tmp, data, { mode: 0o600 });

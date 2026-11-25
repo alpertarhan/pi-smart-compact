@@ -288,10 +288,14 @@ function extractKeyDirs(
 /**
  * Load project fingerprint from cache.
  */
+function readProjectFingerprint(projectId: string): ProjectFingerprint | null {
+  return readJsonSync<ProjectFingerprint>(getFingerprintPath(projectId));
+}
+
 export function loadProjectFingerprint(
   projectId: string,
 ): ProjectFingerprint | null {
-  const data = readJsonSync<ProjectFingerprint>(getFingerprintPath(projectId));
+  const data = readProjectFingerprint(projectId);
   if (!data) return null;
   if (Date.now() - data.updatedAt > THIRTY_DAYS_MS) return null;
   return data;
@@ -314,7 +318,10 @@ export async function saveProjectFingerprint(
     ensureDir(path.dirname(fingerprintPath));
     const release = await acquireLock(fingerprintPath);
     try {
-      const existing = loadProjectFingerprint(projectId);
+      // The 30-day TTL in loadProjectFingerprint keeps stale facts out of
+      // prompts; saving must still build on the stored counters/history
+      // instead of restarting the session count after a quiet month.
+      const existing = readProjectFingerprint(projectId);
       const newKnownFiles = [
         ...new Set([
           ...(existing?.knownFiles ?? []),

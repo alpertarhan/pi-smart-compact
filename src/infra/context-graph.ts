@@ -237,7 +237,10 @@ function createDatabase(fp: string): SqliteDatabase {
   /* best effort on non-POSIX filesystems */
  }
  db.exec(
-  "PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+  // Several sessions share this database; 1s was short enough that a
+  // concurrent compaction-index transaction made peers fail soft and lose
+  // that compaction's facts.
+  "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
  );
  db.exec(`
     CREATE TABLE IF NOT EXISTS context_nodes (
