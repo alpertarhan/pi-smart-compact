@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ONE_HOUR_MS, SEVEN_DAYS_MS } from "../constants.ts";
-import { acquireLockSync, atomicWriteFileSync, ensureDir } from "../infra/fs.ts";
+import { acquireLockSync, atomicWriteFileSync, ensureDir, reclaimStaleLock } from "../infra/fs.ts";
 import { nativeContinuityDir } from "../infra/paths.ts";
 import * as log from "../utils/logger.ts";
 
@@ -41,34 +41,6 @@ function boundedContinuityText(text: string): string {
   let end = Math.max(0, MAX_TEXT_BYTES - marker.length);
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
   return Buffer.concat([bytes.subarray(0, end), marker]).toString("utf8");
-}
-
-function processAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
-}
-
-/**
- * Remove a `<target>.lock` left by a crashed owner: its `owner` file holds
- * `<pid>:<token>`. Reclaim when that pid is dead or the lock outlived
- * BRIDGE_LOCK_STALE_MS; an owner-less lock (mid-acquisition) only by age.
- * The owner is re-read immediately before removal so a lock another process
- * already reclaimed and re-acquired is left alone.
- */
-function reclaimStaleLock(lockDir: string): boolean {
-  const ownerFile = path.join(lockDir, "owner");
-  let owner = "";
-  try { owner = fs.readFileSync(ownerFile, "utf8"); } catch { /* owner-less */ }
-  let stat: fs.Stats;
-  try { stat = fs.statSync(owner ? ownerFile : lockDir); } catch { return false; }
-  const expired = Date.now() - stat.mtimeMs > BRIDGE_LOCK_STALE_MS;
-  if (!expired && (!owner || processAlive(Number(owner.split(":")[0])))) return false;
-  let latest = "";
-  try { latest = fs.readFileSync(ownerFile, "utf8"); } catch { /* released */ }
-  if (latest !== owner) return false;
-  try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { return false; }
-  return true;
 }
 
 export function createNativeContinuityBridge(opts: {
@@ -133,7 +105,7 @@ export function createNativeContinuityBridge(opts: {
     let release: () => void;
     try { release = acquireLockSync(lockTarget); }
     catch (error) {
-      if (!reclaimStaleLock(lockTarget + ".lock")) throw error;
+      if (!reclaimStaleLock(lockTarget + ".lock", BRIDGE_LOCK_STALE_MS)) throw error;
       release = acquireLockSync(lockTarget);
     }
     try { return work(); }

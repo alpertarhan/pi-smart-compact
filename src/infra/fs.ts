@@ -25,8 +25,8 @@
  *    `atomicWriteFile` for new async-friendly callers (background metrics).
  *
  * Lock acquisition is fail-closed: callers never continue an append/trim
- * without ownership. Locks are never stolen on elapsed time because a live,
- * slow owner must not overlap a successor.
+ * without ownership. A lock whose owner pid is dead (or that outlived the
+ * stale bound, where a still-answering pid means pid reuse) is reclaimed.
  */
 
 import fs from "node:fs";
@@ -39,15 +39,24 @@ import * as log from "../utils/logger.ts";
 const LOCK_RETRY_MS = 25;
 const LOCK_MAX_RETRIES = 80; // ≈2s
 
-/** Ensure a private directory exists and normalize an existing target. */
+/**
+ * Ensure a private directory exists. Only a directory this call created is
+ * forced to 0700: normalizing an existing one re-permissions paths the user
+ * pointed us at (a shared backup dir, ~/.pi/agent itself), and chmod throws
+ * outright on filesystems without POSIX modes, which would break every write.
+ */
 export function ensureDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(dir, 0o700);
+  const created = fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (created !== undefined) {
+    try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX filesystem */ }
+  }
 }
 
 async function ensureDirAsync(dir: string): Promise<void> {
-  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
-  await fsp.chmod(dir, 0o700);
+  const created = await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  if (created !== undefined) {
+    try { await fsp.chmod(dir, 0o700); } catch { /* non-POSIX filesystem */ }
+  }
 }
 
 function tempPath(target: string): string {
@@ -94,9 +103,39 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
  *
  * Acquisition errors/timeouts throw, so callers never proceed unlocked. The
  * owner token makes release idempotent and prevents an old release callback
- * from deleting a later owner's lock. Crash leftovers require explicit cleanup;
- * guessing liveness from lock age would violate mutual exclusion.
+ * from deleting a later owner's lock. A lock left by a crashed process is
+ * reclaimed via reclaimStaleLock instead of blocking every later writer.
  */
+export function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/**
+ * Remove a lock directory left by a crashed owner: its owner file holds
+ * "pid:token". Reclaim when that pid is dead, or when the lock outlived
+ * staleMs (critical sections here are sub-second, so an old lock whose pid
+ * still answers is pid reuse, not a live owner). An owner-less lock
+ * (mid-acquisition) is reclaimed only by age. The owner is re-read
+ * immediately before removal so a lock another process already reclaimed
+ * and re-acquired is left alone.
+ */
+export function reclaimStaleLock(lockDir: string, staleMs = 60_000): boolean {
+  const ownerFile = path.join(lockDir, "owner");
+  let owner = "";
+  try { owner = fs.readFileSync(ownerFile, "utf8"); } catch { /* owner-less */ }
+  let stat: fs.Stats;
+  try { stat = fs.statSync(owner ? ownerFile : lockDir); } catch { return false; }
+  const expired = Date.now() - stat.mtimeMs > staleMs;
+  if (!expired && (!owner || processAlive(Number(owner.split(":")[0])))) return false;
+  let latest = "";
+  try { latest = fs.readFileSync(ownerFile, "utf8"); } catch { /* released */ }
+  if (latest !== owner) return false;
+  try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { return false; }
+  return true;
+}
+
 function tryAcquireLock(target: string): (() => void) | null {
   const lockDir = target + ".lock";
   const ownerFile = path.join(lockDir, "owner");
@@ -104,8 +143,15 @@ function tryAcquireLock(target: string): (() => void) | null {
   try {
     fs.mkdirSync(lockDir, { mode: 0o700 });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "EEXIST") return null;
-    throw new Error("Failed to acquire lock for " + target, { cause: error });
+    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") {
+      throw new Error("Failed to acquire lock for " + target, { cause: error });
+    }
+    if (!reclaimStaleLock(lockDir)) return null;
+    try {
+      fs.mkdirSync(lockDir, { mode: 0o700 });
+    } catch {
+      return null; // another process won the reclaimed lock
+    }
   }
   try {
     fs.writeFileSync(ownerFile, token, { mode: 0o600, flag: "wx" });
@@ -135,16 +181,6 @@ export function acquireLockSync(target: string): () => void {
   return release;
 }
 
-/** Bounded blocking acquisition for synchronous durability paths. */
-function acquireLockBlockingSync(target: string): () => void {
-  for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
-    const release = tryAcquireLock(target);
-    if (release) return release;
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_RETRY_MS);
-  }
-  throw new Error("Timed out acquiring lock for " + target);
-}
-
 /** Cooperative multi-process lock for durable read-modify-write operations. */
 export async function acquireLock(target: string): Promise<() => void> {
   for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
@@ -157,53 +193,11 @@ export async function acquireLock(target: string): Promise<() => void> {
   throw new Error("Timed out acquiring lock for " + target);
 }
 
-/**
- * Append one complete line while enforcing an optional tail-retention cap.
- *
- * Append and trim share the same advisory lock. This matters because O_APPEND
- * only serializes writes to one inode; it does not protect a concurrent
- * temp-file rename from replacing an append that landed after the trim read.
- * Retention therefore happens synchronously, but only when the cap is crossed.
- */
-export function appendLineLocked(target: string, line: string, maxBytes?: number): void {
-  ensureDir(path.dirname(target));
-  const payload = Buffer.from(line.endsWith("\n") ? line : line + "\n");
-  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)) {
-    throw new Error("maxBytes must be a positive safe integer");
-  }
-  if (maxBytes !== undefined && payload.length > maxBytes) {
-    throw new Error("Log entry exceeds retention cap for " + target);
-  }
-  const release = acquireLockBlockingSync(target);
-  try {
-    if (maxBytes !== undefined && fs.existsSync(target)) {
-      const stat = fs.statSync(target);
-      if (stat.size + payload.length > maxBytes) {
-        const retainedBudget = Math.max(0, maxBytes - payload.length);
-        const retainedLength = Math.min(stat.size, retainedBudget);
-        const buffer = Buffer.allocUnsafe(retainedLength);
-        if (retainedLength > 0) {
-          const fd = fs.openSync(target, "r");
-          try { fs.readSync(fd, buffer, 0, retainedLength, stat.size - retainedLength); }
-          finally { fs.closeSync(fd); }
-        }
-        let tail = buffer.toString("utf8");
-        if (retainedLength < stat.size) {
-          const firstNewline = tail.indexOf("\n");
-          tail = firstNewline >= 0 ? tail.slice(firstNewline + 1) : "";
-        }
-        atomicWriteFileSync(target, tail);
-      }
-    }
-    if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
-    fs.appendFileSync(target, payload, { mode: 0o600 });
-    fs.chmodSync(target, 0o600);
-  } finally {
-    release();
-  }
-}
-
-/** Async append/retention variant for event-loop-sensitive telemetry paths. */
+/** Append one complete line while enforcing an optional tail-retention cap.
+ * Append and trim share the same advisory lock: O_APPEND only serializes
+ * writes to one inode, not a concurrent temp-file rename. When the cap is
+ * crossed the tail is cut to half the cap, not to just under it, so a full
+ * log is rewritten once per half-cap of new lines instead of per line. */
 export async function appendLineLockedAsync(target: string, line: string, maxBytes?: number): Promise<void> {
   await ensureDirAsync(path.dirname(target));
   const payload = Buffer.from(line.endsWith("\n") ? line : line + "\n");
@@ -222,7 +216,7 @@ export async function appendLineLockedAsync(target: string, line: string, maxByt
       if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
     }
     if (maxBytes !== undefined && stat && stat.size + payload.length > maxBytes) {
-      const retainedLength = Math.min(stat.size, Math.max(0, maxBytes - payload.length));
+      const retainedLength = Math.min(stat.size, Math.max(0, Math.floor(maxBytes / 2) - payload.length));
       const buffer = Buffer.allocUnsafe(retainedLength);
       if (retainedLength > 0) {
         const handle = await fsp.open(target, "r");
@@ -267,25 +261,6 @@ export function readJsonlTail<T>(target: string, limit: number, maxBytes = 512 *
     catch { /* corrupt/incomplete lines are ignored at this recovery boundary */ }
   }
   return values.slice(-limit);
-}
-
-/** Keep only complete trailing lines that fit within `maxBytes`. */
-export async function trimFileTailLocked(target: string, maxBytes: number): Promise<void> {
-  const release = await acquireLock(target);
-  try {
-    const stat = await fsp.stat(target);
-    if (stat.size <= maxBytes) return;
-    const length = Math.min(stat.size, maxBytes);
-    const buffer = Buffer.allocUnsafe(length);
-    const fd = await fsp.open(target, "r");
-    try { await fd.read(buffer, 0, length, stat.size - length); }
-    finally { await fd.close(); }
-    const tail = buffer.toString("utf8");
-    const firstNewline = tail.indexOf("\n");
-    await atomicWriteFile(target, firstNewline >= 0 ? tail.slice(firstNewline + 1) : "");
-  } finally {
-    release();
-  }
 }
 
 
