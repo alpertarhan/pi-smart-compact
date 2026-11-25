@@ -14,8 +14,10 @@
   owner is gone. Saving a setting writes through a symlinked settings.json
   instead of replacing the link, drops the legacy semanticCompact key, and
   no longer re-permissions pre-existing directories.
-- The agent-facing smart_compact tool can no longer raise per-run call or
-  token budgets past the configured maxLlmCalls/maxLlmInputTokens ceilings.
+- The agent-facing smart_compact tool no longer carries per-run call,
+  token, or latency budget knobs; the configured maxLlmCalls and
+  maxLlmInputTokens ceilings govern every run it starts. The deprecated
+  profile alias is gone from its schema (mode remains).
 - A project's fingerprint session count no longer restarts at 1 after 30
   idle days.
 - Session-log recovery uses the host-reported session file instead of
@@ -23,6 +25,38 @@
 
 ### Changed
 
+- The agent no longer receives injected context-fullness percentages or
+  tool-output-share figures. Tool descriptions carry the usage guidance;
+  numbers the agent asked for (status, plan, gate refusals) are unchanged.
+- Over-long agent texts (rewind reports, anchor summaries and carryovers,
+  navigation messages) are shortened head+tail and accepted instead of
+  bouncing the call for a rewrite. smart_save_memory keeps refusing text
+  over its hard caps, because stored facts are never silently truncated.
+- A read that a later call edited or re-read in full is now trimmed from
+  512 characters instead of waiting for the general 2,048-character floor:
+  it is removed because it is stale, and the marker says so.
+- Pressure-only cleanup now also commits a planned trim when the prompt
+  cache has already expired at the turn boundary, when rewriting history
+  costs nothing. The savings floor and cooldown still apply.
+- Recording an anchor or committing a checkpoint rewind counts as the end
+  of a unit of work for automatic compaction: it clears the retry
+  cooldown, so a due compaction is requested at that boundary instead of
+  later, mid-task.
+- The artifact offload floor follows the active model's window (2% of it,
+  bounded to 8k-64k characters) instead of a fixed 16,384 characters.
+- Verification records which kinds of content a summary initially missed;
+  the next run for that project tells the summary model to take extra care
+  with them. Compaction metrics gain an archivedReads count of how often
+  archived output was re-read since the previous compaction.
+- The manual compaction review shows the summary plan for the selected
+  model (planned requests, largest request size, window), and the summary
+  model picker is searchable and shows the same plan facts per model.
+- smart_tools stays hidden in eager tool-loading mode, where every group
+  is already loaded; it appears in on-demand mode or when shown via
+  /tools. This removes its schema from every request in the default mode.
+- Development baseline: pi 1.6.1, bun 1.4.5, typebox 1.4.7; the optional
+  Mnemopi component pin moves to 19.2.0 (facade unchanged; existing
+  stores open as before). The pi >=0.87.1 floor is unchanged.
 - When a capped metrics or damage log fills, it is trimmed to half the cap
   instead of being rewritten on nearly every append.
 - The test suite runs against a throwaway HOME, so it neither reads nor
