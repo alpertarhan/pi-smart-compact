@@ -736,7 +736,7 @@ async function resetInput(env: CategoryEnv, setting: InputSetting, item: Setting
     env.requestRender();
     return config;
   } catch (error) {
-    notifyUser(env.ctx, error instanceof Error ? error.message : String(error), "error");
+    notifyUser(env.ctx, "Setting not reset: " + (error instanceof Error ? error.message : String(error)), "error");
     return undefined;
   }
 }
@@ -875,7 +875,7 @@ function categoryList(
             item.currentValue = "default";
             env.requestRender();
           },
-          (error) => notifyUser(env.ctx, error instanceof Error ? error.message : String(error), "error"),
+          (error) => notifyUser(env.ctx, "Setting not reset: " + (error instanceof Error ? error.message : String(error)), "error"),
         );
       }
     },
@@ -1007,7 +1007,7 @@ function sessionSettingsList(
       }
     } catch (error) {
       notifyUser(ctx,
-        error instanceof Error ? error.message : String(error),
+        "Setting not applied: " + (error instanceof Error ? error.message : String(error)),
         "error",
       );
       list.updateValue(id, displayValue(policyField(id), policy));

@@ -139,7 +139,7 @@ async function showMetrics(
  if (selected !== "html") return;
  const file = writeMetricsDashboard(entries);
  notifyUser(ctx,
-  file ? "Dashboard written: " + file : "Dashboard could not be written",
+  file ? "Dashboard written: " + file : "Dashboard could not be written; see /smart-compact issues for the reason",
   file ? "info" : "error",
  );
 }
@@ -157,7 +157,7 @@ async function restoreBackup(ctx: ExtensionCommandContext): Promise<void> {
  }
  const backup = readConversationBackup(selected);
  if (!backup) {
-  notifyUser(ctx, "Could not read backup: " + selected, "error");
+  notifyUser(ctx, "Could not read backup " + selected + "; it is missing or not a readable backup file", "error");
   return;
  }
  const action = await showRestoreAction(ctx, selected);
@@ -369,7 +369,7 @@ async function manageOpenLoops(ctx: ExtensionCommandContext): Promise<void> {
  }
  state.updatedAt = Date.now();
  if (!saveCompactionState(projectId, state)) {
-  notifyUser(ctx, "Open-loop overrides could not be saved", "error");
+  notifyUser(ctx, "Open-loop overrides could not be saved; see /smart-compact issues for the reason", "error");
   return;
  }
  if (

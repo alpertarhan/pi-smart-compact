@@ -194,7 +194,7 @@ function makeBase(opts: SmartCompactOptions): RcBase {
 
 export async function runSmartCompact(opts: SmartCompactOptions): Promise<CompactOutcome> {
  if (!opts.summaryModel || !opts.segModel) {
-  if (!opts.autoTriggered) notifyUser(opts.ctx, "Model resolve failed", "error");
+  if (!opts.autoTriggered) notifyUser(opts.ctx, "No usable summary model is configured, so nothing ran. Check Settings → Models.", "error");
   return { kind: "skipped", reason: "model-unavailable" };
  }
  if (opts.abortSignal?.aborted) {
