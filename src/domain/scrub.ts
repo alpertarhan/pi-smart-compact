@@ -14,6 +14,18 @@ interface Pattern {
   replacement?: (...groups: string[]) => string;
 }
 
+/** True for values that reference a secret instead of being one: a dotted
+ * identifier chain (`process.env.API_KEY`) or a call expression
+ * (`crypto.randomBytes(32).toString()`). Real secrets are opaque
+ * single runs; they contain no parentheses and are essentially never dotted. */
+function isReferenceValue(value: string): boolean {
+  const bare = value.replace(/[;,\]]+$/, "");
+  return (
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(bare) ||
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\(.*\)(?:\.[A-Za-z_$][\w$]*(?:\(.*\))?)*$/.test(bare)
+  );
+}
+
 const SECRET_PATTERNS: Pattern[] = [
   {
     kind: "private-key",
@@ -26,6 +38,7 @@ const SECRET_PATTERNS: Pattern[] = [
   { kind: "gitlab-token", regex: /\bglpat-[0-9A-Za-z_-]{20,}\b/g },
   { kind: "npm-token", regex: /\bnpm_[0-9A-Za-z]{30,}\b/g },
   { kind: "github-token", regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g },
+  { kind: "github-token", regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
   { kind: "api-key", regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/g },
   { kind: "slack-token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
   {
@@ -38,19 +51,50 @@ const SECRET_PATTERNS: Pattern[] = [
     replacement: () => "Bearer [REDACTED:bearer-token]",
   },
   {
+    kind: "basic-auth",
+    regex: /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/g,
+    // "Basic authentication ..." is prose, not a credential: only redact
+    // when the blob actually decodes to user:password shaped text.
+    replacement: (blob, match) => {
+      let decoded = "";
+      try {
+        decoded = Buffer.from(blob, "base64").toString("utf8");
+      } catch {
+        return match;
+      }
+      return /^[\x20-\x7e]*:[^\x00-\x1f]*$/.test(decoded)
+        ? "Basic [REDACTED:basic-auth]"
+        : match;
+    },
+  },
+  {
     kind: "connection-password",
-    regex: /\b([a-z][a-z0-9+.-]*:\/\/[^:\s/@]+:)[^@\s/]+(@)/gi,
+    // Bounded scheme/name runs: unbounded repetitions backtrack quadratically
+    // on long hyphen-joined input (60k segments took seconds).
+    regex: /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^:\s/@]+:)[^@\s/]+(@)/gi,
     replacement: (prefix, suffix) => prefix + "[REDACTED:password]" + suffix,
   },
   {
     kind: "credential",
     regex:
-      /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+)*)\s*([:=])\s*["']?([^\s"']{16,})["']?/gi,
+      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+){0,12})["']?\s*([:=])\s*["']?([^\s"']{16,})["']?/gi,
     replacement: (name, separator, value, match) =>
-      // `token: process.env.API_KEY` is a reference, not a literal secret.
-      // Multi-segment dotted identifier chains are env/config refs; real
-      // secrets are opaque single runs and essentially never dotted.
-      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value)
+      isReferenceValue(value)
+        ? match
+        : name + separator + "[REDACTED:credential]",
+  },
+  {
+    // Short passwords (`DB_PASSWORD=hunter2`) never reach the 16-char rule
+    // above. Restrict the shorter bar to assignments and quoted values so
+    // type annotations like `password: string` stay readable.
+    kind: "credential",
+    regex:
+      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:password|passwd)(?:[_-][A-Za-z0-9]+){0,12})["']?\s*([:=])\s*(["']?)([^\s"']{4,15})["']?/gi,
+    replacement: (name, separator, quote, value, match) =>
+      // Unquoted colon values stay unless they look like a YAML secret
+      // (symbol + digit, e.g. `s3cret!`); type names have no digit.
+      (separator === ":" && !quote && !(/[^A-Za-z0-9_$]/.test(value) && /\d/.test(value))) ||
+      isReferenceValue(value)
         ? match
         : name + separator + "[REDACTED:credential]",
   },

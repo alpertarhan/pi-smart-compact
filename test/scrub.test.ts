@@ -126,6 +126,40 @@ describe("SecretScrubber", () => {
     expect(redacted).toContain("[REDACTED:credential]");
   });
 
+  it("redacts quoted JSON keys, fine-grained GitHub tokens and Basic auth", () => {
+    const scrubber = new SecretScrubber(true, false);
+    expect(scrubber.scrubText('{"client_secret": "GOCSPX-abcdefghijklmnopqrst"}').value)
+      .not.toContain("GOCSPX-");
+    expect(scrubber.scrubText('{"api_key": "abcdefghij1234567890"}').value)
+      .not.toContain("abcdefghij1234567890");
+    expect(scrubber.scrubText("t github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789abcd").value)
+      .toContain("[REDACTED:github-token]");
+    const basic = scrubber.scrubText("Authorization: Basic dXNlcjpwYXNzd29yZA==").value;
+    expect(basic).toContain("[REDACTED:basic-auth]");
+    expect(basic).not.toContain("dXNlcj");
+    expect(scrubber.scrubText("Basic authentication is described in RFC 7617").value)
+      .toBe("Basic authentication is described in RFC 7617");
+  });
+
+  it("redacts short passwords in assignments but spares code that computes them", () => {
+    const scrubber = new SecretScrubber(true, false);
+    expect(scrubber.scrubText("DB_PASSWORD=hunter2").value).toContain("[REDACTED:credential]");
+    expect(scrubber.scrubText("password: s3cret!").value).toContain("[REDACTED:credential]");
+    expect(scrubber.scrubText("const password: string = req.body.password").value)
+      .toBe("const password: string = req.body.password");
+    expect(scrubber.scrubText("const secret = crypto.randomBytes(32).toString()").value)
+      .toBe("const secret = crypto.randomBytes(32).toString()");
+    expect(scrubber.scrubText("{ password: hashPassword(pw) }").value)
+      .toBe("{ password: hashPassword(pw) }");
+  });
+
+  it("stays fast on long hyphen-joined runs", () => {
+    const run = "a1-".repeat(60_000) + " the end";
+    const started = performance.now();
+    new SecretScrubber(true, false).scrubText(run);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("payment-card counts only Luhn-valid numbers", () => {
     const timestamp = new SecretScrubber(false, true).scrubText(
       "at 1739570400000 ms",
