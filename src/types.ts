@@ -349,6 +349,8 @@ export interface CompactMetricsEntry {
  hardBoundaryAdjusted?: boolean;
  pruneSavedTokens?: number;
  chunkCount?: number;
+ /** Archived outputs re-read (smart_context read/search hits) since the previous compaction. */
+ archivedReads?: number;
  fallbackReason?: string;
  /** Absent for native and pre-10.7.4 records; derive with `summarySourceOf`. */
  summarySource?: SummarySource;

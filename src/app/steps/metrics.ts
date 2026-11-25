@@ -26,6 +26,7 @@ import { aggregateProviderRoutes } from "../../domain/provider-evaluation.ts";
 import { classifyTelemetryFailure, summarySourceOf } from "../../domain/telemetry.ts";
 import { VERSION } from "../../constants.ts";
 import { loadConfig } from "../../utils/config.ts";
+import { takeArchivedReads } from "../context-evidence.ts";
 import {
  appendMetricsLog,
  appendMetricsSnapshot,
@@ -161,6 +162,7 @@ export function buildSuccessMetrics(
    ? "budget-" + rc.services.budget.reason()
    : undefined,
   redactions: rc.services.scrubber.count(),
+  archivedReads: takeArchivedReads(rc.sessionId) || undefined,
   adapted: rc.adapted,
  };
 }
