@@ -86,7 +86,7 @@ describe("appendLineLockedAsync", () => {
     expect(fs.readFileSync(target, "utf8")).toContain("\"ok\":1");
   });
 
-  it("never steals a live lock based only on elapsed time", () => {
+  it("does not steal a live owner's fresh lock when only the directory is old", () => {
     const target = path.join(tmp, "aged-lock.jsonl");
     const release = acquireLockSync(target);
     const lockDir = target + ".lock";

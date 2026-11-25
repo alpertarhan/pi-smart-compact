@@ -103,16 +103,7 @@ export async function atomicWriteFile(target: string, data: string | Uint8Array)
   }
 }
 
-/**
- * Acquire a coarse-grained lock by creating a `<file>.lock` directory.
- * `mkdir` is atomic on every reasonable filesystem, which is exactly what we
- * need for a multi-process advisory lock without depending on `flock`.
- *
- * Acquisition errors/timeouts throw, so callers never proceed unlocked. The
- * owner token makes release idempotent and prevents an old release callback
- * from deleting a later owner's lock. A lock left by a crashed process is
- * reclaimed via reclaimStaleLock instead of blocking every later writer.
- */
+/** True when pid names a live process; EPERM means alive but owned by another user. */
 export function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; }
@@ -124,25 +115,44 @@ export function processAlive(pid: number): boolean {
  * "pid:token". Reclaim when that pid is dead, or when the lock outlived
  * staleMs (critical sections here are sub-second, so an old lock whose pid
  * still answers is pid reuse, not a live owner). An owner-less lock
- * (mid-acquisition) is reclaimed only by age. The owner is re-read
- * immediately before removal so a lock another process already reclaimed
- * and re-acquired is left alone.
+ * (mid-acquisition) is reclaimed only by age. The owner and the directory
+ * are re-checked immediately before removal so a lock another process
+ * already reclaimed and re-acquired is left alone.
  */
 export function reclaimStaleLock(lockDir: string, staleMs = 60_000): boolean {
   const ownerFile = path.join(lockDir, "owner");
   let owner = "";
   try { owner = fs.readFileSync(ownerFile, "utf8"); } catch { /* owner-less */ }
+  let dir: fs.Stats;
   let stat: fs.Stats;
-  try { stat = fs.statSync(owner ? ownerFile : lockDir); } catch { return false; }
+  try {
+    dir = fs.statSync(lockDir);
+    stat = owner ? fs.statSync(ownerFile) : dir;
+  } catch { return false; }
   const expired = Date.now() - stat.mtimeMs > staleMs;
   if (!expired && (!owner || processAlive(Number(owner.split(":")[0])))) return false;
   let latest = "";
   try { latest = fs.readFileSync(ownerFile, "utf8"); } catch { /* released */ }
   if (latest !== owner) return false;
+  // An owner-less re-read cannot tell a peer's fresh directory from the stale one; its inode and mtime can.
+  try {
+    const again = fs.statSync(lockDir);
+    if (again.ino !== dir.ino || again.mtimeMs !== dir.mtimeMs) return false;
+  } catch { return false; }
   try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { return false; }
   return true;
 }
 
+/**
+ * Acquire a coarse-grained lock by creating a `<file>.lock` directory.
+ * `mkdir` is atomic on every reasonable filesystem, which is exactly what we
+ * need for a multi-process advisory lock without depending on `flock`.
+ *
+ * Acquisition errors/timeouts throw, so callers never proceed unlocked. The
+ * owner token makes release idempotent and prevents an old release callback
+ * from deleting a later owner's lock. A lock left by a crashed process is
+ * reclaimed via reclaimStaleLock instead of blocking every later writer.
+ */
 function tryAcquireLock(target: string): (() => void) | null {
   const lockDir = target + ".lock";
   const ownerFile = path.join(lockDir, "owner");
@@ -156,8 +166,9 @@ function tryAcquireLock(target: string): (() => void) | null {
     if (!reclaimStaleLock(lockDir)) return null;
     try {
       fs.mkdirSync(lockDir, { mode: 0o700 });
-    } catch {
-      return null; // another process won the reclaimed lock
+    } catch (retry) {
+      if ((retry as NodeJS.ErrnoException)?.code === "EEXIST") return null; // another process won the reclaimed lock
+      throw new Error("Failed to acquire lock for " + target, { cause: retry });
     }
   }
   try {
@@ -223,7 +234,9 @@ export async function appendLineLockedAsync(target: string, line: string, maxByt
       if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
     }
     if (maxBytes !== undefined && stat && stat.size + payload.length > maxBytes) {
-      const retainedLength = Math.min(stat.size, Math.max(0, Math.floor(maxBytes / 2) - payload.length));
+      // An entry over half the cap keeps whatever older lines still fit beside it.
+      const halfBudget = Math.floor(maxBytes / 2) - payload.length;
+      const retainedLength = Math.min(stat.size, halfBudget > 0 ? halfBudget : maxBytes - payload.length);
       const buffer = Buffer.allocUnsafe(retainedLength);
       if (retainedLength > 0) {
         const handle = await fsp.open(target, "r");
