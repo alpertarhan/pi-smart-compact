@@ -470,10 +470,16 @@ describe("saveProjectFingerprint", () => {
       );
       const stored = JSON.parse(fs.readFileSync(file, "utf8"));
       stored.updatedAt = Date.now() - 31 * 24 * 60 * 60 * 1000;
+      stored.language = "cobol";
+      stored.framework = "rails";
       fs.writeFileSync(file, JSON.stringify(stored));
       expect(loadProjectFingerprint("proj-stale")).toBeNull();
       await saveProjectFingerprint("proj-stale", "session-b", extraction);
-      expect(loadProjectFingerprint("proj-stale")?.sessionCount).toBe(2);
+      const saved = loadProjectFingerprint("proj-stale");
+      expect(saved?.sessionCount).toBe(2);
+      // Expired descriptive facts are re-detected, not revived with a fresh timestamp.
+      expect(saved?.language).not.toBe("cobol");
+      expect(saved?.framework).not.toBe("rails");
     } finally {
       process.env.HOME = previousHome;
       fs.rmSync(home, { recursive: true, force: true });

@@ -321,7 +321,10 @@ export async function saveProjectFingerprint(
       // The 30-day TTL in loadProjectFingerprint keeps stale facts out of
       // prompts; saving must still build on the stored counters/history
       // instead of restarting the session count after a quiet month.
-      const existing = readProjectFingerprint(projectId);
+      const stored = readProjectFingerprint(projectId);
+      // Descriptive facts (files, directories, language, framework) carry over
+      // only while fresh, so an expired record is re-detected, not revived.
+      const existing = stored && Date.now() - stored.updatedAt <= THIRTY_DAYS_MS ? stored : null;
       const newKnownFiles = [
         ...new Set([
           ...(existing?.knownFiles ?? []),
@@ -344,15 +347,15 @@ export async function saveProjectFingerprint(
         .digest("hex")
         .slice(0, 24);
       const baseLegacySessionCount =
-        existing?.legacySessionCount ??
-        (existing
+        stored?.legacySessionCount ??
+        (stored
           ? Math.max(
               0,
-              existing.sessionCount - (existing.knownSessionIds?.length ?? 1),
+              stored.sessionCount - (stored.knownSessionIds?.length ?? 1),
             )
           : 0);
       const allKnownSessionIds = [
-        ...new Set([...(existing?.knownSessionIds ?? []), sessionKey]),
+        ...new Set([...(stored?.knownSessionIds ?? []), sessionKey]),
       ];
       const retiredSessionCount = Math.max(
         0,
