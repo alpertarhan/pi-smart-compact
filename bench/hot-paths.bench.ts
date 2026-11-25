@@ -20,7 +20,7 @@ import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 import { serializeConversationText } from "../src/infra/ai-messages.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { inspectContext, lastAnchorBoundary, planContextTrim, trimTokens } from "../src/app/context-operations.ts";
+import { clearInspectContextMemo, inspectContext, lastAnchorBoundary, planContextTrim, trimTokens } from "../src/app/context-operations.ts";
 
 const fullConversation: LlmMessage[] = Array.from(
   { length: 2_500 },
@@ -272,7 +272,8 @@ const benchmarks: Benchmark[] = [
     name: "inspect trim branch (cold)",
     iterations: 5,
     run: () => {
-      sink += inspectContext(trimBranch, "bench-cold-" + sink).references.size;
+      clearInspectContextMemo();
+      sink += inspectContext(trimBranch, "bench-cold").references.size;
     },
   },
   {
