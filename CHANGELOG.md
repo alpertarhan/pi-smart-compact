@@ -14,6 +14,9 @@
   owner is gone. Saving a setting writes through a symlinked settings.json
   instead of replacing the link, drops the legacy semanticCompact key, and
   no longer re-permissions pre-existing directories.
+- A compaction run that sleeps with the laptop keeps its run lease for up
+  to a day instead of two hours, so waking does not let a second run start
+  beside it.
 - The agent-facing smart_compact tool no longer carries per-run call,
   token, or latency budget knobs; the configured maxLlmCalls and
   maxLlmInputTokens ceilings govern every run it starts. The deprecated
