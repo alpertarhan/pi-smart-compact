@@ -397,7 +397,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const settings = config();
       if (!settings.contextHygieneEnabled || settings.contextPressureOnly || options.canAutoTrim?.(ctx) === false
         || !unchangedSince(branch, mark.leafId)
-        || lastAnchorBoundary(branch) !== lastAnchorBoundary(branch.slice(0, branch.findIndex(entry => entry.id === mark!.leafId) + 1))
+        || lastAnchorBoundary(branch) !== lastAnchorBoundary(branch, branch.findIndex(entry => entry.id === mark!.leafId) + 1)
         || thinkingEditReason(branch, mark.entries, ctx.model?.api)) { mark = null; return; }
       const prefix = cachedPrefix(branch, ctx.model);
       const since = Math.max(prefix?.since ?? 0, warm?.sessionId === sessionId ? warm.at : 0);
@@ -607,7 +607,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const branch = ctx.sessionManager.getBranch();
       const origin = anchor ? branch.findIndex(entry => entry.id === anchor.originId) : -1;
       if (anchor && origin < 0) return { state: "unavailable", notice: "Anchor origin is no longer on this branch." };
-      const anchorBoundary = anchor ? lastAnchorBoundary(branch.slice(0, origin + 1)) ?? null : undefined;
+      const anchorBoundary = anchor ? lastAnchorBoundary(branch, origin + 1) ?? null : undefined;
       const plan = planContextTrim(branch, inspectContext(branch, sessionId).checkpoint?.originId, { anchorBoundary, readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
       if (!plan.entries.length || (anchor?.callId && !userConfirmed && plan.automatic !== "ready")) {
         return { state: "no-eligible", notice: plan.blockedReason ?? describeTrimSkip(plan, config().autoTrimMinSavingChars) };

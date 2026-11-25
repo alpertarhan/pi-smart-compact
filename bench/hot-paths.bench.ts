@@ -20,7 +20,7 @@ import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 import { serializeConversationText } from "../src/infra/ai-messages.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { planContextTrim, trimTokens } from "../src/app/context-operations.ts";
+import { inspectContext, lastAnchorBoundary, planContextTrim, trimTokens } from "../src/app/context-operations.ts";
 
 const fullConversation: LlmMessage[] = Array.from(
   { length: 2_500 },
@@ -144,6 +144,8 @@ const P95_LIMIT_MS: Record<string, number> = {
   "resolve provider watchdog profile": 0.1,
   "plan trim over 120 archived reads": 25,
   "price a held trim over 120 archived reads": 25,
+  "inspect trim branch (cold)": 10,
+  "anchor boundary compare (held trim)": 10,
 };
 
 const benchmarks: Benchmark[] = [
@@ -264,6 +266,22 @@ const benchmarks: Benchmark[] = [
       const plan = planContextTrim(trimBranch);
       if (plan.entries.length !== 33 || plan.superseded !== 32) throw new Error("Trim plan changed shape: " + plan.entries.length + "/" + plan.superseded);
       sink += plan.savedChars;
+    },
+  },
+  {
+    name: "inspect trim branch (cold)",
+    iterations: 5,
+    run: () => {
+      sink += inspectContext(trimBranch, "bench-cold-" + sink).references.size;
+    },
+  },
+  {
+    name: "anchor boundary compare (held trim)",
+    iterations: 20,
+    run: () => {
+      const leaf = trimBranch.at(-2)?.id ?? "";
+      const same = lastAnchorBoundary(trimBranch) === lastAnchorBoundary(trimBranch, trimBranch.findIndex(entry => entry.id === leaf) + 1);
+      sink += same ? 1 : 0;
     },
   },
   // Below pressure, every enabled turn_end also estimates the saved and rebuilt tail tokens.

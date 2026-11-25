@@ -29,10 +29,13 @@ const TRIM_RISK_LINES = 3;
 export const MIN_AUTO_TRIM_SAVING_CHARS = 16_384;
 export const AUTO_TRIM_COOLDOWN_TURNS = 8;
 
-/** Pin the latest owned or historically recorded anchor prefix during cleanup. */
-export function lastAnchorBoundary(branch: SessionEntry[]): string | undefined {
+/** Pin the latest owned or historically recorded anchor prefix during cleanup.
+ * `endExclusive` bounds the scan to a prefix without copying it (the deferred-trim
+ * path compares full-branch and at-leaf boundaries on every request). */
+export function lastAnchorBoundary(branch: SessionEntry[], endExclusive = branch.length): string | undefined {
   let boundary: string | undefined;
-  for (const entry of branch) {
+  for (let index = 0; index < endExclusive && index < branch.length; index++) {
+    const entry = branch[index]!;
     if (!anchorFromEntry(entry)) continue;
     boundary = entry.id;
   }
