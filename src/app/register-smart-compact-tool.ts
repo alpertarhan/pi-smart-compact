@@ -32,6 +32,23 @@ import type { SessionRunLock } from "./session-run-lock.ts";
 import { parseSmartCompactTool } from "./smart-compact-input.ts";
 import type { SmartCompactPolicy } from "./smart-compact-policy.ts";
 
+/** A configured budget is the user's spend ceiling: the agent tool may
+ * lower the per-run budgets but never raise them past the settings (the
+ * user's own /smart-compact options are used as given). */
+export function clampToolBudgets(
+  config: { maxLlmCalls: number; maxLlmInputTokens: number },
+  budgets: { maxLlmCalls?: number; maxLlmInputTokens?: number },
+): { maxLlmCalls?: number; maxLlmInputTokens?: number } {
+  return {
+    maxLlmCalls: config.maxLlmCalls > 0 && budgets.maxLlmCalls !== undefined
+      ? Math.min(budgets.maxLlmCalls, config.maxLlmCalls)
+      : budgets.maxLlmCalls,
+    maxLlmInputTokens: config.maxLlmInputTokens > 0 && budgets.maxLlmInputTokens !== undefined
+      ? Math.min(budgets.maxLlmInputTokens, config.maxLlmInputTokens)
+      : budgets.maxLlmInputTokens,
+  };
+}
+
 interface SmartCompactToolDependencies {
   pendingRef: PendingSlot;
   runLock: SessionRunLock;
@@ -154,6 +171,8 @@ export function registerSmartCompactTool(
       }
 
       const config = loadConfig();
+      const { maxLlmCalls: cappedMaxLlmCalls, maxLlmInputTokens: cappedMaxLlmInputTokens } =
+        clampToolBudgets(config, { maxLlmCalls, maxLlmInputTokens });
       const resolvedMode = mode ?? config.mode;
       const sessionId = resolveSessionId(ctx);
       if (!dryRun && pendingRef.peek(sessionId)) {
@@ -210,8 +229,8 @@ export function registerSmartCompactTool(
           skipCompact: true,
           abortSignal: signal,
           focus,
-          maxLlmCalls,
-          maxLlmInputTokens,
+          maxLlmCalls: cappedMaxLlmCalls,
+          maxLlmInputTokens: cappedMaxLlmInputTokens,
           timeoutMs: maxLatencyMs,
         });
         if (outcome.kind === "staged" || outcome.kind === "apply-requested") {

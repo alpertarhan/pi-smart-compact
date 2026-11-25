@@ -268,7 +268,8 @@ For calls (`maxLlmCalls`) and prompt tokens (`maxLlmInputTokens`):
 
 | Source | Result |
 | --- | --- |
-| Per-run option (`--max-calls`, `max_calls`, ...) | Used as given, even above the mode limit |
+| Per-run option on `/smart-compact` (`--max-calls`, ...) | Used as given, even above the mode limit |
+| Agent-tool option (`max_calls`, `max_input_tokens`) | Clamped to the configured value when it is above 0 |
 | Config value `0` | The mode limit |
 | Config value above `0` | `min(config value, mode limit)` |
 | Automatic run | Additionally capped at 4 calls and 300 s |

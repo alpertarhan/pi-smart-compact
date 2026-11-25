@@ -1,12 +1,24 @@
 import { describe, expect, it } from "bun:test";
 import smartCompactExtension from "../src/index.ts";
 import { BUDGET_LIMITS } from "../src/constants.ts";
-import { registerSmartCompactTool } from "../src/app/register-smart-compact-tool.ts";
+import { clampToolBudgets, registerSmartCompactTool } from "../src/app/register-smart-compact-tool.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resetConfigCache } from "../src/utils/config.ts";
 import { recordIssue, resetIssuesForTests } from "../src/utils/issues.ts";
+
+describe("clampToolBudgets", () => {
+  it("clamps agent-supplied budgets to the configured ceiling", () => {
+    expect(clampToolBudgets({ maxLlmCalls: 3, maxLlmInputTokens: 50_000 },
+      { maxLlmCalls: 100, maxLlmInputTokens: 1_000_000 }))
+      .toEqual({ maxLlmCalls: 3, maxLlmInputTokens: 50_000 });
+    expect(clampToolBudgets({ maxLlmCalls: 3, maxLlmInputTokens: 0 }, { maxLlmCalls: 2 }))
+      .toEqual({ maxLlmCalls: 2, maxLlmInputTokens: undefined });
+    expect(clampToolBudgets({ maxLlmCalls: 0, maxLlmInputTokens: 0 }, { maxLlmCalls: 10 }))
+      .toEqual({ maxLlmCalls: 10, maxLlmInputTokens: undefined });
+  });
+});
 
 describe("smart_compact tool cancellation", () => {
   it("explains the actual threshold, model window, and manual early-compaction option", async () => {
