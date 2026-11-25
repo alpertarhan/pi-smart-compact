@@ -62,7 +62,7 @@
 		"sync-version": "bun run scripts/sync-version.ts",
 		"brand": "bun run scripts/render-brand.ts",
 		"prebuild": "bun run sync-version",
-		"build": "rm -rf dist && mkdir dist && bun build ./src/index.ts ./src/rtk.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' --external '@resvg/resvg-js' && bun build ./src/app/mnemopi-worker.ts --outfile ./dist/mnemopi-worker.js --target bun --external '@oh-my-pi/pi-mnemopi' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",
+		"build": "rm -rf dist && mkdir dist && bun build ./src/index.ts ./src/rtk.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' --external '@resvg/resvg-js' && bun build ./src/app/mnemopi-worker.ts --outfile ./dist/mnemopi-worker.js --target bun --external '@oh-my-pi/pi-mnemopi' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist --declarationMap false && find dist -name '*.d.ts' -exec sed -E -i 's/(from \")(\\.[^\"]*)\\.ts\"/\\1\\2.js\"/g; s/(import\\(\")(\\.[^\"]*)\\.ts\"/\\1\\2.js\"/g' {} +",
 		"test": "bun test",
 		"bench": "bun bench/hot-paths.bench.ts",
 		"gate": "bun run scripts/eval-gate.ts",
