@@ -565,6 +565,13 @@ newest anchor so an unchanged prefix can be reused while later turns change;
 hits still depend on provider caching and expiry), **Anchor status** (footer,
 display only) and **Navigation guide**.
 
+### Context status line
+
+When **Context anchor status** (`contextAnchorStatusEnabled`) is on, the
+footer shows the context as a percentage, followed by what is available:
+`ctx 72% · cleanup available` or `ctx 80% · compaction due`. The size of
+the window is on the Home screen.
+
 Legacy `context` tool anchors recorded in earlier sessions stay readable in
 browse and search.
 
@@ -640,6 +647,14 @@ for a newly observed save. Older records resumed on startup/reload produce one
 short summary after that tracked group finishes or its two-minute tracking
 window expires; messages already stored in session history are not removed.
 See [receipt tracking](./hindsight-memory.md#identity-refs-and-lifecycle).
+
+### Memory and anchor messages in the transcript
+
+Save results from Hindsight, and the anchors you record, appear in the
+transcript as one status line in plain words, for example `done saved to
+Hindsight` with the fact's title under it. Expand the row to see the
+reference. Earlier saves from a previous session are summarized in one line.
+These lines are for you; the agent gets its own short form.
 
 Approval and gates:
 
@@ -944,7 +959,7 @@ What is not covered:
 
 | Symptom | Cause and action |
 | --- | --- |
-| Agent reports "Compaction skipped: context 38% (…) below the 60% agent-tool threshold" | `smart_compact` waits for `Start at context %` of the **active model's** window (`tool=XX%` in the footer is the tool-output share, not context fullness). Use **Compact now** for early compaction. |
+| The smart_compact row says "skipped not needed: context at 38% (…), agent threshold 60%" | The agent tool waits for `Start at context %` of the **active model's** window; the agent itself is only told compaction is not available yet. Use **Compact now** for early compaction. |
 | Nothing compacts automatically | Check the idle boundary and pressure gates. Only the optional `native-hook` strategy requires Pi's auto-compaction (readiness shows `unknown`). Check `Automatic compaction` and `This branch only`. On a large-window model, see `Context cap for start % (tokens)` in [Let it run automatically](#let-it-run-automatically). |
 | Cleanup did nothing on the next reply | Expected: the next request is sent untrimmed; cleanup applies at the next completed turn. |
 | **Clean up tool output** shows `held for a cold cache` | Expected only with **Economic (opt-in)** cleanup timing: the batch waits for the prompt cache to expire; see [automatic cleanup](#automatic-cleanup-optional). Select the row to apply it at the next completed turn instead. |
