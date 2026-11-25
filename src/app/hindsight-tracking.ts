@@ -5,6 +5,7 @@ import { loadConfig } from "../utils/config.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { errorDetail, reportIssue } from "../utils/issues.ts";
 import { describeRemoteSave, refreshReceipt, resolveHindsightTarget, type RemoteSaveOutcome } from "./hindsight-memory.ts";
+import { MEMORY_STATUS_TYPE } from "../ui/message-renderers.ts";
 
 const MAX_TRACKED = 32;
 interface TrackedReceipt {
@@ -71,7 +72,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
       // A resolve or a newer status observed while compaction held this notice wins.
       const latest = listReceipts(receipt, receipt.documentId).find(item => item.key === receipt.key);
       if (!latest || latest.state !== receipt.state) return;
-      pi.sendMessage({ customType: "smart-compact-memory-status", content, display: true,
+      pi.sendMessage({ customType: MEMORY_STATUS_TYPE, content, display: true,
         details: { backend: "hindsight", state: outcome.state, ref, expired, title: receipt.title,
           ...(reason ? { reason } : {}), ...(expired && job.lastError ? { lastError: job.lastError } : {}) } }, { triggerTurn: false });
       delivered = true;
@@ -106,7 +107,7 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
       const content = '<memory_status backend="hindsight" state="summary">\n'
         + `Hindsight: ${total} earlier submissions: ${summary}.`
         + "\n</memory_status>";
-      pi.sendMessage({ customType: "smart-compact-memory-status", content, display: true,
+      pi.sendMessage({ customType: MEMORY_STATUS_TYPE, content, display: true,
         details: { backend: "hindsight", state: "summary", resumed: true, total, counts } }, { triggerTurn: false });
       delivered = true;
     };

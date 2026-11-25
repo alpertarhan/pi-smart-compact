@@ -10,10 +10,10 @@
  * old messages even when Hindsight or navigation is now off.
  */
 
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { ANCHOR_CUSTOM_TYPE, anchorFromMessage } from "../app/navigation-data.ts";
-import { expandHint, metaLine, statusLabel, summarizeLine } from "./tool-rows.ts";
+import { expandHint, metaLine, sanitizeVisible, statusLabel, summarizeLine } from "./tool-rows.ts";
 
 export const MEMORY_STATUS_TYPE = "smart-compact-memory-status";
 
@@ -35,21 +35,34 @@ const MEMORY_ROW: Record<string, { status: "done" | "pending" | "failed"; text: 
  unknown: { status: "pending", text: "Hindsight result unknown" },
 };
 
+/** Details come from persisted or foreign session data: keep only well-typed fields. */
+function memoryDetails(value: unknown): MemoryStatusDetails {
+ const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+ const text = (key: string) => (typeof raw[key] === "string" ? (raw[key] as string) : undefined);
+ return {
+  state: text("state"), ref: text("ref"), title: text("title"), reason: text("reason"), lastError: text("lastError"),
+  expired: raw.expired === true,
+  total: typeof raw.total === "number" ? raw.total : undefined,
+  counts: raw.counts && typeof raw.counts === "object" ? (raw.counts as Record<string, number>) : undefined,
+ };
+}
+
 function memoryStatusRow(theme: Theme, message: { details?: unknown }, expanded: boolean): string[] {
- const details = (message.details ?? {}) as MemoryStatusDetails;
+ const details = memoryDetails(message.details);
  if (details.state === "summary") {
   const counts = details.counts ?? {};
   const parts = ["completed", "failed", "accepted", "unknown"]
-   .map(state => (counts[state] ? counts[state] + " " + state : ""))
+   .map(state => (Number(counts[state]) > 0 ? Number(counts[state]) + " " + state : ""))
    .filter(Boolean);
-  return [statusLabel(theme, "done") + " " + theme.fg("muted", details.total + " earlier Hindsight saves: " + parts.join(", "))];
+  const total = details.total ?? parts.reduce((sum, part) => sum + parseInt(part, 10), 0);
+  return [statusLabel(theme, "done") + " " + theme.fg("muted", total + " earlier Hindsight saves: " + parts.join(", "))];
  }
  const row = MEMORY_ROW[details.state ?? ""] ?? { status: "pending" as const, text: "Hindsight status unavailable" };
  const lines = [statusLabel(theme, row.status) + " " + theme.fg("muted", row.text)];
  if (details.title) lines.push(theme.fg("dim", summarizeLine(details.title, 120)));
  const reason = details.reason ?? details.lastError;
  if (reason && (expanded || row.status !== "done")) lines.push(theme.fg("dim", summarizeLine(reason, 200)));
- if (details.expired) lines.push(theme.fg("dim", "Background tracking stopped at its time limit; /smart-compact memory shows the current state."));
+ if (details.expired) lines.push(theme.fg("dim", "Background tracking stopped at its time limit; the agent's next memory recall refreshes the status."));
  if (details.ref && expanded) lines.push(metaLine(theme, "ref", details.ref));
  else if (details.ref) lines.push(expandHint(theme));
  return lines;
@@ -58,8 +71,9 @@ function memoryStatusRow(theme: Theme, message: { details?: unknown }, expanded:
 function anchorRow(theme: Theme, message: { details?: unknown }, expanded: boolean): string[] {
  const anchor = anchorFromMessage({ role: "custom", customType: ANCHOR_CUSTOM_TYPE, details: message.details });
  if (!anchor) return [theme.fg("muted", "Anchor")];
- const lines = [statusLabel(theme, "done") + " " + theme.fg("muted", "anchor recorded: " + anchor.name)];
- if (expanded) lines.push(theme.fg("dim", anchor.summary));
+ const lines = [statusLabel(theme, "done") + " " + theme.fg("muted", "anchor recorded: " + sanitizeVisible(anchor.name))];
+ // Anchor text is model or foreign-session data: strip terminal escapes before drawing it.
+ if (expanded) lines.push(theme.fg("dim", sanitizeVisible(anchor.summary)));
  return lines;
 }
 
