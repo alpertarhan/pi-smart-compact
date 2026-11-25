@@ -10,6 +10,10 @@ import { errorDetail, reportIssue } from "../utils/issues.ts";
 export interface SettledAutoTrigger {
   request(ctx: ExtensionContext, config: CompactConfig): Promise<void>;
   noteCompaction(sessionId: string): void;
+  /** A finished unit of work (anchor recorded, checkpoint rewound) is the
+   * natural fold point: it clears the retry cooldown so a due compaction is
+   * requested at the next settled boundary instead of mid-task later. */
+  noteUnitBoundary(sessionId: string): void;
   clear(sessionId: string): void;
 }
 
@@ -38,6 +42,10 @@ export function createSettledAutoTrigger(
 
   const noteCompaction = (sessionId: string): void => {
     if (!isUnresolvedSessionId(sessionId)) cooldownStartedAt.set(sessionId, now());
+  };
+
+  const noteUnitBoundary = (sessionId: string): void => {
+    if (!isUnresolvedSessionId(sessionId)) cooldownStartedAt.delete(sessionId);
   };
 
   const clear = (sessionId: string): void => {
@@ -123,5 +131,5 @@ export function createSettledAutoTrigger(
     });
   };
 
-  return { request, noteCompaction, clear };
+  return { request, noteCompaction, noteUnitBoundary, clear };
 }

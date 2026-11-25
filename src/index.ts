@@ -345,7 +345,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  navigation = registerNavigation(pi, {
   config: automaticConfig,
   mutationBlocked: ctx => isRunning.isSessionActive(resolveSessionId(ctx)) ? "Compaction is running; wait for it to finish." : undefined,
-  onAnchor: (ctx, originId, callId, signal, userConfirmed) => smartContext.requestAnchorTrim(ctx, originId, callId, signal, userConfirmed).notice,
+  onAnchor: (ctx, originId, callId, signal, userConfirmed) => {
+   // A recorded anchor ends a unit of work: a due compaction may fold there.
+   settledAutoTrigger.noteUnitBoundary(resolveSessionId(ctx));
+   return smartContext.requestAnchorTrim(ctx, originId, callId, signal, userConfirmed).notice;
+  },
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
@@ -360,7 +364,10 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   // Digests point the model at smart_context; like offload, automatic trims need it reachable.
   canAutoTrim,
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
-  onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
+  onContextEdit: (ctx, kind) => {
+   hostCache.noteContextEdit(kind);
+   if (kind === "rewind") settledAutoTrigger.noteUnitBoundary(resolveSessionId(ctx));
+  },
   onCacheWarm: (ctx, at) => { if (hostCache.sessionId() === resolveSessionId(ctx)) hostCache.noteCacheWarm(at); },
  });
 
