@@ -168,7 +168,6 @@ export function registerSmartCompactTool(
           skipCompact: true,
           abortSignal: signal,
           focus,
-
         });
         if (outcome.kind === "staged" || outcome.kind === "apply-requested") {
           const staged = outcome.pending;

@@ -68,13 +68,17 @@ describe("smart compact input parsing", () => {
     }
   });
 
-  it("rejects invalid tool mode and budgets instead of silently defaulting", () => {
+  it("rejects an invalid tool mode and ignores keys the tool schema dropped", () => {
     expect(parseSmartCompactTool({ mode: "turbo" })).toEqual({
       ok: false,
       error: "mode must be auto, fast, balanced, or thorough",
     });
-    const budget = parseSmartCompactTool({ max_calls: 101 });
-    expect(budget.ok).toBe(false);
-    if (!budget.ok) expect(budget.error).toContain("--max-calls");
+    // Budgets and the profile alias are command-only now; the configured ceilings govern agent runs.
+    const legacy = parseSmartCompactTool({ max_calls: 101, profile: "light" });
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.mode).toBeUndefined();
+      expect(legacy.value).not.toHaveProperty("maxLlmCalls");
+    }
   });
 });

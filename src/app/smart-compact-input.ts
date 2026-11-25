@@ -1,4 +1,4 @@
-import type { CompactionMode, CompressionProfile } from "../types.ts";
+import type { CompactionMode } from "../types.ts";
 import { BUDGET_LIMITS } from "../constants.ts";
 import { modeFromLegacyProfile } from "./mode-policy.ts";
 
@@ -238,22 +238,6 @@ export function parseSmartCompactTool(
       };
     mode = parsed;
   }
-  if (params.profile != null) {
-    const profile = String(params.profile) as CompressionProfile;
-    if (!(["light", "balanced", "aggressive"] as string[]).includes(profile)) {
-      return {
-        ok: false,
-        error: "profile must be light, balanced, or aggressive",
-      };
-    }
-    mode ??= modeFromLegacyProfile(profile);
-  }
-  const budgets = validateBudgets(
-    params.max_calls,
-    params.max_input_tokens,
-    params.max_latency_ms,
-  );
-  if ("ok" in budgets) return budgets;
   return {
     ok: true,
     value: {
@@ -270,7 +254,6 @@ export function parseSmartCompactTool(
         typeof params.focus === "string"
           ? params.focus.trim() || undefined
           : undefined,
-      ...budgets,
     },
   };
 }
