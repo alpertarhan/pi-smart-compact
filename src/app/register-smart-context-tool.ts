@@ -220,19 +220,22 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const state = inspectContext(branch, sessionId);
       if (params.action === "plan") {
         const plan = planContextTrim(branch, state.checkpoint?.originId, { readerApi: ctx.model?.api, minSavingChars: config().autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: config().autoTrimBreakEvenRequests } });
+        // Fullness and saving estimates are for the human renderer (item 2):
+        // the agent gets the decision inputs, the numbers ride in display.
+        const pressure = contextPressure(ctx, config());
         const payload = {
-          pressure: contextPressure(ctx, config()), blockedReason: plan.blockedReason,
-          outputs: plan.references.length, superseded: plan.superseded, savedChars: plan.savedChars,
+          blockedReason: plan.blockedReason,
+          outputs: plan.references.length, superseded: plan.superseded,
           batch: plan.automatic, cooldownTurns: plan.cooldownTurns,
-          note: "No changes applied. Automatic cleanup requires enablement, a safe batch and an uncontested boundary. Below the compaction gate, cache break-even must also pass. Pressure-only is the default; cold-cache timing is opt-in. Estimates are not billed-token savings."
+          note: "No changes applied. Automatic cleanup requires enablement, a safe batch and an uncontested boundary. Below the compaction gate, cache break-even must also pass. Pressure-only is the default; a ready batch can also commit once the prompt cache has expired."
         };
         return reply(JSON.stringify(payload), {
           display: {
             kind: "plan",
-            pressurePercent: payload.pressure?.percent == null ? null : Math.round(payload.pressure.percent),
+            pressurePercent: pressure.percent == null ? null : Math.round(pressure.percent),
             outputs: payload.outputs,
             superseded: payload.superseded,
-            savedChars: payload.savedChars,
+            savedChars: plan.savedChars,
             batchReady: payload.batch === "ready",
             batchReason: payload.blockedReason ?? payload.batch ?? null,
           },
@@ -257,18 +260,18 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           const cleanup = {
             enabled: settings.contextHygieneEnabled || (settings.autoTrigger && settings.autoTriggerStrategy === "background"),
             pressureOnly: settings.contextPressureOnly, maintenanceAvailable: options.canAutoTrim?.(ctx) !== false,
-            batch: plan.automatic, savedChars: plan.savedChars, blockedReason: plan.blockedReason,
+            batch: plan.automatic, blockedReason: plan.blockedReason,
             agentAllowed: options.canAgentMutate?.(ctx) !== false,
           };
+          const held = deferred(sessionId);
+          const roi = trimRoi(branch, sessionId);
           const payload = {
-            pressure,
             cleanup,
             checkpoint: state.checkpoint ? { id: state.checkpoint.id, label: state.checkpoint.label } : null,
             rewind: Boolean(state.checkpoint), reason: state.invalidReason,
             pending: queued?.sessionId === sessionId ? queued.action : undefined,
-            deferredTrim: deferred(sessionId) ?? undefined,
+            deferredTrim: held ? true : undefined,
             archivedOutputs: evidence.list.length, ids: sources.map(source => source.id), sources,
-            trimRoi: trimRoi(branch, sessionId),
             ...(evidence.visualExcerpts ? { visualExcerpts: evidence.visualExcerpts } : {}),
             ...(params.scope === "lineage" ? { lineage: lineage.map(parent => ({ session: parent.sessionId, depth: parent.depth,
               sources: evidence.list.filter(source => source.session === parent.sessionId).length })) } : {}),
@@ -282,6 +285,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
               cleanupBatchReady: plan.automatic === "ready",
               cleanupBatchReason: plan.automatic === "ready" ? null : plan.automatic,
               cleanupBlockedReason: cleanup.blockedReason ?? null,
+              savedChars: plan.savedChars,
+              trimRoi: roi,
+              deferredTrim: held,
               checkpoint: payload.checkpoint?.label ?? null,
               pending: payload.pending ?? null,
               archivedOutputs: payload.archivedOutputs,
@@ -708,6 +714,13 @@ function renderSmartContextRow(
     if (display.checkpoint) lines.push(metaLine(theme, "checkpoint", String(display.checkpoint)));
     if (display.pending) lines.push(metaLine(theme, "pending", String(display.pending)));
     if (display.cleanupBlockedReason) lines.push(theme.fg("dim", summarizeLine(String(display.cleanupBlockedReason), 120)));
+    if (expanded) {
+      // Estimates moved out of the agent's result text; the human sees them here.
+      if (Number(display.savedChars) > 0) lines.push(metaLine(theme, "batch saves ≈", Number(display.savedChars).toLocaleString() + " chars"));
+      const roi = display.trimRoi as { savedCharsEstimate?: number } | undefined;
+      if (roi && Number(roi.savedCharsEstimate) > 0) lines.push(metaLine(theme, "archived so far ≈", Number(roi.savedCharsEstimate).toLocaleString() + " chars saved"));
+      if (display.deferredTrim) lines.push(theme.fg("dim", summarizeLine(formatDeferredTrim(display.deferredTrim as DeferredTrim), 200)));
+    }
     return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
   }
   if (display.kind === "plan") {

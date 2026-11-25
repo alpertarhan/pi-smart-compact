@@ -815,8 +815,13 @@ describe("pressure-first policy", () => {
     h.setNow(ONE_HOUR_MS * 2);
     expect(h.request().result).toBeUndefined();
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
-    const status = JSON.parse((await h.tool.execute("status", { action: "status" }, undefined, undefined, h.ctx)).content[0].text);
-    expect(status.pressure).toMatchObject({ percent: 50, cleanupTokens: 140_000, compactionTokens: 160_000, cleanup: false });
+    const statusResult = await h.tool.execute("status", { action: "status" }, undefined, undefined, h.ctx);
+    const status = JSON.parse(statusResult.content[0].text);
+    // Fullness numbers are for the human renderer, not the agent's result text.
+    expect(status.pressure).toBeUndefined();
+    expect(status.trimRoi).toBeUndefined();
+    expect(status.cleanup.savedChars).toBeUndefined();
+    expect((statusResult.details as { display: { pressurePercent: number } }).display.pressurePercent).toBe(50);
     await expect(h.tool.execute("trim", { action: "trim" }, undefined, undefined, h.ctx)).rejects.toThrow("No context pressure");
     const cp = await h.execute({ action: "checkpoint" });
     h.boundary(cp); // metadata is cheap and permitted before the detour
@@ -1587,8 +1592,10 @@ describe("automatic trim timing", () => {
     expect(deferred).toMatchObject({ savedTokens: expected.savedTokens, tailTokens: expected.tailTokens });
     expect(deferred.breakEvenRequests).toBeCloseTo(expected.breakEvenRequests, 9);
     expect(deferred.breakEvenRequests!).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
-    const status = JSON.parse((await h.tool.execute("s", { action: "status" }, undefined, undefined, h.ctx)).content[0].text);
-    expect(status.deferredTrim).toEqual(deferred);
+    const statusResult = await h.tool.execute("s", { action: "status" }, undefined, undefined, h.ctx);
+    const status = JSON.parse(statusResult.content[0].text);
+    expect(status.deferredTrim).toBe(true);
+    expect((statusResult.details as { display: { deferredTrim: unknown } }).display.deferredTrim).toEqual(deferred);
 
     expect(h.request().result).toBeUndefined(); // 1 minute after the last response: cache warm
     h.setNow(1 + FIVE_MINUTES_MS + 1);

@@ -656,6 +656,13 @@ Hindsight` with the fact's title under it. Expand the row to see the
 reference. Earlier saves from a previous session are summarized in one line.
 These lines are for you; the agent gets its own short form.
 
+### Status and plan results
+
+`smart_context status` and `plan` return the checkpoint, the pending change
+and the archived outputs. Context percentage, trim estimates and the
+break-even figures are no longer part of the result text; the tool row shows
+them to you when you expand it.
+
 Approval and gates:
 
 - `smart_compact` refuses below `Start at context %` (default 80%) or below
