@@ -688,7 +688,7 @@ migrated or cleared.
 - Hindsight: Smart Compact never installs, starts or configures a server. See
   [Hindsight memory backend](./hindsight-memory.md).
 - Mnemopi runs in a bounded `bun --no-install` worker. The engine
-  (`@oh-my-pi/pi-mnemopi` 18.12.6) is an optional component you install into
+  (`@oh-my-pi/pi-mnemopi` 19.2.0) is an optional component you install into
   Pi's package directory; the worker runs on a Bun 1.3.14 or newer from `PATH`,
   or on the optional `bun` (1.4.5) component installed the same way. Nothing is
   downloaded with the extension; **Readiness & details** shows the install

@@ -10,7 +10,7 @@ import {
   localGraphOpsAllowed,
   resolveBunExecutable,
 } from "../src/app/memory-backend.ts";
-import { DEFAULT_CONFIG } from "../src/constants.ts";
+import { DEFAULT_CONFIG, OPTIONAL_COMPONENTS } from "../src/constants.ts";
 
 const PLATFORM_PACKAGE =
   process.platform === "win32"
@@ -157,7 +157,7 @@ describe("describeMemoryBackendReadiness", () => {
     const missing = await describeMnemopiRuntime(pathToFileURL(path.join(dir, "probe.js")).href);
     expect(missing).toEqual({
       ready: false,
-      reason: "unavailable: the optional @oh-my-pi/pi-mnemopi component is not installed. Install it with: npm install @oh-my-pi/pi-mnemopi@18.12.6 --prefix " + dir + " --legacy-peer-deps",
+      reason: "unavailable: the optional @oh-my-pi/pi-mnemopi component is not installed. Install it with: npm install @oh-my-pi/pi-mnemopi@" + OPTIONAL_COMPONENTS.mnemopi.version + " --prefix " + dir + " --legacy-peer-deps",
     });
   });
 

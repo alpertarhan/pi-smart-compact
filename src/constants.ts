@@ -17,7 +17,7 @@ export const VERSION = "10.8.1";
  * exercises. The audit fails if these drift from the manifest.
  */
 export const OPTIONAL_COMPONENTS = {
- mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "18.12.6", enables: "Mnemopi memory store" },
+ mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "19.2.0", enables: "Mnemopi memory store" },
  bun: { name: "bun", version: "1.4.5", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
  resvg: { name: "@resvg/resvg-js", version: "2.6.2", enables: "image snapshots" },
 } as const;
