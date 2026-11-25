@@ -34,7 +34,7 @@
   one plain status line with the fact's title instead of a tagged block
   with identifiers; expand the row to see the reference or the anchor
   summary. Toasts lead with the outcome and name the reason or point at
-  /smart-compact issues.
+  /smart-compact metrics.
 - Over-long agent texts (rewind reports, anchor summaries and carryovers,
   navigation messages) are shortened head+tail and accepted instead of
   bouncing the call for a rewrite. smart_save_memory keeps refusing text
