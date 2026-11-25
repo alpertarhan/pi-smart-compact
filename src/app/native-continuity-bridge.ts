@@ -2,13 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ONE_HOUR_MS, SEVEN_DAYS_MS } from "../constants.ts";
-import { acquireLockSync, atomicWriteFileSync, ensureDir, reclaimStaleLock } from "../infra/fs.ts";
+import { acquireLockSync, atomicWriteFileSync, ensureDir } from "../infra/fs.ts";
 import { nativeContinuityDir } from "../infra/paths.ts";
 import * as log from "../utils/logger.ts";
 
 const MAX_TEXT_BYTES = 256 * 1024;
-/** Bridge critical sections are sub-second; an older lock is a crash leftover. */
-const BRIDGE_LOCK_STALE_MS = 60_000;
 
 export interface NativeContinuityScope {
   projectId: string;
@@ -102,12 +100,7 @@ export function createNativeContinuityBridge(opts: {
   const locked = <T>(work: () => T): T => {
     ensureDir(dir);
     try { fs.chmodSync(dir, 0o700); } catch { /* best effort */ }
-    let release: () => void;
-    try { release = acquireLockSync(lockTarget); }
-    catch (error) {
-      if (!reclaimStaleLock(lockTarget + ".lock", BRIDGE_LOCK_STALE_MS)) throw error;
-      release = acquireLockSync(lockTarget);
-    }
+    const release = acquireLockSync(lockTarget);
     try { return work(); }
     finally { release(); }
   };
