@@ -51,7 +51,8 @@
   later, mid-task.
 - The artifact offload floor follows the active model's window (2% of it,
   bounded to 8k-64k characters) instead of a fixed 16,384 characters.
-- Verification records which kinds of content a summary initially missed;
+- Verification records which kinds of content a summary initially missed,
+  including summaries it rejects;
   the next run for that project tells the summary model to take extra care
   with them. Compaction metrics gain an archivedReads count of how often
   archived output was re-read since the previous compaction.

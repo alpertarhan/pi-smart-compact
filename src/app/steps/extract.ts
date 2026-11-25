@@ -80,7 +80,7 @@ export function loadExtractionContinuity(
  const projectCtx = [
   buildProjectContext(fingerprint),
   gapKinds.length
-   ? "Previous verified summaries for this project initially missed: " + gapKinds.join(", ") + ". Take extra care to include such content."
+   ? "Previous summaries for this project initially missed: " + gapKinds.join(", ") + ". Take extra care to include such content."
    : "",
  ].filter(Boolean).join("\n");
  const ancestryIds = boundedBranchLineageIds(rc.branch as Array<{ id?: string; parentId?: string | null; type?: string }>);

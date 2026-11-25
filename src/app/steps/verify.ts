@@ -217,6 +217,13 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 		}
 	}
 
+	// Feed what this summary initially missed into the next synthesis for
+	// this project (patched and remaining kinds alike), rejected summaries
+	// included: the run after a rejection needs the hint most.
+	writeVerificationGapHints(rc.projectId, [
+		...deterministicPatched.map(gap => gap.kind),
+		...verification.gaps.map(gap => gap.kind),
+	]);
 	const failure = verificationFailureMessage(verification);
 	if (failure) {
 		recordIssue({ key: "verify.gate", message: failure });
@@ -252,12 +259,6 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 		finalScore: verification.score,
 		remainingGaps: verification.gaps,
 	};
-	// Feed what this summary initially missed into the next synthesis for
-	// this project (patched and remaining kinds alike).
-	writeVerificationGapHints(rc.projectId, [
-		...deterministicPatched.map(gap => gap.kind),
-		...verification.gaps.map(gap => gap.kind),
-	]);
 	// Verification may issue an additional semantic-patch call after synthesis.
 	// Refresh the materialized count before the result/details stage consumes it.
 	out.llmCalls = rc.services.metrics.summary().totalCalls;

@@ -1,5 +1,6 @@
 // pi-lens-ignore: ts:2307
 import { describe, it, expect } from "bun:test";
+import { readVerificationGapHints } from "../src/utils/damage.ts";
 import {
 	verifySummary,
 	patchDeterministic,
@@ -1418,7 +1419,7 @@ describe("verifyAndPatch", () => {
 		expect(result.finalSummary).toContain('Continue work in "README.md"');
 	});
 
-	it("fails closed without emitting evidence text from the verification step", async () => {
+	it("fails closed without emitting evidence text and still records gap hints", async () => {
 		const uiErrors: string[] = [];
 		const extraction = makeExtraction({
 			constraints: [
@@ -1460,6 +1461,7 @@ describe("verifyAndPatch", () => {
 			},
 			mode: "fast",
 			flags: { autoTriggered: true },
+			projectId: "verify-gate-hints",
 			notify: (message: string, type: string) => {
 				if (type === "error") uiErrors.push(message);
 			},
@@ -1470,6 +1472,7 @@ describe("verifyAndPatch", () => {
 			stage: "post-synthesis",
 		});
 		expect(uiErrors).toEqual([]);
+		expect(readVerificationGapHints("verify-gate-hints")).not.toEqual([]);
 	});
 
 	it("repairs top-level paths without usable suffix needles", async () => {
