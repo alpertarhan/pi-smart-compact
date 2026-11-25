@@ -8,10 +8,14 @@ import path from "node:path";
 import { Glob } from "bun";
 
 const dir = process.argv[2] ?? "dist";
-const SPECIFIER = /((?:from |import\()")(\.[^"]*)\.ts"/g;
+const SPECIFIER = /((?:from |import\(|import )")(\.[^"]*)\.ts"/g;
+let files = 0;
 for await (const file of new Glob("**/*.d.ts").scan(dir)) {
+  files++;
   const target = path.join(dir, file);
   const text = await Bun.file(target).text();
   const next = text.replace(SPECIFIER, '$1$2.js"');
   if (next !== text) await Bun.write(target, next);
 }
+// A moved tsc output layout must fail the build, not ship .ts specifiers.
+if (!files) throw new Error("No declaration files under " + dir);
