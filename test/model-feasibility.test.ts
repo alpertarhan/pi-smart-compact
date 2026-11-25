@@ -83,7 +83,11 @@ describe("planned-request model eligibility", () => {
     expect(f.ctx.getContextUsage()!.tokens!).toBeGreaterThan(f.small.contextWindow);
     const eligible = await createModelFeasibilityResolver(f.ctx, f.config);
     expect(eligible(f.small, "summary").selectable).toBe(true);
+    expect(eligible(f.small, "summary").requests).toBeGreaterThan(1);
+    expect(eligible(f.small, "summary").largestRequestTokens).toBeGreaterThan(0);
+    expect(eligible(f.small, "summary").largestRequestTokens).toBeLessThan(f.small.contextWindow);
     expect(eligible(f.tiny, "summary").selectable).toBe(false);
+    expect(eligible(f.tiny, "summary").requests).toBeGreaterThan(0);
     expect(eligible(model("unknown-window", 0), "summary").selectable).toBe(false);
     expect(f.authCalls()).toBe(0);
   });

@@ -11,6 +11,7 @@ import { DynamicBorder, type ThemeColor } from "@earendil-works/pi-coding-agent"
 import { POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../constants.ts";
 import {
  Container,
+ Input,
  Key,
  type KeyId,
  matchesKey,
@@ -69,9 +70,16 @@ async function selectModel(
  const modeName = opts.mode
   ? ((MODE_LABELS as Record<string, string>)[opts.mode] ?? opts.mode)
   : undefined;
+ const eligibility = (model: Model<Api>) => opts.feasibility?.(model, "summary", opts.mode);
  const blocked = (model: Model<Api>): string | undefined => {
-  const check = opts.feasibility?.(model, "summary", opts.mode);
+  const check = eligibility(model);
   return check && !check.selectable ? check.reason ?? "not eligible" : undefined;
+ };
+ const planFacts = (model: Model<Api>): string => {
+  const check = eligibility(model);
+  if (!check?.requests) return "";
+  return " · " + check.requests + (check.requests === 1 ? " summary call" : " summary batches")
+   + (check.largestRequestTokens ? ", largest ~" + compactTokenCount(check.largestRequestTokens) : "");
  };
  const options: ModelOption[] = available.map((m) => ({
   value: m.provider + "/" + m.id,
@@ -86,7 +94,7 @@ async function selectModel(
   label: o.label,
   description: blocked(o.model)
    ? "unavailable"
-   : compactTokenCount(o.model.contextWindow) + " window" + (i === opts.defaultModelIndex ? " · selected" : ""),
+   : compactTokenCount(o.model.contextWindow) + " window" + planFacts(o.model) + (i === opts.defaultModelIndex ? " · selected" : ""),
  }));
  const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
   const c = new Container();
@@ -141,6 +149,7 @@ async function selectModel(
       " · " +
       compactTokenCount(option.model.contextWindow) +
       " window" +
+      planFacts(option.model) +
       (opts.feasibility && modeName ? " · fits the " + modeName + " plan" : ""),
      ),
    );
@@ -157,18 +166,26 @@ async function selectModel(
    tui.requestRender();
   };
   sel.onCancel = () => done(null);
+  const search = new Input();
+  c.addChild(new Text(theme.fg("dim", "Type to search models"), 1, 0));
+  c.addChild(search);
   c.addChild(sel);
   c.addChild(detail);
   c.addChild(new Text("", 0, 0));
   c.addChild(
-   new Text(theme.fg("dim", "↑↓ choose · Enter use model · Esc back"), 1, 0),
+   new Text(theme.fg("dim", "Type to filter · ↑↓ choose · Enter use model · Esc back"), 1, 0),
   );
   c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
   return {
    render: (w: number) => c.render(w),
    invalidate: () => c.invalidate(),
    handleInput: (d: string) => {
-    sel.handleInput(d);
+    if (matchesKey(d, Key.up) || matchesKey(d, Key.down) || matchesKey(d, Key.enter) || matchesKey(d, Key.escape)) {
+     sel.handleInput(d);
+    } else {
+     search.handleInput(d);
+     sel.setFilter(search.getValue());
+    }
     tui.requestRender();
    },
   };
@@ -1066,6 +1083,15 @@ export async function showCompactUI(
          "Too large for this model: " +
          (check.reason ?? "the planned requests do not fit"),
          "warning",
+        ),
+       );
+      else if (check.requests)
+       essentials.push(
+        ...para(
+         "Summary plan: " + check.requests + (check.requests === 1 ? " request" : " batch requests")
+         + (check.largestRequestTokens ? " · largest ~" + compactTokenCount(check.largestRequestTokens) + " tokens" : "")
+         + " · window " + compactTokenCount(selectedModel.model.contextWindow),
+         "dim",
         ),
        );
       if (blockedEnter)
