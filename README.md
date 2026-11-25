@@ -139,14 +139,14 @@ memory server, downloads a model or enables an optional engine on your behalf.
 | Feature | Install only when needed |
 | --- | --- |
 | Separate local Mnemopi store | `@oh-my-pi/pi-mnemopi@18.12.6` |
-| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.4` |
+| Mnemopi without Bun 1.3.14+ on `PATH` | `bun@1.4.5` |
 | Experimental image snapshots of old output | `@resvg/resvg-js@2.6.2` |
 
 **Status & help → Readiness & details** provides the exact command for your
 Pi package directory. For a standard npm-managed installation, Mnemopi uses:
 
 ```bash
-npm install @oh-my-pi/pi-mnemopi@18.12.6 bun@1.4.4 --prefix ~/.pi/agent/npm --legacy-peer-deps
+npm install @oh-my-pi/pi-mnemopi@18.12.6 bun@1.4.5 --prefix ~/.pi/agent/npm --legacy-peer-deps
 ```
 
 Pi's `--legacy-peer-deps` installation does not pull optional peers in by itself.

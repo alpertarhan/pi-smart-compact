@@ -76,7 +76,7 @@ export class SmartSettingsList extends SettingsList {
  /** Keep values readable on narrow screens; display shortening never reaches storage. */
  override render(width: number): string[] {
   const internals = internalsOf(this);
-  if (!internals || internals.submenuComponent || !internals.items.length) return super.render(width);
+  if (!internals || internals.submenuComponent || !internals.items.length) return [...super.render(width)];
   const labelWidth = Math.min(36, Math.max(8, Math.floor(width * 0.55)),
    Math.max(...internals.items.map((item) => visibleWidth(item.label))));
   const valueWidth = Math.max(0, width - labelWidth - 6);
@@ -95,7 +95,7 @@ export class SmartSettingsList extends SettingsList {
      ].filter(Boolean).join("\n");
     }
    });
-   const lines = super.render(width);
+   const lines = [...super.render(width)];
    // The native list appends its keyboard hint after the selected-row help.
    lines.splice(-1, 1, ...wrapTextWithAnsi(getSettingsListTheme().hint("  ↑↓ choose · Enter select · Esc back"), Math.max(1, width)));
    return lines;
