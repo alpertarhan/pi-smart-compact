@@ -18,7 +18,8 @@ import { resolveProviderWatchdogMs } from "../src/infra/llm-client.ts";
 import { makeTokenEstimator } from "../src/utils/tokens.ts";
 import type { LlmMessage, StructuredExtraction } from "../src/types.ts";
 import { serializeConversationText } from "../src/infra/ai-messages.ts";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { ANCHOR_CUSTOM_TYPE } from "../src/app/navigation-data.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { clearInspectContextMemo, inspectContext, lastAnchorBoundary, planContextTrim, trimTokens } from "../src/app/context-operations.ts";
 
@@ -113,6 +114,14 @@ const trimBranch = (() => {
   return session.getBranch();
 })();
 const trimPlan = planContextTrim(trimBranch);
+// An anchor mid-branch and a held leaf well before the tip, so the prefix-bounded scan is what gets timed.
+const anchorBranch = [
+  ...trimBranch.slice(0, 300),
+  { type: "custom_message", id: "bench-anchor", parentId: trimBranch[299]!.id, timestamp: trimBranch[299]!.timestamp, customType: ANCHOR_CUSTOM_TYPE,
+    content: "anchor", display: true, details: { anchor: { name: "bench", summary: "s" } } } as unknown as SessionEntry,
+  ...trimBranch.slice(300),
+];
+const HELD_LEAF_INDEX = 400;
 
 interface Benchmark {
   name: string;
@@ -280,9 +289,9 @@ const benchmarks: Benchmark[] = [
     name: "anchor boundary compare (held trim)",
     iterations: 20,
     run: () => {
-      const leaf = trimBranch.at(-2)?.id ?? "";
-      const same = lastAnchorBoundary(trimBranch) === lastAnchorBoundary(trimBranch, trimBranch.findIndex(entry => entry.id === leaf) + 1);
-      sink += same ? 1 : 0;
+      const boundary = lastAnchorBoundary(anchorBranch);
+      if (boundary !== "bench-anchor" || lastAnchorBoundary(anchorBranch, HELD_LEAF_INDEX + 1) !== boundary) throw new Error("Anchor boundary changed");
+      sink += 1;
     },
   },
   // Below pressure, every enabled turn_end also estimates the saved and rebuilt tail tokens.
