@@ -16,21 +16,24 @@ interface Pattern {
 
 /** True for values that reference a secret instead of being one: a dotted
  * identifier chain (`process.env.API_KEY`) or a call expression
- * (`crypto.randomBytes(32).toString()`), including one cut short at a string
- * argument (`getenv(`). Real secrets are opaque single runs; they contain no
+ * (`crypto.randomBytes(32).toString()`), including one cut short inside its
+ * last argument list (`getenv(`, `hash(pw,`). Real secrets are opaque single runs; they contain no
  * parentheses and are essentially never dotted. `[^()]*` keeps both checks
  * linear on hostile input; nested calls are not recognised and get redacted. */
 function isReferenceValue(value: string): boolean {
-  const bare = value.replace(/[;,\]]+$/, "");
+  const bare = value.replace(/[;,\]}]+$/, "");
   return (
     /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(bare) ||
     (bare.includes("(") &&
-      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)*\(?$/.test(bare))
+      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)*(?:\([^()]*)?$/.test(bare))
   );
 }
 
-/** Keywords that start an expression, not a password: `password = await read()`. */
-const EXPRESSION_START = /^(?:await|typeof|yield|function)$/;
+/** Expression starts, literals and type names: never passwords (`password = null`, `password: string`). */
+const NOT_A_SECRET = /^(?:await|typeof|yield|function|string|number|boolean|bigint|symbol|object|unknown|any|never|void|null|undefined|true|false|String|Number|Boolean|Object|Buffer|Date)$/;
+
+/** Punctuation after a value (`;`, `,`, `]`, `}`) stays when the value is redacted, so lines keep their shape. */
+const trailingPunctuation = (value: string): string => /[;,\]}]*$/.exec(value)![0];
 
 const SECRET_PATTERNS: Pattern[] = [
   {
@@ -78,28 +81,30 @@ const SECRET_PATTERNS: Pattern[] = [
     kind: "credential",
     regex:
       /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+){0,12})(["']?\s*([:=])\s*["']?)(?!\[REDACTED)([^\s"']{16,})(["']?)/gi,
-    // Quotes and spacing around the value survive, so scrubbed JSON still parses.
+    // Quotes, spacing and trailing punctuation survive, so scrubbed JSON and shell lines keep their shape.
     replacement: (name, gap, _separator, value, close, match) =>
       isReferenceValue(value)
         ? match
-        : name + gap + "[REDACTED:credential]" + close,
+        : name + gap + "[REDACTED:credential]" + trailingPunctuation(value) + close,
   },
   {
-    // Short passwords (`DB_PASSWORD=hunter2`) never reach the 16-char rule
-    // above. Restrict the shorter bar to assignments and quoted values so
-    // type annotations like `password: string` stay readable.
+    // Short passwords (`DB_PASSWORD=hunter2`, YAML `password: hunter2`) never
+    // reach the 16-char rule above. Type names, literals and code shapes stay.
     kind: "credential",
     regex:
       /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:password|passwd)(?:[_-][A-Za-z0-9]+){0,12})(["']?\s*([:=])\s*(["']?))(?!\[REDACTED)([^\s"']{4,15})(?![^\s"'])(["']?)/gi,
     // The value must end at whitespace, a quote or the end: a longer token
     // (one the rule above spared as a reference) is never cut in two.
-    replacement: (name, gap, separator, quote, value, close, match) =>
-      // Unquoted colon values stay unless they look like a YAML secret
-      // (symbol + digit, e.g. `s3cret!`); type names have no digit.
-      (separator === ":" && !quote && !(/[^A-Za-z0-9_$]/.test(value) && /\d/.test(value))) ||
-      isReferenceValue(value) || EXPRESSION_START.test(value)
+    replacement: (name, gap, separator, quote, value, close, match) => {
+      const bare = value.replace(/[;,\]}]+$/, "");
+      // An unquoted colon value with an inner capital is code: a type or an
+      // object-literal variable (`{ password: hashedPassword }`). YAML secrets
+      // such as `hunter2` or `changeme` have none.
+      const code = separator === ":" && !quote && /^[A-Za-z_$][a-z\d_$]*[A-Z][\w$]*$/.test(bare);
+      return code || NOT_A_SECRET.test(bare) || isReferenceValue(value)
         ? match
-        : name + gap + "[REDACTED:credential]" + close,
+        : name + gap + "[REDACTED:credential]" + trailingPunctuation(value) + close;
+    },
   },
 ];
 

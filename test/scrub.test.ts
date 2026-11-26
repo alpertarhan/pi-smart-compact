@@ -171,6 +171,19 @@ describe("SecretScrubber", () => {
     expect(performance.now() - started).toBeLessThan(250);
   });
 
+  it("redacts YAML passwords but keeps types, literals, calls and punctuation", () => {
+    const scrubber = new SecretScrubber(true, false);
+    const s = (text: string) => scrubber.scrubText(text).value;
+    expect(s("password: hunter2")).toBe("password: [REDACTED:credential]");
+    expect(s("passwd: monkey1")).toContain("[REDACTED:credential]");
+    expect(s("{ password: hashedPassword }")).toBe("{ password: hashedPassword }");
+    expect(s("password: string;")).toBe("password: string;");
+    expect(s("password = null")).toBe("password = null");
+    expect(s("const password = hash(pw, salt)")).toBe("const password = hash(pw, salt)");
+    expect(s("DB_PASSWORD=hunter2;")).toBe("DB_PASSWORD=[REDACTED:credential];");
+    expect(s("{password: hunter2hunter2}")).toBe("{password: [REDACTED:credential]}");
+  });
+
   it("stays fast on long hyphen-joined runs", () => {
     const run = "a1-".repeat(60_000) + " the end";
     const started = performance.now();
