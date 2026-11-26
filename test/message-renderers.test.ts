@@ -54,7 +54,10 @@ describe("message renderers", () => {
 
  it("summarises earlier saves in one line", () => {
   const [line] = lines(createMessageRenderers()[MEMORY_STATUS_TYPE], details({ state: "summary", total: 4, counts: { completed: 1, failed: 1, accepted: 1, unknown: 1 } }));
-  expect(line).toBe("<success>done</> <muted>4 earlier Hindsight saves: 1 completed, 1 failed, 1 accepted, 1 unknown</>");
+  // One failed save fails the row; only an all-completed batch reads as done.
+  expect(line).toMatch(/^<\w+>failed<\/> <muted>4 earlier Hindsight saves: 1 completed, 1 failed, 1 accepted, 1 unknown<\/>$/);
+  const [done] = lines(createMessageRenderers()[MEMORY_STATUS_TYPE], details({ state: "summary", counts: { completed: 2 } }));
+  expect(done).toBe("<success>done</> <muted>2 earlier Hindsight saves: 2 completed</>");
  });
 
  it("shows an unknown or missing state as pending, never as success", () => {

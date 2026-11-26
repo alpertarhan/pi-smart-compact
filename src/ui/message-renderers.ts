@@ -50,14 +50,19 @@ function memoryDetails(value: unknown): MemoryStatusDetails {
 function memoryStatusRow(theme: Theme, message: { details?: unknown }, expanded: boolean): string[] {
  const details = memoryDetails(message.details);
  if (details.state === "summary") {
-  const counts = details.counts ?? {};
-  const parts = ["completed", "failed", "accepted", "unknown"]
-   .map(state => (Number(counts[state]) > 0 ? Number(counts[state]) + " " + state : ""))
-   .filter(Boolean);
-  const total = details.total ?? parts.reduce((sum, part) => sum + parseInt(part, 10), 0);
-  return [statusLabel(theme, "done") + " " + theme.fg("muted", total + " earlier Hindsight saves: " + parts.join(", "))];
+  const count = (state: string) => Math.max(0, Number(details.counts?.[state]) || 0);
+  const states = ["completed", "failed", "accepted", "unknown"];
+  const parts = states.filter(state => count(state) > 0).map(state => count(state) + " " + state);
+  const total = details.total ?? states.reduce((sum, state) => sum + count(state), 0);
+  // Done only when every save completed: a failure fails the row, open saves keep it pending.
+  let status: "done" | "pending" | "failed" = "done";
+  if (count("accepted") || count("unknown")) status = "pending";
+  if (count("failed")) status = "failed";
+  return [statusLabel(theme, status) + " " + theme.fg("muted", total + " earlier Hindsight saves: " + parts.join(", "))];
  }
- const row = MEMORY_ROW[details.state ?? ""] ?? { status: "pending" as const, text: "Hindsight status unavailable" };
+ // Own keys only: a persisted state such as "constructor" must not reach Object.prototype.
+ const row = (details.state && Object.hasOwn(MEMORY_ROW, details.state) ? MEMORY_ROW[details.state] : undefined)
+  ?? { status: "pending" as const, text: "Hindsight status unavailable" };
  const lines = [statusLabel(theme, row.status) + " " + theme.fg("muted", row.text)];
  if (details.title) lines.push(theme.fg("dim", summarizeLine(details.title, 120)));
  const reason = details.reason ?? details.lastError;
@@ -68,12 +73,14 @@ function memoryStatusRow(theme: Theme, message: { details?: unknown }, expanded:
  return lines;
 }
 
-function anchorRow(theme: Theme, message: { details?: unknown }, expanded: boolean): string[] {
+function anchorRow(theme: Theme, message: { details?: unknown; content?: unknown }, expanded: boolean): string[] {
  const anchor = anchorFromMessage({ role: "custom", customType: ANCHOR_CUSTOM_TYPE, details: message.details });
  if (!anchor) return [theme.fg("muted", "Anchor")];
  const lines = [statusLabel(theme, "done") + " " + theme.fg("muted", "anchor recorded: " + sanitizeVisible(anchor.name))];
+ // A handoff seed carries the whole carried-over document in content; its summary is only an excerpt.
+ const handoff = typeof message.content === "string" && Boolean((message.details as { handoff?: unknown }).handoff);
  // Anchor text is model or foreign-session data: strip terminal escapes before drawing it.
- if (expanded) lines.push(theme.fg("dim", sanitizeVisible(anchor.summary)));
+ if (expanded) lines.push(theme.fg("dim", sanitizeVisible(handoff ? message.content as string : anchor.summary)));
  return lines;
 }
 

@@ -11,6 +11,7 @@ import { DynamicBorder, type ThemeColor } from "@earendil-works/pi-coding-agent"
 import { POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../constants.ts";
 import {
  Container,
+ getKeybindings,
  Input,
  Key,
  type KeyId,
@@ -82,7 +83,7 @@ async function selectModel(
  };
  const planFacts = (model: Model<Api>): string => {
   const check = eligibility(model);
-  return check?.requests ? " · " + summaryPlanText(check) : "";
+  return check?.requests ? " · " + summaryPlanText(check.requests, check.largestRequestTokens) : "";
  };
  const options: ModelOption[] = available.map((m) => ({
   value: m.provider + "/" + m.id,
@@ -184,7 +185,8 @@ async function selectModel(
    render: (w: number) => c.render(w),
    invalidate: () => c.invalidate(),
    handleInput: (d: string) => {
-    if (matchesKey(d, Key.up) || matchesKey(d, Key.down) || matchesKey(d, Key.enter) || matchesKey(d, Key.escape)) {
+    // List keys follow the keybindings SelectList itself reads (remapped up/down/confirm/cancel); anything else types.
+    if ((["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const).some(id => getKeybindings().matches(d, id))) {
      sel.handleInput(d);
     } else {
      search.handleInput(d);
@@ -199,9 +201,9 @@ async function selectModel(
 }
 
 /** One wording for the picker and the review: "3 summary requests, largest ~120k tokens". */
-function summaryPlanText(check: { requests?: number; largestRequestTokens?: number }): string {
- return check.requests + (check.requests === 1 ? " summary request" : " summary requests")
-  + (check.largestRequestTokens ? ", largest ~" + compactTokenCount(check.largestRequestTokens) + " tokens" : "");
+function summaryPlanText(requests: number, largestTokens?: number): string {
+ return requests + (requests === 1 ? " summary request" : " summary requests")
+  + (largestTokens ? ", largest ~" + compactTokenCount(largestTokens) + " tokens" : "");
 }
 
 const PRIMARY_MODES: EffectiveCompactionMode[] = [
@@ -1098,7 +1100,7 @@ export async function showCompactUI(
       else if (check.requests)
        essentials.push(
         ...para(
-         "Summary plan: " + summaryPlanText(check) + " · window " + compactTokenCount(selectedModel.model.contextWindow),
+         "Summary plan: " + summaryPlanText(check.requests, check.largestRequestTokens) + " · window " + compactTokenCount(selectedModel.model.contextWindow),
          "dim",
         ),
        );
