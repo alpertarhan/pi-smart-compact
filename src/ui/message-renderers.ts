@@ -28,10 +28,11 @@ interface MemoryStatusDetails {
  counts?: Record<string, number>;
 }
 
+/** Declared in display order: the earlier-saves summary lists states this way. */
 const MEMORY_ROW: Record<string, { status: "done" | "pending" | "failed"; text: string }> = {
  completed: { status: "done", text: "saved to Hindsight" },
- accepted: { status: "pending", text: "Hindsight is still indexing it; not searchable yet" },
  failed: { status: "failed", text: "not saved to Hindsight" },
+ accepted: { status: "pending", text: "Hindsight is still indexing it; not searchable yet" },
  unknown: { status: "pending", text: "Hindsight result unknown" },
 };
 
@@ -51,7 +52,7 @@ function memoryStatusRow(theme: Theme, message: { details?: unknown }, expanded:
  const details = memoryDetails(message.details);
  if (details.state === "summary") {
   const count = (state: string) => Math.max(0, Number(details.counts?.[state]) || 0);
-  const states = ["completed", "failed", "accepted", "unknown"];
+  const states = Object.keys(MEMORY_ROW);
   const parts = states.filter(state => count(state) > 0).map(state => count(state) + " " + state);
   const total = details.total ?? states.reduce((sum, state) => sum + count(state), 0);
   // Done only when every save completed: a failure fails the row, open saves keep it pending.
