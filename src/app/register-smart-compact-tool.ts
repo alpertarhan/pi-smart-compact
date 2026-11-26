@@ -125,14 +125,14 @@ export function registerSmartCompactTool(
         );
       }
 
-      const usage = readerUsage(ctx);
-      // Unknown usage (none measured since the last compaction) is not a small context.
-      if (usage?.tokens == null) {
+      const totalTokens = readerUsage(ctx)?.tokens;
+      // Unknown usage (none measured since the last compaction, or not a valid count) is not
+      // a small context; contextPressure() applies the same rule.
+      if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens < 0) {
         return textResult("Context usage is not measured yet; it is known after the next reply. Nothing to do now.", {
           display: { state: "skipped", reason: "usage-unknown" },
         });
       }
-      const totalTokens = usage.tokens;
       const window = effectiveContextWindow(ctx.model, config);
       const contextPercent = safeContextPercent(totalTokens, window);
       const percent = Math.round(contextPercent);

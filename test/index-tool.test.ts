@@ -23,6 +23,21 @@ describe("smart_compact tool cancellation", () => {
     expect(result.details.display).toMatchObject({ state: "skipped", reason: "below-threshold", tokens: 102_957, percent: 38, window: 272_000 });
     expect(tool.description).toContain("stages");
   });
+  it("reports unmeasured or invalid usage as unknown, not as a small context", async () => {
+    let tool: any;
+    registerSmartCompactTool({ registerTool: (definition: any) => { tool = definition; } } as any, {
+      pendingRef: { peek: () => undefined } as any, runLock: {} as any,
+      onNativeApplyError: () => false, policy: { isAgentToolEnabled: () => true } as any,
+    });
+    for (const usage of [undefined, { tokens: Number.NaN }, { tokens: -1 }]) {
+      const result = await tool.execute("unknown-usage", {}, undefined, () => {}, {
+        model: { contextWindow: 272_000 }, getContextUsage: () => usage,
+        sessionManager: { getSessionId: () => "unknown-usage" },
+      });
+      expect(result.content[0].text).toContain("not measured yet");
+      expect(result.details.display).toEqual({ state: "skipped", reason: "usage-unknown" });
+    }
+  });
   it("includes recent issues in the agent's metrics report so a gate failure is diagnosable", async () => {
     const originalHome = process.env.HOME;
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "smart-compact-tool-report-"));
