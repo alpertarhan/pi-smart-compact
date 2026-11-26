@@ -423,7 +423,7 @@ verify its outputs; checkpoints, rewind and trim stay on the active branch.
 Optional and off by default. With **Offload huge outputs**
 (`artifactOffloadEnabled`) on and `smart_context` reachable by the model (any
 **Agent tools** choice except **Off**, and not hidden with `/tools`),
-successful, known read-only text results of at least 16,384 characters are
+successful, known read-only text results above a window-relative floor (2% of the active model's window, 8,192–65,536 characters) are
 saved before their first model request. The model sees the tool/source label,
 size, an `artifact-<hash>` ID and short first/last excerpts.
 
@@ -973,7 +973,7 @@ What is not covered:
 | Nothing compacts automatically | Check the idle boundary and pressure gates. Only the optional `native-hook` strategy requires Pi's auto-compaction (readiness shows `unknown`). Check `Automatic compaction` and `This branch only`. On a large-window model, see `Context cap for start % (tokens)` in [Let it run automatically](#let-it-run-automatically). |
 | Cleanup did nothing on the next reply | Expected: the next request is sent untrimmed; cleanup applies at the next completed turn. |
 | **Clean up tool output** shows `held for a cold cache` | Expected only with **Economic (opt-in)** cleanup timing: the batch waits for the prompt cache to expire; see [automatic cleanup](#automatic-cleanup-optional). Select the row to apply it at the next completed turn instead. |
-| Automatic cleanup or offload never happens | Both need `smart_context` reachable: **Agent tools** must not be **Off**, and `smart_context` must not be hidden with `/tools`. Offload also needs **Offload huge outputs** on and applies only to read-only text results of 16,384+ characters. |
+| Automatic cleanup or offload never happens | Both need `smart_context` reachable: **Agent tools** must not be **Off**, and `smart_context` must not be hidden with `/tools`. Offload also needs **Offload huge outputs** on and applies only to read-only text results above the window-relative floor. |
 | Agent says a summary is staged, but context did not shrink | Run `/compact` within 5 minutes. With automatic compaction off, nothing else consumes it. |
 | `smart_context`, `smart_recall`, `smart_save_memory` or `smart_navigation` missing | With **On demand**, the agent loads a group through `smart_tools`; with **Off**, no context tool is shown; see [agent tools](#agent-tools). Check `/tools`. |
 | Memory tools say they "must run from a project directory" | Start Pi from inside a project, not from your home directory or `/`. |

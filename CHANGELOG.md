@@ -11,6 +11,19 @@
   very long hyphen-joined input can no longer stall scrubbing for seconds.
   Redacted values keep their quotes and spacing, so scrubbed JSON still
   parses.
+- The model picker follows remapped list keys (up, down, confirm, cancel)
+  instead of typing them into the search field.
+- The row summarising earlier Hindsight saves no longer shows done when a
+  save failed or is still open.
+- Expanding a handoff in the transcript shows its whole carried-over text,
+  not only the excerpt.
+- `smart_compact` reports when context usage is not measured yet instead of
+  calling the context small.
+- Short unquoted YAML passwords (`password: hunter2`) are redacted; type
+  names, literals and object-literal variables stay readable, and punctuation
+  after a redacted value is kept.
+- On Linux, a compaction run lease whose PID now belongs to another process
+  is reclaimed at once.
 - On Linux, a lock whose owner is still running is never taken over, even
   after a long sleep, and a lock whose PID was reused is reclaimed at once.
 - Rewind reports keep up to 16,000 characters (was 8,000): one report in
