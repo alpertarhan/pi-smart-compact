@@ -484,7 +484,7 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
   a writing tool in the detour blocks it, and the refusal names the kept batches.
 - **Files, processes, Git state and external effects are never rolled back.**
 - The report is written by the agent and is not verified. Reports longer
-  than 8,000 characters are shortened head-and-tail with the omission
+  than 16,000 characters are shortened head-and-tail with the omission
   marked; they are never rejected for length. It should include findings with evidence paths/identifiers,
   constraints, failed attempts and the next step. More than 512 eligible messages requires a normal compaction.
 - `plan` previews how many outputs a trim would remove and the characters
