@@ -12,11 +12,14 @@ import {
 } from "../domain/tool-semantics.ts";
 import { errorDetail, recordIssue } from "./issues.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
+import path from "node:path";
 import {
   appendLineLockedAsync,
   readJsonlTail,
   writeJsonSync,
   readJsonSync,
+  acquireLockSync,
+  ensureDir,
 } from "../infra/fs.ts";
 import { RUNTIME_LOG_MAX_BYTES, SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
@@ -309,11 +312,16 @@ function readRemediationFile(projectId: string): RemediationHintsFile {
 }
 
 function writeRemediationFile(projectId: string, patch: Partial<RemediationHintsFile>, what: string): void {
+  const file = remediationHintsFile(projectId);
   try {
-    writeJsonSync(remediationHintsFile(projectId), {
-      ...readRemediationFile(projectId),
-      ...patch,
-    });
+    ensureDir(path.dirname(file));
+    // Read-modify-write: another Pi process may be writing the other hint set.
+    const release = acquireLockSync(file);
+    try {
+      writeJsonSync(file, { ...readRemediationFile(projectId), ...patch });
+    } finally {
+      release();
+    }
   } catch (e) {
     recordIssue({ key: "damage.hints", message: what + " could not be saved (" + errorDetail(e) + "). The next compaction may not use them.", error: e });
   }
@@ -338,14 +346,16 @@ export function writeRemediationHints(
  */
 export function writeVerificationGapHints(projectId: string, kinds: string[]): void {
   const cleaned = [...new Set(kinds.map((k) => (k ?? "").trim()).filter(Boolean))].slice(0, 8);
-  if (!cleaned.length) return;
+  // An empty list clears older kinds; with nothing stored there is nothing to clear.
+  if (!cleaned.length && !Array.isArray(readRemediationFile(projectId).gapKinds)) return;
   writeRemediationFile(projectId, { gapKinds: cleaned, gapKindsUpdatedAt: Date.now() }, "Verification gap hints");
 }
 
 export function readVerificationGapHints(projectId: string): string[] {
   const data = readRemediationFile(projectId);
   if (!Array.isArray(data.gapKinds) || !hintsFresh(data.gapKindsUpdatedAt)) return [];
-  return data.gapKinds.filter((k): k is string => typeof k === "string");
+  // Slugs only: a hand-edited file must not put free text into every later prompt.
+  return data.gapKinds.filter((k): k is string => typeof k === "string" && /^[a-z-]{1,40}$/.test(k));
 }
 
 /**
