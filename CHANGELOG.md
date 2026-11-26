@@ -11,6 +11,10 @@
   very long hyphen-joined input can no longer stall scrubbing for seconds.
   Redacted values keep their quotes and spacing, so scrubbed JSON still
   parses.
+- On Linux, a lock whose owner is still running is never taken over, even
+  after a long sleep, and a lock whose PID was reused is reclaimed at once.
+- A rewind report over 8,000 characters is flagged in the tool result, and
+  the report parameter states that budget.
 - A lock folder left behind by a killed process no longer blocks later
   metrics, settings, and memory writes forever; it is reclaimed when its
   owner is gone. Saving a setting writes through a symlinked settings.json
