@@ -24,7 +24,7 @@ import { anchorFromEntry } from "../src/app/navigation-data.ts";
 import { createSettledAutoTrigger } from "../src/app/settled-auto-trigger.ts";
 import { contextPressure } from "../src/app/background-preparation.ts";
 import { SecretScrubber } from "../src/domain/scrub.ts";
-import { ATTENTION_CUSTOM_TYPE } from "../src/app/context-attention.ts";
+import { ATTENTION_CUSTOM_TYPE } from "../src/app/context-operations.ts";
 function assistant(content: AssistantMessage["content"] = [], stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
     role: "assistant", content, api: "openai-completions", provider: "test", model: "test", stopReason, timestamp: 1,
@@ -772,6 +772,14 @@ describe("smart_context boundary lifecycle", () => {
     expect(h.edits()).toEqual(["rewind"]);
   });
 
+  it("reports a rewind that removed no output as a rewind too", async () => {
+    const h = harness();
+    h.boundary(await h.execute({ action: "checkpoint", label: "Investigate" }));
+    h.boundary(await h.execute({ action: "rewind", report: "Nothing to remove. Next: patch." }));
+    h.nextRequest();
+    expect(h.edits()).toEqual(["rewind"]);
+  });
+
   it.each([
     ["enabled", true], ["native-hook", false], ["below-threshold", false], ["hidden", true], ["busy", false],
   ] as const)("automatic hygiene is independent of agent exposure and respects %s", async (kind, shouldTrim) => {
@@ -815,8 +823,13 @@ describe("pressure-first policy", () => {
     h.setNow(ONE_HOUR_MS * 2);
     expect(h.request().result).toBeUndefined();
     expect(h.controller.deferredTrim(h.session.getSessionId())).toBeNull();
-    const status = JSON.parse((await h.tool.execute("status", { action: "status" }, undefined, undefined, h.ctx)).content[0].text);
-    expect(status.pressure).toMatchObject({ percent: 50, cleanupTokens: 140_000, compactionTokens: 160_000, cleanup: false });
+    const statusResult = await h.tool.execute("status", { action: "status" }, undefined, undefined, h.ctx);
+    const status = JSON.parse(statusResult.content[0].text);
+    // Fullness numbers are for the human renderer, not the agent's result text.
+    expect(status.pressure).toBeUndefined();
+    expect(status.trimRoi).toBeUndefined();
+    expect(status.cleanup.savedChars).toBeUndefined();
+    expect((statusResult.details as { display: { pressurePercent: number } }).display.pressurePercent).toBe(50);
     await expect(h.tool.execute("trim", { action: "trim" }, undefined, undefined, h.ctx)).rejects.toThrow("No context pressure");
     const cp = await h.execute({ action: "checkpoint" });
     h.boundary(cp); // metadata is cheap and permitted before the detour
@@ -1269,6 +1282,18 @@ describe("superseded outputs", () => {
     expect(JSON.stringify(planContextTrim(session.getBranch()))).toBe(JSON.stringify(plan));
   });
 
+  it("trims a small superseded read below the general floor, but keeps a small fresh one", () => {
+    const session = manager();
+    const stale = toolBatch(session, "read", "s".repeat(600), false, { path: "src/stale.ts" });
+    const fresh = toolBatch(session, "read", "f".repeat(600), false, { path: "src/fresh.ts" });
+    edit(session, "src/stale.ts");
+    tail(session);
+    const plan = planContextTrim(session.getBranch());
+    expect(plan.references).toContain(stale.result);
+    expect(plan.references).not.toContain(fresh.result);
+    expect(markerOf(plan, plan.references.indexOf(stale.result))).toContain("superseded: edited later");
+  });
+
   it("never matches relative against absolute paths", () => {
     const session = manager();
     const [a, b, c] = ["a", "b", "c"].map(name => toolBatch(session, "read", name.repeat(5_000), false, { path: `src/${name}.ts` }));
@@ -1575,8 +1600,10 @@ describe("automatic trim timing", () => {
     expect(deferred).toMatchObject({ savedTokens: expected.savedTokens, tailTokens: expected.tailTokens });
     expect(deferred.breakEvenRequests).toBeCloseTo(expected.breakEvenRequests, 9);
     expect(deferred.breakEvenRequests!).toBeGreaterThan(AUTO_TRIM_BREAK_EVEN_REQUESTS);
-    const status = JSON.parse((await h.tool.execute("s", { action: "status" }, undefined, undefined, h.ctx)).content[0].text);
-    expect(status.deferredTrim).toEqual(deferred);
+    const statusResult = await h.tool.execute("s", { action: "status" }, undefined, undefined, h.ctx);
+    const status = JSON.parse(statusResult.content[0].text);
+    expect(status.deferredTrim).toBe(true);
+    expect((statusResult.details as { display: { deferredTrim: unknown } }).display.deferredTrim).toEqual(deferred);
 
     expect(h.request().result).toBeUndefined(); // 1 minute after the last response: cache warm
     h.setNow(1 + FIVE_MINUTES_MS + 1);
@@ -1616,6 +1643,16 @@ describe("automatic trim timing", () => {
     expect(h.request().result).toBeUndefined();
     h.setNow(1 + ONE_HOUR_MS + 1);
     expect(h.request().result).toBeDefined();
+  });
+
+  it("commits a pressure-only trim when the prompt cache is already cold at the turn boundary", () => {
+    const { h, old } = deferredFixture(ANTHROPIC, true);
+    h.cfg.contextPressureOnly = true;
+    // Still warm: nothing happens without pressure.
+    expect(h.turn()).toBeUndefined();
+    // Past the cache lifetime the rewrite is free, so the trim commits as cold.
+    h.setNow(1 + 2 * ONE_HOUR_MS);
+    expect(controlOf(h.turn()?.entries)).toMatchObject({ action: "trim", references: [old.result], cause: "cold" });
   });
 
   it("keeps pressure-only histories intact beyond a known cache horizon", () => {

@@ -6,7 +6,19 @@ import {
 } from "../src/infra/ai-messages.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { LlmMessage } from "../src/types.ts";
-import { computeToolCharPercentage, smartKeepBoundary } from "../src/utils/helpers.ts";
+import { boundText, computeToolCharPercentage } from "../src/utils/helpers.ts";
+
+describe("boundText", () => {
+  it("shortens over-long prose head+tail instead of rejecting it", () => {
+    const text = "head-".repeat(100) + "MIDDLE" + "-tail".repeat(100);
+    const bound = boundText(text, 200);
+    expect(bound.length).toBeLessThanOrEqual(200);
+    expect(bound).toContain("characters omitted");
+    expect(bound.startsWith("head-")).toBe(true);
+    expect(bound.endsWith("-tail")).toBe(true);
+    expect(boundText("short", 200)).toBe("short");
+  });
+});
 
 describe("host-visible context projection", () => {
   it("applies replacements and omissions without changing source IDs", () => {
@@ -35,7 +47,6 @@ describe("host-visible context projection", () => {
     expect(msgs.map(entry => entry.id)).toEqual(["compaction", "anchor", "tool"]);
     expect(JSON.stringify(msgs)).not.toContain("PRIVATE_SENTINEL");
     expect(JSON.stringify(msgs)).toContain("Previous facts");
-    expect(smartKeepBoundary(msgs, 2, branch)).toBe(1);
     expect(computeToolCharPercentage(msgs)).toBeGreaterThan(0);
     expect(computeToolCharPercentage(msgs)).toBeLessThan(computeToolCharPercentage(branch));
   });

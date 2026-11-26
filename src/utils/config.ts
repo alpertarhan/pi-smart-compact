@@ -819,7 +819,17 @@ export async function writeGlobalConfigValues(
   }
 
   root[CONFIG_KEY] = section;
-  await atomicWriteFile(file, JSON.stringify(root, null, 2) + "\n");
+  // The alias is read only while the main key is absent; leaving it behind
+  // turns later edits to it into silent no-ops.
+  delete root[CONFIG_KEY_ALT];
+  // Write through a symlinked settings.json (dotfiles) instead of replacing
+  // the link with a plain file: rename the temp file over the link target.
+  let dest = file;
+  try { dest = fs.realpathSync(file); } catch {
+    // A dangling link (target not created yet) still names where to write.
+    try { dest = path.resolve(path.dirname(file), fs.readlinkSync(file)); } catch { /* missing: write the path itself */ }
+  }
+  await atomicWriteFile(dest, JSON.stringify(root, null, 2) + "\n");
   resetConfigCache();
   return loadConfig();
  } finally {

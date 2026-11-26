@@ -169,7 +169,7 @@ export async function describeEffectiveState(
   lines.push("Auto limits: " + Math.min(config.autoTriggerTimeoutMs, AUTO_TRIGGER_TIMEOUT_CAP_MS) / 1_000
     + " s timeout; " + SETTLED_TRIGGER_COOLDOWN_MS / 60_000 + " min cooldown; " + config.pendingTtlMs / 60_000 + " min preparation TTL");
   const backgroundHygiene = policy.autoTrigger && config.autoTriggerStrategy === "background";
-  lines.push("Context hygiene: " + (config.contextHygieneEnabled ? (config.contextPressureOnly ? "on (pressure only; roomy cached history stays unchanged)"
+  lines.push("Context hygiene: " + (config.contextHygieneEnabled ? (config.contextPressureOnly ? "on (pressure only, or once the prompt cache is cold; roomy warm history stays unchanged)"
     : "on (economic opt-in: pressure, cache break-even, or cold cache)")
     : backgroundHygiene ? "on (enabled by effective background strategy, pressure-gated)" : "off")
     + ((config.contextHygieneEnabled || backgroundHygiene) && config.toolLoading === "off" ? " — automatic trims inactive: agent tools are off, so archived output could not be read back" : ""));

@@ -14,6 +14,31 @@ interface Pattern {
   replacement?: (...groups: string[]) => string;
 }
 
+/** True for values that reference a secret instead of being one: a dotted
+ * identifier chain (`process.env.API_KEY`), a call expression
+ * (`crypto.randomBytes(32).toString()`), one cut short at a quote or space
+ * (`getenv(`, `hash(pw,`, `body[`), or an interpolation (`${password}`). A cut
+ * call must end right after `(` or at an argument's comma, so a password with a
+ * parenthesis (`Secret(2024`) is still redacted. Real secrets are opaque single
+ * runs and essentially never dotted. `[^()]*` and `[^(),]*` keep the checks
+ * linear on hostile input; nested calls are not recognised and get redacted. */
+function isReferenceValue(value: string): boolean {
+  // A trailing ")" is kept: it may close the value's own call, as in getKey().
+  const bare = value.replace(/[;,\]}]+$/, "");
+  return (
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(bare) ||
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)+$/.test(bare) ||
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)*(?:\((?:[^(),]*,)*|\[)$/.test(value) ||
+    /^\$\{[^}]+\}/.test(value)
+  );
+}
+
+/** Expression starts, literals and type names: never passwords (`password = null`, `password: string`). */
+const NOT_A_SECRET = /^(?:await|typeof|yield|function|string|number|boolean|bigint|symbol|object|unknown|any|never|void|null|undefined|true|false|String|Number|Boolean|Object|Buffer|Date)$/;
+
+/** Punctuation after a value (`;` `,` `)` `]` `}`) stays when the value is redacted, so lines keep their shape. */
+const trailingPunctuation = (value: string): string => /[;,)\]}]*$/.exec(value)![0];
+
 const SECRET_PATTERNS: Pattern[] = [
   {
     kind: "private-key",
@@ -26,6 +51,7 @@ const SECRET_PATTERNS: Pattern[] = [
   { kind: "gitlab-token", regex: /\bglpat-[0-9A-Za-z_-]{20,}\b/g },
   { kind: "npm-token", regex: /\bnpm_[0-9A-Za-z]{30,}\b/g },
   { kind: "github-token", regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g },
+  { kind: "github-token", regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g },
   { kind: "api-key", regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/g },
   { kind: "slack-token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
   {
@@ -38,21 +64,51 @@ const SECRET_PATTERNS: Pattern[] = [
     replacement: () => "Bearer [REDACTED:bearer-token]",
   },
   {
+    kind: "basic-auth",
+    // Auth schemes are case-insensitive (RFC 7235), like the Bearer rule.
+    regex: /\bBasic\s+([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/gi,
+    // "Basic authentication ..." is prose, not a credential: only redact
+    // when the blob actually decodes to user:password shaped text.
+    replacement: (blob, match) =>
+      /^[\x20-\x7e]*:[^\x00-\x1f]*$/.test(Buffer.from(blob, "base64").toString("utf8"))
+        ? "Basic [REDACTED:basic-auth]"
+        : match,
+  },
+  {
     kind: "connection-password",
-    regex: /\b([a-z][a-z0-9+.-]*:\/\/[^:\s/@]+:)[^@\s/]+(@)/gi,
+    // Bounded scheme/name runs: unbounded repetitions backtrack quadratically
+    // on long hyphen-joined input (60k segments took seconds).
+    regex: /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^:\s/@]+:)[^@\s/]+(@)/gi,
     replacement: (prefix, suffix) => prefix + "[REDACTED:password]" + suffix,
   },
   {
     kind: "credential",
     regex:
-      /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+)*)\s*([:=])\s*["']?([^\s"']{16,})["']?/gi,
-    replacement: (name, separator, value, match) =>
-      // `token: process.env.API_KEY` is a reference, not a literal secret.
-      // Multi-segment dotted identifier chains are env/config refs; real
-      // secrets are opaque single runs and essentially never dotted.
-      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value)
+      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret(?:[_-]?(?:access)?[_-]?key)?|client[_-]?secret)(?:[_-][A-Za-z0-9]+){0,12})(["']?\s*([:=])\s*["']?)(?!\[REDACTED)([^\s"']{16,})(["']?)/gi,
+    // Quotes, spacing and trailing punctuation survive, so scrubbed JSON and shell lines keep their shape.
+    replacement: (name, gap, _separator, value, close, match) =>
+      isReferenceValue(value)
         ? match
-        : name + separator + "[REDACTED:credential]",
+        : name + gap + "[REDACTED:credential]" + trailingPunctuation(value) + close,
+  },
+  {
+    // Short passwords (`DB_PASSWORD=hunter2`, YAML `password: hunter2`) never
+    // reach the 16-char rule above. Type names, literals and code shapes stay.
+    kind: "credential",
+    regex:
+      /\b((?:[A-Za-z0-9]+[_-]){0,12}(?:password|passwd)(?:[_-][A-Za-z0-9]+){0,12})(["']?\s*([:=])\s*(["']?))(?!\[REDACTED)([^\s"']{4,15})(?![^\s"'])(["']?)/gi,
+    // The value must end at whitespace, a quote or the end: a longer token
+    // (one the rule above spared as a reference) is never cut in two.
+    replacement: (name, gap, separator, quote, value, close, match) => {
+      const bare = value.slice(0, value.length - trailingPunctuation(value).length);
+      // An unquoted colon value with an inner capital is code: a type or an
+      // object-literal variable (`{ password: hashedPassword }`). YAML secrets
+      // such as `hunter2` or `changeme` have none.
+      const code = separator === ":" && !quote && /^[A-Za-z_$][a-z\d_$]*[A-Z][\w$]*$/.test(bare);
+      return code || NOT_A_SECRET.test(bare) || isReferenceValue(value)
+        ? match
+        : name + gap + "[REDACTED:credential]" + trailingPunctuation(value) + close;
+    },
   },
 ];
 

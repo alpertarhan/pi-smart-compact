@@ -11,6 +11,8 @@ import { DynamicBorder, type ThemeColor } from "@earendil-works/pi-coding-agent"
 import { POST_SUMMARY_RESERVE_RATIO, TRUNC } from "../constants.ts";
 import {
  Container,
+ getKeybindings,
+ Input,
  Key,
  type KeyId,
  matchesKey,
@@ -22,7 +24,7 @@ import {
  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { ModelFeasibility } from "../app/model-feasibility.ts";
+import type { ModelEligibility, ModelFeasibility } from "../app/model-feasibility.ts";
 import type {
  CompactConfig,
  CompactionMode,
@@ -69,9 +71,19 @@ async function selectModel(
  const modeName = opts.mode
   ? ((MODE_LABELS as Record<string, string>)[opts.mode] ?? opts.mode)
   : undefined;
+ // capacity() scrubs and re-estimates the planned conversation on each call: check each model once per picker.
+ const checked = new Map<Model<Api>, ModelEligibility | undefined>();
+ const eligibility = (model: Model<Api>) => {
+  if (!checked.has(model)) checked.set(model, opts.feasibility?.(model, "summary", opts.mode));
+  return checked.get(model);
+ };
  const blocked = (model: Model<Api>): string | undefined => {
-  const check = opts.feasibility?.(model, "summary", opts.mode);
+  const check = eligibility(model);
   return check && !check.selectable ? check.reason ?? "not eligible" : undefined;
+ };
+ const planFacts = (model: Model<Api>): string => {
+  const check = eligibility(model);
+  return check?.requests ? " · " + summaryPlanText(check.requests, check.largestRequestTokens) : "";
  };
  const options: ModelOption[] = available.map((m) => ({
   value: m.provider + "/" + m.id,
@@ -86,7 +98,7 @@ async function selectModel(
   label: o.label,
   description: blocked(o.model)
    ? "unavailable"
-   : compactTokenCount(o.model.contextWindow) + " window" + (i === opts.defaultModelIndex ? " · selected" : ""),
+   : compactTokenCount(o.model.contextWindow) + " window" + planFacts(o.model) + (i === opts.defaultModelIndex ? " · selected" : ""),
  }));
  const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
   const c = new Container();
@@ -141,6 +153,7 @@ async function selectModel(
       " · " +
       compactTokenCount(option.model.contextWindow) +
       " window" +
+      planFacts(option.model) +
       (opts.feasibility && modeName ? " · fits the " + modeName + " plan" : ""),
      ),
    );
@@ -157,24 +170,40 @@ async function selectModel(
    tui.requestRender();
   };
   sel.onCancel = () => done(null);
+  const search = new Input();
+  search.focused = true; // the picker owns focus while open; this draws the caret
+  c.addChild(new Text(theme.fg("dim", "Type to search models"), 1, 0));
+  c.addChild(search);
   c.addChild(sel);
   c.addChild(detail);
   c.addChild(new Text("", 0, 0));
   c.addChild(
-   new Text(theme.fg("dim", "↑↓ choose · Enter use model · Esc back"), 1, 0),
+   new Text(theme.fg("dim", "Type to filter · ↑↓ choose · Enter use model · Esc back"), 1, 0),
   );
   c.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
   return {
    render: (w: number) => c.render(w),
    invalidate: () => c.invalidate(),
    handleInput: (d: string) => {
-    sel.handleInput(d);
+    // List keys follow the keybindings SelectList itself reads (remapped up/down/confirm/cancel); anything else types.
+    if ((["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const).some(id => getKeybindings().matches(d, id))) {
+     sel.handleInput(d);
+    } else {
+     search.handleInput(d);
+     sel.setFilter(search.getValue());
+    }
     tui.requestRender();
    },
   };
  });
  if (!result?.startsWith("model:")) return null;
  return options[parseInt(result.slice(6), 10)] ?? null;
+}
+
+/** One wording for the picker and the review: "3 summary requests, largest ~120k tokens". */
+function summaryPlanText(requests: number, largestTokens?: number): string {
+ return requests + (requests === 1 ? " summary request" : " summary requests")
+  + (largestTokens ? ", largest ~" + compactTokenCount(largestTokens) + " tokens" : "");
 }
 
 const PRIMARY_MODES: EffectiveCompactionMode[] = [
@@ -1066,6 +1095,13 @@ export async function showCompactUI(
          "Too large for this model: " +
          (check.reason ?? "the planned requests do not fit"),
          "warning",
+        ),
+       );
+      else if (check.requests)
+       essentials.push(
+        ...para(
+         "Summary plan: " + summaryPlanText(check.requests, check.largestRequestTokens) + " · window " + compactTokenCount(selectedModel.model.contextWindow),
+         "dim",
         ),
        );
       if (blockedEnter)

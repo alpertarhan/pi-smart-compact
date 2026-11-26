@@ -63,6 +63,23 @@ describe("settled auto-trigger host handoff", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("clears the cooldown at a unit boundary so a due compaction folds there", async () => {
+    let now = 1_000;
+    const callbacks: Array<{ onComplete?: (result: unknown) => void }> = [];
+    const ctx = context({ compact: (options: any) => callbacks.push(options) });
+    const trigger = createSettledAutoTrigger({ now: () => now });
+    const first = trigger.request(ctx, config());
+    callbacks[0].onComplete?.({});
+    await first;
+    await trigger.request(ctx, config());
+    expect(callbacks).toHaveLength(1); // cooldown still running
+    trigger.noteUnitBoundary("settled-session");
+    const second = trigger.request(ctx, config());
+    expect(callbacks).toHaveLength(2);
+    callbacks[1].onComplete?.({});
+    await second;
+  });
+
   it("deduplicates concurrent requests and cools down after success", async () => {
     let now = 1_000;
     const callbacks: Array<{ onComplete?: (result: unknown) => void; onError?: (error: Error) => void }> = [];

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import smartCompactExtension from "../src/index.ts";
-import { BUDGET_LIMITS } from "../src/constants.ts";
 import { registerSmartCompactTool } from "../src/app/register-smart-compact-tool.ts";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,7 +8,7 @@ import { resetConfigCache } from "../src/utils/config.ts";
 import { recordIssue, resetIssuesForTests } from "../src/utils/issues.ts";
 
 describe("smart_compact tool cancellation", () => {
-  it("explains the actual threshold, model window, and manual early-compaction option", async () => {
+  it("keeps fullness numbers out of the agent's text and points it to the manual option", async () => {
     let tool: any;
     registerSmartCompactTool({ registerTool: (definition: any) => { tool = definition; } } as any, {
       pendingRef: { peek: () => undefined } as any, runLock: {} as any,
@@ -19,12 +18,25 @@ describe("smart_compact tool cancellation", () => {
       model: { contextWindow: 272_000 }, getContextUsage: () => ({ tokens: 102_957 }),
       sessionManager: { getSessionId: () => "early-compact" },
     });
-    expect(result.content[0].text).toContain("38%");
-    expect(result.content[0].text).toContain("272,000");
-    expect(result.content[0].text).toContain("threshold");
-    expect(result.content[0].text).toContain("/smart-compact");
-    expect(result.content[0].text).not.toContain("tool=97%");
+    expect(result.content[0].text).toBe("Compaction is not available from the agent yet. If the user asks for it, they can run /smart-compact.");
+    // The numbers stay available to the human renderer.
+    expect(result.details.display).toMatchObject({ state: "skipped", reason: "below-threshold", tokens: 102_957, percent: 38, window: 272_000 });
     expect(tool.description).toContain("stages");
+  });
+  it("reports unmeasured or invalid usage as unknown, not as a small context", async () => {
+    let tool: any;
+    registerSmartCompactTool({ registerTool: (definition: any) => { tool = definition; } } as any, {
+      pendingRef: { peek: () => undefined } as any, runLock: {} as any,
+      onNativeApplyError: () => false, policy: { isAgentToolEnabled: () => true } as any,
+    });
+    for (const usage of [undefined, { tokens: Number.NaN }, { tokens: -1 }]) {
+      const result = await tool.execute("unknown-usage", {}, undefined, () => {}, {
+        model: { contextWindow: 272_000 }, getContextUsage: () => usage,
+        sessionManager: { getSessionId: () => "unknown-usage" },
+      });
+      expect(result.content[0].text).toContain("not measured yet");
+      expect(result.details.display).toEqual({ state: "skipped", reason: "usage-unknown" });
+    }
   });
   it("includes recent issues in the agent's metrics report so a gate failure is diagnosable", async () => {
     const originalHome = process.env.HOME;
@@ -66,7 +78,8 @@ describe("smart_compact tool cancellation", () => {
         sessionManager: { getSessionId: () => "capped-compact" },
       });
       // 100k of the 200k cap (not 10% of the 1M window).
-      expect(result.content[0].text).toContain("context 50% (100,000 / 200,000 tokens)");
+      expect(result.content[0].text).not.toMatch(/\d%/);
+      expect(result.details.display).toMatchObject({ percent: 50, tokens: 100_000, window: 200_000 });
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
@@ -104,7 +117,7 @@ describe("smart_compact tool cancellation", () => {
     ]);
   });
 
-  it("publishes mode and aggregate token-budget controls", () => {
+  it("publishes mode without per-run budget knobs (configured ceilings apply)", () => {
     let tool: any;
     smartCompactExtension({
       registerCommand: () => {},
@@ -120,19 +133,10 @@ describe("smart_compact tool cancellation", () => {
     expect(tool.parameters.properties.mode.description).not.toContain(
       "aggressive",
     );
-    expect(tool.parameters.properties.max_input_tokens.description).toContain(
-      BUDGET_LIMITS.INPUT_TOKENS.min + "-" + BUDGET_LIMITS.INPUT_TOKENS.max,
-    );
-    expect(tool.parameters.properties.max_calls.description).toContain(
-      BUDGET_LIMITS.CALLS.min + "-" + BUDGET_LIMITS.CALLS.max,
-    );
-    expect(tool.parameters.properties.max_latency_ms.description).toBe(
-      "Latency cap ms (" +
-        BUDGET_LIMITS.LATENCY_MS.min +
-        "-" +
-        BUDGET_LIMITS.LATENCY_MS.max +
-        ").",
-    );
+    expect(tool.parameters.properties.max_input_tokens).toBeUndefined();
+    expect(tool.parameters.properties.max_calls).toBeUndefined();
+    expect(tool.parameters.properties.max_latency_ms).toBeUndefined();
+    expect(tool.parameters.properties.profile).toBeUndefined();
   });
 
   it("fails closed when a stale call arrives after the agent tool was hidden", async () => {

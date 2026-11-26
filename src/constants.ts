@@ -17,8 +17,8 @@ export const VERSION = "10.8.1";
  * exercises. The audit fails if these drift from the manifest.
  */
 export const OPTIONAL_COMPONENTS = {
- mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "18.12.6", enables: "Mnemopi memory store" },
- bun: { name: "bun", version: "1.4.4", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
+ mnemopi: { name: "@oh-my-pi/pi-mnemopi", version: "19.2.0", enables: "Mnemopi memory store" },
+ bun: { name: "bun", version: "1.4.5", enables: "Mnemopi worker runtime when no Bun 1.3.14+ is on PATH" },
  resvg: { name: "@resvg/resvg-js", version: "2.6.2", enables: "image snapshots" },
 } as const;
 export const CHARS_PER_TOKEN = 3.8;
@@ -425,6 +425,9 @@ export const TRIM_RISK_LINE_RE =
 /** Trim marker digest bounds: line 1 always kept; later lines dropped from the end to fit. */
 export const TRIM_MARKER_MAX_LINES = 6;
 export const TRIM_MARKER_MAX_CHARS = 400;
+/** Schema cap for agent prose (rewind reports, anchor summaries, pivot carryovers): far above
+ * every in-context budget, so an overlong text is shortened once instead of rejected and retried. */
+export const AGENT_TEXT_MAX_CHARS = 262_144;
 /** How far forward to look for a retry of the same tool after an error. */
 export const ERROR_RETRY_WINDOW = 6;
 /** How far forward to look for that retry's resolving (non-error) result. */

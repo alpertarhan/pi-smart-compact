@@ -12,11 +12,14 @@ import {
 } from "../domain/tool-semantics.ts";
 import { errorDetail, recordIssue } from "./issues.ts";
 import { damageReportsFile, remediationHintsFile } from "../infra/paths.ts";
+import path from "node:path";
 import {
   appendLineLockedAsync,
   readJsonlTail,
   writeJsonSync,
   readJsonSync,
+  acquireLockSync,
+  ensureDir,
 } from "../infra/fs.ts";
 import { RUNTIME_LOG_MAX_BYTES, SEVEN_DAYS_MS, TRUNC } from "../constants.ts";
 import { extractCheckKeywords } from "../domain/keywords.ts";
@@ -291,6 +294,48 @@ const REMEDIATION_TTL_MS = SEVEN_DAYS_MS;
  * compaction treats them as must-preserve (remediation). Overwrites with the
  * latest set; a TTL bounds how long stale hints linger.
  */
+interface RemediationHintsFile {
+  files?: unknown;
+  /** When `files` was last written; the name predates gap kinds. */
+  updatedAt?: number;
+  gapKinds?: unknown;
+  gapKindsUpdatedAt?: number;
+}
+
+/** Each hint set has its own clock, so writing one never revives the other. */
+function hintsFresh(writtenAt: unknown): boolean {
+  return typeof writtenAt !== "number" || Date.now() - writtenAt <= REMEDIATION_TTL_MS;
+}
+
+function readRemediationFile(projectId: string): RemediationHintsFile {
+  return readJsonSync<RemediationHintsFile>(remediationHintsFile(projectId)) ?? {};
+}
+
+/** Both hint sets share one file, so each update is a locked read-modify-write
+ * and neither writer clobbers the other's set. The lock never waits (see
+ * acquireLockSync): under contention this update is dropped and recorded as an
+ * issue, which best-effort hints can afford. `update` returns null to skip. */
+function writeRemediationFile(
+  projectId: string,
+  update: (current: RemediationHintsFile) => Partial<RemediationHintsFile> | null,
+  what: string,
+): void {
+  const file = remediationHintsFile(projectId);
+  try {
+    ensureDir(path.dirname(file));
+    const release = acquireLockSync(file);
+    try {
+      const current = readRemediationFile(projectId);
+      const patch = update(current);
+      if (patch) writeJsonSync(file, { ...current, ...patch });
+    } finally {
+      release();
+    }
+  } catch (e) {
+    recordIssue({ key: "damage.hints", message: what + " could not be saved (" + errorDetail(e) + "). The next compaction may not use them.", error: e });
+  }
+}
+
 export function writeRemediationHints(
   projectId: string,
   files: string[],
@@ -300,14 +345,40 @@ export function writeRemediationHints(
     ...new Set(files.map((f) => (f ?? "").trim()).filter((f) => f.length > 0)),
   ];
   if (!cleaned.length) return;
-  try {
-    writeJsonSync(remediationHintsFile(projectId), {
-      files: cleaned,
-      updatedAt: Date.now(),
-    });
-  } catch (e) {
-    recordIssue({ key: "damage.hints", message: "Re-read file hints could not be saved (" + errorDetail(e) + "). The next compaction may not prioritise those files.", error: e });
-  }
+  writeRemediationFile(projectId, () => ({ files: cleaned, updatedAt: Date.now() }), "Re-read file hints");
+}
+
+/** Verification gap kinds that name content a summary can include, in prompt
+ * words. Defect kinds (fabricated files, inconsistencies, unsupported claims)
+ * are verify's job: they are not stored and never take a hint's place. */
+const GAP_HINTS = new Map([
+  ["missing-goal", "the current goal"], ["missing-prior-goal", "earlier goals"], ["missing-section", "required sections"],
+  ["missing-file", "modified files"], ["missing-read-file", "files that were read"], ["missing-deleted-file", "deleted files"],
+  ["missing-error", "errors"], ["missing-decision", "decisions"], ["missing-constraint", "constraints"], ["missing-open-loops", "open loops"],
+]);
+
+/**
+ * Persist the content kinds a summary initially missed so the next synthesis
+ * for this project is told to take extra care with them — the smallest form
+ * of refining the compression guidance against failures. A run that missed
+ * nothing clears the stored kinds.
+ */
+export function writeVerificationGapHints(projectId: string, kinds: string[]): void {
+  const cleaned = [...new Set(kinds)].filter((kind) => GAP_HINTS.has(kind));
+  writeRemediationFile(
+    projectId,
+    // With nothing to record and nothing stored, there is nothing to write.
+    (current) => (cleaned.length || Array.isArray(current.gapKinds) ? { gapKinds: cleaned, gapKindsUpdatedAt: Date.now() } : null),
+    "Verification gap hints",
+  );
+}
+
+/** What earlier summaries for this project left out, in prompt words. */
+export function readVerificationGapHints(projectId: string): string[] {
+  const data = readRemediationFile(projectId);
+  if (!Array.isArray(data.gapKinds) || !hintsFresh(data.gapKindsUpdatedAt)) return [];
+  // Known kinds only: a hand-edited file must not put free text into every later prompt.
+  return data.gapKinds.flatMap((kind) => GAP_HINTS.get(String(kind)) ?? []);
 }
 
 /**
@@ -315,14 +386,7 @@ export function writeRemediationHints(
  * or older than the TTL.
  */
 export function readRemediationHints(projectId: string): string[] {
-  const data = readJsonSync<{ files?: unknown; updatedAt?: number }>(
-    remediationHintsFile(projectId),
-  );
-  if (!data || !Array.isArray(data.files)) return [];
-  if (
-    typeof data.updatedAt === "number" &&
-    Date.now() - data.updatedAt > REMEDIATION_TTL_MS
-  )
-    return [];
+  const data = readRemediationFile(projectId);
+  if (!Array.isArray(data.files) || !hintsFresh(data.updatedAt)) return [];
   return data.files.filter((f): f is string => typeof f === "string");
 }

@@ -26,6 +26,39 @@ describe("SessionRunLock", () => {
     expect(fs.readdirSync(dir)).toEqual([]);
   }));
 
+  it("keeps a live owner's lease through a long suspend, but not past a day", () => withLeaseDir(dir => {
+    const owner = createSessionRunLock(2, { leaseDir: dir });
+    const other = createSessionRunLock(2, { leaseDir: dir });
+    expect(owner.acquire("a")).toBe(true);
+    const lease = path.join(dir, fs.readdirSync(dir).find(name => name.startsWith("session-"))!);
+    const ageLease = (hours: number) => {
+      const at = Date.now() - hours * 60 * 60_000;
+      fs.writeFileSync(lease, JSON.stringify({ ...JSON.parse(fs.readFileSync(lease, "utf8")), createdAt: at }));
+      fs.utimesSync(lease, at / 1000, at / 1000);
+    };
+    ageLease(8); // a night asleep: the owner (this process) still answers to its PID
+    expect(other.acquire("a")).toBe(false);
+    ageLease(25); // past a day the PID more likely belongs to a process that reused it
+    expect(other.acquire("a")).toBe(true);
+    owner.value = false;
+    other.value = false;
+  }));
+
+  it("reclaims at once a lease whose PID now belongs to another process", () => withLeaseDir(dir => {
+    if (!fs.existsSync("/proc/self/stat")) return; // start times come from Linux /proc
+    const owner = createSessionRunLock(2, { leaseDir: dir });
+    const other = createSessionRunLock(2, { leaseDir: dir });
+    expect(owner.acquire("a")).toBe(true);
+    const lease = path.join(dir, fs.readdirSync(dir).find(name => name.startsWith("session-"))!);
+    const at = Date.now() - 8 * 60 * 60_000;
+    // Same PID (alive), another start time: a reboot or wrap handed the PID to a new process.
+    fs.writeFileSync(lease, JSON.stringify({ ...JSON.parse(fs.readFileSync(lease, "utf8")), createdAt: at, start: "1" }));
+    fs.utimesSync(lease, at / 1000, at / 1000);
+    expect(other.acquire("a")).toBe(true);
+    owner.value = false;
+    other.value = false;
+  }));
+
   it("fails closed when the lease directory cannot be created", () => {
     const lock = createSessionRunLock(2, { leaseDir: "/dev/null/not-a-directory" });
     expect(lock.acquire("a")).toBe(false);

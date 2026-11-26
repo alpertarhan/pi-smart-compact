@@ -19,6 +19,7 @@ import {
 } from "../../phases/verify.ts";
 import { showProgressOverlay } from "../../ui/overlays.ts";
 import { errorDetail, recordIssue } from "../../utils/issues.ts";
+import { writeVerificationGapHints } from "../../utils/damage.ts";
 import { MODE_POLICIES, modeFromLegacyProfile } from "../mode-policy.ts";
 import { assembleFallback } from "../../phases/synthesize.ts";
 import { resolveStageAuth } from "../stage-auth.ts";
@@ -59,6 +60,8 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 		evidence,
 	);
 	const initialScore = verification.score;
+	// Repairs and the quality floor replace `verification`; the hint needs what this summary missed first.
+	const initialGapKinds = verification.gaps.map(gap => gap.kind);
 	const deterministicPatched: typeof verification.gaps = [];
 	let llmPatched = false;
 	let qualityFloorUsed = false;
@@ -216,6 +219,15 @@ export async function verifyAndPatch(rc: SynthesizedRc): Promise<VerifiedRc> {
 		}
 	}
 
+	// Feed what this summary initially missed into the next synthesis for
+	// this project (patched and remaining kinds alike), rejected summaries
+	// included: the run after a rejection needs the hint most. A run with no
+	// gaps writes an empty list, which clears an older hint.
+	writeVerificationGapHints(rc.projectId, [
+		...initialGapKinds,
+		...deterministicPatched.map(gap => gap.kind),
+		...verification.gaps.map(gap => gap.kind),
+	]);
 	const failure = verificationFailureMessage(verification);
 	if (failure) {
 		recordIssue({ key: "verify.gate", message: failure });

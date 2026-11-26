@@ -192,7 +192,8 @@ Or Home → **Clean up tool output**. Either one:
 - is queued, not applied: **the first next provider request is still sent
   untrimmed**, and the edit applies at the next natural completed-turn boundary;
 - replaces old successful text results of at least 2,048 characters with a
-  digest marker, up to 32 outputs per boundary: read-only tools, shell
+  digest marker (512 characters for a result a later call edited or re-read
+  in full; large stale content is removed first), up to 32 outputs per boundary: read-only tools, shell
   (`bash`) output, `process` `output`/`list` results, `smart_context` `read`
   pages, old process notifications and peer (`agent_mesh`) messages the agent
   already answered with a `reply`;
@@ -232,7 +233,7 @@ page points back at the source it paged
 (`[Archived smart_context read of id=<source-id>, …]`), so the agent re-reads
 the source instead of the copy.
 
-Superseded output goes first. A read-only result whose path a later call
+Superseded output goes first, except one under 2,048 characters, which goes after everything else so it never takes one of the 32 slots from a large output. A read-only result whose path a later call
 writes, edits or deletes (`write`, `edit`, path-carrying mutating tools, or a
 literal `bash` target such as `sed -i`, `>` or `rm`), or reads again in full
 (a plain `read` without `offset`/`limit`; searches, listings, symbol reads and
@@ -422,7 +423,7 @@ verify its outputs; checkpoints, rewind and trim stay on the active branch.
 Optional and off by default. With **Offload huge outputs**
 (`artifactOffloadEnabled`) on and `smart_context` reachable by the model (any
 **Agent tools** choice except **Off**, and not hidden with `/tools`),
-successful, known read-only text results of at least 16,384 characters are
+successful, known read-only text results above a window-relative floor (2% of the active model's window, 8,192–65,536 characters) are
 saved before their first model request. The model sees the tool/source label,
 size, an `artifact-<hash>` ID and short first/last excerpts.
 
@@ -470,8 +471,9 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
   requirements.
 - Rewind removes successful read-only tool exchanges as complete call/result
   pairs, including supported graph queries, diagnostics and web research.
-  It removes intermediate assistant prose, the rewind call itself and this
-  extension's pressure hints created during the detour, leaving one handoff.
+  It removes intermediate assistant prose, the rewind call itself and any
+  pressure hints an earlier version of this extension added during the
+  detour, leaving one handoff.
   Unrelated extension messages stay. Errors, instruction reads, incomplete exchanges, images, writes
   and unknown tools stay. Shell commands stay unless every line and pipeline segment only reads:
   `rg`, `grep`, `cat`, `head`, `tail`, `wc`, `ls`, `sort`/`uniq` without output files, `sed -n`
@@ -481,8 +483,9 @@ Example inputs (one JSON object per call; explore between checkpoint and rewind)
 - With signed Anthropic thinking, rewind applies only when nothing it keeps follows what it removes:
   a writing tool in the detour blocks it, and the refusal names the kept batches.
 - **Files, processes, Git state and external effects are never rolled back.**
-- The report (maximum 8,000 characters) is written by the agent and is not
-  verified. It should include findings with evidence paths/identifiers,
+- The report is written by the agent and is not verified. Reports longer
+  than 16,000 characters are shortened head-and-tail with the omission
+  marked; they are never rejected for length. It should include findings with evidence paths/identifiers,
   constraints, failed attempts and the next step. More than 512 eligible messages requires a normal compaction.
 - `plan` previews how many outputs a trim would remove and the characters
   saved, without queuing anything.
@@ -564,6 +567,13 @@ newest anchor so an unchanged prefix can be reused while later turns change;
 hits still depend on provider caching and expiry), **Anchor status** (footer,
 display only) and **Navigation guide**.
 
+### Context status line
+
+When **Context anchor status** (`contextAnchorStatusEnabled`) is on, the
+footer shows the context as a percentage, followed by what is available:
+`ctx 72% · cleanup available` or `ctx 80% · compaction due`. The size of
+the window is on the Home screen.
+
 Legacy `context` tool anchors recorded in earlier sessions stay readable in
 browse and search.
 
@@ -610,9 +620,10 @@ decides what the agent sees:
 | **On demand** | `smart_tools` loads a missing group. Late loading can rebuild the provider cache. Loaded groups reset at session start/branch change, not compaction. |
 | **Off** | No context tools. The human UI keeps working. |
 
-`smart_tools` also answers `status`, `unload` and `guide`. The guide is the
-context workflow text; it is returned only when asked for and is never added
-to the system prompt. Loading a group adds only that group's tool declarations.
+In On demand mode, `smart_tools` also answers `status`, `unload` and `guide`;
+it stays hidden under Always available (every group is already loaded) unless
+you show it with `/tools`. The guide is the context workflow text; it is
+returned only when asked for and is never added to the system prompt. Loading a group adds only that group's tool declarations.
 Each group still needs its own permission: `compaction` follows **Agent can
 compact**, `memory` needs project memory or a Hindsight/Mnemopi backend, and
 `navigation` needs **Session navigation**. Choices you make with `/tools` win
@@ -639,6 +650,21 @@ for a newly observed save. Older records resumed on startup/reload produce one
 short summary after that tracked group finishes or its two-minute tracking
 window expires; messages already stored in session history are not removed.
 See [receipt tracking](./hindsight-memory.md#identity-refs-and-lifecycle).
+
+### Memory and anchor messages in the transcript
+
+Save results from Hindsight, and the anchors you record, appear in the
+transcript as one status line in plain words, for example `done saved to
+Hindsight` with the fact's title under it. Expand the row to see the
+reference. Earlier saves from a previous session are summarized in one line.
+These lines are for you; the agent gets its own short form.
+
+### Status and plan results
+
+`smart_context status` and `plan` return the checkpoint, the pending change
+and the archived outputs. Context percentage, trim estimates and the
+break-even figures are no longer part of the result text; the tool row shows
+them to you when you expand it.
 
 Approval and gates:
 
@@ -687,9 +713,9 @@ migrated or cleared.
 - Hindsight: Smart Compact never installs, starts or configures a server. See
   [Hindsight memory backend](./hindsight-memory.md).
 - Mnemopi runs in a bounded `bun --no-install` worker. The engine
-  (`@oh-my-pi/pi-mnemopi` 18.12.6) is an optional component you install into
+  (`@oh-my-pi/pi-mnemopi` 19.2.0) is an optional component you install into
   Pi's package directory; the worker runs on a Bun 1.3.14 or newer from `PATH`,
-  or on the optional `bun` (1.4.4) component installed the same way. Nothing is
+  or on the optional `bun` (1.4.5) component installed the same way. Nothing is
   downloaded with the extension; **Readiness & details** shows the install
   command (see [Optional components](../README.md#optional-components)).
   Missing pieces fail before any request is sent. Embeddings, model calls,
@@ -943,11 +969,11 @@ What is not covered:
 
 | Symptom | Cause and action |
 | --- | --- |
-| Agent reports "Compaction skipped: context 38% (…) below the 60% agent-tool threshold" | `smart_compact` waits for `Start at context %` of the **active model's** window (`tool=XX%` in the footer is the tool-output share, not context fullness). Use **Compact now** for early compaction. |
+| The smart_compact row says "skipped not needed: context at 38% (…), agent threshold 60%" | The agent tool waits for `Start at context %` of the **active model's** window; the agent itself is only told compaction is not available yet. Use **Compact now** for early compaction. |
 | Nothing compacts automatically | Check the idle boundary and pressure gates. Only the optional `native-hook` strategy requires Pi's auto-compaction (readiness shows `unknown`). Check `Automatic compaction` and `This branch only`. On a large-window model, see `Context cap for start % (tokens)` in [Let it run automatically](#let-it-run-automatically). |
 | Cleanup did nothing on the next reply | Expected: the next request is sent untrimmed; cleanup applies at the next completed turn. |
 | **Clean up tool output** shows `held for a cold cache` | Expected only with **Economic (opt-in)** cleanup timing: the batch waits for the prompt cache to expire; see [automatic cleanup](#automatic-cleanup-optional). Select the row to apply it at the next completed turn instead. |
-| Automatic cleanup or offload never happens | Both need `smart_context` reachable: **Agent tools** must not be **Off**, and `smart_context` must not be hidden with `/tools`. Offload also needs **Offload huge outputs** on and applies only to read-only text results of 16,384+ characters. |
+| Automatic cleanup or offload never happens | Both need `smart_context` reachable: **Agent tools** must not be **Off**, and `smart_context` must not be hidden with `/tools`. Offload also needs **Offload huge outputs** on and applies only to read-only text results above the window-relative floor. |
 | Agent says a summary is staged, but context did not shrink | Run `/compact` within 5 minutes. With automatic compaction off, nothing else consumes it. |
 | `smart_context`, `smart_recall`, `smart_save_memory` or `smart_navigation` missing | With **On demand**, the agent loads a group through `smart_tools`; with **Off**, no context tool is shown; see [agent tools](#agent-tools). Check `/tools`. |
 | Memory tools say they "must run from a project directory" | Start Pi from inside a project, not from your home directory or `/`. |

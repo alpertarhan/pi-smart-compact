@@ -3,7 +3,7 @@
 	"version": "10.8.1",
 	"description": "Smart Compact — recoverable context cleanup, verified compaction, session navigation and project memory for Pi Coding Agent.",
 	"type": "module",
-	"packageManager": "bun@1.4.4",
+	"packageManager": "bun@1.4.5",
 	"engines": {
 		"node": ">=22.19.0"
 	},
@@ -62,7 +62,7 @@
 		"sync-version": "bun run scripts/sync-version.ts",
 		"brand": "bun run scripts/render-brand.ts",
 		"prebuild": "bun run sync-version",
-		"build": "rm -rf dist && mkdir dist && bun build ./src/index.ts ./src/rtk.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' --external '@resvg/resvg-js' && bun build ./src/app/mnemopi-worker.ts --outfile ./dist/mnemopi-worker.js --target bun --external '@oh-my-pi/pi-mnemopi' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist",
+		"build": "rm -rf dist && mkdir dist && bun build ./src/index.ts ./src/rtk.ts --outdir ./dist --target bun --external '@earendil-works/*' --external 'typebox' --external '@resvg/resvg-js' && bun build ./src/app/mnemopi-worker.ts --outfile ./dist/mnemopi-worker.js --target bun --external '@oh-my-pi/pi-mnemopi' --external 'typebox' && bun x tsc --emitDeclarationOnly --outDir dist --declarationMap false && bun run scripts/rewrite-dts-specifiers.ts dist",
 		"test": "bun test",
 		"bench": "bun bench/hot-paths.bench.ts",
 		"gate": "bun run scripts/eval-gate.ts",
@@ -87,9 +87,9 @@
 		"@earendil-works/pi-ai": ">=0.87.1",
 		"@earendil-works/pi-coding-agent": ">=0.87.1",
 		"@earendil-works/pi-tui": ">=0.87.1",
-		"@oh-my-pi/pi-mnemopi": "18.12.6",
+		"@oh-my-pi/pi-mnemopi": "19.2.0",
 		"@resvg/resvg-js": "2.6.2",
-		"bun": "1.4.4",
+		"bun": "1.4.5",
 		"typebox": "*"
 	},
 	"peerDependenciesMeta": {
@@ -107,16 +107,16 @@
 		"undici": "8.12.3"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-ai": "1.5.0",
-		"@earendil-works/pi-coding-agent": "1.5.0",
+		"@earendil-works/pi-ai": "1.6.1",
+		"@earendil-works/pi-coding-agent": "1.6.1",
 		"@earendil-works/pi-server": "1.1.0",
-		"@earendil-works/pi-tui": "1.5.0",
-		"@oh-my-pi/pi-mnemopi": "18.12.6",
+		"@earendil-works/pi-tui": "1.6.1",
+		"@oh-my-pi/pi-mnemopi": "19.2.0",
 		"@resvg/resvg-js": "2.6.2",
-		"@types/bun": "1.4.4",
-		"@types/node": "^26.6.5",
-		"bun": "1.4.4",
-		"typebox": "1.4.3",
+		"@types/bun": "1.4.5",
+		"@types/node": "^26.6.10",
+		"bun": "1.4.5",
+		"typebox": "1.4.7",
 		"typescript": "^7.0.2"
 	},
 	"publishConfig": {

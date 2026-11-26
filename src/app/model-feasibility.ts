@@ -20,7 +20,14 @@ import { buildBatchRequest, buildSinglePassRequest, chunkLlmMessages, heuristicT
 import { buildDirectExplorationRequest, buildExplorerRequest, explorationToolSupportKey, shouldExplore } from "../phases/explore.ts";
 import { buildPatchRequest } from "../phases/verify.ts";
 
-export interface ModelEligibility { selectable: boolean; reason?: string }
+export interface ModelEligibility {
+ selectable: boolean;
+ reason?: string;
+ /** Summary stage: planned summary request count (1 = single pass). */
+ requests?: number;
+ /** Summary stage: estimated input tokens of the largest planned request. */
+ largestRequestTokens?: number;
+}
 
 export type ModelFeasibility = (
  model: Model<Api>, stage: "summary" | "segmentation" | "verification", mode?: CompactionMode,
@@ -61,7 +68,7 @@ export async function createModelFeasibilityResolver(
  }
  const services = createProductionServices({ scrubber: new SecretScrubber(config.scrubSecrets, config.scrubPii) });
  const shared = prepareManualPreflightContext(ctx, selectedSummary, services.tokenCalibration);
- const recovered = await recoverSourceMessages(sessionId, shared.msgs, ctx.cwd);
+ const recovered = await recoverSourceMessages(sessionId, shared.msgs, ctx.cwd, ctx.sessionManager.getSessionFile?.());
  const cachedExt = loadCachedExtraction(sessionId, { readOnly: true });
  const damageMedian = preflightDamageMedian(ctx.cwd, config);
  const previousCompaction = getPreviousCompactionContext(shared.branch);
@@ -132,11 +139,11 @@ export async function createModelFeasibilityResolver(
   if (!current) { current = plan(model, modePreference); models.set(model, current); }
   return current;
  }
- function capacity(model: Model<Api>, phase: string, request: SynthesisRequest): ModelEligibility {
+ function capacity(model: Model<Api>, phase: string, request: SynthesisRequest): ModelEligibility & { input: number } {
   const safeRequest = services.scrubber.scrubValue(request.context).value;
   const input = estimateTokens(JSON.stringify(safeRequest), model.provider, model.id, services.tokenCalibration);
   const reason = modelRequestCapacityReason(model, input, request.maxTokens);
-  return reason ? { selectable: false, reason: `${phase}: ${reason}` } : { selectable: true };
+  return reason ? { selectable: false, reason: `${phase}: ${reason}`, input } : { selectable: true, input };
  }
  function explorationCapacity(model: Model<Api>, data: PreparedPrefix): ModelEligibility {
   const direct = services.toolSupport.get(explorationToolSupportKey(model), services.clock.now()) === false;
@@ -151,15 +158,17 @@ export async function createModelFeasibilityResolver(
   if (invalid) return { selectable: false, reason: invalid };
   if (stage === "summary") {
    const current = summaryPlan(model, modePreference);
+   const facts = { requests: current.requests.length, largestRequestTokens: 0 };
    for (const item of current.requests) {
     const checked = capacity(model, item.phase, item.request);
-    if (!checked.selectable) return checked;
+    facts.largestRequestTokens = Math.max(facts.largestRequestTokens, checked.input);
+    if (!checked.selectable) return { ...checked, ...facts };
    }
    if (current.explore) {
     const explorationModel = resolveModels(ctx, model, config, true).segModel ?? model;
-    return explorationCapacity(explorationModel, current.data);
+    return { ...explorationCapacity(explorationModel, current.data), ...facts };
    }
-   return { selectable: true };
+   return { selectable: true, ...facts };
   }
   if (stage === "segmentation") {
    const current = summaryPlan(selectedSummary, modePreference);

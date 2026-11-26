@@ -9,7 +9,7 @@ import {
 } from "../src/utils/extraction.ts";
 import { pruneRedundant } from "../src/utils/pruning.ts";
 import {
-	smartKeepBoundary,
+	smartKeepBoundaryCandidates,
 	guardToolCallBoundary,
 } from "../src/utils/helpers.ts";
 import { assembleFallback } from "../src/phases/synthesize.ts";
@@ -524,7 +524,7 @@ function filterMsgs(entries: unknown[]): SessionMessageEntry[] {
 	) as SessionMessageEntry[];
 }
 
-describe("smartKeepBoundary with pi-toolkit anchors", () => {
+describe("smartKeepBoundaryCandidates with pi-toolkit anchors", () => {
 	it("keeps last anchor inside keep window", () => {
 		const branch: unknown[] = [
 			makeSessionEntry({ role: "user", content: "msg1" }),
@@ -538,7 +538,7 @@ describe("smartKeepBoundary with pi-toolkit anchors", () => {
 
 		// keepFrom=6 would compact everything (including the anchor)
 		// Should be adjusted to 5 to keep the anchor inside the window
-		const result = smartKeepBoundary(msgs, 6, branch);
+		const result = (smartKeepBoundaryCandidates(msgs, 6, branch).find(c => c.kind === 'anchor')?.keepFrom ?? 6);
 		expect(result).toBe(5);
 	});
 
@@ -549,7 +549,7 @@ describe("smartKeepBoundary with pi-toolkit anchors", () => {
 		];
 		const msgs = filterMsgs(branch);
 
-		const result = smartKeepBoundary(msgs, 1, branch);
+		const result = (smartKeepBoundaryCandidates(msgs, 1, branch).find(c => c.kind === 'anchor')?.keepFrom ?? 1);
 		expect(result).toBe(1);
 	});
 
@@ -564,7 +564,7 @@ describe("smartKeepBoundary with pi-toolkit anchors", () => {
 
 		// keepFrom=1, anchor at msg index 3
 		// 1 < 3, so no adjustment needed
-		const result = smartKeepBoundary(msgs, 1, branch);
+		const result = (smartKeepBoundaryCandidates(msgs, 1, branch).find(c => c.kind === 'anchor')?.keepFrom ?? 1);
 		expect(result).toBe(1);
 	});
 
@@ -581,7 +581,7 @@ describe("smartKeepBoundary with pi-toolkit anchors", () => {
 
 		// Anchor is at msg index 3 (last msg)
 		// keepFrom=1 < 3, no adjustment needed
-		const result = smartKeepBoundary(msgs, 1, branch);
+		const result = (smartKeepBoundaryCandidates(msgs, 1, branch).find(c => c.kind === 'anchor')?.keepFrom ?? 1);
 		expect(result).toBe(1);
 	});
 
@@ -598,7 +598,7 @@ describe("smartKeepBoundary with pi-toolkit anchors", () => {
 
 		// Anchor at msg index 2
 		// Requested keepFrom=4, should adjust to 2
-		const result = smartKeepBoundary(msgs, 4, branch);
+		const result = (smartKeepBoundaryCandidates(msgs, 4, branch).find(c => c.kind === 'anchor')?.keepFrom ?? 4);
 		expect(result).toBe(2);
 	});
 });

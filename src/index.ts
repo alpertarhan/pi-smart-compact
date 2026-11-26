@@ -27,6 +27,7 @@ import {
  notifyAppliedCompaction,
  notifySummaryFallback,
 } from "./ui/overlays.ts";
+import { registerMessageRenderers } from "./ui/message-renderers.ts";
 import {
  branchEntryIds,
  resolveSessionId,
@@ -61,7 +62,6 @@ import { createNativeContinuityBridge } from "./app/native-continuity-bridge.ts"
 import { createNativeReplayHook, setNativeToolSource } from "./app/native-compaction.ts";
 import { createSettledAutoTrigger } from "./app/settled-auto-trigger.ts";
 import { createBackgroundPreparation } from "./app/background-preparation.ts";
-import { registerContextAttention } from "./app/context-attention.ts";
 import { createHostCacheLedger, formatCacheLedgerSummary } from "./app/host-cache-ledger.ts";
 import { injectVisualArchive } from "./app/visual-archive.ts";
 import { SecretScrubber } from "./domain/scrub.ts";
@@ -140,6 +140,7 @@ function unwrapConsumed(
 }
 
 export default function smartCompactExtension(pi: ExtensionAPI) {
+ registerMessageRenderers(pi);
  const delivery = registerCompactionDelivery(pi);
  // Encapsulated slot: producers call `.set(...)`, the event handler calls
  // `.consume(...)`. The lifecycle (set/consume/clear/expire/mismatch) lives
@@ -346,7 +347,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
  navigation = registerNavigation(pi, {
   config: automaticConfig,
   mutationBlocked: ctx => isRunning.isSessionActive(resolveSessionId(ctx)) ? "Compaction is running; wait for it to finish." : undefined,
-  onAnchor: (ctx, originId, callId, signal, userConfirmed) => smartContext.requestAnchorTrim(ctx, originId, callId, signal, userConfirmed).notice,
+  onAnchor: (ctx, originId, callId, signal, userConfirmed) => {
+   // A recorded anchor ends a unit of work: a due compaction may fold there.
+   settledAutoTrigger.noteUnitBoundary(resolveSessionId(ctx));
+   return smartContext.requestAnchorTrim(ctx, originId, callId, signal, userConfirmed).notice;
+  },
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
   onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
  });
@@ -361,15 +366,11 @@ export default function smartCompactExtension(pi: ExtensionAPI) {
   // Digests point the model at smart_context; like offload, automatic trims need it reachable.
   canAutoTrim,
   onContextChange: ctx => invalidatePreparation(ctx, "branch"),
-  onContextEdit: (_ctx, kind) => hostCache.noteContextEdit(kind),
+  onContextEdit: (ctx, kind) => {
+   hostCache.noteContextEdit(kind);
+   if (kind === "rewind") settledAutoTrigger.noteUnitBoundary(resolveSessionId(ctx));
+  },
   onCacheWarm: (ctx, at) => { if (hostCache.sessionId() === resolveSessionId(ctx)) hostCache.noteCacheWarm(at); },
- });
-
- registerContextAttention(pi, {
-  config: automaticConfig,
-  canAgentAct: ctx => policy.snapshot().agentToolAccess !== "disabled" && !pivotQueued(ctx) && !isRunning.isSessionActive(resolveSessionId(ctx)),
-  canCleanup: canAutoTrim,
-  reachable: group => toolExposure.reachable(group),
  });
 
  registerSmartCompactCommand(pi, {

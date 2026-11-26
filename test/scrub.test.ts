@@ -126,6 +126,77 @@ describe("SecretScrubber", () => {
     expect(redacted).toContain("[REDACTED:credential]");
   });
 
+  it("redacts quoted JSON keys, fine-grained GitHub tokens and Basic auth", () => {
+    const scrubber = new SecretScrubber(true, false);
+    expect(scrubber.scrubText('{"client_secret": "GOCSPX-abcdefghijklmnopqrst"}').value)
+      .not.toContain("GOCSPX-");
+    expect(scrubber.scrubText('{"api_key": "abcdefghij1234567890"}').value)
+      .not.toContain("abcdefghij1234567890");
+    expect(scrubber.scrubText("t github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789abcd").value)
+      .toContain("[REDACTED:github-token]");
+    const basic = scrubber.scrubText("Authorization: Basic dXNlcjpwYXNzd29yZA==").value;
+    expect(basic).toContain("[REDACTED:basic-auth]");
+    expect(basic).not.toContain("dXNlcj");
+    expect(scrubber.scrubText("Basic authentication is described in RFC 7617").value)
+      .toBe("Basic authentication is described in RFC 7617");
+  });
+
+  it("redacts short passwords in assignments but spares code that computes them", () => {
+    const scrubber = new SecretScrubber(true, false);
+    expect(scrubber.scrubText("DB_PASSWORD=hunter2").value).toContain("[REDACTED:credential]");
+    expect(scrubber.scrubText("password: s3cret!").value).toContain("[REDACTED:credential]");
+    expect(scrubber.scrubText("const password: string = req.body.password").value)
+      .toBe("const password: string = req.body.password");
+    expect(scrubber.scrubText("const secret = crypto.randomBytes(32).toString()").value)
+      .toBe("const secret = crypto.randomBytes(32).toString()");
+    expect(scrubber.scrubText("{ password: hashPassword(pw) }").value)
+      .toBe("{ password: hashPassword(pw) }");
+  });
+
+  it("keeps quotes, never re-reads a placeholder and leaves expressions alone", () => {
+    const scrubber = new SecretScrubber(true, false);
+    expect(scrubber.scrubText("DB_PASSWORD=supersecret123456").value).toBe("DB_PASSWORD=[REDACTED:credential]");
+    expect(scrubber.scrubText('{"password": "hunter2"}').value).toBe('{"password": "[REDACTED:credential]"}');
+    expect(scrubber.scrubText('{"api_key": "abcdefghij1234567890"}').value).toBe('{"api_key": "[REDACTED:credential]"}');
+    expect(scrubber.scrubText("const password = await readSecret()").value).toBe("const password = await readSecret()");
+    expect(scrubber.scrubText("password = crypto.randomBytes(32).toString('hex')").value)
+      .toBe("password = crypto.randomBytes(32).toString('hex')");
+    expect(scrubber.scrubText("Authorization: basic dXNlcjpwYXNzd29yZA==").value).toContain("[REDACTED:basic-auth]");
+  });
+
+  it("checks reference-shaped values in linear time", () => {
+    const value = "password=a" + ".b(c)".repeat(2_000) + "!";
+    const started = performance.now();
+    new SecretScrubber(true, false).scrubText(value);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it("redacts YAML passwords but keeps types, literals, calls and punctuation", () => {
+    const scrubber = new SecretScrubber(true, false);
+    const s = (text: string) => scrubber.scrubText(text).value;
+    expect(s("password: hunter2")).toBe("password: [REDACTED:credential]");
+    expect(s("passwd: monkey1")).toContain("[REDACTED:credential]");
+    expect(s("{ password: hashedPassword }")).toBe("{ password: hashedPassword }");
+    expect(s("password: string;")).toBe("password: string;");
+    expect(s("password = null")).toBe("password = null");
+    expect(s("const password = hash(pw, salt)")).toBe("const password = hash(pw, salt)");
+    expect(s("DB_PASSWORD=hunter2;")).toBe("DB_PASSWORD=[REDACTED:credential];");
+    expect(s("{password: hunter2hunter2}")).toBe("{password: [REDACTED:credential]}");
+    // Index access and interpolation cut at a quote are code; a long value with an unclosed paren is not.
+    expect(s("password: body['password']")).toBe("password: body['password']");
+    expect(s('logger.info(`password: ${password}`)')).toBe('logger.info(`password: ${password}`)');
+    expect(s("DB_PASSWORD=SuperSecret(2024")).toMatch(/^DB_PASSWORD=\[REDACTED:[a-z-]+\]$/);
+    expect(s("API_KEY=abcdefghij(klmnopqrstuvwxyz")).not.toContain("klmnop");
+    expect(s("(token=abcdefghijklmnopqrstuvwxyz)")).toMatch(/^\(token=\[REDACTED:[a-z-]+\]\)$/);
+  });
+
+  it("stays fast on long hyphen-joined runs", () => {
+    const run = "a1-".repeat(60_000) + " the end";
+    const started = performance.now();
+    new SecretScrubber(true, false).scrubText(run);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("payment-card counts only Luhn-valid numbers", () => {
     const timestamp = new SecretScrubber(false, true).scrubText(
       "at 1739570400000 ms",

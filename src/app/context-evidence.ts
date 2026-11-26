@@ -9,6 +9,19 @@ import { activeVisualArchive } from "./visual-archive.ts";
 import { artifactId, branchToolArtifacts, readToolArtifact, type ToolArtifact } from "./tool-artifacts.ts";
 import type { VisualArchive } from "../types.ts";
 
+/** Read-back counter: how often archived evidence is actually re-read. The
+ * number that decides whether trim/offload limits can rise; flushed into the
+ * next compaction's metrics entry per session. */
+const archivedReads = new Map<string, number>();
+export function noteArchivedReads(sessionId: string, count: number): void {
+  if (count > 0) archivedReads.set(sessionId, (archivedReads.get(sessionId) ?? 0) + count);
+}
+export function takeArchivedReads(sessionId: string): number {
+  const count = archivedReads.get(sessionId) ?? 0;
+  archivedReads.delete(sessionId);
+  return count;
+}
+
 export const MAX_SEARCH_SOURCES = 32;
 export const MAX_SEARCH_CHARS = 4 * 1024 * 1024;
 export const MAX_READ_CHARS = 4_096;

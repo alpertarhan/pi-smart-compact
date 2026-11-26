@@ -2,10 +2,7 @@ import { readerUsage } from "./context-usage.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import {
-  BUDGET_LIMITS,
-  MIN_TOKEN_THRESHOLD,
-} from "../constants.ts";
+import { MIN_TOKEN_THRESHOLD } from "../constants.ts";
 import {
   buildMetricsReport,
   writeMetricsDashboard,
@@ -56,10 +53,6 @@ export function registerSmartCompactTool(
           type: "string",
           description: "fast, balanced, thorough or auto (default).",
         },
-        profile: {
-          type: "string",
-          description: "Deprecated mode alias.",
-        },
         verbose: {
           type: "boolean",
           description: "Detailed output.",
@@ -79,33 +72,6 @@ export function registerSmartCompactTool(
         focus: {
           type: "string",
           description: "Topic/path to preserve more.",
-        },
-        max_calls: {
-          type: "number",
-          description:
-            "LLM call cap (" +
-            BUDGET_LIMITS.CALLS.min +
-            "-" +
-            BUDGET_LIMITS.CALLS.max +
-            ").",
-        },
-        max_input_tokens: {
-          type: "number",
-          description:
-            "Prompt-token cap (" +
-            BUDGET_LIMITS.INPUT_TOKENS.min +
-            "-" +
-            BUDGET_LIMITS.INPUT_TOKENS.max +
-            ").",
-        },
-        max_latency_ms: {
-          type: "number",
-          description:
-            "Latency cap ms (" +
-            BUDGET_LIMITS.LATENCY_MS.min +
-            "-" +
-            BUDGET_LIMITS.LATENCY_MS.max +
-            ").",
         },
       },
     },
@@ -138,9 +104,6 @@ export function registerSmartCompactTool(
         dryRun,
         action,
         focus,
-        maxLlmCalls,
-        maxLlmInputTokens,
-        timeoutMs: maxLatencyMs,
       } = parsedInput.value;
       if (action === "metrics" || action === "dashboard") {
         // A failed run tells the agent to review metrics; the findings live in recent issues.
@@ -162,26 +125,27 @@ export function registerSmartCompactTool(
         );
       }
 
-      const usage = readerUsage(ctx);
-      const totalTokens = usage?.tokens ?? 0;
+      const totalTokens = readerUsage(ctx)?.tokens;
+      // Unknown usage (none measured since the last compaction, or not a valid count) is not
+      // a small context; contextPressure() applies the same rule.
+      if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens < 0) {
+        return textResult("Context usage is not measured yet; it is known after the next reply. Nothing to do now.", {
+          display: { state: "skipped", reason: "usage-unknown" },
+        });
+      }
       const window = effectiveContextWindow(ctx.model, config);
       const contextPercent = safeContextPercent(totalTokens, window);
       const percent = Math.round(contextPercent);
       if (!totalTokens || totalTokens < MIN_TOKEN_THRESHOLD) {
-        return textResult(
-          "Context is not large enough for compaction (" +
-          totalTokens.toLocaleString() +
-          " tokens, " +
-          percent +
-          "%). No action needed.",
-        );
+        // Context fullness is the user's business: the agent gets the outcome, the numbers go to the human renderer.
+        return textResult("Compaction is not needed yet. Nothing to do.", {
+          display: { state: "skipped", reason: "too-small", tokens: totalTokens, percent },
+        });
       }
       if (contextPercent < config.minContextPercent) {
         return textResult(
-          "Compaction skipped: context " + percent + "% (" + totalTokens.toLocaleString() +
-          " / " + (window ?? 0).toLocaleString() + " tokens), below the " +
-          config.minContextPercent + "% agent-tool threshold. tool=XX% measures tool-output ratio, not context usage. " +
-          "For deliberate early compaction, the user can run /smart-compact; preview and safety checks still apply.",
+          "Compaction is not available from the agent yet. If the user asks for it, they can run /smart-compact.",
+          { display: { state: "skipped", reason: "below-threshold", tokens: totalTokens, percent, threshold: config.minContextPercent, window: window ?? null } },
         );
       }
 
@@ -210,9 +174,6 @@ export function registerSmartCompactTool(
           skipCompact: true,
           abortSignal: signal,
           focus,
-          maxLlmCalls,
-          maxLlmInputTokens,
-          timeoutMs: maxLatencyMs,
         });
         if (outcome.kind === "staged" || outcome.kind === "apply-requested") {
           const staged = outcome.pending;
@@ -340,6 +301,16 @@ function renderCompactRow(
     if (display.seconds) lines.push(metaLine(theme, "pipeline", display.seconds + "s"));
   } else if (display.state === "cancelled") {
     lines.push(statusLabel(theme, "cancelled") + " " + theme.fg("muted", "by " + String(display.source ?? "host")));
+  } else if (display.state === "skipped" && (display.reason === "too-small" || display.reason === "below-threshold")) {
+    // Fullness numbers are for the human only; the agent's text stays plain.
+    const tokens = (Number(display.tokens) || 0).toLocaleString();
+    const window = Number(display.window) || 0;
+    // Without a known window there is no share to show, only the token count.
+    const size = window > 0 ? display.percent + "% (" + tokens + " of " + window.toLocaleString() + " tokens)" : tokens + " tokens (window unknown)";
+    const fact = display.reason === "too-small"
+      ? "context is small (" + tokens + " tokens)"
+      : "context at " + size + ", agent threshold " + display.threshold + "%";
+    lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "not needed: " + fact));
   } else if (display.state === "skipped") {
     lines.push(statusLabel(theme, "skipped") + " " + theme.fg("dim", summarizeLine(firstTextContent(result.content), 140)));
   } else if (display.kind === "metrics") {

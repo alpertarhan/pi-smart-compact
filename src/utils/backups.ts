@@ -290,10 +290,6 @@ export function readConversationBackup(
   }
 }
 
-export function readBackupContent(file: string): string | null {
-  return readConversationBackup(file)?.content ?? null;
-}
-
 export function buildRestoreMessage(
   content: string,
   source: string,

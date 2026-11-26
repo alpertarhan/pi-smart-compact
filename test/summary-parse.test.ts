@@ -6,7 +6,7 @@
  * `renderSummary` doesn't reorder canonical sections.
  */
 import { describe, it, expect } from "bun:test";
-import { parseSummary, findSection, hasSection, upsertSection, appendToSection, renderSummary, summaryEvidenceLine } from "../src/domain/summary-parse.ts";
+import { parseSummary, findSection, upsertSection, appendToSection, renderSummary, summaryEvidenceLine } from "../src/domain/summary-parse.ts";
 import { extractFileRefs } from "../src/utils/file-ref-detect.ts";
 import type { SectionPlacement } from "../src/domain/summary-parse.ts";
 
@@ -62,13 +62,13 @@ describe("parseSummary", () => {
 
 });
 
-describe("findSection / hasSection", () => {
+describe("findSection", () => {
   it("finds by kind without case sensitivity", () => {
     // Canonical classifier lowercases the heading text, so `## goal` and
     // `## GOAL` both resolve to kind=goal. This is the contract that lets
     // verification stop caring about LLM capitalization drift.
     const md = "## goal\nfoo\n";
-    expect(hasSection(md, "goal")).toBe(true);
+    expect(findSection(md, "goal")).toBeDefined();
     expect(findSection(md, "goal")?.body).toBe("foo");
   });
 });

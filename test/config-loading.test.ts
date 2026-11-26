@@ -120,6 +120,28 @@ describe("loadConfig", () => {
 });
 
 describe("writeGlobalConfigValue", () => {
+  it("writes through a symlinked settings.json and drops the legacy alias key", async () => {
+    const dotfiles = path.join(home, "dotfiles-settings.json");
+    fs.writeFileSync(dotfiles, JSON.stringify({ semanticCompact: { showStatus: false } }));
+    fs.symlinkSync(dotfiles, settings);
+    resetConfigCache();
+    await writeGlobalConfigValue("mode", "thorough");
+    expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
+    const stored = JSON.parse(fs.readFileSync(dotfiles, "utf8"));
+    expect(stored.smartCompact.mode).toBe("thorough");
+    expect(stored.smartCompact.showStatus).toBe(false);
+    expect(stored.semanticCompact).toBeUndefined();
+  });
+
+  it("writes through a dangling settings.json symlink instead of replacing it", async () => {
+    const dotfiles = path.join(home, "dotfiles-new-settings.json");
+    fs.symlinkSync(dotfiles, settings);
+    resetConfigCache();
+    await writeGlobalConfigValue("mode", "thorough");
+    expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(dotfiles, "utf8")).smartCompact.mode).toBe("thorough");
+  });
+
   it("preserves unrelated root and smartCompact keys", async () => {
     writeSettings({
       theme: "dark",

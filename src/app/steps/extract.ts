@@ -53,6 +53,7 @@ import {
  scrubLlmMessages,
 } from "../../infra/ai-messages.ts";
 import { prepareConversationBackup } from "../../utils/backups.ts";
+import { readVerificationGapHints } from "../../utils/damage.ts";
 import {
  loadScopedCompactionState,
  previewMergedContinuity,
@@ -76,6 +77,12 @@ export function loadExtractionContinuity(
  const projectId = deriveProjectId(rc.cwd, extraction, rc.sessionId);
  const fingerprint = loadProjectFingerprint(projectId);
  const projectCtx = buildProjectContext(fingerprint);
+ // Content earlier summaries left out rides in the continuity block, which
+ // single-pass and chunked synthesis both receive.
+ const missed = readVerificationGapHints(projectId);
+ const gapHint = missed.length
+  ? "Previous summaries for this project initially left out " + missed.join(", ") + ". Take extra care to include them."
+  : "";
  const ancestryIds = boundedBranchLineageIds(rc.branch as Array<{ id?: string; parentId?: string | null; type?: string }>);
  const continuityScope = {
   schemaVersion: 2 as const, projectId, sessionId: rc.sessionId,
@@ -116,7 +123,7 @@ export function loadExtractionContinuity(
  );
  return {
   projectId, fingerprint, projectCtx, continuityScope, previousState, factOverrides, verificationContinuity, goalEvidence,
-  continuity: previousState ? renderContinuityCapsule(previousState) : "",
+  continuity: [previousState ? renderContinuityCapsule(previousState) : "", gapHint].filter(Boolean).join("\n\n"),
  };
 }
 

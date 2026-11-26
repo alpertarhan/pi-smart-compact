@@ -195,7 +195,7 @@ hides latency, not cost: an unused summary still spends its model budget.
 | Concurrency | One speculative task per extension |
 | Retry cooldown | 10 minutes |
 | Ready result lifetime | `pendingTtlMs` (default 5 minutes); `pendingFingerprintTtlMs` extends it while the live branch still matches the captured prefix (off by default) |
-| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, below the compaction gate and only with break-even; at the gate the due compaction replaces the context instead. Below-early-gate and cold-cache timing additionally require hygiene enabled and `contextPressureOnly: false`. |
+| Context hygiene | Pressure-gated trims run even if `contextHygieneEnabled` is off, below the compaction gate and only with break-even; at the gate the due compaction replaces the context instead. Below-early-gate economical timing additionally requires hygiene enabled and `contextPressureOnly: false`; a batch planned when the prompt cache has already expired commits cold with hygiene enabled in either timing mode. |
 
 Example: with `prepareContextPercent: 60` and `minContextPercent: 70` in a 200k
 window, preparation starts at 120k and applies at 140k. With Auto and an 80%
@@ -268,7 +268,8 @@ For calls (`maxLlmCalls`) and prompt tokens (`maxLlmInputTokens`):
 
 | Source | Result |
 | --- | --- |
-| Per-run option (`--max-calls`, `max_calls`, ...) | Used as given, even above the mode limit |
+| Per-run option on `/smart-compact` (`--max-calls`, ...) | Used as given, even above the mode limit |
+| Agent tool (`smart_compact`) | No per-run budget options; the configured ceilings and mode limits govern |
 | Config value `0` | The mode limit |
 | Config value above `0` | `min(config value, mode limit)` |
 | Automatic run | Additionally capped at 4 calls and 300 s |
@@ -280,9 +281,9 @@ Per-run options accept narrower ranges than the settings:
 
 | Budget | Per-run option | Setting |
 | --- | --- | --- |
-| Calls | `--max-calls` / `max_calls`: 1–100 | `maxLlmCalls`: 0–100 |
-| Prompt tokens | `--max-input-tokens` / `max_input_tokens`: 10,000–1,000,000 | `maxLlmInputTokens`: 0–1,000,000 |
-| Deadline (ms) | `--max-latency` / `max_latency_ms`: 5,000–600,000 | `maxLatencyMs`: 0 or 5,000–7,200,000 |
+| Calls | `--max-calls`: 1–100 | `maxLlmCalls`: 0–100 |
+| Prompt tokens | `--max-input-tokens`: 10,000–1,000,000 | `maxLlmInputTokens`: 0–1,000,000 |
+| Deadline (ms) | `--max-latency`: 5,000–600,000 | `maxLatencyMs`: 0 or 5,000–7,200,000 |
 
 Optional exploration leaves two calls for batch synthesis and final assembly;
 with two or fewer calls remaining it is skipped. Batch retries and queued work
@@ -381,7 +382,7 @@ stay on disk and manual `/smart-compact trim` still works.
 | `contextHygieneEnabled` | `Automatic cleanup` | `true` | Batched, recoverable trimming. Needs 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction. Works with `autoTrigger: false`. |
 | `contextPressureOnly` | `Cleanup timing` | `true` | Automatic cleanup and autonomous agent trim/anchor requests require the early pressure gate. Human commands and one host-confirmed anchor can bypass timing, never safety checks. Checkpoint/rewind research round trips are independent of pressure. `false` opts into the legacy early/economic timing below; no switch is needed for a user-confirmed anchor. |
 | `providerContextEditing` | `Anthropic server cleanup` | `"off"` | Direct Anthropic sessions only. `"tool-results"` adds Anthropic context editing (`clear_tool_uses_20250919`, beta `context-management-2025-06-27`) to the session model's requests: from the cleanup band, the API clears old shell and read-only research tool results, keeping the last 8 tool uses; reads, writes, user answers and unknown tools stay. `"tool-results-and-thinking"` also clears thinking older than the last 4 turns (`clear_thinking_20251015`). The session history is unchanged and signed thinking stays valid, unlike local trims. Each clearing rebuilds the prompt cache from the cleared point. |
-| `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results of 16,384+ characters before the model sees them. Independent of pressure gates. |
+| `artifactOffloadEnabled` | `Offload huge outputs` | `false` | Saves eligible read-only text results above a window-relative floor (2% of the active model's window, bounded to 8,192–65,536 characters) before the model sees them. Independent of pressure gates. |
 | `visualArchiveEnabled` | `Image snapshots` | `false` | Experimental image snapshots beside the verified text. Adds image tokens; needs a vision model with a validated cost rule and the optional `@resvg/resvg-js` component (not installed with the extension; `Readiness & details` shows the install command). Without it, output falls back to text. |
 | `pinPaths` | `Always-kept files` | `[]` | Paths every summary must keep |
 
@@ -400,13 +401,13 @@ These limits are not configurable. Behavior and examples are in the guide's
 
 | Item | Limit |
 | --- | --- |
-| Trim per boundary | At most 32 outputs of 2,048+ characters; the latest four assistant turns stay |
+| Trim per boundary | At most 32 outputs of 2,048+ characters (512+ for outputs a later call edited or re-read in full; large stale content goes first, small stale content last); the latest four assistant turns stay |
 | Trimmed output types | Successful text from read-only tools, shell (`bash`) output and `process` `output`/`list` results whose call stays in context, and `smart_context` `read` pages (their markers point back at the source ID). Old `ad-process:notification` messages, and `agent_mesh` deliveries a later successful `agent_mesh` `reply` answered by `reply_to`. Errors, writes, other `process` actions, unknown tools, mixed turns, `agent_mesh` tool results and unanswered deliveries stay whole. |
 | Digest marker | At most 6 lines and 400 characters: retrieval line, call subject, first output line, up to three error/warning lines. A notification keeps `process <name> (<id>) <status> [exit code]` and its summary; a peer message keeps `answered agent-mesh message <id> from <sender>` and its first line |
-| Order within the 32 | Read-only outputs whose path a later call writes, edits or deletes; then those read again in full later (a plain `read` without `offset`/`limit`); then the rest, each in session order. Markers note `(superseded: edited later)` or `(superseded: read again in full later)`. Paths compare after `path.normalize` only (relative never matches absolute). This changes order and the note, not eligibility. |
+| Order within the 32 | Read-only outputs whose path a later call writes, edits or deletes; then those read again in full later (a plain `read` without `offset`/`limit`); then the rest, each in session order. Markers note `(superseded: edited later)` or `(superseded: read again in full later)`. Paths compare after `path.normalize` only (relative never matches absolute). Superseded outputs are also eligible from 512 characters instead of the general 2,048 floor: they are removed because they are stale, not to save space. |
 | Integrity | Trim and rewind records store a SHA-256 and length of each archived output; `smart_context` `read`/`search` refuse text that no longer matches. Records from earlier versions have no hash and are read as before. |
 | Automatic cleanup batch | At least 16,384 characters of net savings and eight assistant turns since the last trim, rewind or compaction |
-| Offload | Read-only text results of 16,384+ characters; each artifact at most 2 MiB; at most 256 files or 32 MiB per origin session, after which new offloads stop |
+| Offload | Read-only text results above the window-relative floor (2% of the active model window, bounded 8,192–65,536 characters); each artifact at most 2 MiB; at most 256 files or 32 MiB per origin session, after which new offloads stop |
 | Retrieval | At most 4,096 characters per `read` |
 | `scope: "lineage"` | Follows `parentSession` headers (handoff or fork) at most 3 levels, reads only files of at most 64 MiB, stops at a missing file or a cycle, and never writes them. Search limits apply across all sessions, active branch first. |
 | Artifact retention | No expiry or garbage collection; see [storage](./guide.md#storage-and-privacy) |
@@ -416,8 +417,9 @@ These limits are not configurable. Behavior and examples are in the guide's
 By default, automatic cleanup is considered only at the shared early gate:
 `prepareContextPercent`, or the adaptive lead when null. Between that gate and
 `minContextPercent`, a ready trim must also pass the cache break-even check
-below. An unknown price or poor payback leaves history unchanged, without
-queuing a cold-cache trim. At the compaction gate, freeing context takes
+below. An unknown price or poor payback leaves history unchanged at that
+boundary; if the prompt cache has already expired, the ready batch commits
+as a cold trim instead (below). At the compaction gate, freeing context takes
 priority over cache economics, unless automatic compaction (`settled` or
 `background`) is due when the turn settles: then automatic and agent trims
 are skipped, since the compaction replaces the context they would rewrite.
@@ -430,8 +432,10 @@ subject to the same branch, permission, preparation and safety checks.
 
 Cache economics apply to automatic trims below the compaction gate in both
 timing modes. `contextPressureOnly: false` additionally allows economical
-cleanup below the early gate and deferred cold-cache cleanup; both require
-`contextHygieneEnabled: true`.
+cleanup below the early gate and holding a batch until the cache goes cold;
+both require `contextHygieneEnabled: true`. A batch planned when the cache
+has already expired commits cold in either mode, because rewriting an
+expired prefix costs nothing.
 Let `X` be the estimated tokens a batch removes (net of its markers) and `T`
 the estimated tokens of every message from the first trimmed output to the
 end, the part of the prompt cache a trim rewrites. For `openai-codex`, `T`
@@ -450,8 +454,9 @@ At a completed turn boundary a ready batch commits with cause:
 - `pressure` when usage reached the compaction gate and no automatic
   compaction is due (`autoTrigger` off or `native-hook`);
 - `break-even` when `N* ≤ 24` and the timing policy permits cleanup;
-- `cold` otherwise, only with economic timing enabled, after waiting. The batch
-  is held (`smart_context status` reports it as `deferredTrim`). The first request beyond the estimated
+- `cold` when the prompt cache has already expired at the boundary, in either
+  timing mode; or, only with economic timing enabled, after waiting. A waited
+  batch is held (`smart_context status` reports it as `deferredTrim`). The first request beyond the estimated
   cache horizon sends the trimmed messages; later requests keep them, and the
   edits commit at the next completed, uncontested turn. The horizon comes from
   Pi's model `promptCache` metadata (seconds), not a universal five-minute TTL.
@@ -461,7 +466,7 @@ At a completed turn boundary a ready batch commits with cause:
   Missing/invalid lifetime metadata disables `cold` timing and its warming veto,
   not manual cleanup or pressure-based cleanup.
 
-An unknown price only allows `pressure` at the compaction gate and opt-in `cold`
+An unknown price only allows `pressure` at the compaction gate and `cold`
 (the latter still needs lifetime metadata). Manual and permitted agent trims
 commit at the next boundary (causes `manual`, `agent`). Below the compaction
 gate, a priced agent trim or anchor cleanup with `N*` above the limit is refused.
@@ -490,13 +495,13 @@ Settings → **Agent tools & navigation**.
 
 | Key | TUI label | Default | Effect |
 | --- | --- | --- | --- |
-| `toolLoading` | `Agent tools` | `eager` | `eager` (Always available): permitted tools are present from the start, keeping their prefix stable. `lazy` (On demand): load groups through `smart_tools`; late loading can rebuild the cache. Loaded groups reset at session start/branch change, not compaction. `off`: no agent context tools; human commands and navigation keep working. |
+| `toolLoading` | `Agent tools` | `eager` | `eager` (Always available): permitted tools are present from the start, keeping their prefix stable; the `smart_tools` loader itself stays hidden, since every group is already loaded. `lazy` (On demand): load groups through `smart_tools`; late loading can rebuild the cache. Loaded groups reset at session start/branch change, not compaction. `off`: no agent context tools; human commands and navigation keep working. |
 | `contextNavigationEnabled` | `Session navigation` | `true` | Anchors, search and returning to an anchor. Off hides the panel and `smart_navigation`; recorded anchors and the keys below are kept. |
 | `contextRecallEnabled` | `Search other sessions` | `true` | Read-only search of anchors saved by earlier sessions, this project by default. |
 | `contextPivotEnabled` | `Return to an anchor` | `true` | Returning to an anchor on a new branch with a required carryover. |
 | `contextAnchorCacheEnabled` | `Anchor prompt cache` | `true` | Anthropic models: keeps a prompt-cache marker on the newest anchor. |
 | `contextAnchorStatusEnabled` | `Anchor status` | `true` | Shows the newest anchor on this branch in Pi's footer; display only. |
-| `contextGuidanceEnabled` | `Navigation guide` | `true` | Lets you or the agent open the navigation guide on request; the full guide is never injected automatically. Also enables one short context-attention note per pressure band. Prompt-start advice uses current usage and permissions, not a parked `nextTurn` note. It names reachable tools, shares cleanup's preparation gate, names a trim only for a ready batch that pays back its cache rewrite, and distinguishes automatic strategies and staging from applying. Checkpoint metadata can remain available when trim/rewind is blocked. Navigation off does not disable history guidance. Re-armed when pressure clears, compaction occurs or the session/model changes. |
+| `contextGuidanceEnabled` | `Navigation guide` | `true` | Lets you or the agent open the navigation guide on request; the full guide is never injected automatically. Context fullness is never reported to the agent: pressure is acted on by the host (automatic cleanup/compaction) and shown to you in the status line and Home. |
 
 Group permissions apply in both `lazy` and `eager` modes: `compaction` follows
 `agentToolAccess`, `memory` needs `contextGraphEnabled` or a non-local

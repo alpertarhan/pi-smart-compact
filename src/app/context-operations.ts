@@ -22,6 +22,9 @@ export const MAX_CONTEXT_EDITS = 512;
 export const MAX_TRIM_EDITS = 32;
 // 2 KB keeps every edit worth ≥1.6 KB after its ≤400-char marker while reaching ~60% of output volume (4 KB: ~33%).
 export const MIN_TRIM_CHARS = 2_048;
+/** A superseded read is trimmed for correctness (stale content), not savings,
+ * so its floor is far lower; the marker names the staleness either way. */
+export const MIN_SUPERSEDED_TRIM_CHARS = 512;
 export const KEEP_RECENT_TURNS = 4;
 /** Per-line digest budget so a long first line cannot crowd out risk lines. */
 const TRIM_DIGEST_LINE_CHARS = 100;
@@ -29,10 +32,13 @@ const TRIM_RISK_LINES = 3;
 export const MIN_AUTO_TRIM_SAVING_CHARS = 16_384;
 export const AUTO_TRIM_COOLDOWN_TURNS = 8;
 
-/** Pin the latest owned or historically recorded anchor prefix during cleanup. */
-export function lastAnchorBoundary(branch: SessionEntry[]): string | undefined {
+/** Pin the latest owned or historically recorded anchor prefix during cleanup.
+ * `endExclusive` bounds the scan to a prefix without copying it (the deferred-trim
+ * path compares full-branch and at-leaf boundaries on every request). */
+export function lastAnchorBoundary(branch: SessionEntry[], endExclusive = branch.length): string | undefined {
   let boundary: string | undefined;
-  for (const entry of branch) {
+  for (let index = 0; index < endExclusive && index < branch.length; index++) {
+    const entry = branch[index]!;
     if (!anchorFromEntry(entry)) continue;
     boundary = entry.id;
   }
@@ -482,7 +488,14 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
   const assistantIndexes = projection.flatMap((entry, index) => entry.messages[0]?.role === "assistant" ? [index] : []);
   const cutoff = assistantIndexes.at(-KEEP_RECENT_TURNS) ?? 0;
   const superseded = supersededResults(projection, candidates);
-  const rank = (id: string) => { const reason = superseded.get(id); return reason === "edited" ? 0 : reason === "reread" ? 1 : 2; };
+  // Stale outputs go first, but a small one (under the general floor) goes last:
+  // it must never take one of the MAX_TRIM_EDITS slots from a large output.
+  const rank = (entry: { id: string; text: string }) => {
+    const reason = superseded.get(entry.id);
+    if (!reason) return 2;
+    if (entry.text.length < MIN_TRIM_CHARS) return 3;
+    return reason === "edited" ? 0 : 1;
+  };
   // Superseded outputs first (edited before reread), each group in branch order; the cap then prefers them.
   const floorChars = options.minSavingChars ?? MIN_AUTO_TRIM_SAVING_CHARS;
   const notices = archivableNotices(projection);
@@ -495,15 +508,16 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
     if (protectedIds.has(sourceEntry.id) || edited.has(sourceEntry.id)) return [];
     if (notice) return notice.text.length < MIN_TRIM_CHARS || index < signedAt ? [] : [{ id: sourceEntry.id, ...notice, savedChars: notice.text.length - notice.marker.length }];
     if (!call || message?.role !== "toolResult" || message.isError || message.content.some(block => block.type !== "text")) return [];
-    const text = extractText(message.content);
-    if (text.length < MIN_TRIM_CHARS) return [];
-    const flat = flattenToolCallBlock(call);
     const reason = superseded.get(sourceEntry.id);
+    const text = extractText(message.content);
+    if (text.length < (reason ? MIN_SUPERSEDED_TRIM_CHARS : MIN_TRIM_CHARS)) return [];
+    const flat = flattenToolCallBlock(call);
     const marker = buildTrimMarker({
       toolName: message.toolName, entryId: sourceEntry.id, text, call: flat.length === 1 ? flat[0] : undefined, note: reason && SUPERSEDED_NOTE[reason],
     });
+    if (text.length - marker.length <= 0) return [];
     return [{ id: sourceEntry.id, text, marker, savedChars: text.length - marker.length }];
-  }).sort((left, right) => rank(left.id) - rank(right.id)).slice(0, MAX_TRIM_EDITS);
+  }).sort((left, right) => rank(left) - rank(right)).slice(0, MAX_TRIM_EDITS);
   const chosen = selectTrimFrontier(eligible, branch, options.economy, floorChars);
   const entries: SessionBoundaryDraft[] = [];
   const references: string[] = [];
@@ -535,7 +549,7 @@ export function planContextTrim(branch: SessionEntry[], afterId?: string, option
 /** Why a trim plan queues nothing, with its numbers, so a skipped cleanup is diagnosable without debug mode. */
 export function describeTrimSkip(plan: { entries: unknown[]; savedChars: number; automatic: string; cooldownTurns: number }, floorChars: number): string {
   if (!plan.entries.length) {
-    return `No safe cleanup: no eligible archived content (tool output, process notifications or answered peer messages; each needs ≥${MIN_TRIM_CHARS} chars, must be older than the last ${KEEP_RECENT_TURNS} turns and come after the previous anchor or checkpoint).`;
+    return `No safe cleanup: no eligible archived content. Eligible are tool outputs, process notifications and answered peer messages of at least ${MIN_TRIM_CHARS} chars (${MIN_SUPERSEDED_TRIM_CHARS} for a tool output a later call edited or re-read), older than the last ${KEEP_RECENT_TURNS} turns and after the previous anchor or checkpoint.`;
   }
   if (plan.automatic === "cooldown") return `No safe cleanup yet: cooldown, ${plan.cooldownTurns} more turn(s) after the last context change.`;
   return `No safe cleanup: eligible outputs would save ${plan.savedChars} chars, under the ${floorChars}-char floor.`;

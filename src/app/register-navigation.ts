@@ -8,6 +8,7 @@ import { SecretScrubber } from "../domain/scrub.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
+import { boundText } from "../utils/helpers.ts";
 import { notifyUser } from "../utils/issues.ts";
 import { readContextGuide } from "./context-guide.ts";
 import { contextPressure } from "./background-preparation.ts";
@@ -86,6 +87,7 @@ function renderNavigationRow(
   return rawFallbackRow(theme, result, expanded);
 }
 import type { AnchorPage, AnchorRecallPage, AnchorState, NavigationPanelActions } from "./navigation-types.ts";
+import { AGENT_TEXT_MAX_CHARS } from "../constants.ts";
 
 const STATUS = "smart-context-navigation";
 const APPLY_PREFIX = "context --apply=";
@@ -96,6 +98,8 @@ interface Pivot {
  targetId: string;
  carryover: string;
  message?: string;
+ /** Which texts the in-context budget shortened, for the agent's result. */
+ cut: string[];
  callId?: string;
  signal?: AbortSignal;
  readyLeaf?: string;
@@ -154,7 +158,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const anchor = index < 0 ? null : anchorFromEntry(branch[index]);
   const pressure = contextPressure(ctx, config());
   const parts: string[] = [];
-  if (pressure.percent !== null) parts.push(`ctx ${Math.round(pressure.percent)}%${pressure.policyWindow !== pressure.modelWindow ? ` of ${pressure.policyWindow?.toLocaleString("en-US")} policy window` : ""}`);
+  // Plain words for a human: a number with a verb, no internal band or window terms.
+  if (pressure.percent !== null) parts.push(`ctx ${Math.round(pressure.percent)}%${pressure.compaction ? " · compaction due" : pressure.cleanup ? " · cleanup available" : ""}`);
   if (anchor) parts.push(`anchor:${anchor.name.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120)} · ${branch.length - index - 1} entries later`);
   ctx.ui.setStatus(STATUS, parts.length ? parts.join(" · ") : undefined);
  };
@@ -164,19 +169,24 @@ export function registerNavigation(pi: ExtensionAPI, options: {
    || !pi.getActiveTools().includes(NAVIGATION_TOOL_NAME))) cancel(ctx, "navigation permission changed");
   footer(ctx);
  };
- const anchor = (ctx: ExtensionContext, name: string, summary: string): AnchorState => {
+ // In-context budgets for agent prose: an anchor summary, and a pivot's carryover and next message.
+ const ANCHOR_SUMMARY_CHARS = 12_000;
+ const PIVOT_TEXT_CHARS = 16_000;
+ const anchor = (ctx: ExtensionContext, name: string, summary: string): { state: AnchorState; cut: boolean } => {
   enabled();
   const reason = busy(ctx);
   if (reason) throw new Error(reason);
   name = scrub(name.trim());
   summary = scrub(summary.trim());
   if (!name || name.length > 120 || /[\x00-\x1f\x7f]/.test(name)) throw new Error("Use an anchor name of 1–120 printable characters.");
-  if (!summary || summary.length > 12_000) throw new Error("Use a retrospective summary of 1–12000 characters.");
+  if (!summary) throw new Error("Use a non-empty retrospective summary.");
+  const cut = summary.length > ANCHOR_SUMMARY_CHARS;
+  summary = boundText(summary, ANCHOR_SUMMARY_CHARS);
   if (getAnchors(ctx.sessionManager).some(entry => entry.data.name === name)
    || ctx.sessionManager.getEntries().some(entry => ctx.sessionManager.getLabel(entry.id) === name)) throw new Error("That anchor name or label is already in use; choose another name.");
   const targetId = ctx.sessionManager.getLeafId();
   if (!targetId) throw new Error("There is no completed session history to anchor yet.");
-  return { name, summary, targetId };
+  return { state: { name, summary, targetId }, cut };
  };
  const preparePivot = (ctx: ExtensionContext, target: string, carryover: string, message?: string): Pivot => {
   enabled();
@@ -184,9 +194,14 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   const reason = busy(ctx);
   if (reason) throw new Error(reason);
   if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority over a pivot.");
-  carryover = scrub(carryover.trim());
-  if (!carryover || carryover.length > 16_000) throw new Error("Pivot requires a carryover of 1–16000 characters.");
-  if (message !== undefined && (!message.trim() || message.length > 16_000)) throw new Error("The optional next message must have 1–16000 characters.");
+  const cut: string[] = [];
+  const bound = (what: string, text: string) => {
+   if (text.length > PIVOT_TEXT_CHARS) cut.push(what);
+   return boundText(text, PIVOT_TEXT_CHARS);
+  };
+  carryover = bound("carryover", scrub(carryover.trim()));
+  if (!carryover) throw new Error("Pivot requires a non-empty carryover.");
+  if (message !== undefined && !message.trim()) throw new Error("The optional next message must not be empty.");
   let targetId = resolveAnchorTarget(ctx.sessionManager, target);
   const targetEntry = targetId ? ctx.sessionManager.getEntry(targetId) : undefined;
   if (targetEntry?.type === "custom_message" && anchorFromEntry(targetEntry)) {
@@ -198,7 +213,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
   if (!targetId) throw new Error("Pivot target not found. Inspect anchors with view first.");
   const originId = ctx.sessionManager.getLeafId();
   if (!originId || originId === targetId) throw new Error("Choose a different history entry or anchor.");
-  return { nonce: randomUUID(), sessionId: resolveSessionId(ctx), originId, targetId, carryover, message: message ? scrub(message) : undefined };
+  return { nonce: randomUUID(), sessionId: resolveSessionId(ctx), originId, targetId, carryover, message: message ? bound("next message", scrub(message)) : undefined, cut };
  };
  const valid = (operation: Pivot, ctx: ExtensionContext) => !operation.signal?.aborted
   && operation.sessionId === resolveSessionId(ctx)
@@ -233,18 +248,18 @@ export function registerNavigation(pi: ExtensionAPI, options: {
  pi.registerTool({
   name: NAVIGATION_TOOL_NAME,
   label: "Context Navigation",
-  description: "View/recall session anchors. Anchor completed work under pressure. In pressure-only mode, early cleanup for an explicitly user-requested anchor needs one-time host confirmation; without that dialog the anchor is only a recall point. Safe cleanup is queued once, not full compaction; never claim approval or retry a refusal. Pivot needs carryover and ends the turn; files/processes are not rolled back.",
+  description: "Session anchors. When you finish a unit of work, anchor it with a short handoff (done, in progress, next step) so it can be returned to. view lists this session's anchors, or opens one by name or entry ID (target). recall lists anchors from earlier sessions. pivot returns to an anchor (target) with a carryover and ends the turn; files and processes are never rolled back. A requested cleanup may need the user's confirmation: never claim approval and never retry a refusal.",
   parameters: Type.Object({
    action: StringEnum(["view", "recall", "anchor", "pivot"] as const),
-   target: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+   target: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Anchor name or entry ID (for view/pivot)." })),
    keyword: Type.Optional(Type.String({ maxLength: 200 })),
    scope: Type.Optional(StringEnum(["cwd", "all"] as const)),
    offset: Type.Optional(Type.Integer({ minimum: 0 })),
    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
    name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-   summary: Type.Optional(Type.String({ minLength: 1, maxLength: 12_000 })),
-   carryover: Type.Optional(Type.String({ minLength: 1, maxLength: 16_000 })),
-   message: Type.Optional(Type.String({ minLength: 1, maxLength: 16_000 })),
+   summary: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS })),
+   carryover: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS })),
+   message: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS })),
   }),
   executionMode: "sequential",
   async execute(callId, params, signal, _onUpdate, ctx) {
@@ -274,7 +289,8 @@ export function registerNavigation(pi: ExtensionAPI, options: {
    if (params.action === "anchor") {
     const early = config().contextPressureOnly && !contextPressure(ctx, config()).cleanup;
     if (early && !ctx.hasUI && config().requireApproval) throw new Error("No context pressure (or usage is unavailable); early anchor requires host confirmation. No anchor or cleanup requested. A human can use /smart-compact.");
-    let data = anchor(ctx, params.name ?? "", params.summary ?? "");
+    const first = anchor(ctx, params.name ?? "", params.summary ?? "");
+    let data = first.state;
     let userConfirmed = false;
     if (early) {
      if (ctx.hasPendingMessages()) throw new Error("Queued user input takes priority; no anchor or cleanup requested.");
@@ -288,20 +304,20 @@ export function registerNavigation(pi: ExtensionAPI, options: {
       if (approved !== true || signal?.aborted) throw new Error("Anchor not approved or cancelled; no anchor or cleanup requested. Do not retry without a new user request.");
       if (approvalEpoch !== epoch || sessionId !== resolveSessionId(ctx) || data.targetId !== ctx.sessionManager.getLeafId()
        || ctx.hasPendingMessages() || !agentAllowed()) throw new Error("Anchor confirmation expired: session, history, pending input or tool permissions changed. Nothing was queued.");
-      data = anchor(ctx, data.name, data.summary); // recheck navigation, running work and name after the dialog
+      data = anchor(ctx, data.name, data.summary).state; // recheck navigation, running work and name after the dialog
       userConfirmed = true; // host response only; never read this from model arguments
      }
     }
     const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal, userConfirmed) ?? "History unchanged; no cleanup controller attached.";
     // The summary is already in this call's arguments; echoing it would put it in context twice.
-    return { content: [{ type: "text", text: `Anchor saved: ${data.name} (${data.summary.length} chars; read it with smart_navigation view)\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
+    return { content: [{ type: "text", text: `Anchor saved: ${data.name} (${data.summary.length} chars${first.cut ? ", shortened to fit " + ANCHOR_SUMMARY_CHARS.toLocaleString("en-US") + ": its middle was omitted" : ""}; read it with smart_navigation view)\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
    }
    const operation = preparePivot(ctx, params.target ?? "", params.carryover ?? "", params.message);
    operation.callId = callId;
    operation.signal = signal;
    queued = operation;
    options.onContextChange?.(ctx);
-   return { ...reply("Pivot queued. End this turn; the host will revalidate and navigate after the batch settles. No file/process rollback."), details: { queued: "pivot", targetId: operation.targetId, display: { state: "queued", action: "pivot", target: params.target ?? "" } }, terminate: true };
+   return { ...reply("Pivot queued." + operation.cut.map(what => " The " + what + " was over " + PIVOT_TEXT_CHARS.toLocaleString("en-US") + " characters, so its middle was omitted.").join("") + " End this turn; the host will revalidate and navigate after the batch settles. No file/process rollback."), details: { queued: "pivot", targetId: operation.targetId, display: { state: "queued", action: "pivot", target: params.target ?? "" } }, terminate: true };
   },
   renderCall(args, theme) {
    const label = theme.fg("toolTitle", "smart_navigation ");
@@ -388,7 +404,7 @@ export function registerNavigation(pi: ExtensionAPI, options: {
     list(query) { enabled(); return listAnchors(ctx.sessionManager, query); },
     recall: query => queryRecall(ctx, query),
     async create(name, summary) {
-     const data = anchor(ctx, name, summary);
+     const data = anchor(ctx, name, summary).state;
      pi.sendMessage({ customType: ANCHOR_CUSTOM_TYPE, content: `Anchor: ${data.name}\n\n${data.summary}`, display: true, details: { anchor: data } }, { triggerTurn: false });
      pi.setLabel(ctx.sessionManager.getLeafId()!, data.name);
      footer(ctx);

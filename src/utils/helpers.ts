@@ -22,6 +22,30 @@ export {
   validateSmartCompactConfig,
 } from "./config.ts";
 
+/**
+ * Bound agent-supplied prose (rewind reports, pivot carryovers, anchor
+ * summaries) to an in-context budget without rejecting the call: keep the
+ * head and tail and mark the omitted middle. Schema caps stay far above
+ * these budgets so an over-long text is shortened once, never bounced back
+ * for a retry loop.
+ */
+export function boundText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const marker = (omitted: number) => "\n… [" + omitted + " characters omitted] …\n";
+  const budget = maxChars - marker(text.length).length;
+  if (budget <= 0) return text.slice(0, maxChars); // no room for the marker
+  // Never cut a surrogate pair in half: a lone half is not valid UTF-8.
+  const surrogate = (index: number, low: boolean) => {
+    const code = text.charCodeAt(index);
+    return low ? code >= 0xdc00 && code <= 0xdfff : code >= 0xd800 && code <= 0xdbff;
+  };
+  let head = Math.ceil(budget * 0.6);
+  if (head > 0 && surrogate(head - 1, false)) head--;
+  let tailStart = text.length - (budget - Math.ceil(budget * 0.6));
+  if (tailStart < text.length && surrogate(tailStart, true)) tailStart++;
+  return text.slice(0, head) + marker(tailStart - head) + text.slice(tailStart);
+}
+
 export function getPreviousCompactionContext(branch: unknown[]): string {
   interface BranchEntry {
     type: string;
@@ -135,24 +159,6 @@ export function smartKeepBoundaryCandidates(
     }
   }
   return candidates;
-}
-
-export function smartKeepBoundary(
-  msgs: SessionMessageEntry[],
-  keepFromIndex: number,
-  branchEntries?: unknown[],
-): number {
-  const anchor = smartKeepBoundaryCandidates(
-    msgs,
-    keepFromIndex,
-    branchEntries,
-  ).find((candidate) => candidate.kind === "anchor");
-  const adjusted = anchor?.keepFrom ?? keepFromIndex;
-  return (
-    smartKeepBoundaryCandidates(msgs, adjusted).find(
-      (candidate) => candidate.kind === "topical",
-    )?.keepFrom ?? adjusted
-  );
 }
 
 /**

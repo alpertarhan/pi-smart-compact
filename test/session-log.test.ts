@@ -49,6 +49,18 @@ describe("resolveCompactionMessages — Pi jsonl filename format", () => {
   expect(result![0].message.content).toBe("hello");
   expect(result![1].message.content).toBe("hi"); });
 
+  it("reads the host-reported session file that the directory scan cannot find", async () => {
+    const custom = path.join(TMP_HOME, "custom-session-dir", "any-name.jsonl");
+    fs.mkdirSync(path.dirname(custom), { recursive: true });
+    fs.writeFileSync(custom, JSON.stringify({ id: "host-0", type: "message", message: { role: "toolResult", toolCallId: "tc9", content: "full original" } }));
+    const entries: SessionMessageEntry[] = [
+      { type: "message", id: "host-0", message: { role: "toolResult", toolCallId: "tc9", content: "cut…✂999" } },
+    ];
+    expect(await resolveCompactionMessages("host-session", entries)).toBeNull();
+    const result = await resolveCompactionMessages("host-session", entries, undefined, custom);
+    expect(result?.[0].message.content).toBe("full original");
+  });
+
   it("falls back to branch entry when log id is missing", async () => { const entries: SessionMessageEntry[] = [
     {
       type: "message",

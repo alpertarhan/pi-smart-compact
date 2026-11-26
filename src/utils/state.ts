@@ -38,11 +38,10 @@ import {
  type RawGoalEvidence,
 } from "./extraction.ts";
 import { releasesConstraint, supersedesConstraint } from "../phases/verify.ts";
-import { errorDetail, recordIssue, reportIssue } from "./issues.ts";
+import { errorDetail, recordIssue } from "./issues.ts";
 import * as log from "./logger.ts";
 import {
  compactionStateFile,
- legacyScopedCompactionStateFile,
  scopedCompactionStateFile,
 } from "../infra/paths.ts";
 import { writeJsonSync, readJsonSync } from "../infra/fs.ts";
@@ -219,7 +218,7 @@ export function loadScopedCompactionState(
     .map((entry) => entry.name),
   );
  } catch {
-  // No branch snapshot directory yet; legacy migration below may still apply.
+  // No branch snapshot directory yet.
  }
  const ancestry = Array.from(
   new Set([
@@ -252,31 +251,7 @@ export function loadScopedCompactionState(
   if (valid(state, branchHeadId)) return state;
  }
 
- // One-time migration from the old session-only snapshot. Remove the file
- // before creating the same-named directory used by branch snapshots.
- const legacyPath = legacyScopedCompactionStateFile(
-  scope.projectId,
-  scope.sessionId,
- );
- const legacy = freshState(
-  legacyPath,
-  readJsonSync<CompactionState>(legacyPath),
-  options.readOnly,
- );
- if (!valid(legacy) || !ancestry.includes(legacy.scope.branchHeadId))
-  return null;
- if (options.readOnly) return legacy;
- try {
-  fs.unlinkSync(legacyPath);
-  writeJsonSync(getStatePath(scope.projectId, legacy), legacy, true);
- } catch (error) {
-  reportIssue({
-   key: "state.migrate",
-   message: "Legacy continuity state could not be migrated (" + errorDetail(error) + "). The old copy is still used for this session. Check permissions for the Smart Compact state directory.",
-   error,
-  });
- }
- return legacy;
+ return null;
 }
 
 export function applyLoopOverrides(

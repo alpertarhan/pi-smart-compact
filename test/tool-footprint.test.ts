@@ -36,7 +36,8 @@ describe("context tool exposure", () => {
     expect(DEFAULT_CONFIG.toolLoading).toBe("eager");
     const h = harness({ settings: { toolLoading: DEFAULT_CONFIG.toolLoading } });
     const before = h.active();
-    expect(before).toEqual(selected(...details));
+    // Eager loads every group, so the loader itself stays hidden.
+    expect(before).toEqual(["foreign_tool", "read", ...details].sort());
     h.exposure.load("navigation");
     h.exposure.load("history");
     h.exposure.atBoundary();
@@ -99,13 +100,13 @@ describe("context tool exposure", () => {
         contextGraphEnabled: false, memoryBackend: "local", agentToolAccess: "disabled",
       }
     });
-    expect(h.active()).toEqual(selected("smart_context"));
+    expect(h.active()).toEqual(["foreign_tool", "read", "smart_context"]);
     expect(() => h.exposure.load("compaction")).toThrow();
     expect(() => h.exposure.load("memory")).toThrow();
     h.settings.memoryBackend = "hindsight";
     h.settings.contextNavigationEnabled = true;
     h.exposure.apply();
-    expect(h.active()).toEqual(selected("smart_context", "smart_navigation", "smart_recall", "smart_save_memory"));
+    expect(h.active()).toEqual(["foreign_tool", "read", "smart_context", "smart_navigation", "smart_recall", "smart_save_memory"].sort());
   });
 
   it("never expands an initial host allowlist or defeats a later host refusal", () => {

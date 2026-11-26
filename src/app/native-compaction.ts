@@ -281,7 +281,7 @@ export async function attemptNativeCompaction(
   // The EESV restore point, over the untruncated native prefix; written by
   // persist only after Pi confirms the compaction.
   const preparedBackup = rc.config.backupEnabled
-    ? prepareScrubbedBackup(rc, (await recoverSourceMessages(rc.sessionId, prefix, rc.ctx.cwd)).messages.map((item) => item.message))
+    ? prepareScrubbedBackup(rc, (await recoverSourceMessages(rc.sessionId, prefix, rc.ctx.cwd, rc.ctx.sessionManager.getSessionFile?.())).messages.map((item) => item.message))
     : undefined;
   const tokensBefore = rc.totalTokens;
   // Same split as the planner (steps/window.ts, domain/yield-gate.ts): Pi's measured

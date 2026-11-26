@@ -5,6 +5,7 @@ import { loadConfig } from "../utils/config.ts";
 import { deriveProjectIdFromCwd } from "../utils/fingerprint.ts";
 import { errorDetail, reportIssue } from "../utils/issues.ts";
 import { describeRemoteSave, refreshReceipt, resolveHindsightTarget, type RemoteSaveOutcome } from "./hindsight-memory.ts";
+import { MEMORY_STATUS_TYPE } from "../ui/message-renderers.ts";
 
 const MAX_TRACKED = 32;
 interface TrackedReceipt {
@@ -56,11 +57,14 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
           : { state: "unknown", receipt, reason: job.lastError ?? receipt.detail ?? "completion not confirmed" };
     const memoryId = receipt.documentId.slice(4);
     const ref = "hindsight:" + memoryId + "@" + hindsightTargetDigest(target.baseUrl, target.bankId, receipt.projectId, memoryId);
-    const content = `<memory_status backend="hindsight" state="${outcome.state}">\nSmart Compact: `
+    // For the model only; the human view is drawn from `details` by ui/message-renderers.ts.
+    // The leading tag keeps old and new notices alike recognisable as harness text.
+    const reason = "reason" in outcome ? outcome.reason : undefined;
+    const content = `<memory_status backend="hindsight" state="${outcome.state}">\n`
       + (expired ? "Last observed memory state: " : "") + describeRemoteSave(outcome)
-      + "\nRef: " + ref + "\nOperation: " + receipt.operationId
+      + "\nRef: " + ref
       + (expired && job.lastError ? "\nLast status check failed: " + job.lastError : "")
-      + (expired ? "\nBackground tracking stopped at its time limit; use smart_recall to check the current status." : "")
+      + (expired ? "\nBackground tracking stopped at its time limit." : "")
       + "\n</memory_status>";
     let delivered = false;
     const deliver = () => {
@@ -68,8 +72,9 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
       // A resolve or a newer status observed while compaction held this notice wins.
       const latest = listReceipts(receipt, receipt.documentId).find(item => item.key === receipt.key);
       if (!latest || latest.state !== receipt.state) return;
-      pi.sendMessage({ customType: "smart-compact-memory-status", content, display: true,
-        details: { backend: "hindsight", state: outcome.state, ref, expired } }, { triggerTurn: false });
+      pi.sendMessage({ customType: MEMORY_STATUS_TYPE, content, display: true,
+        details: { backend: "hindsight", state: outcome.state, ref, expired, title: receipt.title,
+          ...(reason ? { reason } : {}), ...(expired && job.lastError ? { lastError: job.lastError } : {}) } }, { triggerTurn: false });
       delivered = true;
     };
     const request = { version: 1, sessionId: context.sessionId, deliver, deferred: false };
@@ -99,11 +104,10 @@ export function registerHindsightTracking(pi: ExtensionAPI, options: {
       if (!total) return;
       const summary = Object.entries(counts).filter(([, count]) => count > 0)
         .map(([state, count]) => `${count} ${state === "accepted" ? "accepted (completion unconfirmed)" : state}`).join(", ");
-      const content = '<memory_status backend="hindsight" state="summary">\nSmart Compact: Hindsight: '
-        + `${total} earlier submissions — ${summary}.`
-        + (counts.failed || counts.accepted || counts.unknown ? " Use smart_recall to check their status." : "")
+      const content = '<memory_status backend="hindsight" state="summary">\n'
+        + `Hindsight: ${total} earlier submissions: ${summary}.`
         + "\n</memory_status>";
-      pi.sendMessage({ customType: "smart-compact-memory-status", content, display: true,
+      pi.sendMessage({ customType: MEMORY_STATUS_TYPE, content, display: true,
         details: { backend: "hindsight", state: "summary", resumed: true, total, counts } }, { triggerTurn: false });
       delivered = true;
     };

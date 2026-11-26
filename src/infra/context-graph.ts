@@ -143,36 +143,14 @@ interface EdgeRow {
  weight: number;
 }
 
-function bunSqliteAdapter(
- db: Pick<SqliteDatabase, "exec" | "query" | "close">,
+/** One transaction wrapper for both drivers; they differ only in how a statement is made (bun's query vs node's prepare). */
+function sqliteAdapter(
+ db: { exec(sql: string): void; close(): void },
+ query: (sql: string) => SqliteStatement,
 ): SqliteDatabase {
  return {
   exec: (sql) => db.exec(sql),
-  query: (sql) => db.query(sql),
-  transaction: (fn) =>
-   ((...args: never[]) => {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-     const result = fn(...args);
-     db.exec("COMMIT");
-     return result;
-    } catch (error) {
-     try {
-      db.exec("ROLLBACK");
-     } catch {
-      /* preserve the original failure */
-     }
-     throw error;
-    }
-   }) as typeof fn,
-  close: () => db.close(),
- };
-}
-
-function nodeSqliteAdapter(db: NodeSqliteDatabase): SqliteDatabase {
- return {
-  exec: (sql) => db.exec(sql),
-  query: (sql) => db.prepare(sql),
+  query,
   transaction: (fn) =>
    ((...args: never[]) => {
     db.exec("BEGIN IMMEDIATE");
@@ -224,12 +202,14 @@ function createDatabase(fp: string): SqliteDatabase {
   const { Database } = require("bun:sqlite") as {
    Database: new (filename: string) => SqliteDatabase;
   };
-  db = bunSqliteAdapter(new Database(fp));
+  const raw = new Database(fp);
+  db = sqliteAdapter(raw, (sql) => raw.query(sql));
  } else {
   const { DatabaseSync } = require("node:sqlite") as {
    DatabaseSync: new (filename: string) => NodeSqliteDatabase;
   };
-  db = nodeSqliteAdapter(new DatabaseSync(fp));
+  const raw = new DatabaseSync(fp);
+  db = sqliteAdapter(raw, (sql) => raw.prepare(sql));
  }
  try {
   fs.chmodSync(fp, 0o600);
@@ -237,7 +217,10 @@ function createDatabase(fp: string): SqliteDatabase {
   /* best effort on non-POSIX filesystems */
  }
  db.exec(
-  "PRAGMA busy_timeout=1000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+  // Several sessions share this database; 1s was short enough that a
+  // concurrent compaction-index transaction made peers fail soft and lose
+  // that compaction's facts.
+  "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
  );
  db.exec(`
     CREATE TABLE IF NOT EXISTS context_nodes (

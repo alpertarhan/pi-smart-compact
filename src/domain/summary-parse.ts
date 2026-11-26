@@ -259,13 +259,6 @@ export function findSection(
 	return parsed.sections.find((s) => s.kind === kind);
 }
 
-export function hasSection(
-	summary: CanonicalSummary | string,
-	kind: SectionKind,
-): boolean {
-	return findSection(summary, kind) !== undefined;
-}
-
 /** Stringify the canonical form back to markdown.
  *
  * `opts.canonicalHeadings` rewrites recognized headings to their canonical
