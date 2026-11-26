@@ -1103,7 +1103,8 @@ deleting a possibly renewed lease in place. SQLite supplies its own WAL
 durability.
 
 The session run lock (`app/session-run-lock.ts`) uses file leases reclaimed
-when the owning PID dies. Reclaim has a deliberate, documented TOCTOU window:
+when the owning PID dies or, on Linux, belongs to another process (a lease
+records its owner's start time). Reclaim has a deliberate, documented TOCTOU window:
 two processes reclaiming the same stale lease within milliseconds can, in one
 interleaving, unlink the other's fresh lease. A double re-read (token + inode
 metadata) narrows but cannot atomically close this without an O_EXCL rename

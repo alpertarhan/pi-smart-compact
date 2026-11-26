@@ -119,6 +119,15 @@ export function processStart(pid: number): string {
   } catch { return ""; }
 }
 
+/** Whether a recorded owner still runs: "same" (its start time matches), "unknown"
+ * (alive, no start time to compare) or "gone" (dead, or its PID now names another process). */
+export function ownerState(pid: number, recordedStart?: string): "same" | "unknown" | "gone" {
+  if (!processAlive(pid)) return "gone";
+  const started = recordedStart ? processStart(pid) : "";
+  if (!started) return "unknown";
+  return started === recordedStart ? "same" : "gone";
+}
+
 /**
  * Remove a lock directory left by a crashed owner: its owner file holds
  * "pid:token:start". Reclaim when that pid is dead. A live pid keeps its
@@ -142,9 +151,8 @@ export function reclaimStaleLock(lockDir: string, staleMs = 60_000): boolean {
   } catch { return false; }
   const expired = Date.now() - stat.mtimeMs > staleMs;
   const [pid, , recorded] = owner.split(":");
-  const alive = owner !== "" && processAlive(Number(pid));
-  const started = alive && recorded ? processStart(Number(pid)) : "";
-  if (started ? started === recorded : !expired && (!owner || alive)) return false;
+  const state = owner ? ownerState(Number(pid), recorded) : "gone";
+  if (state === "same" || (!expired && (!owner || state === "unknown"))) return false;
   let latest = "";
   try { latest = fs.readFileSync(ownerFile, "utf8"); } catch { /* released */ }
   if (latest !== owner) return false;
