@@ -32,7 +32,7 @@ import {
 } from "./context-operations.ts";
 
 const TOOL_NAME = "smart_context";
-const MAX_REPORT_CHARS = 8_000;
+const MAX_REPORT_CHARS = 16_000; // fits every report seen in real sessions (longest 12,604); ~4k tokens is small next to what a rewind removes
 const ACTIVE_CHECKPOINT_ERROR = "A checkpoint is already active. Finish it with rewind(report) before starting another.";
 // A trim right before compaction rewrites the prompt cache that the compaction then replaces.
 const COMPACTION_DUE_ERROR = "Automatic compaction runs when this turn settles; a trim now would only rewrite the prompt cache it replaces. History left unchanged.";
