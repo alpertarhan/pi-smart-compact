@@ -182,6 +182,12 @@ describe("SecretScrubber", () => {
     expect(s("const password = hash(pw, salt)")).toBe("const password = hash(pw, salt)");
     expect(s("DB_PASSWORD=hunter2;")).toBe("DB_PASSWORD=[REDACTED:credential];");
     expect(s("{password: hunter2hunter2}")).toBe("{password: [REDACTED:credential]}");
+    // Index access and interpolation cut at a quote are code; a long value with an unclosed paren is not.
+    expect(s("password: body['password']")).toBe("password: body['password']");
+    expect(s('logger.info(`password: ${password}`)')).toBe('logger.info(`password: ${password}`)');
+    expect(s("DB_PASSWORD=SuperSecret(2024")).toMatch(/^DB_PASSWORD=\[REDACTED:[a-z-]+\]$/);
+    expect(s("API_KEY=abcdefghij(klmnopqrstuvwxyz")).not.toContain("klmnop");
+    expect(s("(token=abcdefghijklmnopqrstuvwxyz)")).toMatch(/^\(token=\[REDACTED:[a-z-]+\]\)$/);
   });
 
   it("stays fast on long hyphen-joined runs", () => {

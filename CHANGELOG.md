@@ -20,8 +20,8 @@
 - `smart_compact` reports when context usage is not measured yet instead of
   calling the context small.
 - Short unquoted YAML passwords (`password: hunter2`) are redacted; type
-  names, literals and object-literal variables stay readable, and punctuation
-  after a redacted value is kept.
+  names, literals, object-literal variables, index access and interpolations
+  stay readable, and punctuation after a redacted value is kept.
 - On Linux, a compaction run lease whose PID now belongs to another process
   is reclaimed at once.
 - On Linux, a lock whose owner is still running is never taken over, even

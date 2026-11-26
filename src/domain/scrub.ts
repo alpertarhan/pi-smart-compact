@@ -15,25 +15,29 @@ interface Pattern {
 }
 
 /** True for values that reference a secret instead of being one: a dotted
- * identifier chain (`process.env.API_KEY`) or a call expression
- * (`crypto.randomBytes(32).toString()`), including one cut short inside its
- * last argument list (`getenv(`, `hash(pw,`). Real secrets are opaque single runs; they contain no
- * parentheses and are essentially never dotted. `[^()]*` keeps both checks
+ * identifier chain (`process.env.API_KEY`), a call expression
+ * (`crypto.randomBytes(32).toString()`), one cut short at a quote or space
+ * (`getenv(`, `hash(pw,`, `body[`), or an interpolation (`${password}`). A cut
+ * call must end right after `(` or at an argument's comma, so a password with a
+ * parenthesis (`Secret(2024`) is still redacted. Real secrets are opaque single
+ * runs and essentially never dotted. `[^()]*` and `[^(),]*` keep the checks
  * linear on hostile input; nested calls are not recognised and get redacted. */
 function isReferenceValue(value: string): boolean {
+  // A trailing ")" is kept: it may close the value's own call, as in getKey().
   const bare = value.replace(/[;,\]}]+$/, "");
   return (
     /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(bare) ||
-    (bare.includes("(") &&
-      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)*(?:\([^()]*)?$/.test(bare))
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)+$/.test(bare) ||
+    /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)(?:\.[A-Za-z_$][\w$]*)*)*(?:\((?:[^(),]*,)*|\[)$/.test(value) ||
+    /^\$\{[^}]+\}/.test(value)
   );
 }
 
 /** Expression starts, literals and type names: never passwords (`password = null`, `password: string`). */
 const NOT_A_SECRET = /^(?:await|typeof|yield|function|string|number|boolean|bigint|symbol|object|unknown|any|never|void|null|undefined|true|false|String|Number|Boolean|Object|Buffer|Date)$/;
 
-/** Punctuation after a value (`;`, `,`, `]`, `}`) stays when the value is redacted, so lines keep their shape. */
-const trailingPunctuation = (value: string): string => /[;,\]}]*$/.exec(value)![0];
+/** Punctuation after a value (`;` `,` `)` `]` `}`) stays when the value is redacted, so lines keep their shape. */
+const trailingPunctuation = (value: string): string => /[;,)\]}]*$/.exec(value)![0];
 
 const SECRET_PATTERNS: Pattern[] = [
   {
@@ -96,7 +100,7 @@ const SECRET_PATTERNS: Pattern[] = [
     // The value must end at whitespace, a quote or the end: a longer token
     // (one the rule above spared as a reference) is never cut in two.
     replacement: (name, gap, separator, quote, value, close, match) => {
-      const bare = value.replace(/[;,\]}]+$/, "");
+      const bare = value.slice(0, value.length - trailingPunctuation(value).length);
       // An unquoted colon value with an inner capital is code: a type or an
       // object-literal variable (`{ password: hashedPassword }`). YAML secrets
       // such as `hunter2` or `changeme` have none.
