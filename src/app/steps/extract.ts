@@ -68,13 +68,6 @@ import {
 } from "../../infra/session-identity.ts";
 import { EXTRACTION_LIMITS, VERSION } from "../../constants.ts";
 
-/** Verification gap kinds that name content a summary can include, in prompt words. */
-const GAP_HINTS = new Map([
- ["missing-goal", "the current goal"], ["missing-prior-goal", "earlier goals"], ["missing-section", "required sections"],
- ["missing-file", "modified files"], ["missing-read-file", "files that were read"], ["missing-deleted-file", "deleted files"],
- ["missing-error", "errors"], ["missing-decision", "decisions"], ["missing-constraint", "constraints"], ["missing-open-loops", "open loops"],
-]);
-
 /** Shared continuity input; previews must request a read-only state load. */
 export function loadExtractionContinuity(
  rc: { cwd: string; branch: unknown[]; sessionId: string; llmMessages: LlmMessage[] },
@@ -84,9 +77,9 @@ export function loadExtractionContinuity(
  const projectId = deriveProjectId(rc.cwd, extraction, rc.sessionId);
  const fingerprint = loadProjectFingerprint(projectId);
  const projectCtx = buildProjectContext(fingerprint);
- // Content earlier summaries left out (defects such as fabrication are verify's job). It rides in
- // the continuity block, which single-pass and chunked synthesis both receive.
- const missed = readVerificationGapHints(projectId).flatMap(kind => GAP_HINTS.get(kind) ?? []);
+ // Content earlier summaries left out rides in the continuity block, which
+ // single-pass and chunked synthesis both receive.
+ const missed = readVerificationGapHints(projectId);
  const gapHint = missed.length
   ? "Previous summaries for this project initially left out " + missed.join(", ") + ". Take extra care to include them."
   : "";

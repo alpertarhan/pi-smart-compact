@@ -311,14 +311,23 @@ function readRemediationFile(projectId: string): RemediationHintsFile {
   return readJsonSync<RemediationHintsFile>(remediationHintsFile(projectId)) ?? {};
 }
 
-function writeRemediationFile(projectId: string, patch: Partial<RemediationHintsFile>, what: string): void {
+/** Both hint sets share one file, so each update is a locked read-modify-write
+ * and neither writer clobbers the other's set. The lock never waits (see
+ * acquireLockSync): under contention this update is dropped and recorded as an
+ * issue, which best-effort hints can afford. `update` returns null to skip. */
+function writeRemediationFile(
+  projectId: string,
+  update: (current: RemediationHintsFile) => Partial<RemediationHintsFile> | null,
+  what: string,
+): void {
   const file = remediationHintsFile(projectId);
   try {
     ensureDir(path.dirname(file));
-    // Read-modify-write: another Pi process may be writing the other hint set.
     const release = acquireLockSync(file);
     try {
-      writeJsonSync(file, { ...readRemediationFile(projectId), ...patch });
+      const current = readRemediationFile(projectId);
+      const patch = update(current);
+      if (patch) writeJsonSync(file, { ...current, ...patch });
     } finally {
       release();
     }
@@ -336,26 +345,40 @@ export function writeRemediationHints(
     ...new Set(files.map((f) => (f ?? "").trim()).filter((f) => f.length > 0)),
   ];
   if (!cleaned.length) return;
-  writeRemediationFile(projectId, { files: cleaned, updatedAt: Date.now() }, "Re-read file hints");
+  writeRemediationFile(projectId, () => ({ files: cleaned, updatedAt: Date.now() }), "Re-read file hints");
 }
+
+/** Verification gap kinds that name content a summary can include, in prompt
+ * words. Defect kinds (fabricated files, inconsistencies, unsupported claims)
+ * are verify's job: they are not stored and never take a hint's place. */
+const GAP_HINTS = new Map([
+  ["missing-goal", "the current goal"], ["missing-prior-goal", "earlier goals"], ["missing-section", "required sections"],
+  ["missing-file", "modified files"], ["missing-read-file", "files that were read"], ["missing-deleted-file", "deleted files"],
+  ["missing-error", "errors"], ["missing-decision", "decisions"], ["missing-constraint", "constraints"], ["missing-open-loops", "open loops"],
+]);
 
 /**
- * Persist the verification gap kinds a summary initially missed so the next
- * synthesis for this project is told to take extra care with them — the
- * smallest form of refining the compression guidance against failures.
+ * Persist the content kinds a summary initially missed so the next synthesis
+ * for this project is told to take extra care with them — the smallest form
+ * of refining the compression guidance against failures. A run that missed
+ * nothing clears the stored kinds.
  */
 export function writeVerificationGapHints(projectId: string, kinds: string[]): void {
-  const cleaned = [...new Set(kinds.map((k) => (k ?? "").trim()).filter(Boolean))].slice(0, 8);
-  // An empty list clears older kinds; with nothing stored there is nothing to clear.
-  if (!cleaned.length && !Array.isArray(readRemediationFile(projectId).gapKinds)) return;
-  writeRemediationFile(projectId, { gapKinds: cleaned, gapKindsUpdatedAt: Date.now() }, "Verification gap hints");
+  const cleaned = [...new Set(kinds)].filter((kind) => GAP_HINTS.has(kind));
+  writeRemediationFile(
+    projectId,
+    // With nothing to record and nothing stored, there is nothing to write.
+    (current) => (cleaned.length || Array.isArray(current.gapKinds) ? { gapKinds: cleaned, gapKindsUpdatedAt: Date.now() } : null),
+    "Verification gap hints",
+  );
 }
 
+/** What earlier summaries for this project left out, in prompt words. */
 export function readVerificationGapHints(projectId: string): string[] {
   const data = readRemediationFile(projectId);
   if (!Array.isArray(data.gapKinds) || !hintsFresh(data.gapKindsUpdatedAt)) return [];
-  // Slugs only: a hand-edited file must not put free text into every later prompt.
-  return data.gapKinds.filter((k): k is string => typeof k === "string" && /^[a-z-]{1,40}$/.test(k));
+  // Known kinds only: a hand-edited file must not put free text into every later prompt.
+  return data.gapKinds.flatMap((kind) => GAP_HINTS.get(String(kind)) ?? []);
 }
 
 /**
