@@ -23,7 +23,7 @@ import {
  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { Model, Api } from "@earendil-works/pi-ai";
-import type { ModelFeasibility } from "../app/model-feasibility.ts";
+import type { ModelEligibility, ModelFeasibility } from "../app/model-feasibility.ts";
 import type {
  CompactConfig,
  CompactionMode,
@@ -70,7 +70,12 @@ async function selectModel(
  const modeName = opts.mode
   ? ((MODE_LABELS as Record<string, string>)[opts.mode] ?? opts.mode)
   : undefined;
- const eligibility = (model: Model<Api>) => opts.feasibility?.(model, "summary", opts.mode);
+ // capacity() scrubs and re-estimates the planned conversation on each call: check each model once per picker.
+ const checked = new Map<Model<Api>, ModelEligibility | undefined>();
+ const eligibility = (model: Model<Api>) => {
+  if (!checked.has(model)) checked.set(model, opts.feasibility?.(model, "summary", opts.mode));
+  return checked.get(model);
+ };
  const blocked = (model: Model<Api>): string | undefined => {
   const check = eligibility(model);
   return check && !check.selectable ? check.reason ?? "not eligible" : undefined;

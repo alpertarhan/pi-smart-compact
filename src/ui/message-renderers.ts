@@ -62,7 +62,7 @@ function memoryStatusRow(theme: Theme, message: { details?: unknown }, expanded:
  if (details.title) lines.push(theme.fg("dim", summarizeLine(details.title, 120)));
  const reason = details.reason ?? details.lastError;
  if (reason && (expanded || row.status !== "done")) lines.push(theme.fg("dim", summarizeLine(reason, 200)));
- if (details.expired) lines.push(theme.fg("dim", "Background tracking stopped at its time limit; the agent's next memory recall refreshes the status."));
+ if (details.expired) lines.push(theme.fg("dim", "Background tracking stopped at its time limit; the next session checks this save again."));
  if (details.ref && expanded) lines.push(metaLine(theme, "ref", details.ref));
  else if (details.ref) lines.push(expandHint(theme));
  return lines;
