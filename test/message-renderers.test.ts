@@ -73,6 +73,11 @@ describe("message renderers", () => {
   expect(lines(renderers[ANCHOR_CUSTOM_TYPE], message, true).join("\n")).toBe("<success>done</> <muted>anchor recorded: post-refactor</>\n<dim>SUMMARY-BODY</>");
  });
 
+ it("expands a handoff seed to its whole carried-over text, not the excerpt", () => {
+  const message = { customType: ANCHOR_CUSTOM_TYPE, content: "FULL-HANDOFF-TEXT", details: { anchor: { name: "handoff", summary: "EXCERPT", targetId: "t1" }, handoff: { fromSessionId: "s0" } } };
+  expect(lines(createMessageRenderers()[ANCHOR_CUSTOM_TYPE], message, true).join("\n")).toBe("<success>done</> <muted>anchor recorded: handoff</>\n<dim>FULL-HANDOFF-TEXT</>");
+ });
+
  it("falls back to plain text for a malformed anchor instead of throwing", () => {
   expect(lines(createMessageRenderers()[ANCHOR_CUSTOM_TYPE], { customType: ANCHOR_CUSTOM_TYPE, content: "Anchor: x", details: { anchor: { name: 7 } } })).toEqual(["<muted>Anchor</>"]);
  });

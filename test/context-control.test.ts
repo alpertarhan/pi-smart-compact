@@ -772,6 +772,14 @@ describe("smart_context boundary lifecycle", () => {
     expect(h.edits()).toEqual(["rewind"]);
   });
 
+  it("reports a rewind that removed no output as a rewind too", async () => {
+    const h = harness();
+    h.boundary(await h.execute({ action: "checkpoint", label: "Investigate" }));
+    h.boundary(await h.execute({ action: "rewind", report: "Nothing to remove. Next: patch." }));
+    h.nextRequest();
+    expect(h.edits()).toEqual(["rewind"]);
+  });
+
   it.each([
     ["enabled", true], ["native-hook", false], ["below-threshold", false], ["hidden", true], ["busy", false],
   ] as const)("automatic hygiene is independent of agent exposure and respects %s", async (kind, shouldTrim) => {
