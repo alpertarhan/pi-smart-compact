@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [10.9.0] - 2026-11-26
+
 ### Fixed
 
 - Secret scrubbing now catches quoted JSON keys ({"api_key": "..."}),
