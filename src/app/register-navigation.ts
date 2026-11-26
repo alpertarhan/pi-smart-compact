@@ -87,6 +87,7 @@ function renderNavigationRow(
   return rawFallbackRow(theme, result, expanded);
 }
 import type { AnchorPage, AnchorRecallPage, AnchorState, NavigationPanelActions } from "./navigation-types.ts";
+import { AGENT_TEXT_MAX_CHARS } from "../constants.ts";
 
 const STATUS = "smart-context-navigation";
 const APPLY_PREFIX = "context --apply=";
@@ -245,9 +246,9 @@ export function registerNavigation(pi: ExtensionAPI, options: {
    offset: Type.Optional(Type.Integer({ minimum: 0 })),
    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
    name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-   summary: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144 })),
-   carryover: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144 })),
-   message: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144 })),
+   summary: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS })),
+   carryover: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS })),
+   message: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS })),
   }),
   executionMode: "sequential",
   async execute(callId, params, signal, _onUpdate, ctx) {

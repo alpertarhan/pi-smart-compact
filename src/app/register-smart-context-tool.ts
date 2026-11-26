@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { SecretScrubber } from "../domain/scrub.ts";
 import { contextMessageEntries } from "../infra/ai-messages.ts";
 import { isUnresolvedSessionId, resolveSessionId } from "../infra/session-identity.ts";
-import { AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
+import { AGENT_TEXT_MAX_CHARS, AUTO_TRIM_BREAK_EVEN_REQUESTS, CACHE_WARMING_MIN_SAVINGS_USD } from "../constants.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
 import { boundText } from "../utils/helpers.ts";
@@ -202,7 +202,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     parameters: Type.Object({
       action: StringEnum(["status", "plan", "checkpoint", "rewind", "trim", "read", "search"] as const),
       label: Type.Optional(Type.String({ maxLength: 120, description: "Checkpoint label." })),
-      report: Type.Optional(Type.String({ minLength: 1, maxLength: 262_144, description: "Rewind report: findings, evidence, failed attempts, next step. Overlong text is shortened, not rejected." })),
+      report: Type.Optional(Type.String({ minLength: 1, maxLength: AGENT_TEXT_MAX_CHARS, description: `Rewind report: findings, evidence, failed attempts, next step. Up to ${MAX_REPORT_CHARS.toLocaleString("en-US")} characters are kept; longer text loses its middle.` })),
       id: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Source ID." })),
       query: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Literal text." })),
       line: Type.Optional(Type.Integer({ minimum: 1, description: "Read from line." })),
@@ -343,6 +343,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const next = params.action === "checkpoint"
         ? "Explore read-only, then call rewind(report) with findings, evidence, constraints and the next step before implementation or your final answer. Do not nest checkpoints. No pressure required."
         : params.action === "rewind" ? "Stop research here. After the batch, continue the original task from the retained report. Files and processes are not reverted."
+          + (text.length < scrubbed.length ? ` The report was over ${MAX_REPORT_CHARS.toLocaleString("en-US")} characters, so its middle was omitted.` : "")
         : "Use status to inspect the committed state.";
       return reply(`${params.action} queued for the completed tool batch. ${next}`, {
         display: { state: "queued", action: params.action, label: text.slice(0, 120) },
@@ -567,31 +568,31 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
           if (coldCache && !urgentPressure) {
             entries = trimEntries(plan, "cold");
           } else {
-          // Otherwise only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
-          const cause = urgentPressure ? "pressure" : undefined;
-          const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id, ctx.model?.api);
-          const breakEvenRequests = economics ? trimBreakEvenRequests(ctx.model?.cost, economics.savedTokens, economics.tailTokens) : null;
-          const breakEvenLimit = settings.autoTrimBreakEvenRequests;
-          if (economics && (breakEvenRequests === null || breakEvenRequests > breakEvenLimit)) {
-            if (settings.contextPressureOnly || !settings.contextHygieneEnabled) return;
-            const edits = new Map(plan.entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
-              ? [[entry.targetId, entry.replacement.content] as const] : []));
-            mark = {
-              sessionId, leafId: branch.at(-1)!.id, entries: trimEntries(plan, "cold"),
-              ...economics, breakEvenRequests,
-              targets: branch.flatMap((entry): TrimMark["targets"] => {
-                const replacement = edits.get(entry.id);
-                if (replacement === undefined) return [];
-                if (entry.type === "custom_message") {
-                  return [{ targetId: entry.id, replacement, customType: entry.customType, timestamp: Date.parse(entry.timestamp), content: JSON.stringify(entry.content) }];
-                }
-                return entry.type === "message" && entry.message.role === "toolResult"
-                  ? [{ targetId: entry.id, replacement, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName }] : [];
-              }),
-            };
-            return;
-          }
-          entries = trimEntries(plan, cause ?? "break-even");
+            // Otherwise only the compaction gate justifies an uneconomic cache rewrite, not early cleanup pressure.
+            const cause = urgentPressure ? "pressure" : undefined;
+            const economics = cause ? undefined : trimTokens(branch, plan.entries, ctx.model?.provider, ctx.model?.id, ctx.model?.api);
+            const breakEvenRequests = economics ? trimBreakEvenRequests(ctx.model?.cost, economics.savedTokens, economics.tailTokens) : null;
+            const breakEvenLimit = settings.autoTrimBreakEvenRequests;
+            if (economics && (breakEvenRequests === null || breakEvenRequests > breakEvenLimit)) {
+              if (settings.contextPressureOnly || !settings.contextHygieneEnabled) return;
+              const edits = new Map(plan.entries.flatMap(entry => entry.type === "context_edit" && typeof entry.replacement?.content === "string"
+                ? [[entry.targetId, entry.replacement.content] as const] : []));
+              mark = {
+                sessionId, leafId: branch.at(-1)!.id, entries: trimEntries(plan, "cold"),
+                ...economics, breakEvenRequests,
+                targets: branch.flatMap((entry): TrimMark["targets"] => {
+                  const replacement = edits.get(entry.id);
+                  if (replacement === undefined) return [];
+                  if (entry.type === "custom_message") {
+                    return [{ targetId: entry.id, replacement, customType: entry.customType, timestamp: Date.parse(entry.timestamp), content: JSON.stringify(entry.content) }];
+                  }
+                  return entry.type === "message" && entry.message.role === "toolResult"
+                    ? [{ targetId: entry.id, replacement, toolCallId: entry.message.toolCallId, toolName: entry.message.toolName }] : [];
+                }),
+              };
+              return;
+            }
+            entries = trimEntries(plan, cause ?? "break-even");
           }
         }
       }

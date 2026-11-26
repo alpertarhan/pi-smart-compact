@@ -424,6 +424,9 @@ export const TRIM_RISK_LINE_RE =
  /\b(?:error|fail(?:ed|ure)|warn(?:ing)?|exception|traceback|panic|exit code|exited with|command not found|permission denied|ENOENT|EACCES)\b/i;
 /** Trim marker digest bounds: line 1 always kept; later lines dropped from the end to fit. */
 export const TRIM_MARKER_MAX_LINES = 6;
+/** Schema cap for agent prose (rewind reports, anchor summaries, pivot carryovers): far above
+ * every in-context budget, so an overlong text is shortened once instead of rejected and retried. */
+export const AGENT_TEXT_MAX_CHARS = 262_144;
 export const TRIM_MARKER_MAX_CHARS = 400;
 /** How far forward to look for a retry of the same tool after an error. */
 export const ERROR_RETRY_WINDOW = 6;
