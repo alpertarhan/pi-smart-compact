@@ -151,6 +151,24 @@ describe("appendLineLockedAsync", () => {
     expect(reclaimStaleLock(lockDir)).toBe(false);
     expect(fs.existsSync(lockDir)).toBe(true);
   });
+  it("keeps a running owner's lock however old and reclaims a reused pid at once", () => {
+    if (!fs.existsSync("/proc/self/stat")) return; // start times come from Linux /proc
+    const target = path.join(tmp, "slept.jsonl");
+    const lockDir = target + ".lock";
+    const release = acquireLockSync(target);
+    const old = new Date(Date.now() - 10 * 60_000);
+    fs.utimesSync(path.join(lockDir, "owner"), old, old);
+    try {
+      // The same process after a long laptop sleep keeps its lock.
+      expect(reclaimStaleLock(lockDir)).toBe(false);
+    } finally {
+      release();
+    }
+    fs.mkdirSync(lockDir);
+    // A live pid with another start time is a reused pid, even on a fresh lock.
+    fs.writeFileSync(path.join(lockDir, "owner"), process.pid + ":token:1");
+    expect(reclaimStaleLock(lockDir)).toBe(true);
+  });
   it("serializes concurrent asynchronous appends into complete JSONL records", async () => {
     const target = path.join(tmp, "async-log.jsonl");
     await Promise.all(Array.from({ length: 20 }, (_, index) =>

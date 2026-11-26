@@ -110,12 +110,23 @@ export function processAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
+/** Start time of pid in clock ticks since boot, from Linux /proc; "" where unavailable. */
+function processStart(pid: number): string {
+  try {
+    const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+    // Fields after the parenthesised command name begin at field 3; starttime is field 22.
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? "";
+  } catch { return ""; }
+}
+
 /**
  * Remove a lock directory left by a crashed owner: its owner file holds
- * "pid:token". Reclaim when that pid is dead, or when the lock outlived
- * staleMs (critical sections here are sub-second, so an old lock whose pid
- * still answers is pid reuse, not a live owner). An owner-less lock
- * (mid-acquisition) is reclaimed only by age. The owner and the directory
+ * "pid:token:start". Reclaim when that pid is dead. A live pid keeps its
+ * lock while its Linux start time matches the recorded one, however long the
+ * owner slept; another start time means the pid was reused, so the lock is
+ * reclaimed at once. Without start times (other systems, older owners) a live
+ * pid is trusted for staleMs only. An owner-less lock (mid-acquisition) is
+ * reclaimed only by age. The owner and the directory
  * are re-checked immediately before removal so a lock another process
  * already reclaimed and re-acquired is left alone.
  */
@@ -130,7 +141,10 @@ export function reclaimStaleLock(lockDir: string, staleMs = 60_000): boolean {
     stat = owner ? fs.statSync(ownerFile) : dir;
   } catch { return false; }
   const expired = Date.now() - stat.mtimeMs > staleMs;
-  if (!expired && (!owner || processAlive(Number(owner.split(":")[0])))) return false;
+  const [pid, , recorded] = owner.split(":");
+  const alive = owner !== "" && processAlive(Number(pid));
+  const started = alive && recorded ? processStart(Number(pid)) : "";
+  if (started ? started === recorded : !expired && (!owner || alive)) return false;
   let latest = "";
   try { latest = fs.readFileSync(ownerFile, "utf8"); } catch { /* released */ }
   if (latest !== owner) return false;
@@ -156,7 +170,7 @@ export function reclaimStaleLock(lockDir: string, staleMs = 60_000): boolean {
 function tryAcquireLock(target: string): (() => void) | null {
   const lockDir = target + ".lock";
   const ownerFile = path.join(lockDir, "owner");
-  const token = process.pid + ":" + crypto.randomBytes(8).toString("hex");
+  const token = process.pid + ":" + crypto.randomBytes(8).toString("hex") + ":" + processStart(process.pid);
   try {
     fs.mkdirSync(lockDir, { mode: 0o700 });
   } catch (error) {
