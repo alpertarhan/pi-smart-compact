@@ -111,7 +111,7 @@ export function processAlive(pid: number): boolean {
 }
 
 /** Start time of pid in clock ticks since boot, from Linux /proc; "" where unavailable. */
-function processStart(pid: number): string {
+export function processStart(pid: number): string {
   try {
     const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
     // Fields after the parenthesised command name begin at field 3; starttime is field 22.
