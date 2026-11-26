@@ -292,12 +292,17 @@ function readProjectFingerprint(projectId: string): ProjectFingerprint | null {
   return readJsonSync<ProjectFingerprint>(getFingerprintPath(projectId));
 }
 
+/** Descriptive facts expire after 30 idle days; counters outlive them. */
+function isFresh(data: ProjectFingerprint): boolean {
+  return Date.now() - data.updatedAt <= THIRTY_DAYS_MS;
+}
+
 export function loadProjectFingerprint(
   projectId: string,
 ): ProjectFingerprint | null {
   const data = readProjectFingerprint(projectId);
   if (!data) return null;
-  if (Date.now() - data.updatedAt > THIRTY_DAYS_MS) return null;
+  if (!isFresh(data)) return null;
   return data;
 }
 
@@ -324,7 +329,7 @@ export async function saveProjectFingerprint(
       const stored = readProjectFingerprint(projectId);
       // Descriptive facts (files, directories, language, framework) carry over
       // only while fresh, so an expired record is re-detected, not revived.
-      const existing = stored && Date.now() - stored.updatedAt <= THIRTY_DAYS_MS ? stored : null;
+      const existing = stored && isFresh(stored) ? stored : null;
       const newKnownFiles = [
         ...new Set([
           ...(existing?.knownFiles ?? []),
