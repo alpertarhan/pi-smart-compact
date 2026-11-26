@@ -46,6 +46,11 @@ export function boundText(text: string, maxChars: number): string {
   return text.slice(0, head) + marker(tailStart - head) + text.slice(tailStart);
 }
 
+/** True when boundText shortened the text: it carries the omission marker. */
+export function wasShortened(text: string): boolean {
+  return /\n… \[\d+ characters omitted\] …\n/.test(text);
+}
+
 export function getPreviousCompactionContext(branch: unknown[]): string {
   interface BranchEntry {
     type: string;

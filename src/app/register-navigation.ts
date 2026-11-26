@@ -8,7 +8,7 @@ import { SecretScrubber } from "../domain/scrub.ts";
 import { resolveSessionId } from "../infra/session-identity.ts";
 import type { CompactConfig } from "../types.ts";
 import { loadConfig } from "../utils/config.ts";
-import { boundText } from "../utils/helpers.ts";
+import { boundText, wasShortened } from "../utils/helpers.ts";
 import { notifyUser } from "../utils/issues.ts";
 import { readContextGuide } from "./context-guide.ts";
 import { contextPressure } from "./background-preparation.ts";
@@ -298,14 +298,14 @@ export function registerNavigation(pi: ExtensionAPI, options: {
     }
     const cleanup = options.onAnchor?.(ctx, data.targetId, callId, signal, userConfirmed) ?? "History unchanged; no cleanup controller attached.";
     // The summary is already in this call's arguments; echoing it would put it in context twice.
-    return { content: [{ type: "text", text: `Anchor saved: ${data.name} (${data.summary.length} chars; read it with smart_navigation view)\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
+    return { content: [{ type: "text", text: `Anchor saved: ${data.name} (${data.summary.length} chars${wasShortened(data.summary) ? ", shortened to fit 12,000: its middle was omitted" : ""}; read it with smart_navigation view)\n\n${cleanup}` }], details: { anchor: data, ...(userConfirmed ? { userConfirmed: true } : {}) } };
    }
    const operation = preparePivot(ctx, params.target ?? "", params.carryover ?? "", params.message);
    operation.callId = callId;
    operation.signal = signal;
    queued = operation;
    options.onContextChange?.(ctx);
-   return { ...reply("Pivot queued. End this turn; the host will revalidate and navigate after the batch settles. No file/process rollback."), details: { queued: "pivot", targetId: operation.targetId, display: { state: "queued", action: "pivot", target: params.target ?? "" } }, terminate: true };
+   return { ...reply("Pivot queued." + (wasShortened(operation.carryover) ? " The carryover was over 16,000 characters, so its middle was omitted." : "") + " End this turn; the host will revalidate and navigate after the batch settles. No file/process rollback."), details: { queued: "pivot", targetId: operation.targetId, display: { state: "queued", action: "pivot", target: params.target ?? "" } }, terminate: true };
   },
   renderCall(args, theme) {
    const label = theme.fg("toolTitle", "smart_navigation ");

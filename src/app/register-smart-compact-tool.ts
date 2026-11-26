@@ -126,7 +126,13 @@ export function registerSmartCompactTool(
       }
 
       const usage = readerUsage(ctx);
-      const totalTokens = usage?.tokens ?? 0;
+      // Unknown usage (none measured since the last compaction) is not a small context.
+      if (usage?.tokens == null) {
+        return textResult("Context usage is not measured yet; it is known after the next reply. Nothing to do now.", {
+          display: { state: "skipped", reason: "usage-unknown" },
+        });
+      }
+      const totalTokens = usage.tokens;
       const window = effectiveContextWindow(ctx.model, config);
       const contextPercent = safeContextPercent(totalTokens, window);
       const percent = Math.round(contextPercent);
@@ -297,11 +303,13 @@ function renderCompactRow(
     lines.push(statusLabel(theme, "cancelled") + " " + theme.fg("muted", "by " + String(display.source ?? "host")));
   } else if (display.state === "skipped" && (display.reason === "too-small" || display.reason === "below-threshold")) {
     // Fullness numbers are for the human only; the agent's text stays plain.
-    const tokens = Number(display.tokens) || 0;
+    const tokens = (Number(display.tokens) || 0).toLocaleString();
+    const window = Number(display.window) || 0;
+    // Without a known window there is no share to show, only the token count.
+    const size = window > 0 ? display.percent + "% (" + tokens + " of " + window.toLocaleString() + " tokens)" : tokens + " tokens (window unknown)";
     const fact = display.reason === "too-small"
-      ? "context is small (" + tokens.toLocaleString() + " tokens, " + display.percent + "%)"
-      : "context at " + display.percent + "% (" + tokens.toLocaleString() + " of " + (Number(display.window) || 0).toLocaleString()
-        + " tokens), agent threshold " + display.threshold + "%";
+      ? "context is small (" + tokens + " tokens)"
+      : "context at " + size + ", agent threshold " + display.threshold + "%";
     lines.push(statusLabel(theme, "skipped") + " " + theme.fg("muted", "not needed: " + fact));
   } else if (display.state === "skipped") {
     lines.push(statusLabel(theme, "skipped") + " " + theme.fg("dim", summarizeLine(firstTextContent(result.content), 140)));

@@ -184,7 +184,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
     if (!edit || edit.sessionId !== resolveSessionId(ctx)) return;
     const branch = ctx.sessionManager.getBranch();
     const leaf = branch.findIndex(entry => entry.id === edit.leafId);
-    if (leaf >= 0 && branch.slice(leaf + 1).some(entry => entry.type === "context_edit" && edit.targets.has(entry.targetId))) {
+    if (leaf >= 0 && branch.slice(leaf + 1).some(entry => (entry.type === "context_edit" && edit.targets.has(entry.targetId))
+      || (edit.kind === "rewind" && entry.type === "custom" && entry.customType === CONTEXT_CONTROL_TYPE))) {
       options.onContextEdit?.(ctx, edit.kind);
     }
   };
@@ -289,6 +290,7 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
               savedChars: plan.savedChars,
               trimRoi: roi,
               deferredTrim: held,
+              breakEvenLimit: settings.autoTrimBreakEvenRequests,
               checkpoint: payload.checkpoint?.label ?? null,
               pending: payload.pending ?? null,
               archivedOutputs: payload.archivedOutputs,
@@ -343,9 +345,9 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       const next = params.action === "checkpoint"
         ? "Explore read-only, then call rewind(report) with findings, evidence, constraints and the next step before implementation or your final answer. Do not nest checkpoints. No pressure required."
         : params.action === "rewind" ? "Stop research here. After the batch, continue the original task from the retained report. Files and processes are not reverted."
-          + (text.length < scrubbed.length ? ` The report was over ${MAX_REPORT_CHARS.toLocaleString("en-US")} characters, so its middle was omitted.` : "")
         : "Use status to inspect the committed state.";
-      return reply(`${params.action} queued for the completed tool batch. ${next}`, {
+      const cut = text.length < scrubbed.length ? ` The report was over ${MAX_REPORT_CHARS.toLocaleString("en-US")} characters, so its middle was omitted.` : "";
+      return reply(`${params.action} queued for the completed tool batch. ${next}${cut}`, {
         display: { state: "queued", action: params.action, label: text.slice(0, 120) },
       });
     },
@@ -546,7 +548,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
         entries = applied.entries;
         applied = null;
       } else {
-        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
+        // A cold prefix makes the rewrite free, so the frontier need not pay it back.
+        const plan = planContextTrim(branch, state.checkpoint?.originId, { anchorBoundary: request?.anchorBoundary, readerApi: ctx.model?.api, minSavingChars: settings.autoTrimMinSavingChars, economy: coldCache ? undefined : { provider: ctx.model?.provider, model: ctx.model?.id, api: ctx.model?.api, cost: ctx.model?.cost, breakEvenLimit: settings.autoTrimBreakEvenRequests } });
         if (plan.blockedReason) return request ? cancelled(event, plan.blockedReason) : undefined;
         if (request) {
           const human = request.manual || request.userConfirmed;
@@ -600,7 +603,8 @@ export function registerSmartContextTool(pi: ExtensionAPI, options: {
       return request ? cancelled(event, error instanceof Error ? error.message : "Context change rejected.") : undefined;
     }
     if (!entries.length) return request ? cancelled(event, "No eligible archived content to trim.") : undefined;
-    if (entries.some(entry => entry.type === "context_edit")) {
+    // A rewind ends its checkpoint even when it found no output to remove: still a unit boundary.
+    if (entries.some(entry => entry.type === "context_edit") || request?.action === "rewind") {
       options.onContextChange?.(ctx);
       staged = {
         sessionId, leafId: branch.at(-1)!.id, kind: request?.action === "rewind" ? "rewind" : "trim",
@@ -721,7 +725,7 @@ function renderSmartContextRow(
       if (Number(display.savedChars) > 0) lines.push(metaLine(theme, "batch saves ≈", Number(display.savedChars).toLocaleString() + " chars"));
       const roi = display.trimRoi as { savedCharsEstimate?: number } | undefined;
       if (roi && Number(roi.savedCharsEstimate) > 0) lines.push(metaLine(theme, "archived so far ≈", Number(roi.savedCharsEstimate).toLocaleString() + " chars saved"));
-      if (display.deferredTrim) lines.push(theme.fg("dim", summarizeLine(formatDeferredTrim(display.deferredTrim as DeferredTrim, loadConfig().autoTrimBreakEvenRequests), 200)));
+      if (display.deferredTrim) lines.push(theme.fg("dim", summarizeLine(formatDeferredTrim(display.deferredTrim as DeferredTrim, Number(display.breakEvenLimit) || undefined), 200)));
     }
     return expanded ? expandedRow(theme, result, lines) : new Text(lines.join("\n"), 0, 0);
   }
